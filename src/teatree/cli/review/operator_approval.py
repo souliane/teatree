@@ -43,8 +43,13 @@ def publish_operator_approval(
                 .order_by("created_at")
                 .first()
             )
-            if approval is None:
-                return f"No consent from {approver_key} for {action} on {target}", 1
+            if approval is None or not service.oauth:
+                reason = (
+                    "OAuth grant required for operator approval"
+                    if not service.oauth
+                    else f"No consent from {approver_key} for {action} on {target}"
+                )
+                return reason, 1
             actual = service._get_api().current_username()
             if f"gitlab:{actual.casefold()}" != approver_key:
                 return f"OAuth grant identity does not match requester {approver_key}", 1

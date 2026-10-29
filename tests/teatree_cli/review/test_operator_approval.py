@@ -10,6 +10,7 @@ from django.utils import timezone
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.review.operator_approval import publish_operator_approval
 from teatree.cli.review.service import ReviewService
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, OperatorGrant, OperatorIdentity, Ticket
 from teatree.core.models.operator_grant import OperatorGrantTokens
@@ -83,7 +84,7 @@ class TestOperatorApproval(TestCase):
 
         with (
             patch.dict(os.environ, {"GITLAB_TOKEN": "owner-personal-token"}),
-            patch("teatree.core.operator_oauth.master_key_source") as source,
+            patch("teatree.core.operator_auth.operator_oauth.master_key_source") as source,
             patch.object(ReviewService, "_get_api", api_for),
         ):
             source.return_value.load.return_value = self.key
@@ -164,6 +165,20 @@ class TestOperatorApproval(TestCase):
 
         assert code == 1
         assert "OAuth grant" in message
+        post.assert_not_called()
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+
+    def test_publisher_refuses_personal_token_even_with_consent(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        api = ApprovalAPI()
+        service = ReviewService("personal-token", repo="org/repo", api=api)
+
+        with patch.object(api, "post_status", wraps=api.post_status) as post:
+            message, code = publish_operator_approval(service, "org/repo", 7, "approve", "gitlab:alice")
+
+        assert code == 1
+        assert "OAuth grant required" in message
         post.assert_not_called()
         approval.refresh_from_db()
         assert approval.consumed_at is None

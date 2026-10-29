@@ -45,7 +45,7 @@ repos:
       - id: refuse-bot-push
         name: Refuse a human credential or commit on a bot-owned repo (#5122)
         language: system
-        entry: uv run --no-sync python -m teatree.hooks.bot_push_gate
+        entry: scripts/hooks/branch-push-only.sh uv run --no-sync python -m teatree.hooks.bot_push_gate
         pass_filenames: false
         always_run: true
         stages: [push]

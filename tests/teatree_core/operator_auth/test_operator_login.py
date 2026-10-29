@@ -6,7 +6,7 @@ from django.contrib.sessions.models import Session
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.operator_login import create_local_login_link
+from teatree.core.operator_auth.operator_login import create_local_login_link
 
 
 class LocalOperatorLoginTestCase(TestCase):

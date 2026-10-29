@@ -5,6 +5,7 @@ import webbrowser
 import httpx
 import typer
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.cli.admin import _record_browse_url
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.loopback_forward import ensure_admin_forward
@@ -34,7 +35,7 @@ def login(forge: str = typer.Argument(help="GitHub or GitLab OAuth provider.")) 
     else:
         url = f"{_NATIVE_ADMIN_URL}{path}"
         try:
-            response = httpx.get(url, timeout=5, follow_redirects=False)
+            response = client_for_url(url).get(url, headers={}, timeout=5)
         except httpx.HTTPError as exc:
             typer.echo(f"Admin is not reachable; start `t3 admin`: {type(exc).__name__}", err=True)
             raise typer.Exit(code=1) from exc
@@ -53,7 +54,9 @@ def logout(
     provider = _forge(forge)
     ensure_django()
     from teatree.core.models import OperatorGrant  # noqa: PLC0415 — Django setup precedes model import
-    from teatree.core.operator_oauth import revoke_operator_grant  # noqa: PLC0415 — Django setup precedes model import
+    from teatree.core.operator_auth.operator_oauth import (  # noqa: PLC0415 — Django setup precedes model import
+        revoke_operator_grant,
+    )
 
     grants = OperatorGrant.objects.filter(forge=provider)
     if user:

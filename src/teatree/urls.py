@@ -4,8 +4,8 @@ from django.contrib.staticfiles.views import serve as serve_static
 from django.urls import include, path, re_path
 from django.views.generic.base import RedirectView
 
-from teatree.core.operator_login import consume_local_login_link
-from teatree.core.operator_oauth import finish_login, start_login
+from teatree.core.operator_auth.operator_login import consume_local_login_link
+from teatree.core.operator_auth.operator_oauth import finish_login, start_login
 
 urlpatterns = [
     # Browsers request /favicon.ico unprompted on any page that declares no icon

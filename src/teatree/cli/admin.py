@@ -167,7 +167,9 @@ def _publish_running_admin(*, port: int | None, path: str) -> None:
 def _operator_login_url(base_url: str, username: str, path: str) -> str:
     from django.contrib.auth import get_user_model  # noqa: PLC0415 — Django is initialized by _serve.
 
-    from teatree.core.operator_login import create_local_login_link  # noqa: PLC0415 — Django is initialized by _serve.
+    from teatree.core.operator_auth.operator_login import (  # noqa: PLC0415 — Django is initialized by _serve.
+        create_local_login_link,
+    )
 
     user = get_user_model().objects.get(username=username)
     return f"{base_url}{create_local_login_link(user, path)}"

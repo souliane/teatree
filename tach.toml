@@ -323,6 +323,8 @@ depends_on = [
   # the readiness probe's boot-time GET reuses the shared bounded-retry
   # transport rather than carrying a second, uncapped retry loop.
   "teatree.backends.http_retry",
+  # Operator OAuth shares the forge connection pool with GitHub/GitLab API clients.
+  "teatree.backends.forge_pool",
   # #2385: the admission leaves are their own node, so the governor reaches the
   # metered ledger through a DECLARED edge rather than a function-scoped import
   # tach's acyclic guard cannot see.

@@ -73,6 +73,7 @@ graph TD
     teatree.core --> teatree.quality
     teatree.core --> teatree.backends.types
     teatree.core --> teatree.backends.http_retry
+    teatree.core --> teatree.backends.forge_pool
     teatree.core --> teatree.core.admission
     teatree.core --> teatree.core.admission_pressure
     teatree.core --> teatree.core.modelkit

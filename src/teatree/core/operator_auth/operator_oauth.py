@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.config.operator_oauth_apps import parse_operator_oauth_apps
 from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity
 from teatree.core.models.operator_grant import OperatorGrantTokens
@@ -123,10 +124,12 @@ def _token_response(
     else:
         data["refresh_token"] = credential
     route = "/login/oauth/access_token" if forge == "github" else "/oauth/token"
-    response = httpx.post(
-        f"{_base_url(forge, app)}{route}",
-        data=data,
-        headers={"Accept": "application/json"},
+    url = f"{_base_url(forge, app)}{route}"
+    response = client_for_url(url).request(
+        "POST",
+        url,
+        payload=urlencode(data),
+        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
         timeout=_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
@@ -151,7 +154,7 @@ def _profile_response(forge: str, app: dict[str, str], access_token: str) -> htt
     else:
         url = f"{_base_url(forge, app)}/api/v4/user"
         headers = {"Authorization": f"Bearer {access_token}"}
-    return httpx.get(url, headers=headers, timeout=_TIMEOUT_SECONDS)
+    return client_for_url(url).get(url, headers=headers, timeout=_TIMEOUT_SECONDS)
 
 
 def _forge_identity(forge: str, app: dict[str, str], access_token: str) -> tuple[str, str]:
@@ -270,18 +273,23 @@ def revoke_operator_grant(user: "AbstractBaseUser", forge: str) -> None:
     secret = _secret(app, forge)
     if forge == "gitlab":
         for token in (access, tokens.refresh_token):
-            response = httpx.post(
-                f"{_base_url(forge, app)}/oauth/revoke",
-                data={"client_id": app["client_id"], "client_secret": secret, "token": token},
+            url = f"{_base_url(forge, app)}/oauth/revoke"
+            response = client_for_url(url).request(
+                "POST",
+                url,
+                payload=urlencode({"client_id": app["client_id"], "client_secret": secret, "token": token}),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
     else:
-        response = httpx.request(
+        url = f"https://api.github.com/applications/{app['client_id']}/grant"
+        credentials = base64.b64encode(f"{app['client_id']}:{secret}".encode()).decode()
+        response = client_for_url(url).request(
             "DELETE",
-            f"https://api.github.com/applications/{app['client_id']}/grant",
-            auth=(app["client_id"], secret),
-            json={"access_token": access},
+            url,
+            payload={"access_token": access},
+            headers={"Authorization": f"Basic {credentials}", "Accept": "application/vnd.github+json"},
             timeout=_TIMEOUT_SECONDS,
         )
         response.raise_for_status()

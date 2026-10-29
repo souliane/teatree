@@ -20,7 +20,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _push_repo(repo: Path, *, author: str, base_author: str = "build-bot") -> tuple[str, str]:
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.name", base_author)
     _git(repo, "config", "user.email", f"{base_author}@users.noreply.github.com")
     _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
@@ -119,7 +119,7 @@ def test_routed_bot_token_lists_private_remote_before_scanning_commits(
 
 
 def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "init", "-q", "-b", "main")
     helper = tmp_path / "credential-helper"
     helper.write_text(
         "#!/bin/sh\n"

@@ -13,13 +13,35 @@ from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity, SealedSecret
 from teatree.core.models.operator_grant import OperatorGrantTokens
-from teatree.core.operator_oauth import operator_access_token, revoke_operator_grant
+from teatree.core.operator_auth.operator_oauth import operator_access_token, revoke_operator_grant
 from teatree.utils.master_key import MasterKeySourceError
 from teatree.utils.sealing import MasterKey
 
 
 class OperatorOAuthTestCase(TestCase):
     def setUp(self) -> None:
+        class MockTransport:
+            def request(
+                self, method: str, url: str, *, payload: object, headers: dict[str, str], timeout: float
+            ) -> httpx.Response:
+                if method == "POST":
+                    assert isinstance(payload, str)
+                    return httpx.post(
+                        url,
+                        data={key: values[0] for key, values in parse_qs(payload).items()},
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                assert method == "DELETE"
+                assert isinstance(payload, dict)
+                return httpx.request(method, url, json=payload, headers=headers, timeout=timeout)
+
+            def get(self, url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+                return httpx.get(url, headers=headers, timeout=timeout)
+
+        transport = patch("teatree.core.operator_auth.operator_oauth.client_for_url", return_value=MockTransport())
+        transport.start()
+        self.addCleanup(transport.stop)
         ConfigSetting.objects.create(
             scope="",
             key="operator_oauth_apps",
@@ -61,8 +83,8 @@ class OperatorOAuthTestCase(TestCase):
         assert response.status_code == 403
         assert not OperatorGrant.objects.exists()
 
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_token_exchange_without_refresh_grant_reports_relogin_action(self, post: Mock, secret: Mock) -> None:
         post.return_value = httpx.Response(
             200,
@@ -79,10 +101,10 @@ class OperatorOAuthTestCase(TestCase):
         assert not OperatorGrant.objects.exists()
         secret.assert_called_once_with("github/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_uninvited_forge_account_cannot_sign_in(self, post: Mock, get: Mock, secret: Mock, source: Mock) -> None:
         source.return_value.load.return_value = self.key
         post.return_value = httpx.Response(
@@ -105,10 +127,10 @@ class OperatorOAuthTestCase(TestCase):
         secret.assert_called_once_with("github/oauth-app")
         source.assert_not_called()
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_signed_in_admin_cannot_link_an_uninvited_forge_account(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -133,10 +155,10 @@ class OperatorOAuthTestCase(TestCase):
         secret.assert_called_once_with("github/oauth-app")
         source.assert_not_called()
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_github_pkce_login_uses_invited_superuser_and_sealed_per_user_grant(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -187,7 +209,7 @@ class OperatorOAuthTestCase(TestCase):
         secret.assert_called_once_with("github/oauth-app")
         assert self.client.get("/login/oauth/github/callback/", {"code": "replay", "state": state}).status_code == 403
 
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_wrong_state_never_exchanges_code(self, post: Mock) -> None:
         self._start_github_login()
         assert self.client.get("/login/oauth/github/callback/", {"code": "x", "state": "wrong"}).status_code == 403
@@ -197,16 +219,16 @@ class OperatorOAuthTestCase(TestCase):
     def _forge_account(self, profile: dict[str, object], *, key_error: Exception | None = None) -> Generator[Mock]:
         tokens = {"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_in": 3600}
         with (
-            patch("teatree.core.operator_oauth.master_key_source") as source,
-            patch("teatree.core.operator_oauth.read_pass", return_value="app-secret"),
+            patch("teatree.core.operator_auth.operator_oauth.master_key_source") as source,
+            patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret"),
             patch(
-                "teatree.core.operator_oauth.httpx.get",
+                "teatree.core.operator_auth.operator_oauth.httpx.get",
                 return_value=httpx.Response(
                     200, request=httpx.Request("GET", "https://api.github.com/user"), json=profile
                 ),
             ),
             patch(
-                "teatree.core.operator_oauth.httpx.post",
+                "teatree.core.operator_auth.operator_oauth.httpx.post",
                 return_value=httpx.Response(
                     200, request=httpx.Request("POST", "https://github.com/login/oauth/access_token"), json=tokens
                 ),
@@ -311,10 +333,10 @@ class OperatorOAuthTestCase(TestCase):
                 response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
                 assert response.headers["Location"] == landing
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_gitlab_login_uses_invited_operator_and_configured_forge(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -342,10 +364,10 @@ class OperatorOAuthTestCase(TestCase):
         assert get.call_args.args[0] == "https://gitlab.example/api/v4/user"
         secret.assert_called_once_with("gitlab/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_logout_revokes_at_forge_then_deletes_only_that_users_grant(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -366,10 +388,10 @@ class OperatorOAuthTestCase(TestCase):
         assert get.call_args.args[0] == "https://gitlab.example/api/v4/user"
         secret.assert_called_once_with("gitlab/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.request")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.request")
     def test_github_logout_revokes_the_whole_grant(self, request: Mock, get: Mock, secret: Mock, source: Mock) -> None:
         source.return_value.load.return_value = self.key
         user = get_user_model().objects.create_superuser("alice", email="", password="unused")
@@ -390,11 +412,11 @@ class OperatorOAuthTestCase(TestCase):
         assert not OperatorGrant.objects.filter(user=user, forge="github").exists()
         secret.assert_called_once_with("github/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.request")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.request")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_github_logout_refreshes_expired_access_before_revoking(
         self, post: Mock, request: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -424,10 +446,10 @@ class OperatorOAuthTestCase(TestCase):
         assert not OperatorGrant.objects.filter(user=user, forge="github").exists()
         secret.assert_called_with("github/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.get")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_logout_keeps_grant_when_forge_still_accepts_it(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
@@ -448,9 +470,9 @@ class OperatorOAuthTestCase(TestCase):
         assert OperatorGrant.objects.filter(user=user, forge="gitlab").exists()
         secret.assert_called_once_with("gitlab/oauth-app")
 
-    @patch("teatree.core.operator_oauth.master_key_source")
-    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
-    @patch("teatree.core.operator_oauth.httpx.post")
+    @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
     def test_expired_grant_refreshes_under_its_own_operator(self, post: Mock, secret: Mock, source: Mock) -> None:
         source.return_value.load.return_value = self.key
         user = get_user_model().objects.create_superuser("alice", email="", password="unused")

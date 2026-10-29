@@ -15,7 +15,7 @@ _GIT = shutil.which("git") or "/usr/bin/git"
 
 
 def test_interactive_hook_refuses_raw_push_to_bot_repo(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    subprocess.run([_GIT, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(tmp_path)], check=True)
     subprocess.run(
         [_GIT, "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/build-bot/engine.git"],
         check=True,
@@ -31,7 +31,7 @@ def test_interactive_hook_refuses_raw_push_to_bot_repo(tmp_path: Path, capsys: p
 
 
 def test_interactive_hook_allows_non_bot_repo(tmp_path: Path) -> None:
-    subprocess.run([_GIT, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(tmp_path)], check=True)
     subprocess.run(
         [_GIT, "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/team/engine.git"],
         check=True,
@@ -43,7 +43,7 @@ def test_interactive_hook_allows_non_bot_repo(tmp_path: Path) -> None:
 
 
 def test_interactive_hook_refuses_direct_bot_url(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    subprocess.run([_GIT, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(tmp_path)], check=True)
     remote = "https://github.com/build-bot/engine.git"
     data = {"tool_name": "Bash", "tool_input": {"command": f"git push {remote} HEAD"}, "cwd": str(tmp_path)}
     bot = BotRepo("github.com/build-bot/engine", "github.com", "github", "build-bot/engine", "build-bot")

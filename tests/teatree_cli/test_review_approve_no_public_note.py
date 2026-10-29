@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.operator_approval import publish_operator_approval
 from teatree.core.models import OnBehalfApproval
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
@@ -80,7 +81,7 @@ def _immediate_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _service_with_stub() -> tuple[ReviewService, _SilentApproveStubAPI]:
     stub = _SilentApproveStubAPI()
-    service = ReviewService(token="t", api=stub)
+    service = ReviewService(token="t", api=stub, oauth=True)
     return service, stub
 
 
@@ -103,10 +104,10 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         """On-behalf approve succeeds via the internal verdict, posting ZERO notes."""
         _immediate_gate(self.tmp_path, self.monkeypatch)
         # The internal verdict/attribution record — human-recorded, maker!=checker.
-        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="gitlab:souliane")
         service, stub = _service_with_stub()
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
         assert code == 0, msg
         assert "OK approved" in msg
@@ -125,10 +126,10 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         _immediate_gate(self.tmp_path, self.monkeypatch)
         service, stub = _service_with_stub()
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
         assert code == 1
-        assert "review before approve" in msg
+        assert "No consent" in msg
         assert not any(c[0] == "post_status" for c in stub.calls)
         assert _posted_to_mr(stub) == []
 
@@ -154,11 +155,12 @@ class TestApproveAcceptsDraftFootprint:
     def test_draft_note_footprint_satisfies_precondition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A colleague-invisible draft review satisfies the precondition — no public note forced."""
         _immediate_gate(self.tmp_path, self.monkeypatch)
-        service = ReviewService(token="t")
+        service = ReviewService(token="t", oauth=True)
         stub = _DraftReviewStubAPI()
         monkeypatch.setattr(service, "_get_api", lambda: stub)
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="gitlab:souliane")
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
         assert code == 0, msg
         assert "OK approved" in msg

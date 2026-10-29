@@ -20,11 +20,15 @@ runner = CliRunner()
 class OperatorLoginCliTestCase(TestCase):
     @patch("teatree.cli.login.webbrowser.open")
     @patch("teatree.cli.login.httpx.get")
+    @patch("teatree.cli.login.client_for_url")
     @patch("teatree.cli.login.running_in_container", return_value=False)
-    def test_native_login_opens_the_configured_oauth_start(self, container: Mock, get: Mock, browser: Mock) -> None:
+    def test_native_login_opens_the_configured_oauth_start(
+        self, container: Mock, transport: Mock, get: Mock, browser: Mock
+    ) -> None:
         get.return_value = httpx.Response(
             302, request=httpx.Request("GET", "http://127.0.0.1:8000/login/oauth/github/start/")
         )
+        transport.return_value.get.side_effect = get
         result = runner.invoke(app, ["login", "github"])
         assert result.exit_code == 0
         browser.assert_called_once_with("http://127.0.0.1:8000/login/oauth/github/start/")
@@ -46,7 +50,7 @@ class OperatorLoginCliTestCase(TestCase):
             )
             container.assert_called_once()
 
-    @patch("teatree.core.operator_oauth.revoke_operator_grant")
+    @patch("teatree.core.operator_auth.operator_oauth.revoke_operator_grant")
     def test_logout_selects_one_operators_grant_and_requires_username_when_ambiguous(self, revoke: Mock) -> None:
         alice = get_user_model().objects.create_superuser("alice", email="", password="unused")
         bob = get_user_model().objects.create_superuser("bob", email="", password="unused")
@@ -64,7 +68,7 @@ class OperatorLoginCliTestCase(TestCase):
         revoke.assert_called_once_with(bob, "gitlab")
 
     @patch(
-        "teatree.core.operator_oauth.revoke_operator_grant",
+        "teatree.core.operator_auth.operator_oauth.revoke_operator_grant",
         side_effect=RuntimeError("operator gitlab grant is still active or could not be verified"),
     )
     def test_a_failed_revoke_exits_one_and_keeps_the_grant(self, revoke: Mock) -> None:

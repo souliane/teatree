@@ -49,7 +49,7 @@ def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewS
     ensure_django()
     from teatree.cli.review.operator_target import requester_key_for_mr  # noqa: PLC0415 — ORM after bootstrap
     from teatree.core.models import OnBehalfApproval, OperatorIdentity  # noqa: PLC0415 — ORM after bootstrap
-    from teatree.core.operator_oauth import (  # noqa: PLC0415 — ORM after bootstrap
+    from teatree.core.operator_auth.operator_oauth import (  # noqa: PLC0415 — ORM after bootstrap
         OperatorOAuthUnavailableError,
         operator_access_token,
     )
