@@ -116,6 +116,14 @@ class TestConfigSettingChange(TestCase):
         ConfigSetting.objects.set_value("subagent_spawn_ceiling", 2.0, authorized_by="operator")
         assert ConfigSettingChange.objects.filter(key="subagent_spawn_ceiling").count() == 2
 
+    def test_nested_json_type_change_is_written_and_audited(self) -> None:
+        key = "banned_term_registry"
+        ConfigSetting.objects.set_value(key, {"sample": [1]}, authorized_by="operator")
+        ConfigSetting.objects.set_value(key, {"sample": [True]}, authorized_by="operator")
+
+        assert ConfigSetting.objects.get(key=key).value["sample"][0] is True
+        assert ConfigSettingChange.objects.filter(key=key).count() == 2
+
     def test_manager_rejects_sub_floor_value(self) -> None:
         with pytest.raises(ValidationError, match="agent_max_turns"):
             ConfigSetting.objects.set_value("agent_max_turns", 9)

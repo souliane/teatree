@@ -44,6 +44,7 @@ explicitly out of scope — they must be readable before Django starts, so they 
 never live here (#1775).
 """
 
+import json
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -146,10 +147,8 @@ def reject_review_config_write(database: str) -> None:
 def unchanged_operator_row(row: "ConfigSetting | None", value: ConfigValue, writer: str) -> "ConfigSetting | None":
     if row is None:
         return None
-    same_json_type = type(row.value) is type(value) or (type(row.value) is str and isinstance(value, StrEnum))
     if (
-        same_json_type
-        and row.value == value
+        json.dumps(row.value, sort_keys=True) == json.dumps(value, sort_keys=True)
         and not row.seeded_by
         and row.seed_value is None
         and row.written_by == writer
