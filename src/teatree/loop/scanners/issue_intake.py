@@ -542,6 +542,7 @@ class IssueIntakeScanner:
             error_class = (
                 common_class
                 if common_class in {ScannerErrorClass.RATE_LIMIT, ScannerErrorClass.NETWORK}
+                or classifications == {ScannerErrorClass.RATE_LIMIT, ScannerErrorClass.NETWORK}
                 else ScannerErrorClass.AUTH
             )
             causes = "; ".join(dict.fromkeys(reason for _, reason in failures))

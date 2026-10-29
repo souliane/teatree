@@ -131,6 +131,17 @@ class TestEveryDiscoveryQueryFailing(TestCase):
         assert caught.value.error_class == ScannerErrorClass.AUTH
         assert "GNUPGHOME" in (caught.value.detail or "")
 
+    def test_mixed_rate_limit_and_network_failures_report_unknown(self) -> None:
+        host = _BrokenHost(error=RuntimeError("secondary rate limit"))
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("dial tcp: network is unreachable")),
+            pytest.raises(ScannerError) as caught,
+        ):
+            _scanner(host).scan()
+
+        assert caught.value.error_class == ScannerErrorClass.UNKNOWN
+        assert "GNUPGHOME" not in (caught.value.detail or "")
+
     def test_all_network_failures_report_network(self) -> None:
         host = _BrokenHost(error=RuntimeError("dial tcp: network is unreachable"))
         with pytest.raises(ScannerError) as caught:
