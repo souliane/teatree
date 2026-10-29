@@ -259,6 +259,21 @@ class MidRunCheckoutTests(TestCase):
         assert holder is not None
         assert (holder.holder, holder.holder_session) == ("task:999", "rival")
 
+    def test_completion_does_not_renew_a_checkout_taken_by_a_rival(self) -> None:
+        def finish(task: Task) -> None:
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+            task.complete()
+
+        self.run_to(finish, heartbeat=False)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert (row.occupied_by, row.occupied_by_session) == ("task:999", "rival")
+        assert "attested_state" not in row.get_extra()
+
+    def test_exit_does_not_renew_a_checkout_taken_by_a_rival(self) -> None:
+        self.run_to(lambda task: acquire(self.worktree, holder="task:999", holder_session="rival"), heartbeat=False)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert (row.occupied_by, row.occupied_by_session) == ("task:999", "rival")
+
     def test_short_run_claims_its_new_checkout_before_completion(self) -> None:
         self.run_to(lambda task: task.complete(), heartbeat=False)
         self.assert_released_and_attested()

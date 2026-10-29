@@ -235,7 +235,7 @@ class TestHumanNoteActivityClaims(TestCase):
         assert claim_red_mr_fix(self._payload("b" * 40, 42)) is False
 
     def test_unrepresentable_head_does_not_claim(self) -> None:
-        assert claim_red_mr_fix(self._payload("a" * 64, 42)) is False
+        assert claim_red_mr_fix(self._payload("a" * 65, 42)) is False
         assert RedMrFixAttempt.objects.count() == 0
 
 

@@ -129,12 +129,9 @@ def _is_self_authored(
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     if not author:
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
-    actors = ForgeActors.for_url(mr_url)
-    self_identities = {name.casefold() for name in identities if name} | actors.system_logins
+    self_identities = {name.casefold() for name in _resolve_self_identities(mr_url, identities)}
     if author_is_self(author.casefold(), current_user="", self_identities=self_identities):
         verdict = AuthorshipVerdict.SELF
-    elif actors.is_automation(author):
-        verdict = AuthorshipVerdict.UNREADABLE
     else:
         verdict = AuthorshipVerdict.FOREIGN
     return _observed_authorship(mr_url, author, verdict)

@@ -19,7 +19,6 @@ from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.config import clone_root, worktree_root
-from teatree.core.forge_scan_index import branch_scan_scope
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.worktree.branch_classification import RedundancyVerdict, branch_redundancy
@@ -607,15 +606,14 @@ def reconcile_work_state_all() -> dict[int, Drift]:
     rows are read once here rather than per ticket — the per-ticket entry point
     above pays for its own because it answers about one ticket.
     """
-    with branch_scan_scope():
-        scope = WorkStateScope.whole_board()
-        worktrees_by_ticket: dict[int, list[Worktree]] = defaultdict(list)
-        for wt in Worktree.objects.all():
-            worktrees_by_ticket[wt.ticket_id].append(wt)
-        drifts: dict[int, Drift] = {}
-        for ticket in Ticket.objects.all():
-            drift = Drift(ticket_pk=ticket.pk)
-            _collect_work_state_drift(drift, ticket, worktrees_by_ticket[ticket.pk], scope)
-            if drift.has_drift:
-                drifts[ticket.pk] = drift
-        return drifts
+    scope = WorkStateScope.whole_board()
+    worktrees_by_ticket: dict[int, list[Worktree]] = defaultdict(list)
+    for wt in Worktree.objects.all():
+        worktrees_by_ticket[wt.ticket_id].append(wt)
+    drifts: dict[int, Drift] = {}
+    for ticket in Ticket.objects.all():
+        drift = Drift(ticket_pk=ticket.pk)
+        _collect_work_state_drift(drift, ticket, worktrees_by_ticket[ticket.pk], scope)
+        if drift.has_drift:
+            drifts[ticket.pk] = drift
+    return drifts

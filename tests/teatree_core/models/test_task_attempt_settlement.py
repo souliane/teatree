@@ -8,6 +8,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_attempt_settlement import complete_with_strict_lease
+from teatree.core.models.task_claim import _refuse_lost_lease
 
 
 class TestTaskAttemptSettlement(TestCase):
@@ -62,18 +63,18 @@ class TestTaskAttemptSettlement(TestCase):
         assert "run failed" in attempt.error
         assert task.attempts.count() == 1
 
-    def test_lease_loss_during_attempt_write_reclassifies_one_record(self) -> None:
+    def test_lease_loss_after_precheck_reclassifies_one_record(self) -> None:
         ticket = Ticket.objects.create()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
         task.claim(claimed_by="worker", claimed_by_session="run-1")
-        original_create = TaskAttempt.objects.create
 
-        def create_then_complete(**kwargs: object) -> TaskAttempt:
-            attempt = original_create(**kwargs)
+        def check_then_complete(checked: Task) -> None:
+            _refuse_lost_lease(checked)
             Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
-            return attempt
 
-        with mock.patch.object(TaskAttempt.objects, "create", side_effect=create_then_complete):
+        with mock.patch(
+            "teatree.core.models.task_attempt_settlement._refuse_lost_lease", side_effect=check_then_complete
+        ):
             attempt = task.complete_with_attempt(exit_code=1, error="run failed")
 
         task.refresh_from_db()
@@ -83,6 +84,31 @@ class TestTaskAttemptSettlement(TestCase):
         assert attempt.outcome == TaskAttempt.Outcome.SUCCESS
         assert attempt.error == ""
         assert attempt.error_fingerprint == ""
+        assert task.attempts.count() == 1
+
+    def test_lease_loss_after_success_write_cannot_publish_success(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        task.claim(claimed_by="worker", claimed_by_session="run-1")
+        original_create = TaskAttempt.objects.create
+        published: list[str] = []
+
+        def create_and_queue_publish(**kwargs: object) -> TaskAttempt:
+            attempt = original_create(**kwargs)
+            if kwargs["exit_code"] == 0 and kwargs["error"] == "":
+                transaction.on_commit(lambda: published.append("success"))
+            return attempt
+
+        with (
+            self.captureOnCommitCallbacks(execute=True),
+            mock.patch.object(TaskAttempt.objects, "create", side_effect=create_and_queue_publish),
+            mock.patch.object(Task, "complete", side_effect=LeaseLostError("rival claimed task")),
+        ):
+            attempt = task.complete_with_attempt(exit_code=0)
+
+        attempt.refresh_from_db()
+        assert published == []
+        assert attempt.error.startswith("stuck_loop:")
         assert task.attempts.count() == 1
 
     def test_strict_lease_rolls_back_attempt_when_completion_loses_lease(self) -> None:

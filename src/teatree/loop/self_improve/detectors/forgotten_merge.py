@@ -31,6 +31,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.gates.merge_quality_gate import unmet_items
+from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import CriticVerdict, DeferredQuestion, Task
 from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners.base import ScanSignal
@@ -56,11 +57,12 @@ def _critic_refusal_in_progress(clear: MergeClear, cutoff: dt.datetime) -> bool:
         return False
     if verdict.recorded_at > cutoff:
         return True
-    if (
-        Task.objects.filter(ticket_id=clear.ticket_id, phase="coding", created_at__gt=verdict.recorded_at)
-        .exclude(status=Task.Status.FAILED)
-        .exists()
-    ):
+    if Task.objects.filter(
+        ticket_id=clear.ticket_id,
+        phase__in=phase_spellings("coding"),
+        status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
+        created_at__gt=verdict.recorded_at,
+    ).exists():
         return True
     return (
         DeferredQuestion.owner_pending()

@@ -91,11 +91,15 @@ class CredentialPolicyCase(TestCase):
 
 class TestExhaustionRule(CredentialPolicyCase):
     def test_admission_defers_live_health_probe_to_recovery(self) -> None:
+        self._monkeypatch.delenv(_OAUTH_VAR, raising=False)
         _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/plan/oauth"])
         task = _claimed_task()
 
-        with patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe:
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe,
+            patch("teatree.agents.credential_policy.oauth_lane_available", return_value=False),
+        ):
             assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
         probe.assert_not_called()
 
@@ -136,6 +140,12 @@ class TestExhaustionRule(CredentialPolicyCase):
             ticket=task.ticket, session=task.session, phase="reviewing", status=Task.Status.CLAIMED
         )
         record_park(unrelated, reason=f"{LIMIT_PARKED_PREFIX}api_credit: credit spent", not_before=reset)
+        UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=ALL_ACCOUNTS_EXHAUSTED_CAUSE,
+            resets_at=reset + timedelta(days=1),
+        )
+        window.refresh_from_db()
         reading = TokenHealthReading(
             organization_id="org",
             utilization_5h=0.2,
@@ -171,13 +181,17 @@ class TestExhaustionRule(CredentialPolicyCase):
         assert task.status == Task.Status.CLAIMED
 
     def test_missing_health_keeps_the_window_and_throttles_recovery_reprobe(self) -> None:
+        self._monkeypatch.delenv(_OAUTH_VAR, raising=False)
         window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/unreadable/oauth"])
         task = _claimed_task()
         second = Task.objects.create(
             ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
         )
-        with patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe:
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe,
+            patch("teatree.agents.credential_policy.oauth_lane_available", return_value=False),
+        ):
             assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
             assert maybe_park_for_active_window(second, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None

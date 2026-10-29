@@ -81,13 +81,14 @@ def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[Brief
         if scope.lstrip().startswith("forget to "):
             continue
         scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
-        conditional = scope.split(" unless ", 1)[0].rsplit(" and ", 1)[-1] if " unless " in scope else ""
+        before_unless, separator, _ = scope.partition(" unless ")
+        conditional = re.split(r",\s*|\s+(?:and|or)\s+", before_unless)[-1] if separator else ""
         for kind, pattern in (
             ("no_migration", r"\bmigrations?\b"),
             ("no_setting", r"\bsettings?\b"),
             ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
         ):
-            if re.search(pattern, scope) and not re.search(pattern, conditional):
+            if re.search(pattern, before_unless) and not re.search(pattern, conditional):
                 found[kind, ""] = BriefConstraint(
                     kind, "", match.group(0).strip(), allowed_settings if kind == "no_setting" else frozenset()
                 )

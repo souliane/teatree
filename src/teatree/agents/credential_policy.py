@@ -95,7 +95,7 @@ def clear_stale_exhaustion_window(window: UsageWindowState, *, scope: str | None
     with transaction.atomic():
         window.clear(now)
         released = (
-            Task.objects.filter(status=Task.Status.PENDING, not_before=window.resets_at)
+            Task.objects.filter(status=Task.Status.PENDING, not_before__gt=now)
             .annotate(latest_error=Subquery(latest_error))
             .filter(subscription_park)
             .update(not_before=None)

@@ -41,7 +41,7 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 
 import logging
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -156,7 +156,10 @@ def _prepare_task_checkout_exit(
         return None
     row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
     if row is None and writes_checkout(task):
-        renew_ticket_checkout(task.ticket, holder=holder, holder_session=holder_session)
+        try:
+            renew_ticket_checkout(task.ticket, holder=holder, holder_session=holder_session)
+        except WorktreeOccupancyLostError:
+            return None
         row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
     return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait, namespace=namespace)
 
@@ -235,7 +238,8 @@ def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str, namesp
                 )
             )
             if should_renew:
-                renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
+                with suppress(WorktreeOccupancyLostError):
+                    renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
             _finish_task_checkout(
                 ticket, holder=holder, holder_session=holder_session, scope=scope, namespace=namespace
             )

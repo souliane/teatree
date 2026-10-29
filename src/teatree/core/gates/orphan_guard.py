@@ -32,7 +32,7 @@ from django.db.models import QuerySet
 from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.forge_push import VERIFY_TIMEOUT_SECONDS
-from teatree.core.forge_scan_index import active_branch_scan_index, branch_scan_scope
+from teatree.core.gates.forge_scan_index import active_branch_scan_index, branch_scan_scope
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base, pr_from_branch_would_be_empty

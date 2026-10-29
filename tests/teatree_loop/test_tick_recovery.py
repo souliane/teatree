@@ -32,6 +32,14 @@ _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES":
 
 
 class TestReapStaleTaskClaims(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        data_dir = patch.dict(os.environ, {"T3_DATA_DIR": temporary.name})
+        data_dir.start()
+        self.addCleanup(data_dir.stop)
+
     def test_prelude_runs_once_inside_interval_and_refreshes_after_it(self) -> None:
         with (
             TemporaryDirectory() as root,

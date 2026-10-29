@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
@@ -9,7 +10,6 @@ from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, 
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_claim import _refuse_lost_lease
 from teatree.core.models.types import JSONObject
-from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -69,37 +69,38 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
         fields = _late_fields(task, loss=exc, exit_code=exit_code, error=error, result=recorded_result)
         exit_code, error, recorded_result = fields.exit_code, fields.error, fields.result
 
-    attempt = retry_on_locked(
-        lambda: task_attempt_model.objects.create(
-            # no-usage: core has no metered turn, or a lost result is marked usage_unknown.
+    def create_attempt(code: int, reason: str, result: JSONObject) -> "TaskAttempt":
+        return task_attempt_model.objects.create(
             task=task,
             ended_at=timezone.now(),
-            exit_code=exit_code,
+            exit_code=code,
             artifact_path=artifact_path,
-            error=error,
-            result=recorded_result,
+            error=reason,
+            result=result,
             usage_unknown=details.usage_unknown,
         )
-    )
+
     if lost is not None:
-        return attempt
-    try:
-        if exit_code == 0:
-            retry_on_locked(lambda: task.complete(result_artifact_path=artifact_path))
-        else:
-            retry_on_locked(
-                lambda: task.fail_claimed(
+        return retry_on_locked(lambda: create_attempt(exit_code, error, recorded_result))
+
+    def settle() -> "TaskAttempt":
+        with transaction.atomic():
+            attempt = create_attempt(exit_code, error, recorded_result)
+            if exit_code == 0:
+                task.complete(result_artifact_path=artifact_path)
+            else:
+                task.fail_claimed(
                     reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded"
                 )
-            )
+            return attempt
+
+    try:
+        return retry_on_locked(settle)
     except LeaseLostError as exc:
         if details.strict_lease:
             raise
         fields = _late_fields(task, loss=exc, exit_code=exit_code, error=error, result=recorded_result)
-        attempt.exit_code, attempt.error, attempt.result = fields.exit_code, fields.error, fields.result
-        attempt.error_fingerprint = terminal_reason_fingerprint(attempt.error)
-        retry_on_locked(attempt.save)
-    return attempt
+        return retry_on_locked(lambda: create_attempt(fields.exit_code, fields.error, fields.result))
 
 
 def complete_with_strict_lease(task: "Task", result: JSONObject) -> "TaskAttempt":

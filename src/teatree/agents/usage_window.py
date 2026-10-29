@@ -34,6 +34,7 @@ from teatree.agents.credential_policy import (
     plans_only,
     resolve_credential_provider,
     spend_metered_key,
+    subscription_lane_exhausted,
 )
 from teatree.agents.harness_dispatch import another_lane_can_dispatch
 from teatree.config import AgentHarnessProvider, get_effective_settings
@@ -464,6 +465,10 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     moment = now or timezone.now()
     window = UsageWindowState.objects.active_for_lane(lane)
     if window is None or window.resets_at is None or window.should_clear(moment):
+        return None
+    if window.cause == ALL_ACCOUNTS_EXHAUSTED_CAUSE and not subscription_lane_exhausted(
+        scope=task.ticket.overlay, now=moment
+    ):
         return None
     lane_name = str(lane.value) if isinstance(lane, TaskAttempt.Lane) else (lane or "ambient")
     reason = f"{LIMIT_PARKED_PREFIX}admission: {window.cause} window on lane {lane_name!r} active"

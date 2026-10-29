@@ -122,6 +122,15 @@ class ForgottenMergeDetectorTests(TestCase):
         question.save(update_fields=["answered_at"])
         assert len(_detector().detect()) == 1
 
+    def test_completed_coding_without_new_clear_does_not_suppress_stalled_merge(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(209)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        coding = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="code")
+        assert _detector().detect() == []
+        coding.status = Task.Status.COMPLETED
+        coding.save(update_fields=["status"])
+        assert len(_detector().detect()) == 1
+
     def test_fires_when_smell_present(self) -> None:
         """CLEAR issued > 30 min ago whose PR is still OPEN ⇒ forgotten merge."""
         _stale(200)

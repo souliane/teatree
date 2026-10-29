@@ -99,11 +99,11 @@ class TestForgeAuthorshipProof:
 
         assert _is_self_authored("https://forge.example/group/repo/pull/1", host, ()) is False
 
-    def test_undeclared_bot_is_not_classified_as_a_colleague(self, monkeypatch) -> None:
+    def test_undeclared_bot_is_foreign_without_an_owner_declaration(self, monkeypatch) -> None:
         monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
         assert (
             _is_self_authored("https://github.com/group/repo/pull/1", _Host(author="Dependabot[bot]"), ("owner",))
-            is None
+            is False
         )
 
     def test_unreadable_author_or_host_stays_unresolved(self, monkeypatch) -> None:
