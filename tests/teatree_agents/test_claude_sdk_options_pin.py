@@ -439,10 +439,10 @@ class TestInteractiveSessionsArePinned(TestCase):
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
             "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",
-            "agent_max_turns": 7,
+            "agent_max_turns": 100,
             "subagent_spawn_ceiling": 3,
             "envelope_stop_gate_refusals": 1,
-            "pydantic_ai_request_limit": 11,
+            "pydantic_ai_request_limit": 100,
             "pydantic_ai_max_tokens": 1234,
             "openai_compatible_lane": "bulk",
         }
