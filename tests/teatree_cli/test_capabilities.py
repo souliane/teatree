@@ -117,6 +117,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree review findings": review.Command.findings,
         "teatree review publish-findings": review.Command.publish_findings,
         "teatree checking show": checking.Command.show,
+        "teatree checking shoot": checking.Command.shoot,
         "teatree e2e lanes": e2e.Command.lanes,
         "teatree e2e write-test-plan": e2e.Command.write_test_plan,
         "teatree e2e write-plan-from-seams": e2e.Command.write_plan_from_seams,

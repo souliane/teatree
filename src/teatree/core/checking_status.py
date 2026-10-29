@@ -34,6 +34,7 @@ class FeatureBlockDict(TypedDict):
     merged: list[FeatureLinkDict]
     left: list[FeatureLinkDict]
     owner_waits: list[FeatureLinkDict]
+    pending_delivery: int
     live: bool | Literal["partly"]
 
 
@@ -63,6 +64,7 @@ class FeatureBlock:
     merged: list[FeatureLink] = field(default_factory=list)
     left: list[FeatureLink] = field(default_factory=list)
     owner_waits: list[FeatureLink] = field(default_factory=list)
+    unlinked_owner_waits: int = 0
     live: bool | Literal["partly"] = False
     merge_shas: list[str] = field(default_factory=list)
 
@@ -72,6 +74,7 @@ class FeatureBlock:
             "merged": [item.to_dict() for item in self.merged],
             "left": [item.to_dict() for item in self.left],
             "owner_waits": [item.to_dict() for item in self.owner_waits],
+            "pending_delivery": self.unlinked_owner_waits,
             "live": self.live,
         }
 
@@ -93,6 +96,9 @@ class FeatureBlock:
         if self.owner_waits:
             waits = ", ".join(item.render() for item in self.owner_waits[:2])
             next_step = f"waiting for your Slack reply: {waits}"
+        if self.unlinked_owner_waits:
+            pending = "waiting for Slack delivery of your question"
+            next_step = f"{next_step}; {pending}" if self.owner_waits else pending
         return f"- {self.title}: {merged}; {left}. {next_step}."
 
 
@@ -171,10 +177,14 @@ def _add_owner_waits(block_for: Callable[[Ticket | None], FeatureBlock], overlay
         questions = questions.filter(Q(parked_task__isnull=True) | Q(parked_task__ticket__overlay__in=overlay_names))
     for question in questions:
         ticket = question.parked_task.ticket if question.parked_task else None
-        url = slack_permalink(question.slack_channel, question.slack_ts) or _feature_key(ticket)
-        block_for(ticket).owner_waits.append(
-            FeatureLink(label=plain_title(question.question), url=url, state="waiting for your Slack reply")
-        )
+        url = slack_permalink(question.slack_channel, question.slack_ts)
+        block = block_for(ticket)
+        if url:
+            block.owner_waits.append(
+                FeatureLink(label=plain_title(question.question), url=url, state="waiting for your Slack reply")
+            )
+        else:
+            block.unlinked_owner_waits += 1
 
 
 def build_feature_status(

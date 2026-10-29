@@ -131,3 +131,17 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert len(status.features) == 1
         assert status.features[0].title == "Other maintenance"
         assert status.features[0].owner_waits[0].url.startswith("https://slack.com/archives/")
+
+    def test_unposted_owner_question_does_not_render_an_unlinked_label(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/401", short_description="publish workflow"
+        )
+        task = TaskFactory(ticket=ticket, session__ticket=ticket)
+        DeferredQuestion.record("Can I publish the prepared change?", parked_task=task, card=owner_card())
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].owner_waits == []
+        assert status.to_dict()["features"][0]["pending_delivery"] == 1
+        assert "waiting for Slack delivery" in status.render()[1]
+        assert "Can I publish" not in status.render()[1]
