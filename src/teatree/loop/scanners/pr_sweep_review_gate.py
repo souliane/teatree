@@ -66,23 +66,17 @@ def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str
         .exclude(outcome__in=("", "venue_limit"))
         .values_list("subject", flat=True)
     )
-    heads = tuple(
-        dict.fromkeys(
-            (
-                *measured,
-                *(
-                    head
-                    for record_slug, record_pr_id, head in verdicts
-                    if (record_slug.casefold(), record_pr_id, head) not in carried
-                ),
-            )
-        )
+    recorded_heads = tuple(
+        head
+        for record_slug, record_pr_id, head in verdicts
+        if (record_slug.casefold(), record_pr_id, head) not in carried
     )
-    if head_sha in heads or len(heads) < MAX_REVIEW_ROUNDS:
+    heads = (*recorded_heads, *(head for head in measured if head not in recorded_heads))
+    if len(heads) < MAX_REVIEW_ROUNDS:
         return False
     text = (
-        f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url}: "
-        f"{MAX_REVIEW_ROUNDS} recorded heads ({', '.join(heads)}). Review the findings before another dispatch."
+        f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url} at {head_sha[:8]}: "
+        f"{MAX_REVIEW_ROUNDS} recorded passes ({', '.join(heads)}). Review the findings before another dispatch."
     )
     notify_user(
         text,

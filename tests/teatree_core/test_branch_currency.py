@@ -1,18 +1,8 @@
-"""Pre-cold-review / pre-ship branch-currency auto-merge gate (#940).
+"""Pre-cold-review / pre-ship branch-currency conflict gate (#940).
 
-The exit-point sibling of :mod:`teatree.core.gates.clone_guard` (#948 — the
-entry-point pre-investigation gate). Before a cold reviewer attests a
-PR's SHA, and before ``ship`` pushes a stale base into review, this gate
-re-fetches the target branch and auto-merges it into the feature branch
-on a zero-conflict fast-forward/merge so the cold reviewer attests the
-**post-merge** tree. On conflict it refuses cleanly (``git merge
---abort``) — never leaves the worktree half-merged.
-
-Real ``git init`` under ``tmp_path`` exercises three scenarios: a
-zero-conflict auto-merge, a conflicting overlap that aborts cleanly,
-and an already-current no-op. Each asserts the
-:class:`BranchCurrencyResult` fields (the public contract), not
-mock-call counts.
+The gate fetches the target and predicts conflicts without changing the
+reviewed head or worktree. Real Git repositories under ``tmp_path`` cover
+a clean stale branch, a conflicting branch, and an already-current branch.
 """
 
 import socket

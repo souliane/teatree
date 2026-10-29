@@ -104,6 +104,24 @@ def _record(*, verdict: str, reviewer: str, sha: str = HEAD, at: dt.datetime | N
 class TestArmColdReview:
     """The arm is best-effort: every refusal degrades to "no task armed"."""
 
+    def test_three_recorded_verdicts_on_one_head_refuse_a_fourth_review(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for reviewer in ("reviewer-agent-7", "reviewer-agent-8", "reviewer-agent-9"):
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha="a" * 40,
+                verdict="hold",
+                reviewer_identity=reviewer,
+                ticket=ticket,
+            )
+        dispatcher = _FakeDispatcher()
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
+        assert dispatcher.calls == []
+        assert notify.call_count == 1
+
     def test_three_recorded_heads_refuse_a_fourth_review(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
         PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
@@ -161,23 +179,6 @@ class TestArmColdReview:
             )
         RoundMetric.objects.open(kind="review", ticket=ticket, subject="c" * 40, size=1, detail={})
         RoundMetric.objects.settle(kind="review", ticket=ticket, subject="c" * 40, outcome="venue_limit")
-
-        dispatcher = _FakeDispatcher()
-        assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
-        assert len(dispatcher.calls) == 1
-
-    def test_counted_head_can_rearm_without_spending_another_round(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4807")
-        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
-        for head in ("a" * 40, "b" * 40, HEAD):
-            ReviewVerdict.record(
-                pr_id=PR_ID,
-                slug=SLUG,
-                reviewed_sha=head,
-                verdict="hold",
-                reviewer_identity="reviewer-agent-7",
-                ticket=ticket,
-            )
 
         dispatcher = _FakeDispatcher()
         assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
