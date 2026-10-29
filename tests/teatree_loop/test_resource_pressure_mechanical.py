@@ -2,6 +2,8 @@
 
 import os
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +11,11 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
 from teatree.loop import mechanical_resources
+from teatree.loop.mechanical_artifacts import ARTIFACT_PASS_BUDGET_SECONDS, ENV_DIR_WALK_BUDGET_SECONDS
 from teatree.loop.mechanical_resources import free_resources
+from teatree.loops.timer_chains import MIN_TICK_DEADLINE_SECONDS
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -175,6 +180,26 @@ class DiskCachePurgeTests(TestCase):
         assert "PURGE cache" in marker.last_plan
         assert marker.last_freed_at is not None
 
+    def test_failed_step_persists_completed_and_failed_lines(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_run_uv_cache_prune", side_effect=RuntimeError("uv failed")),
+            pytest.raises(RuntimeError, match="uv failed"),
+        ):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "DONE allowlisted caches" in plan
+        assert "FAILED uv cache: uv failed" in plan
+
+    def test_reclaim_pass_budgets_leave_tick_margin(self) -> None:
+        assert (
+            mechanical_resources.DISK_PASS_BUDGET_SECONDS
+            + ARTIFACT_PASS_BUDGET_SECONDS
+            + ENV_DIR_WALK_BUDGET_SECONDS
+            + 30
+            <= MIN_TICK_DEADLINE_SECONDS
+        )
+
     def test_an_absent_allowlist_entry_is_named_in_the_plan(self) -> None:
         """A stale allow-list entry must be VISIBLE, not silently worth 0.00 GB (#3852).
 
@@ -235,6 +260,7 @@ class DiskDockerReclaimTests(TestCase):
         with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
             mock_reclaim.return_value = _fake_reclaim_report()
             free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        assert mock_reclaim.call_args.kwargs["include_unused_test_images"] is True
         mock_reclaim.assert_called_once()
 
     def test_reclaimed_docker_bytes_counted_in_plan(self) -> None:
@@ -246,6 +272,18 @@ class DiskDockerReclaimTests(TestCase):
         marker = ResourcePressureMarker.load()
         assert "RECLAIM docker" in marker.last_plan
         assert marker.last_freed_at is not None
+
+    def test_removed_test_image_is_reported_when_bytes_are_unmeasured(self) -> None:
+        step = ReclaimStep(
+            argv=["docker", "image", "rm", "sha256:test"],
+            label="unused test image teatree-test",
+            outcome=PruneOutcome("image removed (shared layers unmeasured)", 0),
+        )
+        report = ReclaimReport(steps=(step,), planned=(step,))
+        with patch.object(mechanical_resources, "reclaim_disk", return_value=report):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+
+        assert "unused test image teatree-test: reclaimed image removed" in ResourcePressureMarker.load().last_plan
 
     def test_docker_reclaim_failure_is_swallowed(self) -> None:
         """A docker prune failure never crashes the freeing pass."""
@@ -348,6 +386,95 @@ class DoneWorktreeSweepTests(TestCase):
         mock_reap.assert_called_once()
         assert mock_reap.call_args.kwargs == {"dry_run": False}
         assert "done-worktree sweep handled 1 worktree row(s)" in ResourcePressureMarker.load().last_plan
+
+
+class BoundedDiskPassTests(TestCase):
+    def test_budget_defers_remaining_steps_and_next_tick_resumes(self) -> None:
+        cache = Path(tempfile.mkdtemp(prefix="bounded-disk-"))
+        self.addCleanup(_rmtree_safe, str(cache))
+        now = [0.0]
+
+        def slow_purge(_path: str) -> float:
+            now[0] = 100.0
+            return 0.25
+
+        with (
+            patch.object(time, "monotonic", side_effect=lambda: now[0]),
+            patch.object(mechanical_resources, "_purge_dir", side_effect=slow_purge),
+            patch.object(mechanical_resources, "_run_uv_cache_prune") as uv_prune,
+            patch.object(mechanical_resources, "_clean_stale_statusline"),
+            patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=0.0) as docker_reclaim,
+            patch.object(mechanical_resources, "_reap_done_worktrees"),
+        ):
+            payload = {"resource": "disk", "disk_cache_allowlist": [str(cache)]}
+            free_resources(payload)
+            first = ResourcePressureMarker.load()
+            assert first.last_freed_at is None
+            assert "DEFER" in first.last_plan
+            uv_prune.assert_not_called()
+            docker_reclaim.assert_not_called()
+
+            now[0] = 0.0
+            free_resources(payload)
+
+        second = ResourcePressureMarker.load()
+        assert second.last_freed_at is not None
+        assert second.disk_reclaim_cursor == 0
+        uv_prune.assert_called_once()
+        docker_reclaim.assert_called_once()
+
+
+class DockerStepThatDidNotFinishTests(TestCase):
+    """A prune that timed out, or was never started, is retried by the next pass — never recorded as done."""
+
+    def setUp(self) -> None:
+        self.uv_prune = _patch_uv_cache_prune(self)
+        self.addCleanup(patch.object(mechanical_resources, "_reap_done_worktrees").start().stop)
+        marker = ResourcePressureMarker.load()
+        marker.disk_reclaim_cursor = mechanical_resources._DOCKER_STEP
+        marker.save(update_fields=["disk_reclaim_cursor"])
+
+    def _unfinished_report(self) -> ReclaimReport:
+        step = ReclaimStep(
+            argv=["docker", "builder", "prune", "-af"],
+            label="build cache",
+            outcome=PruneOutcome("0B", 0, failure="timed out after 90s", incomplete=True),
+        )
+        return ReclaimReport(steps=(step,), planned=(step,))
+
+    def _pass(self, report: ReclaimReport) -> ResourcePressureMarker:
+        with patch.object(mechanical_resources, "reclaim_disk", return_value=report) as reclaim:
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        self.reclaim = reclaim
+        return ResourcePressureMarker.load()
+
+    def test_the_cursor_stays_on_the_docker_step(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert marker.disk_reclaim_cursor == mechanical_resources._DOCKER_STEP
+
+    def test_the_plan_says_deferred_and_never_done(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert "DEFER docker" in marker.last_plan
+        assert "DONE docker" not in marker.last_plan
+
+    def test_the_pass_does_not_stamp_a_completed_freeing_pass(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert marker.last_freed_at is None
+
+    def test_the_ladder_passes_the_remaining_pass_budget_down(self) -> None:
+        self._pass(self._unfinished_report())
+
+        budget = self.reclaim.call_args.kwargs["budget_seconds"]
+        assert 0 < budget <= mechanical_resources.DISK_PASS_BUDGET_SECONDS
+
+    def test_a_finished_report_still_advances_to_the_next_step(self) -> None:
+        marker = self._pass(_fake_reclaim_report())
+
+        assert marker.disk_reclaim_cursor == 0
+        assert "DONE docker" in marker.last_plan
 
 
 class ReclaimStallTests(TestCase):

@@ -1,6 +1,8 @@
 """Agent-scratch retention sweep — the guards, the report, and the fail-closed paths (#4165)."""
 
 import os
+import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +16,7 @@ from teatree.core.models.worktree import Worktree
 from teatree.core.retention import scratch
 from teatree.core.retention.liveness import ProcessTableView
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweep, ScratchSweepPlan
+from teatree.core.retention.scratch_tree import TreeStats
 from tests._procfs import answering_pid as _answering_pid
 from tests._procfs import listening_socket as _listening_socket
 from tests._procfs import net_unix as _net_unix
@@ -67,6 +70,35 @@ class ScratchSweepTestCase(TestCase):
 
 
 class ScratchSweepPlanTests(ScratchSweepTestCase):
+    def test_a_bounded_scheduled_pass_resumes_after_protected_entries(self) -> None:
+        young = _scratch(self.root, "a-young", days=1)
+        old = _scratch(self.root, "b-old", days=9)
+        later = _scratch(self.root, "c-old", days=9)
+        clock = [0.0]
+        real_stats = scratch._tree_stats
+
+        def counted_stats(path: Path, *, deadline: float | None = None) -> TreeStats:
+            clock[0] += 1.0
+            return real_stats(path, deadline=deadline)
+
+        with (
+            patch.object(scratch.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(scratch, "_tree_stats", side_effect=counted_stats),
+        ):
+            first = replace(self.sweep(), deadline=2.0).apply()
+            assert first.last_checked_path == str(young)
+            assert old.exists()
+            clock[0] = 0.0
+            second = replace(self.sweep(), deadline=2.0, start_after=first.last_checked_path).apply()
+            assert second.last_checked_path == str(old)
+            assert not old.exists()
+            clock[0] = 0.0
+            third = replace(self.sweep(), deadline=2.0, start_after=second.last_checked_path).apply()
+
+        assert second.reclaimed_bytes > 0
+        assert third.reclaimed_bytes > 0
+        assert not later.exists()
+
     def test_stale_entry_is_removable_and_young_one_is_kept(self) -> None:
         stale = _scratch(self.root, "t3db.sqlite3", days=7, size=4096)
         young = _scratch(self.root, "wt4081venv", days=1, size=8192)
@@ -188,6 +220,18 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
         assert "open-file probe unsighted" in plan.probe_gap
         assert plan.entries[0].size_bytes == 2048
 
+    def test_a_bounded_refused_pass_does_not_walk_scratch_trees(self) -> None:
+        _scratch(self.root, "t3after", days=9, size=2048)
+        sweep = self.sweep(proc_root=self.root / "no-such-proc")
+
+        with patch.object(scratch, "_tree_stats", side_effect=AssertionError("walked refused scratch")):
+            plan = replace(sweep, deadline=time.monotonic() + 10).plan()
+
+        assert plan.refused is True
+        assert "open-file probe unsighted" in plan.probe_gap
+        assert "residency not measured" in plan.summary
+        assert "1 entry(ies) kept" in plan.summary
+
     def test_retention_days_zero_disables_the_sweep(self) -> None:
         _scratch(self.root, "t3after", days=99)
 
@@ -210,6 +254,21 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
 
 
 class ScratchSweepApplyTests(ScratchSweepTestCase):
+    def test_expired_budget_keeps_old_scratch_and_reports_deferred_work(self) -> None:
+        stale = _scratch(self.root, "old-worker-scratch", days=1)
+        sweep = ScratchSweep(
+            root=self.root,
+            retention_days=1 / 6,
+            proc_root=self.proc,
+            deadline=time.monotonic() - 1,
+        )
+
+        result = sweep.apply()
+
+        assert stale.exists()
+        assert result.refused
+        assert "budget exhausted" in result.probe_gap
+
     def test_apply_removes_the_stale_tree_and_reports_the_bytes(self) -> None:
         stale = self.root / "wt4081venv"
         stale.mkdir()

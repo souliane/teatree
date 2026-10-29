@@ -12,7 +12,7 @@ Docker disk reclaim: build cache and unused images are typically the largest
 reclaimable consumers on a host that builds often, and file-cache purging alone
 does not touch them. The disk ladder routes the sanctioned
 :func:`teatree.docker.reclaim.reclaim_disk` (build cache + DANGLING-only images
-+ UNREFERENCED-only volumes via a FIXED argv that can never contain ``-a`` /
++ UNREFERENCED-only volumes plus guarded test images, never ``image prune -a`` /
 ``system prune``), so a running container's images, a tagged application image,
 and an attached DB volume backing a live worktree all survive. It is
 non-destructive by construction, so — like the cache purge and ``uv cache
@@ -39,7 +39,9 @@ claude-CLI process ancestry are never reclaim candidates.
 
 import logging
 import shutil
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -53,11 +55,17 @@ from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+
 # Paths that must NEVER be auto-removed regardless of the allow-list, because
 # they hold irreplaceable state. ``~/.claude/projects`` is session memory.
 _PROTECTED_DISK_PATHS: tuple[str, ...] = ("~/.claude/projects",)
 
 _STALE_STATUSLINE_DAYS = 2
+DISK_PASS_BUDGET_SECONDS = 90.0
+_STATUSLINE_STEP = 2
+_DOCKER_STEP = 3
 
 # The well-known statusline scratch dir. A module constant so it is patchable
 # in tests without monkeypatching ``pathlib.Path`` itself.
@@ -83,10 +91,16 @@ def free_resources(payload: ActionPayload) -> None:
 
     marker = ResourcePressureMarker.load()
     persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
-    _execute_plan(plan, payload)
     if resource == "disk":
+        complete = _execute_disk(plan, payload, marker)
+    else:
+        _execute_ram()
+        complete = True
+    if resource == "disk" and complete:
         plan.steps.extend(reclaim_yield_steps(marker, reclaimed_gb=plan.reclaimed_gb, payload=payload))
     persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
+    if not complete:
+        return
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
     logger.info("free_resources(%s) reclaimed ~%.2f GB", resource, plan.reclaimed_gb)
@@ -143,13 +157,47 @@ def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
     return resolved
 
 
-def _execute_disk(plan: FreePlan, payload: ActionPayload) -> None:
-    for path in _resolve_disk_allowlist(payload):
-        plan.reclaimed_gb += _purge_dir(path)
-    _run_uv_cache_prune()
-    _clean_stale_statusline()
-    plan.reclaimed_gb += _reclaim_docker_disk(plan)
-    _reap_done_worktrees(plan)
+def _execute_disk(plan: FreePlan, payload: ActionPayload, marker: "ResourcePressureMarker") -> bool:
+    steps = ("allowlisted caches", "uv cache", "statusline scratch", "docker", "done worktrees")
+    cursor = marker.disk_reclaim_cursor % len(steps)
+    requested = payload.get("budget_seconds")
+    budget = (
+        min(float(requested), DISK_PASS_BUDGET_SECONDS)
+        if isinstance(requested, int | float)
+        else DISK_PASS_BUDGET_SECONDS
+    )
+    deadline = time.monotonic() + budget
+    for index in range(cursor, len(steps)):
+        if time.monotonic() >= deadline:
+            plan.steps.append(
+                f"DEFER {steps[index]} and {len(steps) - index - 1} later step(s) — pass budget exhausted"
+            )
+            return False
+        try:
+            if index == 0:
+                for path in _resolve_disk_allowlist(payload):
+                    plan.reclaimed_gb += _purge_dir(path)
+            elif index == 1:
+                _run_uv_cache_prune()
+            elif index == _STATUSLINE_STEP:
+                _clean_stale_statusline()
+            elif index == _DOCKER_STEP:
+                plan.reclaimed_gb += _reclaim_docker_disk(plan, budget_seconds=max(deadline - time.monotonic(), 0.0))
+            else:
+                _reap_done_worktrees(plan)
+        except Exception as exc:
+            plan.steps.append(f"FAILED {steps[index]}: {exc}")
+            persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
+            raise
+        if plan.unfinished:
+            plan.steps.append(f"DEFER {steps[index]} — {plan.unfinished}; the next pass retries it")
+            plan.unfinished = ""
+            return False
+        plan.steps.append(f"DONE {steps[index]}")
+        marker.disk_reclaim_cursor = index + 1 if index + 1 < len(steps) else 0
+        marker.last_plan = plan.render()
+        marker.save(update_fields=["disk_reclaim_cursor", "last_plan"])
+    return True
 
 
 def _reap_done_worktrees(plan: FreePlan) -> None:
@@ -172,19 +220,19 @@ def _reap_done_worktrees(plan: FreePlan) -> None:
     plan.steps.append(f"  → done-worktree sweep handled {len(reaped)} worktree row(s)")
 
 
-def _reclaim_docker_disk(plan: FreePlan) -> float:
+def _reclaim_docker_disk(plan: FreePlan, *, budget_seconds: float | None = None) -> float:
     """Run the safe Docker disk reclaim; return GB reclaimed (best-effort).
 
     Delegates to :func:`teatree.docker.reclaim.reclaim_disk` — the fixed-argv
-    build-cache + dangling-image + unreferenced-volume prune that can never use
-    ``-a``/``system prune``, so a running container's images are never reaped.
+    build-cache + dangling-image + unreferenced-volume prune, plus guarded test
+    image removal. The image prune never uses ``-a``/``system prune``.
     A failure (no docker daemon, a prune error) is swallowed and recorded so
     the freeing pass continues; the per-step reclaimed bytes land in the plan.
     A venue that cannot reach dockerd ran nothing, so it says so rather than
     logging a 0B reclaim the next reader takes for "nothing to reclaim" (#4585).
     """
     try:
-        report = reclaim_disk()
+        report = reclaim_disk(include_unused_test_images=True, budget_seconds=budget_seconds)
     except Exception:
         logger.exception("free_resources: docker disk reclaim failed — swallowed")
         return 0.0
@@ -193,6 +241,14 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
         return 0.0
     reclaimed_gb = report.total_bytes / GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
+    plan.steps.extend(
+        f"  → {step.summary_line.strip()}"
+        for step in report.steps
+        if step.label.startswith("unused test image") and step.outcome is not None and step.outcome.reclaimed != "0B"
+    )
+    plan.steps.extend(f"  → REFUSED {label}: {reason}" for label, reason in report.failures)
+    if report.incomplete:
+        plan.unfinished = "a docker prune timed out or never started inside the pass budget"
     return reclaimed_gb
 
 
@@ -296,13 +352,6 @@ def _docker(*args: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _execute_plan(plan: FreePlan, payload: ActionPayload) -> None:
-    if plan.resource == "disk":
-        _execute_disk(plan, payload)
-    else:
-        _execute_ram()
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout: float = 60) -> str | None:

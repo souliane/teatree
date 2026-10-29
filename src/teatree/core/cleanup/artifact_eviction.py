@@ -99,7 +99,10 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+from django.apps import apps
+from django.db import DatabaseError
 from django.utils import timezone
 
 from teatree.core.cleanup.artifact_lock import (
@@ -117,9 +120,14 @@ from teatree.core.cleanup.artifact_removal import (
     remove_anchored_artifact,
 )
 from teatree.core.cleanup.artifact_sizing import ArtifactCandidate, budget_spent, largest_first, path_identity
+from teatree.core.cleanup.checkout_evidence import evidence_checkout_reason
 from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.cleanup.venue_population import venue_population
+from teatree.core.gates.idle_stack import worktree_protects_against_reap
+
+if TYPE_CHECKING:
+    from teatree.core.models import Worktree
 
 #: Rebuildable build products a checkout can lose without losing work — each one
 #: root-level, hundreds of MB to GB, and restored by a single documented command
@@ -236,7 +244,9 @@ def plan_artifact_eviction(
     if gaps:
         return dataclasses.replace(base, gaps=gaps, refusal=_enumeration_refusal(gaps))
     cutoff = None if idle_days is None else timezone.now().timestamp() - idle_days * 86400
-    eligible, kept = _triage(classified, guards=_Guards(table=table, protection=protection), cutoff=cutoff)
+    eligible, kept = _triage(
+        classified, guards=_Guards(table=table, protection=protection), cutoff=cutoff, deadline=deadline
+    )
     candidates, deferred = largest_first(eligible, deadline=deadline)
     return dataclasses.replace(
         base,
@@ -249,7 +259,7 @@ def plan_artifact_eviction(
 
 
 def _triage(
-    classified: dict[Path, _CheckoutArtifacts], *, guards: _Guards, cutoff: float | None
+    classified: dict[Path, _CheckoutArtifacts], *, guards: _Guards, cutoff: float | None, deadline: float | None
 ) -> tuple[list[tuple[Path, Path]], list[str]]:
     """Each artifact is either eligible or kept with its reason; a symlinked one is always kept."""
     eligible: list[tuple[Path, Path]] = []
@@ -257,7 +267,7 @@ def _triage(
     for checkout, found in classified.items():
         kept.extend(f"{link}: {_SYMLINK_REASON}" for link in found.links)
         for artifact in found.artifacts:
-            if reason := _keep_reason(artifact, checkout=checkout, guards=guards, cutoff=cutoff):
+            if reason := _keep_reason(artifact, checkout=checkout, guards=guards, cutoff=cutoff, deadline=deadline):
                 kept.append(f"{artifact}: {reason}")
             else:
                 eligible.append((artifact, checkout))
@@ -290,7 +300,7 @@ def evict_artifacts(plan: ArtifactEvictionPlan) -> EvictionOutcome:
             if isinstance(guards, str):
                 partial = EvictionOutcome(freed_bytes=freed, skipped=tuple(skipped), evicted=tuple(evicted))
                 return _stopped_outcome(plan, index, partial, guards)
-            if reason := _delete_time_reason(candidate, guards=guards):
+            if reason := _delete_time_reason(candidate, guards=guards, deadline=plan.deadline):
                 skipped.append(f"{candidate.artifact}: {reason} since it was planned")
                 continue
             if reason := _remove_anchored_candidate(candidate, deadline=plan.deadline):
@@ -374,17 +384,19 @@ def _classify_artifacts_in(checkout: Path) -> _CheckoutArtifacts:
     return _CheckoutArtifacts(tuple(sorted(artifacts)), tuple(sorted(links)), tuple(sorted(leftovers)))
 
 
-def _keep_reason(artifact: Path, *, checkout: Path, guards: _Guards, cutoff: float | None) -> str:
+def _keep_reason(
+    artifact: Path, *, checkout: Path, guards: _Guards, cutoff: float | None, deadline: float | None
+) -> str:
     """Why *artifact* survives this pass, or ``""`` when nothing keeps it."""
-    blocking = _authorisation_reason(artifact, checkout=checkout, guards=guards) or unrebuildable_reason(
-        artifact, checkout=checkout
-    )
+    blocking = _authorisation_reason(
+        artifact, checkout=checkout, guards=guards, deadline=deadline
+    ) or unrebuildable_reason(artifact, checkout=checkout)
     if blocking or cutoff is None:
         return blocking
     return _dormancy_reason(artifact, checkout=checkout, cutoff=cutoff)
 
 
-def _delete_time_reason(candidate: ArtifactCandidate, *, guards: _Guards) -> str:
+def _delete_time_reason(candidate: ArtifactCandidate, *, guards: _Guards, deadline: float | None) -> str:
     """Why the guard stops this delete NOW — re-read before each delete, never inherited.
 
     Symlink status and the shared-target set are re-judged alongside liveness because
@@ -398,7 +410,7 @@ def _delete_time_reason(candidate: ArtifactCandidate, *, guards: _Guards) -> str
     return (
         _identity_change_reason(candidate)
         or unrebuildable_reason(candidate.artifact, checkout=candidate.checkout)
-        or _authorisation_reason(candidate.artifact, checkout=candidate.checkout, guards=guards)
+        or _authorisation_reason(candidate.artifact, checkout=candidate.checkout, guards=guards, deadline=deadline)
     )
 
 
@@ -423,16 +435,59 @@ def _identity_change_reason(candidate: ArtifactCandidate) -> str:
     return ""
 
 
-def _authorisation_reason(artifact: Path, *, checkout: Path, guards: _Guards) -> str:
+def _authorisation_reason(artifact: Path, *, checkout: Path, guards: _Guards, deadline: float | None) -> str:
     """The half of the verdict that AUTHORISES a delete, so the half re-run before each one.
 
     Rebuildability and dormancy are properties of the artifact that a deletion elsewhere
-    cannot change; these three are properties of the world, and the world moves during a
-    batch.
+    cannot change; these four are properties of the world, and the world moves during a
+    batch — a reviewer can write a receipt into the checkout while a pass is deleting.
     """
-    return _shared_target_reason(artifact, protection=guards.protection) or _in_use_reason(
-        artifact, checkout=checkout, table=guards.table
+    return (
+        evidence_checkout_reason(checkout)
+        or _shared_target_reason(artifact, protection=guards.protection)
+        or _in_use_reason(artifact, checkout=checkout, table=guards.table)
+        or _ticket_activity_reason(artifact, checkout, deadline=deadline)
     )
+
+
+def _ticket_activity_reason(artifact: Path, checkout: Path, *, deadline: float | None) -> str:
+    if artifact.name != ".venv":
+        return ""
+    try:
+        current = checkout.resolve()
+        worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
+        for row in worktree_model.objects.select_related("ticket").all():
+            extra = row.extra if isinstance(row.extra, dict) else {}
+            recorded = extra.get("worktree_path")
+            if not recorded or Path(str(recorded)).resolve() != current:
+                continue
+            if reason := worktree_protects_against_reap(row):
+                return reason
+            if reason := _recent_tree_write_reason(artifact, deadline=deadline):
+                return reason
+            last_activity = row.ticket.last_activity_at()
+            if last_activity is not None and (timezone.now() - last_activity).total_seconds() < 2 * 60 * 60:
+                return "its ticket was active in the last 2 hours"
+    except (DatabaseError, OSError, TypeError, ValueError) as exc:
+        return f"ticket activity could not be read ({exc})"
+    return ""
+
+
+def _recent_tree_write_reason(artifact: Path, *, deadline: float | None) -> str:
+    cutoff = timezone.now().timestamp() - 2 * 60 * 60
+    pending = [artifact]
+    try:
+        while pending:
+            if budget_spent(deadline):
+                return "the pass budget ended before the venv's writes could be checked"
+            entry = pending.pop()
+            if entry.lstat().st_mtime >= cutoff:
+                return "a file in the venv was written in the last 2 hours"
+            if entry.is_dir() and not entry.is_symlink():
+                pending.extend(entry.iterdir())
+    except OSError as exc:
+        return f"venv writes could not be read ({exc})"
+    return ""
 
 
 def _shared_target_reason(artifact: Path, *, protection: ArtifactProtection) -> str:
