@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models import override_allow_model_requests
 
 from teatree.agents import pydantic_ai_config
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
@@ -32,6 +33,7 @@ from tests.integration.live_control.live_pydantic import (
     LIVE_ROUTE_ENTRY_ENV,
     OPERATOR_DEADLINE_SECONDS,
     OPERATOR_JOIN_SECONDS,
+    PROVIDER_KEY_PREFIX,
     Evidence,
     Operator,
     closing_provider_clients,
@@ -44,7 +46,7 @@ from tests.integration.live_control.live_pydantic import (
 )
 
 ENTRY = "tests/provider-free-entry"
-PROVIDER_KEY = "sk-or-" + "v1-0123abcd_EF-45"
+PROVIDER_KEY = f"{PROVIDER_KEY_PREFIX}placeholder-not-a-key"
 STREAM_CHUNKS = (
     {"delta": {"role": "assistant", "content": "done"}, "finish_reason": None},
     {"delta": {}, "finish_reason": "stop"},
@@ -119,7 +121,36 @@ def test_masked_hides_the_entry_name_and_provider_keys() -> None:
     with patch.dict(os.environ, {LIVE_ROUTE_ENTRY_ENV: ENTRY}):
         text = masked(f"entry {ENTRY} key {PROVIDER_KEY} again {PROVIDER_KEY}")
     assert ENTRY not in text
-    assert "sk-or-" not in text
+    assert PROVIDER_KEY_PREFIX not in text
+
+
+def test_masked_replaces_absolute_paths_and_keeps_model_ids_and_urls() -> None:
+    assert masked("touch /var/tmp/t3-pydantic-pause-x/second-bash && sleep 30") == "touch <path> && sleep 30"
+    assert masked("failed in /srv/checkout/module.py:12") == "failed in <path>:12"
+    kept = "openai/gpt-oss-120b via https://openrouter.ai/api/v1 at 1/2"
+    assert masked(kept) == kept
+
+
+def test_evidence_line_shows_a_bash_command_without_its_temp_path(capsys: pytest.CaptureFixture[str]) -> None:
+    thread = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "Bash", {"command": "touch /var/tmp/t3-pydantic-pause-x/second-bash && sleep 30"}, tool_call_id="c1"
+                )
+            ]
+        )
+    ]
+    paused = HarnessOutcome(agent_text="", result_message=None, stuck_reason=None, thread=thread, paused=True)
+
+    with Evidence("pause_resume", model="model-x") as evidence:
+        evidence.outcome = paused
+
+    out = capsys.readouterr().out
+    assert json.loads(out)["tool_trail"] == [
+        {"arg_keys": ["command"], "call": "Bash", "command": "touch <path> && sleep 30"}
+    ]
+    assert "/var/tmp" not in out
 
 
 def test_evidence_line_is_written_when_the_node_body_fails(capsys: pytest.CaptureFixture[str]) -> None:
@@ -151,7 +182,7 @@ def test_evidence_line_never_carries_the_entry_name_or_a_provider_key(capsys: py
     out = capsys.readouterr().out
     assert out.strip()
     assert ENTRY not in out
-    assert "sk-or-" not in out
+    assert PROVIDER_KEY_PREFIX not in out
 
 
 def test_sender_evidence_keeps_the_drive_trail_when_the_receive_side_fails(
@@ -380,6 +411,7 @@ class LiveHarnessMailboxTests(TestCase):
         with (
             patch.dict(os.environ, {"OPENAI_COMPATIBLE_API_KEY": "provider-free-key"}),
             patch.object(pydantic_ai_config, "DefaultAsyncHttpxClient", stubbed_client),
+            override_allow_model_requests(allow_model_requests=True),
         ):
             outcome = asyncio.run(
                 drive_with_heartbeat(

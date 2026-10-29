@@ -44,7 +44,9 @@ LIVE_ROUTE_DEFAULT_MODEL = "openai/gpt-oss-120b"
 OPERATOR_DEADLINE_SECONDS = 150.0
 OPERATOR_JOIN_SECONDS = OPERATOR_DEADLINE_SECONDS + 90.0
 
-_PROVIDER_KEY = re.compile(r"sk-or-[A-Za-z0-9_-]+")
+PROVIDER_KEY_PREFIX = "sk-or-"
+_PROVIDER_KEY = re.compile(re.escape(PROVIDER_KEY_PREFIX) + r"[A-Za-z0-9_-]+")
+_ABSOLUTE_PATH = re.compile(r"(?<![\w:/<.-])/(?:[\w.-]+/)*[\w.-]+")
 _TEXT_EXCERPT = 80
 _AGENT_TEXT_EXCERPT = 160
 
@@ -112,7 +114,8 @@ def live_runtime(*, idle_window_seconds: float = 0) -> HeartbeatRuntime:
 
 def masked(text: str) -> str:
     entry = os.environ.get(LIVE_ROUTE_ENTRY_ENV, "").strip()
-    return _PROVIDER_KEY.sub("<key>", text.replace(entry, "<entry>") if entry else text)
+    hidden = text.replace(entry, "<entry>") if entry else text
+    return _ABSOLUTE_PATH.sub("<path>", _PROVIDER_KEY.sub("<key>", hidden))
 
 
 def _return_summary(content: object) -> dict[str, object]:
