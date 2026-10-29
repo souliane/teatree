@@ -402,6 +402,30 @@ class TestBuildAutomationSummary(TestCase):
         assert summary.succeeded_24h == 1
         assert summary.failed_24h == 1
 
+    def test_a_park_is_completed_but_not_failed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        attempts = [
+            TaskAttempt.objects.create(
+                task=Task.objects.create(ticket=ticket, session=session),
+                exit_code=exit_code,
+                error=error,
+                ended_at=timezone.now(),
+            )
+            for exit_code, error in [(0, ""), (1, "limit_parked: reset"), (1, "agent crashed")]
+        ]
+        assert [a.outcome for a in attempts] == [
+            TaskAttempt.Outcome.SUCCESS,
+            TaskAttempt.Outcome.PARKED,
+            TaskAttempt.Outcome.CRASH,
+        ]
+
+        summary = build_automation_summary()
+
+        assert summary.completed_24h == 3
+        assert summary.succeeded_24h == 1
+        assert summary.failed_24h == 1
+
     def test_excludes_old_attempts(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
