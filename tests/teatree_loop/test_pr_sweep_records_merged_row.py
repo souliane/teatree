@@ -60,6 +60,7 @@ def _repo_internal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _required_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teatree.backends.github.client.GitHubCodeHost.current_user", lambda self: "souliane")
     monkeypatch.setattr(
         "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
         lambda *a, **k: {"test (3.13)"},

@@ -62,6 +62,7 @@ from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScann
 from teatree.types import RawAPIDict
 from tests._pr_open_state_stub import pr_open_state
 from tests.teatree_core.conftest import record_review_context_for_test
+from tests.teatree_loop._review_fixture import complete_review_task
 
 OLD_SHA = "a" * 40
 NEW_SHA = "b" * 40
@@ -294,7 +295,7 @@ class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
         created = persist_agent_actions(actions)
         assert len(created) == 1, "a new head must schedule exactly one review task"
 
-        created[0].complete()
+        complete_review_task(created[0])
         ticket.refresh_from_db()
 
         assert ticket.state == Ticket.State.REVIEW_DELIVERED
@@ -310,7 +311,7 @@ class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
         )
         first = persist_agent_actions(dispatch(scanner.scan()))
         assert len(first) == 1
-        first[0].complete()
+        complete_review_task(first[0])
 
         stable = ReviewedPrHeadScanner(
             host=FakeCodeHost(live_head_by_url={MR_URL: NEW_SHA}),

@@ -60,7 +60,7 @@ class TestObserve(django.test.TestCase):
         assert row.reason == "draft"
         assert row.tick_count == 1
 
-    def test_a_new_reason_shortly_after_surfacing_does_not_clear_the_cooldown(self) -> None:
+    def test_a_new_reason_clears_the_surface_marker(self) -> None:
         for _ in range(3):
             _observe()
         SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
@@ -69,7 +69,7 @@ class TestObserve(django.test.TestCase):
         row = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
         assert row.reason == "draft"
         assert row.tick_count == 1
-        assert row.surfaced_at is not None
+        assert row.surfaced_at is None
 
     def test_distinct_prs_keep_distinct_streaks(self) -> None:
         _observe(pr_id=7)
@@ -96,13 +96,13 @@ class TestDueToSurface(django.test.TestCase):
     def test_below_the_threshold_nothing_is_due(self) -> None:
         _observe()
 
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3)) == []
 
     def test_at_the_threshold_the_streak_is_due(self) -> None:
         for _ in range(3):
             _observe()
 
-        due = SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)
+        due = SweepSkipStreak.objects.due_to_surface(threshold=3)
         assert [row.pr_id for row in due] == [7]
 
     def test_an_already_surfaced_streak_is_not_due_again(self) -> None:
@@ -111,27 +111,25 @@ class TestDueToSurface(django.test.TestCase):
         SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
         _observe()
 
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3)) == []
 
-    def test_a_reason_change_within_the_cooldown_does_not_re_arm(self) -> None:
+    def test_a_reason_change_rearms_after_the_threshold(self) -> None:
         for _ in range(3):
             _observe()
         SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
-        # An announcing reason, so the cooldown is what suppresses this — not the park class.
         for _ in range(3):
             _observe(reason="changes_requested")
 
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert [row.pr_id for row in SweepSkipStreak.objects.due_to_surface(threshold=3)] == [7]
 
-    def test_a_streak_is_due_again_once_the_cooldown_has_elapsed(self) -> None:
+    def test_unchanged_reason_is_not_due_again_after_the_old_cooldown(self) -> None:
         for _ in range(3):
             _observe()
         row = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
         stale_surface = timezone.now() - _COOLDOWN - dt.timedelta(minutes=1)
         SweepSkipStreak.objects.filter(pk=row.pk).update(surfaced_at=stale_surface)
 
-        due = SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)
-        assert [r.pr_id for r in due] == [7]
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3)) == []
 
     def test_a_streak_surfaced_just_within_the_cooldown_boundary_is_not_due(self) -> None:
         for _ in range(3):
@@ -140,7 +138,7 @@ class TestDueToSurface(django.test.TestCase):
         recent_surface = timezone.now() - _COOLDOWN + dt.timedelta(minutes=1)
         SweepSkipStreak.objects.filter(pk=row.pk).update(surfaced_at=recent_surface)
 
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3)) == []
 
 
 class TestAged(django.test.TestCase):
@@ -199,14 +197,23 @@ class TestCiVerdictGroupContinuity(django.test.TestCase):
         assert row.first_seen_at == start
         assert row.age_label(now=start + dt.timedelta(hours=4)) == "4h"
 
-    def test_a_flip_within_the_group_does_not_re_arm_a_surfaced_streak(self) -> None:
+    def test_a_flip_within_the_group_keeps_the_announcement_spent(self) -> None:
         for _ in range(3):
             _observe(reason="ci_red")
         SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
         row = _observe(reason="ci_pending")
 
         assert row.surfaced_at is not None
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert not SweepSkipStreak.objects.due_to_surface(threshold=3).exists()
+
+    def test_a_change_of_group_rearms_the_announcement(self) -> None:
+        for _ in range(3):
+            _observe(reason="ci_red")
+        SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
+        row = _observe(reason="changes_requested")
+
+        assert row.surfaced_at is None
+        assert row.tick_count == 1
 
     def test_a_non_ci_reason_still_restarts_the_streak(self) -> None:
         _observe(reason="ci_pending")
@@ -307,8 +314,6 @@ class TestDueToSurfaceIsBoundedByThisPass(django.test.TestCase):
     def _due(self, observed_since: dt.datetime | None) -> list[int]:
         rows = SweepSkipStreak.objects.due_to_surface(
             threshold=3,
-            cooldown=dt.timedelta(hours=24),
-            now=_NOW,
             observed_since=observed_since,
         )
         return [row.pr_id for row in rows]
@@ -383,7 +388,7 @@ class TestDeliberateParksNeverBecomeDue(django.test.TestCase):
         for _ in range(3):
             _observe(reason="draft")
 
-        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3)) == []
 
     def test_a_park_still_stands_in_the_doctor_view(self) -> None:
         for _ in range(3):
@@ -396,7 +401,7 @@ class TestDeliberateParksNeverBecomeDue(django.test.TestCase):
             _observe(reason="draft")
             _observe(pr_id=8, reason="ci_red")
 
-        due = SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)
+        due = SweepSkipStreak.objects.due_to_surface(threshold=3)
         assert [row.pr_id for row in due] == [8]
 
 

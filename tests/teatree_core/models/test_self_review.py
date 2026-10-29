@@ -80,6 +80,12 @@ class TestLatestFor(TestCase):
 
         assert SelfReview.open_hold_for(ticket) is not None
 
+    def test_unverified_self_review_holds_the_author_ticket(self) -> None:
+        ticket = author_ticket()
+        completed_self_review(ticket, "unverified")
+
+        assert SelfReview.open_hold_for(ticket) is not None
+
     def test_a_reviewer_ticket_has_no_self_review(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.TESTED)
         completed_self_review(ticket, "hold")

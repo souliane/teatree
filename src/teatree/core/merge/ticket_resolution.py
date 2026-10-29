@@ -12,11 +12,12 @@ package just unified got built in the first place.
 
 from typing import TYPE_CHECKING
 
-from teatree.core.models import MergeClear, PullRequest
+from teatree.core.models import MergeClear, PullRequest, ReviewVerdict, Ticket
 from teatree.core.models.review_target import review_target_for_task
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
-    from teatree.core.models import Task, Ticket
+    from teatree.core.models import Task
 
 
 def resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
@@ -38,6 +39,32 @@ def resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
     if clear is not None and clear.ticket is not None:
         return clear.ticket
     return None
+
+
+def related_gated_tickets(*, slug: str, pr_id: int) -> tuple[Ticket, ...]:
+    """Ticket handles positively tied to one PR identity, owning ticket first."""
+    owner = resolve_gated_ticket(slug=slug, pr_id=pr_id)
+    ids = [owner.pk] if owner is not None else []
+    ids.extend(
+        PullRequest.objects.filter(repo__iexact=slug, iid=str(pr_id), ticket__isnull=False).values_list(
+            "ticket_id", flat=True
+        )
+    )
+    ids.extend(
+        MergeClear.objects.filter(slug__iexact=slug, pr_id=pr_id, ticket__isnull=False).values_list(
+            "ticket_id", flat=True
+        )
+    )
+    ids.extend(
+        ReviewVerdict.objects.for_pr(slug, pr_id).exclude(ticket__isnull=True).values_list("ticket_id", flat=True)
+    )
+    for ticket in Ticket.objects.filter(role=Ticket.Role.REVIEWER, issue_url__iendswith=f"/{pr_id}"):
+        ref = pr_ref_from_url(ticket.issue_url)
+        if ref is not None and ref.slug.casefold() == slug.casefold() and ref.pr_id == pr_id:
+            ids.append(ticket.pk)
+    unique_ids = list(dict.fromkeys(ids))
+    found = Ticket.objects.in_bulk(unique_ids)
+    return tuple(found[pk] for pk in unique_ids if pk in found)
 
 
 def gated_ticket_for_review_task(task: "Task") -> "Ticket | None":

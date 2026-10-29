@@ -23,12 +23,13 @@ import django.test
 from django.utils import timezone
 
 import teatree.cli.doctor.run_checks as doctor_runner
-from teatree.cli.doctor.checks_loop import _check_unconsumed_merge_clears
+from teatree.cli.doctor.checks_loop import _check_missing_clear_actor_kind, _check_unconsumed_merge_clears
 from teatree.cli.doctor.run_checks import _run_loop_intent_gates
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.clear_liveness_report import LISTED
 from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS
 from teatree.core.merge.clear_liveness import PROBE_CAP
+from teatree.core.models import MergeClear
 from tests.factories import MergeAuditFactory, MergeClearFactory
 
 _QUERY = "teatree.core.factory.clear_liveness_report.unconsumed_actionable_clear_rows"
@@ -62,6 +63,20 @@ class UnconsumedClearCheckBase(django.test.TestCase):
 
 
 class TestUnconsumedMergeClearsCheck(UnconsumedClearCheckBase):
+    def test_doctor_reports_legacy_clearance_without_actor_kind(self) -> None:
+        self._stranded(pr_id=4200, hours=1)
+        with patch("typer.echo") as echo:
+            assert _check_missing_clear_actor_kind() is True
+        assert any("no recorded actor kind" in str(call.args[0]) for call in echo.call_args_list)
+
+    def test_consumed_legacy_clearance_does_not_warn_forever(self) -> None:
+        self._stranded(pr_id=4201, hours=25)
+        MergeClear.objects.filter(pr_id=4201).update(consumed_at=self.now)
+
+        with patch("typer.echo") as echo:
+            assert _check_missing_clear_actor_kind() is True
+        echo.assert_not_called()
+
     def test_an_empty_backlog_passes(self) -> None:
         assert self._run() is True
 

@@ -11,7 +11,7 @@ import datetime as dt
 import pytest
 from django.utils import timezone
 
-from teatree.core.models import CodexReviewMarker, MRReviewLock, ReviewVerdict
+from teatree.core.models import AutoReviewDispatch, CodexReviewMarker, MRReviewLock, ReviewVerdict
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -36,6 +36,21 @@ class TestClaimDedupSurvives:
         assert row is not None
         assert row.overlay == "teatree"
         assert row.variant == "codex:review"
+
+    def test_live_headless_dispatch_blocks_codex_claim(self) -> None:
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is not None
+
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is None
+
+    @pytest.mark.parametrize("attempts", [1, MAX_DISPATCH_ATTEMPTS])
+    def test_expired_headless_dispatch_does_not_block_codex_claim(self, attempts: int) -> None:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        assert row is not None
+        AutoReviewDispatch.objects.filter(pk=row.pk).update(
+            deadline=timezone.now() - dt.timedelta(minutes=1), attempts=attempts
+        )
+
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is not None
 
     def test_a_second_claim_on_a_live_row_is_refused(self) -> None:
         assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is not None
@@ -119,6 +134,16 @@ class TestExpiredClaimIsReArmable:
 
 
 class TestResolvedIsTerminal:
+    def test_a_later_verdict_retires_an_unverified_claim(self) -> None:
+        row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        assert row is not None
+        assert CodexReviewMarker.mark_unverified(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
+
+        assert CodexReviewMarker.mark_resolved(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
+        row.refresh_from_db()
+        assert row.state == CodexReviewMarker.State.RESOLVED
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is None
+
     def test_a_resolved_claim_is_never_re_armed(self) -> None:
         row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
         assert row is not None

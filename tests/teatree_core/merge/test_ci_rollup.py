@@ -613,7 +613,10 @@ class TestKeystoneMergeOnRefusedRollupRead(TestCase):
         ci = _actions_fallback_gh_stub(
             rollup=_ROLLUP_FORBIDDEN, head=(0, _KEYSTONE_HEAD, ""), actions_runs=list(actions_runs)
         )
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_keystone_gh_stub(ci)):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_keystone_gh_stub(ci)),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             merged = cast(
                 "dict[str, object]", call_command("ticket", "merge", str(clear_id), loop_identity="merge-loop")
             )
