@@ -19,10 +19,10 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _push_repo(repo: Path, *, author: str) -> tuple[str, str]:
+def _push_repo(repo: Path, *, author: str, base_author: str = "build-bot") -> tuple[str, str]:
     _git(repo, "init", "-q")
-    _git(repo, "config", "user.name", "build-bot")
-    _git(repo, "config", "user.email", "build-bot@example.com")
+    _git(repo, "config", "user.name", base_author)
+    _git(repo, "config", "user.email", f"{base_author}@users.noreply.github.com")
     _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
     base = _git(repo, "rev-parse", "HEAD")
     _git(repo, "config", "user.name", author)
@@ -60,7 +60,7 @@ def test_pre_push_identity_gate(
     monkeypatch.setattr(
         bot_push_gate,
         "remote_holdings",
-        lambda repo, remote_url, remote_name, reported_shas: RemoteHoldings(tips=(base,), listed=True),
+        lambda repo, remote_url, remote_name, reported_shas, env_override: RemoteHoldings(tips=(base,), listed=True),
     )
 
     result = bot_push_gate.main(["origin", remote])
@@ -76,6 +76,46 @@ def test_pre_push_identity_gate(
 def test_pre_push_hook_is_installed() -> None:
     config = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
     assert "id: refuse-bot-push" in config.read_text()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("https://github.com/build-bot/engine.git", "github.com", "github", "GH_TOKEN"),
+        ("https://gitlab.example.test/build-bot/engine.git", "gitlab.example.test", "gitlab", "GITLAB_TOKEN"),
+    ],
+)
+def test_routed_bot_token_lists_private_remote_before_scanning_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str, str]
+) -> None:
+    remote, host, forge, token_name = case
+    base, head = _push_repo(tmp_path, author="build-bot", base_author="person")
+    monkeypatch.setattr(
+        bot_push_gate.cold_reader,
+        "read_setting_confirmed",
+        lambda key: SettingRead({host: ["build-bot"]}, readable=True),
+    )
+
+    def credential_login(actual_forge: str, actual_host: str, url: str, token: str) -> str:
+        assert (actual_forge, actual_host, url, token) == (forge, host, remote, "bot-key")
+        return "build-bot"
+
+    monkeypatch.setattr(bot_push_gate, "_credential_login", credential_login)
+
+    def holdings(
+        repo: Path, *, remote_url: str, remote_name: str, reported_shas: tuple[str, ...], env_override: dict[str, str]
+    ) -> RemoteHoldings:
+        assert env_override == {token_name: "bot-key"}
+        return RemoteHoldings(tips=(base,), listed=True)
+
+    monkeypatch.setattr(bot_push_gate, "remote_holdings", holdings)
+
+    assert (
+        bot_push_gate.bot_push_error(
+            repo=tmp_path, remote_name="origin", remote_url=remote, refs=([(head, "")], True), token="bot-key"
+        )
+        == ""
+    )
 
 
 def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

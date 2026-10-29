@@ -152,18 +152,26 @@ def bot_repo_for(remote_url: str) -> BotRepo | None:
 
 
 def _new_commit_error(
-    repo: Path, remote_name: str, remote_url: str, refs: tuple[list[tuple[str, str]], bool], login: str
+    repo: Path, remote: tuple[str, str], refs: tuple[list[tuple[str, str]], bool], target: BotRepo, token: str
 ) -> str:
+    remote_name, remote_url = remote
     updates, synthesized = refs
     reported = () if synthesized else tuple(remote_sha for _, remote_sha in updates if remote_sha != _ZERO)
-    holdings = remote_holdings(repo, remote_url=remote_url, remote_name=remote_name, reported_shas=reported)
+    credential_env = {"GH_TOKEN" if target.forge == GITHUB else "GITLAB_TOKEN": token} if token else None
+    holdings = remote_holdings(
+        repo,
+        remote_url=remote_url,
+        remote_name=remote_name,
+        reported_shas=reported,
+        env_override=credential_env,
+    )
     slug = slug_for_remote_url(remote_url)
     for local_sha, _ in updates:
         commits = _new_commits(repo, local_sha, holdings.tips)
         if commits is None:
             return f"the new commits for bot-owned {slug} could not be read"
         for sha in commits:
-            if not _bot_commit(repo, sha, login):
+            if not _bot_commit(repo, sha, target.login):
                 return f"a push to bot-owned {slug} carries a non-bot commit ({sha[:12]})"
     return ""
 
@@ -184,7 +192,7 @@ def bot_push_error(
     login = _credential_login(target.forge, target.host, remote_url, token).casefold()
     if login != target.login:
         return f"a push to bot-owned {target.slug} requires a verified bot credential"
-    return _new_commit_error(repo, remote_name, remote_url, refs, login)
+    return _new_commit_error(repo, (remote_name, remote_url), refs, target, token)
 
 
 def ambient_bot_credential_error() -> str:
