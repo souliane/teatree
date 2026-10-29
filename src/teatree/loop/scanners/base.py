@@ -55,8 +55,8 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
 
     The classifier reads gh's well-known error wording: auth-required
     prompts (``gh auth login``, ``GH_TOKEN``, ``Bad credentials``, ``401``),
-    GitHub rate-limit messages (``API rate limit exceeded``, ``rate
-    limit``, ``secondary rate limit``), and network failures (``dial
+    GitHub rate-limit messages (``rate limit``), pooled ``gh api`` headers
+    (``remaining=0``, ``retry-after=`` on HTTP 403/429), and network failures (``dial
     tcp``, ``no such host``, ``Could not resolve``). Anything else falls
     through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
     surfaces the failure rather than masking it.
@@ -65,12 +65,14 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     the marker lists stay in one place.
     """
     lower = stderr.lower()
-    rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
+    rate_limit_markers = ("rate limit", "rate-limit", "secondary rate", "remaining=0")
     auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
     network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
-    if any(marker in lower for marker in rate_limit_markers):
+    if any(marker in lower for marker in rate_limit_markers) or (
+        "retry-after=" in lower and ("http 403" in lower or "http 429" in lower)
+    ):
         return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower for marker in auth_markers):
+    if any(marker in lower.replace("remaining=401", "") for marker in auth_markers):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK
