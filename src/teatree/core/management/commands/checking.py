@@ -40,7 +40,8 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
-from teatree.core.checking_slack import ShootReportDict, shoot_questions
+from teatree.core.checking_report.slack import ShootReportDict, shoot_questions
+from teatree.core.checking_report.status import plain_title
 from teatree.core.checking_types import CheckItem, OwnerWaitItem
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 from teatree.core.machine_output import MachineOutputCommand, emit
@@ -85,6 +86,36 @@ def _listener_stale(beat: ListenerBeat | None, *, now: float) -> bool:
     return heartbeat_is_stale(beat, "", now=now)
 
 
+def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
+    lines: list[str] = []
+    for group in groups:
+        if group.title == "Needs you":
+            lines.extend(
+                f"Failed run: [{plain_title(item.title)}]({item.url})"
+                for item in group.items
+                if item.detail.startswith("failed agent run") and item.url
+            )
+        elif group.title == "Remaining":
+            lines.extend(
+                f"Held pull request: [{plain_title(item.title)}]({item.url})"
+                for item in group.items
+                if getattr(item, "kind", "") == "pr" and getattr(item, "hold", "") and item.url
+            )
+    return lines
+
+
+def _render_brief(groups: list[CheckGroup], *, context: _RenderContext, internal_escalations: int) -> str:
+    status = [*context.status_lines, *_brief_critical_lines(groups)]
+    if status:
+        if internal_escalations:
+            status[0] = f"{status[0]} · {internal_escalations} internal escalations"
+        return "\n".join(status)
+    if all(not group.has_table_content() for group in groups) and not internal_escalations:
+        return f"Nothing since {context.stamp}."
+    suffix = f" · {internal_escalations} internal escalations" if internal_escalations else ""
+    return f"No active feature work since {context.stamp}{suffix}."
+
+
 def _render_groups_tables(
     groups: list[CheckGroup],
     *,
@@ -98,17 +129,12 @@ def _render_groups_tables(
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
+    if brief:
+        return _render_brief(groups, context=context, internal_escalations=internal_escalations)
     status = context.status_lines
     cap = DEFAULT_CAP
     if all(not group.has_table_content() for group in groups) and not internal_escalations and not status:
         return f"Nothing since {context.stamp}."
-    if brief and status:
-        if internal_escalations:
-            status = [f"{status[0]} · {internal_escalations} internal escalations", *status[1:]]
-        return "\n".join(status)
-    if brief:
-        suffix = f" · {internal_escalations} internal escalations" if internal_escalations else ""
-        return f"No active feature work since {context.stamp}{suffix}."
     buffer = io.StringIO()
     if status:
         buffer.write("\n".join(status) + "\n")
@@ -265,7 +291,12 @@ class Command(MachineOutputCommand):
     ) -> CheckingReportDict | AllOverlaysReportDict:
         """Print a terse, grouped, clickable report of changes since the last check."""
         flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify, brief=False)
-        return self._show_report(flags=flags, this_overlay=this_overlay)
+        overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
+        now = timezone.now()
+        _validate_since(flags.since)
+        if this_overlay:
+            return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
+        return self._show_all_overlays(now=now, flags=flags)
 
     @command()
     def brief(
@@ -277,9 +308,6 @@ class Command(MachineOutputCommand):
     ) -> CheckingReportDict | AllOverlaysReportDict:
         """Print the one-screen status while keeping full groups in the returned payload."""
         flags = _ShowFlags(since=since, json_output=False, no_advance=no_advance, notify=False, brief=True)
-        return self._show_report(flags=flags, this_overlay=this_overlay)
-
-    def _show_report(self, *, flags: _ShowFlags, this_overlay: bool) -> CheckingReportDict | AllOverlaysReportDict:
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
         _validate_since(flags.since)

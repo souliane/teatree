@@ -1,7 +1,9 @@
 """Owner-facing feature summary in the check-in report."""
 
 import re
+import subprocess
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -62,19 +64,16 @@ class CheckInFeatureStatusTestCase(TestCase):
         report = self._report()
         status = report.to_dict()["status_by_feature"]
         assert [feature["title"] for feature in status["features"]] == [
+            "dashboard access",
             "message delivery",
             "review workflow",
-            "dashboard access",
             "Other maintenance",
         ]
         assert report.to_terse().startswith("Status by feature\n")
-        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[2]
-        assert status["features"][0]["left"][0]["url"] == "https://github.com/example/widgets/pull/202"
-        assert status["features"][2]["owner_waits"][0]["url"].startswith("https://slack.com/archives/")
-        assert {item["url"] for item in status["not_yet_deployed"]} == {
-            "https://github.com/example/widgets/pull/201",
-            "https://github.com/example/widgets/pull/203",
-        }
+        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[3]
+        assert status["features"][1]["left"][0]["url"] == "https://github.com/example/widgets/pull/202"
+        assert status["features"][0]["owner_waits"][0]["url"].startswith("https://slack.com/archives/")
+        assert status["not_yet_deployed"] == []
         for feature in status["features"]:
             assert not re.search(r"\d", feature["title"])
             for item in [*feature["merged"], *feature["left"], *feature["owner_waits"]]:
@@ -93,9 +92,9 @@ class CheckInFeatureStatusTestCase(TestCase):
             started_at=timezone.now() - timedelta(days=2),
         )
         ticket = TicketFactory(
-            issue_url="https://github.com/example/widgets/issues/301", short_description="finish access"
+            issue_url="https://github.com/souliane/teatree/issues/301", short_description="finish access"
         )
-        MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets", clear__pr_id=302, merged_sha=sha)
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=302, merged_sha=sha)
 
         status = self._report().status_by_feature
 
@@ -107,18 +106,70 @@ class CheckInFeatureStatusTestCase(TestCase):
     def test_partly_live_feature_lists_only_the_undeployed_merge(self) -> None:
         repo = str(teatree_source_root())
         serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
-        future_sha = run_strict(repo=repo, args=["rev-parse", "origin/main"])
+        future_sha = "a" * 40
         WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
         ticket = TicketFactory(
-            issue_url="https://github.com/example/widgets/issues/401", short_description="message delivery"
+            issue_url="https://github.com/souliane/teatree/issues/401", short_description="message delivery"
         )
-        MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets", clear__pr_id=402, merged_sha=serving_sha)
-        MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets", clear__pr_id=403, merged_sha=future_sha)
+        MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=402, merged_sha=serving_sha
+        )
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=403, merged_sha=future_sha)
 
         status = self._report().status_by_feature
 
         assert status.features[0].live == "partly"
-        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/example/widgets/pull/403"]
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/403"]
+
+    def test_git_timeout_degrades_deployment_to_unknown(self) -> None:
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/410")
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha="a" * 40)
+        WorkerGeneration.objects.create(sha="b" * 40, image="test-image", state=WorkerGeneration.State.ACTIVE)
+
+        with patch(
+            "teatree.core.checking_report.status.run_with_status", side_effect=subprocess.TimeoutExpired("git", 3)
+        ):
+            status = self._report().status_by_feature
+
+        assert status.deploy_state == "unknown"
+
+    def test_other_repository_merge_does_not_change_worker_deployment_state(self) -> None:
+        sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        own = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/411")
+        other = TicketFactory(issue_url="https://github.com/example/widgets/issues/412")
+        MergeAuditFactory(clear__ticket=own, clear__slug="souliane/teatree", merged_sha=sha)
+        MergeAuditFactory(clear__ticket=other, clear__slug="example/widgets", merged_sha="a" * 40)
+
+        status = self._report().status_by_feature
+
+        assert status.deploy_state == "verified"
+        assert status.not_yet_deployed == []
+
+    def test_only_active_author_pull_requests_are_left(self) -> None:
+        active = TicketFactory(issue_url="https://github.com/example/widgets/issues/420")
+        PullRequestFactory(ticket=active, url="https://github.com/example/widgets/pull/421")
+        for state in (Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED):
+            ticket = TicketFactory(state=state)
+            PullRequestFactory(ticket=ticket)
+        reviewer = TicketFactory(role=Ticket.Role.REVIEWER)
+        PullRequestFactory(ticket=reviewer)
+
+        status = self._report().status_by_feature
+
+        assert [item.url for block in status.features for item in block.left] == [
+            "https://github.com/example/widgets/pull/421"
+        ]
+
+    def test_failed_pipeline_is_not_described_as_pending(self) -> None:
+        ticket = TicketFactory(
+            extra={"prs": {"https://github.com/example/widgets/pull/430": {"pipeline_status": "failed"}}}
+        )
+        PullRequestFactory(ticket=ticket, url="https://github.com/example/widgets/pull/430")
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].left[0].state == "tests failed"
 
     def test_related_features_share_a_named_lane_and_keep_problem_links(self) -> None:
         first = TicketFactory(
@@ -205,6 +256,45 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert len(status.features) == 8
         assert status.more == 1
         assert status.render()[-1] == "…and 1 more features"
+
+    def test_owner_question_survives_feature_cap(self) -> None:
+        for number in range(8):
+            ticket = TicketFactory(issue_url=f"https://github.com/example/widgets/issues/{600 + number}")
+            MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets")
+        owner = TicketFactory(issue_url="https://github.com/example/widgets/issues/699")
+        task = TaskFactory(ticket=owner, session__ticket=owner)
+        DeferredQuestion.record(
+            "Can I publish it?",
+            parked_task=task,
+            card=owner_card(),
+            slack_channel="DQUESTION",
+            slack_ts="1800000000.000001",
+        )
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].owner_waits
+        assert status.more == 1
+
+    def test_hidden_links_are_counted_in_visible_block(self) -> None:
+        ticket = TicketFactory(issue_url="https://github.com/example/widgets/issues/700")
+        for number in range(4):
+            PullRequestFactory(ticket=ticket, url=f"https://github.com/example/widgets/pull/{710 + number}")
+
+        line = self._report().status_by_feature.render()[1]
+
+        assert "and 2 more" in line
+
+    def test_incidental_lane_word_does_not_reclassify_feature(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/730",
+            short_description="Repair an unrelated coordinator mention",
+        )
+        PullRequestFactory(ticket=ticket)
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].title == "Repair an unrelated coordinator mention"
 
     def test_global_owner_question_is_under_other_maintenance(self) -> None:
         DeferredQuestion.record(

@@ -40,7 +40,7 @@ button spawns `ttyd --writable --once` on fixed `127.0.0.1:8804` wrapping a
 `claude` session (fresh, or `--resume <session>` from the card). It binds loopback
 only, and is reached through a static SSH forward (`ssh -L 8804:127.0.0.1:8804`).
 Add it once alongside the dashboard forward; the panel repeats the command when opened.
-and `--once` makes the process die with the session — no lingering writable
+`--once` makes the process die with the session — no lingering writable
 terminal, no new network door. If the Django process is down the button does not
 render; fall back to tier 1.
 

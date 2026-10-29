@@ -49,7 +49,7 @@ from teatree.core._checking_gather import (
     ticket_url,
 )
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
-from teatree.core.checking_status import StatusByFeature, StatusByFeatureDict, build_feature_status
+from teatree.core.checking_report.status import StatusByFeature, StatusByFeatureDict, build_feature_status
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
@@ -363,9 +363,7 @@ def _accumulate_overlays(
         overlay_tag = f"[{overlay_name}]"
         scoped = scoped_merge_audits(since=window[0], now=window[1], scope=scope)
         merged_rows.extend((audit, repo_slug, code_host) for audit, repo_slug in scoped)
-        merged_entries.extend(
-            merged_entries_from_qs(since=window[0], now=window[1], scope=scope, overlay_tag=overlay_tag, scoped=scoped)
-        )
+        merged_entries.extend(merged_entries_from_qs(scope=scope, overlay_tag=overlay_tag, scoped=scoped))
         new_in_flight, new_failed = motion_for_overlay(
             window=window,
             overlay_name=overlay_name,
@@ -409,7 +407,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
     scoped = scoped_merge_audits(since=since, now=now, scope=scope)
     return CheckingReport(
         since=since,
-        merged=_merged_group(since=since, now=now, scope=scope, cap=cap, scoped=scoped),
+        merged=_merged_group(scope=scope, cap=cap, scoped=scoped),
         status_by_feature=build_feature_status(
             merged=[(audit, repo_slug, code_host) for audit, repo_slug in scoped],
             overlay_names=[overlay_name] if overlay_name else [],
@@ -464,10 +462,8 @@ def _metered_group(*, since: datetime, now: datetime, overlay_name: str, cap: in
     return CheckGroup(title="Metered", items=[item for _, item in entries], total=total)
 
 
-def _merged_group(
-    *, since: datetime, now: datetime, scope: _MergedScope, cap: int, scoped: list[tuple[MergeAudit, str]]
-) -> CheckGroup:
-    entries = merged_entries_from_qs(since=since, now=now, scope=scope, scoped=scoped)
+def _merged_group(*, scope: _MergedScope, cap: int, scoped: list[tuple[MergeAudit, str]]) -> CheckGroup:
+    entries = merged_entries_from_qs(scope=scope, scoped=scoped)
     return CheckGroup(title="Merged", items=[item for _, item in entries[:cap]], total=len(entries))
 
 

@@ -59,15 +59,12 @@ def test_terminal_does_not_report_a_url_when_listener_never_starts() -> None:
 
 
 def test_terminal_refuses_an_occupied_port() -> None:
-    with socket.socket() as held:
-        held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        held.bind(("127.0.0.1", 8804))
-        held.listen()
-        with (
-            patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-            patch.object(terminal_launcher, "spawn") as spawn,
-        ):
-            result = terminal_launcher.launch_ttyd(["claude"])
+    with (
+        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
+        patch.object(terminal_launcher, "_port_available", return_value=False),
+        patch.object(terminal_launcher, "spawn") as spawn,
+    ):
+        result = terminal_launcher.launch_ttyd(["claude"])
     assert result.launch_url == ""
     assert "already in use" in result.error
     spawn.assert_not_called()
@@ -76,13 +73,14 @@ def test_terminal_refuses_an_occupied_port() -> None:
 def test_terminal_port_is_available_after_the_previous_client_closes() -> None:
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", 8804))
+        listener.bind(("127.0.0.1", 0))
         listener.listen()
-        with socket.create_connection(("127.0.0.1", 8804)) as client:
+        port = listener.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port)) as client:
             peer, _ = listener.accept()
             peer.close()
             client.recv(1)
-    assert terminal_launcher._port_available(8804)
+    assert terminal_launcher._port_available(port)
 
 
 def test_terminal_reaps_a_child_that_exits() -> None:

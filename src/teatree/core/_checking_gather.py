@@ -177,11 +177,9 @@ def audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) 
 
 def merged_entries_from_qs(
     *,
-    since: datetime,
-    now: datetime,
     scope: _MergedScope,
+    scoped: list[tuple[MergeAudit, str]],
     overlay_tag: str = "",
-    scoped: list[tuple[MergeAudit, str]] | None = None,
 ) -> list[tuple[datetime, CheckItem]]:
     """Every scoped merge in the window as ``(merged_at, item)``, newest first.
 
@@ -190,7 +188,7 @@ def merged_entries_from_qs(
     overlay's older merges displace another's newer ones.
     """
     entries: list[tuple[datetime, CheckItem]] = []
-    for audit, repo_slug in scoped if scoped is not None else scoped_merge_audits(since=since, now=now, scope=scope):
+    for audit, repo_slug in scoped:
         ticket = audit.clear.ticket
         raw_detail = ticket.short_description if ticket else ""
         detail = (f"{raw_detail} {overlay_tag}".strip() if raw_detail else overlay_tag) if overlay_tag else raw_detail
@@ -221,19 +219,6 @@ def scoped_merge_audits(*, since: datetime, now: datetime, scope: _MergedScope) 
         if audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
             rows.append((audit, repo_slug))
     return rows
-
-
-def merged_group_from_qs(
-    *,
-    since: datetime,
-    now: datetime,
-    scope: _MergedScope,
-    cap: int,
-    overlay_tag: str = "",
-) -> tuple[list, int]:
-    """Query and scope the merged audits; return (items, total)."""
-    entries = merged_entries_from_qs(since=since, now=now, scope=scope, overlay_tag=overlay_tag)
-    return [item for _, item in entries[:cap]], len(entries)
 
 
 def motion_for_overlay(

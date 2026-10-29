@@ -228,6 +228,38 @@ class TestCheckingShow:
         assert text.startswith("No active feature work since ")
         assert len(text.splitlines()) == 1
 
+    def test_brief_keeps_failed_run_visible(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/725",
+            state=Ticket.State.CODED,
+            short_description="restore delivery",
+        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="agent crashed")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert "failed run" in text.lower()
+        assert "[restore delivery](https://github.com/acme/widgets/issues/725)" in text
+
+    def test_brief_keeps_held_pull_request_visible(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/726",
+            state=Ticket.State.PR_OPENED,
+            short_description="restore access",
+        )
+        PullRequest.objects.create(
+            ticket=ticket, repo="acme/widgets", iid="727", url="https://github.com/acme/widgets/pull/727"
+        )
+        _task(ticket, "reviewing", status=Task.Status.FAILED, failure_kind="unclassified")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert "held pull request" in text.lower()
+        assert "[restore access](https://github.com/acme/widgets/pull/727)" in text
+
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay")

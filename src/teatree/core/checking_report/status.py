@@ -16,7 +16,9 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration, WorkerGenerationQuerySet
 from teatree.core.ref_render import short_title
 from teatree.paths import teatree_source_root
+from teatree.utils.git_remote_ops import remote_slug
 from teatree.utils.git_run import run_with_status
+from teatree.utils.run import SUBPROCESS_UNREACHABLE
 from teatree.utils.slack_links import slack_permalink
 
 FEATURE_CAP = 8
@@ -73,7 +75,8 @@ class FeatureBlock:
     owner_waits: list[FeatureLink] = field(default_factory=list)
     unlinked_owner_waits: int = 0
     live: bool | Literal["partly"] = False
-    merge_shas: list[str] = field(default_factory=list)
+    merge_shas: list[tuple[str, str]] = field(default_factory=list)
+    deployment_unknown: bool = False
 
     def to_dict(self) -> FeatureBlockDict:
         return {
@@ -86,22 +89,23 @@ class FeatureBlock:
         }
 
     def render(self, deploy_state: str) -> str:
+        block_deploy_state = "unknown" if self.deployment_unknown else deploy_state
         if self.merged:
             merged = (
                 "merged and live"
                 if self.live is True
-                else f"{', '.join(item.render() for item in self.merged[:2])} merged; deployment {deploy_state}"
+                else f"{_render_links(self.merged, 2)} merged; deployment {block_deploy_state}"
             )
         else:
             merged = "no merge since the last check"
         if self.left:
-            left = ", ".join(f"{item.render()} ({item.state})" for item in self.left[:2])
+            left = _render_links(self.left, 2, with_state=True)
             next_step = "the factory has the next step"
         else:
             left = "nothing left"
             next_step = "the coordinator has the next step" if self.merged and self.live is not True else "done"
         if self.owner_waits:
-            waits = ", ".join(item.render() for item in self.owner_waits[:2])
+            waits = _render_links(self.owner_waits, 2)
             next_step = f"waiting for your Slack reply: {waits}"
         if self.unlinked_owner_waits:
             pending = "waiting for Slack delivery of your question"
@@ -131,13 +135,18 @@ class StatusByFeature:
         if self.more:
             lines.append(f"…and {self.more} more features")
         if self.not_yet_deployed:
-            names = ", ".join(item.render() for item in self.not_yet_deployed[:3])
+            names = _render_links(self.not_yet_deployed, 3)
             lines.append(f"Not yet deployed ({self.deploy_state}): {names}")
         return lines
 
 
 def plain_title(title: str) -> str:
     return short_title(_NUMBERED_WORD.sub("", title)).strip(" -:,.—") or "Work in progress"
+
+
+def _render_links(items: list[FeatureLink], cap: int, *, with_state: bool = False) -> str:
+    rendered = ", ".join(f"{item.render()} ({item.state})" if with_state else item.render() for item in items[:cap])
+    return f"{rendered}, and {len(items) - cap} more" if len(items) > cap else rendered
 
 
 def _feature_key(ticket: Ticket | None) -> str:
@@ -165,10 +174,10 @@ def _lane_name(ticket: Ticket) -> str:
                 if name:
                     return _canonical_lane_name(name)
     issue_title = extra.get("issue_title")
-    title = f"{ticket.short_description} {issue_title if isinstance(issue_title, str) else ''}"
-    for lane, pattern in _LANE_TITLE_PATTERNS:
-        if pattern.search(title):
-            return lane
+    for title in (ticket.short_description, issue_title if isinstance(issue_title, str) else ""):
+        for lane, pattern in _LANE_TITLE_PATTERNS:
+            if pattern.match(title):
+                return lane
     return ""
 
 
@@ -185,7 +194,9 @@ def _pr_state(pr: PullRequest) -> str:
     prs = (pr.ticket.extra or {}).get("prs")
     entry = prs.get(pr.url) if isinstance(prs, dict) else None
     pipeline = entry.get("pipeline_status") if isinstance(entry, dict) else ""
-    if pipeline in {"failed", "pending", "running"}:
+    if pipeline == "failed":
+        return "tests failed"
+    if pipeline in {"pending", "running"}:
         return "waiting for the tests"
     if pr.state == PullRequest.State.APPROVED:
         return "ready to merge"
@@ -212,7 +223,7 @@ def _live_state(merged_sha: str, serving_sha: str) -> bool | None:
         result = run_with_status(
             repo=str(teatree_source_root()), args=["merge-base", "--is-ancestor", merged_sha, serving_sha], timeout=3
         )
-    except (OSError, ValueError):
+    except (*SUBPROCESS_UNREACHABLE, ValueError):
         return None
     return {0: True, 1: False}.get(result.returncode)
 
@@ -272,11 +283,17 @@ def build_feature_status(
         url = pr_url_for(ticket, repo_slug=repo_slug, pr_id=audit.clear.pr_id, code_host=code_host)
         block = block_for(ticket)
         block.merged.append(FeatureLink(label=_pr_label(ticket, url), url=url))
-        block.merge_shas.append(audit.merged_sha)
+        block.merge_shas.append((repo_slug, audit.merged_sha))
 
     represented_ticket_ids = {audit.clear.ticket_id for audit, _repo, _host in merged if audit.clear.ticket_id}
 
-    prs = PullRequest.objects.live().select_related("ticket").order_by("-pk")
+    prs = (
+        PullRequest.objects.live()
+        .filter(ticket__role=Ticket.Role.AUTHOR)
+        .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
+        .select_related("ticket")
+        .order_by("-pk")
+    )
     if overlay_names:
         prs = prs.filter(ticket__overlay__in=overlay_names)
     for pr in prs:
@@ -294,20 +311,40 @@ def build_feature_status(
         state=WorkerGeneration.State.STARTING,
         started_at__gte=timezone.now() - WorkerGenerationQuerySet.STARTING_LEASE_MARGIN,
     ).exists()
+    local_slug = remote_slug(repo=str(teatree_source_root()))
     undeployed: list[FeatureLink] = []
     unknown = False
     for block in blocks.values():
-        live = [_live_state(sha, serving_sha) for sha in block.merge_shas]
-        unknown = unknown or None in live
+        live = [
+            _live_state(sha, serving_sha) if local_slug and slug.casefold() == local_slug.casefold() else None
+            for slug, sha in block.merge_shas
+        ]
+        block.deployment_unknown = any(slug.casefold() != local_slug.casefold() for slug, _sha in block.merge_shas)
+        unknown = unknown or any(
+            state is None and slug.casefold() == local_slug.casefold()
+            for (slug, _sha), state in zip(block.merge_shas, live, strict=True)
+        )
         block.live = True if live and all(state is True for state in live) else "partly" if True in live else False
-        undeployed.extend(item for item, state in zip(block.merged, live, strict=True) if state is not True)
+        undeployed.extend(
+            item
+            for item, (slug, _sha), state in zip(block.merged, block.merge_shas, live, strict=True)
+            if slug.casefold() == local_slug.casefold() and state is not True
+        )
     if starting:
         deploy_state = "running"
-    elif not serving_sha or unknown:
+    elif not serving_sha or not local_slug or unknown:
         deploy_state = "unknown"
     else:
         deploy_state = "waiting" if undeployed else "verified"
-    ordered = sorted(blocks.items(), key=lambda item: (not bool(item[1].merged), not item[0], item[0]))
+    ordered = sorted(
+        blocks.items(),
+        key=lambda item: (
+            not bool(item[1].owner_waits or item[1].unlinked_owner_waits),
+            not bool(item[1].merged),
+            not item[0],
+            item[0],
+        ),
+    )
     features = [block for _key, block in ordered[:FEATURE_CAP]]
     return StatusByFeature(
         features=features,

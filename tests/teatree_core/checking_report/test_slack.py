@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +12,8 @@ from django.utils import timezone
 
 from teatree.backends.slack.listener_heartbeat import ListenerBeat
 from teatree.core import notify as notify_module
-from teatree.core.checking_slack import ShootReportDict
-from teatree.core.models import BotPing, DeferredQuestion
+from teatree.core.checking_report.slack import ShootReportDict
+from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.models.scanner_fault import ScannerFault
 from tests._owner_channel import owner_card
 from tests.factories import TaskFactory, TicketFactory
@@ -31,6 +32,96 @@ def _shoot(beat: ListenerBeat | None = None, *, missing_listener: bool = False) 
 
 
 class CheckingShootTestCase(TestCase):
+    def test_stuck_owner_answer_uses_fallback(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            idempotency_key="stuck-answer",
+            received_at=timezone.now() - timedelta(minutes=3),
+        )
+        backend = MagicMock(user_id="U_ME")
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            report = _shoot()
+
+        assert report["mode"] == "fallback"
+        assert "answers" in report["reason"]
+
+    def test_recent_failed_post_is_retried_by_shoot(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        BotPing.objects.create(
+            idempotency_key="prior-failure", kind=BotPing.Kind.QUESTION, status=BotPing.Status.FAILED, text="failed"
+        )
+        backend = MagicMock(user_id="U_ME")
+        backend.open_dm.return_value = "D_ME"
+        ts = f"{timezone.now().timestamp():.6f}"
+        backend.post_message.return_value = {"ok": True, "ts": ts}
+        backend.get_permalink.return_value = f"https://slack.com/archives/D_ME/p{ts.replace('.', '')}"
+
+        with (
+            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=False),
+        ):
+            report = _shoot()
+
+        assert report["posted"] == 1
+        assert report["mode"] == "slack"
+
+    def test_new_failed_post_flips_to_fallback_after_drain(self) -> None:
+        backend = MagicMock(user_id="U_ME")
+
+        def fail_post(**_kwargs: object) -> tuple[int, int]:
+            BotPing.objects.create(
+                idempotency_key="new-failure", kind=BotPing.Kind.QUESTION, status=BotPing.Status.NOOP, text="failed"
+            )
+            return 0, 1
+
+        with (
+            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
+            patch("teatree.core.checking_report.slack.drain_unmirrored_deferred_questions", side_effect=fail_post),
+        ):
+            report = _shoot()
+
+        assert report["mode"] == "fallback"
+        assert report["reason"] == "Slack question post failed"
+
+    def test_nudge_count_is_reported(self) -> None:
+        backend = MagicMock(user_id="U_ME")
+
+        with (
+            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
+            patch("teatree.core.checking_report.slack.reask_escalated_questions", return_value=(2, 2)),
+        ):
+            report = _shoot()
+
+        assert report["nudged"] == 2
+
+    def test_quiet_send_reports_why_card_is_still_waiting(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        backend = MagicMock(user_id="U_ME")
+
+        with (
+            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=True),
+        ):
+            report = _shoot()
+
+        assert report["mode"] == "slack"
+        assert report["posted"] == 0
+        assert report["remaining"] == 1
+        assert "next pass" in report["reason"]
+
+    def test_fallback_remaining_counts_only_unmirrored_cards(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        DeferredQuestion.record(
+            "Can I merge?", card=owner_card(), slack_channel="D_ME", slack_ts=f"{timezone.now().timestamp():.6f}"
+        )
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=None):
+            report = _shoot()
+
+        assert report["mode"] == "fallback"
+        assert report["remaining"] == 1
+
     def test_missing_listener_uses_fallback_even_when_post_backend_exists(self) -> None:
         backend = MagicMock()
         backend.user_id = "U_ME"

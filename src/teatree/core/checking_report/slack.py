@@ -1,12 +1,12 @@
 """Explicit Slack delivery for owner questions during a check-in."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TypedDict
 
 from django.utils import timezone
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.checking_status import plain_title
+from teatree.core.checking_report.status import plain_title
 from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.notify import resolve_owner_dm_backend
@@ -30,7 +30,9 @@ class ShootReportDict(TypedDict):
     cards: list[ShootCardDict]
 
 
-def _broken_reason(backend: MessagingBackend | None, *, listener_stale: bool) -> str:
+def _broken_reason(
+    backend: MessagingBackend | None, *, listener_stale: bool, failed_since: datetime | None = None
+) -> str:
     if backend is None:
         return "Slack post path is unavailable"
     if listener_stale:
@@ -43,12 +45,14 @@ def _broken_reason(backend: MessagingBackend | None, *, listener_stale: bool) ->
     ).exists()
     if stuck_answer:
         return "Slack owner answers are not being processed"
-    latest = BotPing.objects.filter(kind=BotPing.Kind.QUESTION).order_by("-posted_at", "-pk").first()
-    if (
-        latest
-        and latest.status in {BotPing.Status.FAILED, BotPing.Status.NOOP}
-        and latest.posted_at > timezone.now() - timedelta(hours=24)
-    ):
+    if failed_since is None:
+        return ""
+    latest = (
+        BotPing.objects.filter(kind=BotPing.Kind.QUESTION, posted_at__gte=failed_since)
+        .order_by("-posted_at", "-pk")
+        .first()
+    )
+    if latest and latest.status in {BotPing.Status.FAILED, BotPing.Status.NOOP}:
         return "Slack question post failed"
     return ""
 
@@ -75,21 +79,24 @@ def shoot_questions(*, overlay: str, listener_stale: bool) -> ShootReportDict:
             "reason": broken,
             "posted": 0,
             "nudged": 0,
-            "remaining": DeferredQuestion.owner_pending().count(),
+            "remaining": DeferredQuestion.unmirrored_pending().count(),
             "cards": _linked_cards(),
         }
     ScannerFault.objects.heal(_FAULT_KEY)
     user_id = getattr(backend, "user_id", "") if backend is not None else ""
-    posted, _candidates = drain_unmirrored_deferred_questions(user_id=user_id, overlay=overlay, backend=backend)
+    started = timezone.now()
+    posted, candidates = drain_unmirrored_deferred_questions(user_id=user_id, overlay=overlay, backend=backend)
     nudged, _candidates = reask_escalated_questions(user_id=user_id, overlay=overlay, backend=backend)
-    broken = _broken_reason(backend, listener_stale=listener_stale)
+    broken = _broken_reason(backend, listener_stale=listener_stale, failed_since=started)
     if broken:
         ScannerFault.objects.record_failure(_FAULT_KEY, "SlackUnavailable", broken)
+    remaining = DeferredQuestion.unmirrored_pending().count()
     return {
         "mode": "fallback" if broken else "slack",
-        "reason": broken,
+        "reason": broken
+        or ("Slack send paused until the next pass" if candidates and not posted and remaining else ""),
         "posted": posted,
         "nudged": nudged,
-        "remaining": DeferredQuestion.unmirrored_pending().count(),
+        "remaining": remaining,
         "cards": _linked_cards(),
     }
