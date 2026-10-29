@@ -18,7 +18,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (`checking show` is read-only), then advances per-overlay markers. After the report, it shoots waiting owner questions to Slack and gives one thread link per posted card.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first runs `checking brief` for the one-screen status, then advances per-overlay markers. After the report, it shoots waiting owner questions to Slack and gives one thread link per posted card.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -43,7 +43,8 @@ A Slack-given answer is read on demand with `questions list --all`; the walk-thr
 ## The single command
 
 ```bash
-t3 <overlay> checking show                 # report ALL overlays since their last check, advance each marker
+t3 <overlay> checking brief                # one-screen report for ALL overlays; advance each marker
+t3 <overlay> checking show                 # detailed report with the original groups
 t3 <overlay> checking show --this-overlay  # scope to the current overlay only (backward-compat)
 t3 <overlay> checking show --since 2026-05-30T08:00:00   # explicit window start (does NOT advance the marker)
 t3 <overlay> checking show --no-advance     # read without moving the last-checked markers
@@ -55,10 +56,11 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 ## Output contract
 
-- **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
-- **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- `Status by feature` opens the report: one short block per active feature, at most eight, with merged/live, what is left, and who acts next. A completed, live block has no link; a named open problem has a word-labelled link. No two-digit run appears in a visible heading, sentence, or link label.
-- Groups in fixed order after the feature status — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
+- **All-overlays (default):** The detailed view has a `Since <local HH:MM> · all overlays` header. Overlay-scoped detail carries an `[overlay]` tag.
+- **Single-overlay (`--this-overlay`):** The detailed view has a `Since <local HH:MM> · <overlay>` header.
+- `Status by feature` opens the one-screen report: one short block per active lane, at most eight, with merged/live, what is left, and who acts next. A `lane:<name>` issue label names the lane; the owner-named multi-user, agent communication, coordinator, webhooks, and evals lanes are inferred from issue titles when no label exists; other issues use their title. A completed, live block has no link; a named open problem has a word-labelled link. No two-digit run appears in a visible heading, sentence, or link label.
+- With `checking brief`, the human view contains only active status, or one line when no lane is active; `checking show --json` and the default detailed view retain all groups.
+- Groups in fixed order in the detailed view — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`.
 - Every linked PR / issue / ticket reference in the feature status uses a markdown link `[label](url)` with a label in words.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`

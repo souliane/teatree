@@ -19,6 +19,7 @@ Edit the source command, not this file.
 | --- | --- |
 | `shoot` | Post or nudge waiting owner questions through the existing Slack drains |
 | `show` | Print a terse, grouped, clickable report of changes since the last check |
+| `brief` | Print the one-screen status while keeping full groups in the returned payload |
 
 ## `config_setting`
 

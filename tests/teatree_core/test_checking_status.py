@@ -9,6 +9,7 @@ from django.utils import timezone
 from teatree.core.checking import CheckingReport, gather_checking_report
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.paths import teatree_source_root
 from teatree.utils.git_run import run_strict
@@ -103,6 +104,77 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.deploy_state == "verified"
         assert "http" not in status.render()[1]
 
+    def test_related_features_share_a_named_lane_and_keep_problem_links(self) -> None:
+        first = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/501",
+            short_description="webhook delivery",
+            extra={"labels": ["lane:webhooks"]},
+        )
+        second = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/502",
+            short_description="webhook recovery",
+            extra={"labels": ["lane:webhooks"]},
+        )
+        PullRequestFactory(ticket=first, url="https://github.com/example/widgets/pull/503")
+        PullRequestFactory(ticket=second, url="https://github.com/example/widgets/pull/504")
+
+        status = self._report().status_by_feature
+
+        assert [feature.title for feature in status.features] == ["Webhooks"]
+        assert len(status.features[0].left) == 2
+        assert "https://github.com/example/widgets/pull/503" in status.render()[1]
+        assert "https://github.com/example/widgets/pull/504" in status.render()[1]
+
+    def test_owner_named_lanes_are_inferred_when_labels_are_absent(self) -> None:
+        first = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/511",
+            short_description="webhook delivery",
+        )
+        second = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/512",
+            short_description="webhook recovery",
+        )
+        PullRequestFactory(ticket=first, url="https://github.com/example/widgets/pull/513")
+        PullRequestFactory(ticket=second, url="https://github.com/example/widgets/pull/514")
+        for index, title in enumerate(
+            ("multi-user access", "agent communication on Slack", "coordinator check-in", "evals harness"),
+            start=515,
+        ):
+            ticket = TicketFactory(
+                issue_url=f"https://github.com/example/widgets/issues/{index}",
+                short_description=title,
+            )
+            PullRequestFactory(ticket=ticket, url=f"https://github.com/example/widgets/pull/{index}")
+
+        status = self._report().status_by_feature
+
+        assert {feature.title for feature in status.features} == {
+            "Webhooks",
+            "Multi-user",
+            "Agent communication",
+            "Coordinator",
+            "Evals",
+        }
+        assert len(next(feature for feature in status.features if feature.title == "Webhooks").left) == 2
+
+    def test_explicit_and_inferred_names_share_the_same_lane(self) -> None:
+        labelled = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/521",
+            short_description="account access",
+            extra={"labels": ["lane:multi-user"]},
+        )
+        inferred = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/522",
+            short_description="multi-user roles",
+        )
+        PullRequestFactory(ticket=labelled, url="https://github.com/example/widgets/pull/523")
+        PullRequestFactory(ticket=inferred, url="https://github.com/example/widgets/pull/524")
+
+        status = self._report().status_by_feature
+
+        assert [feature.title for feature in status.features] == ["Multi-user"]
+        assert len(status.features[0].left) == 2
+
     def test_caps_features_and_omits_empty_section(self) -> None:
         assert self._report().status_by_feature.render() == []
         for number in range(9):
@@ -131,6 +203,19 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert len(status.features) == 1
         assert status.features[0].title == "Other maintenance"
         assert status.features[0].owner_waits[0].url.startswith("https://slack.com/archives/")
+
+    def test_active_feature_without_pull_request_still_names_the_next_step(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/601",
+            short_description="agent communication",
+            state=Ticket.State.CODED,
+        )
+
+        status = self._report().status_by_feature
+
+        assert [feature.title for feature in status.features] == ["Agent communication"]
+        assert status.features[0].left[0].url == ticket.issue_url
+        assert status.features[0].left[0].state == "waiting for the tests"
 
     def test_unposted_owner_question_does_not_render_an_unlinked_label(self) -> None:
         ticket = TicketFactory(

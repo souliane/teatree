@@ -200,6 +200,34 @@ def _lane_width_patch(widths: MagicMock) -> AbstractContextManager[Any]:
 class TestCheckingShow:
     """Single-overlay path via ``--this-overlay`` (the old default behavior)."""
 
+    def test_brief_check_in_fits_one_screen_with_many_active_features(self) -> None:
+        for index in range(9):
+            Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{700 + index}",
+                state=Ticket.State.CODED,
+                short_description=f"feature {chr(65 + index)}",
+            )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert text.startswith("Status by feature\n")
+        assert len(text.splitlines()) <= 11
+        assert "Remaining" not in text
+
+    def test_brief_with_only_queued_work_is_one_line(self) -> None:
+        Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/720",
+            state=Ticket.State.NOT_STARTED,
+            short_description="queued work",
+        )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert text.startswith("No active feature work since ")
+        assert len(text.splitlines()) == 1
+
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay")

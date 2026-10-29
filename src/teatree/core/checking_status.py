@@ -21,6 +21,13 @@ from teatree.utils.slack_links import slack_permalink
 
 FEATURE_CAP = 8
 _NUMBERED_WORD = re.compile(r"\S*\d\S*")
+_LANE_TITLE_PATTERNS = (
+    ("Multi-user", re.compile(r"\b(?:multi[- ]user|tenant sharing)\b", re.IGNORECASE)),
+    ("Agent communication", re.compile(r"\b(?:agent communication|mailbox|agent messages?)\b", re.IGNORECASE)),
+    ("Coordinator", re.compile(r"\bcoordinator\b", re.IGNORECASE)),
+    ("Webhooks", re.compile(r"\bwebhooks?\b", re.IGNORECASE)),
+    ("Evals", re.compile(r"\b(?:evals?|evaluations?)\b", re.IGNORECASE)),
+)
 
 
 class FeatureLinkDict(TypedDict):
@@ -134,7 +141,35 @@ def plain_title(title: str) -> str:
 
 
 def _feature_key(ticket: Ticket | None) -> str:
-    return ticket.issue_url if ticket is not None and ticket.repo_namespaced_key else ""
+    if ticket is None:
+        return ""
+    if lane := _lane_name(ticket):
+        return f"{ticket.overlay}:lane:{lane.casefold()}"
+    return ticket.issue_url if ticket.repo_namespaced_key else ""
+
+
+def _canonical_lane_name(name: str) -> str:
+    for lane, pattern in _LANE_TITLE_PATTERNS:
+        if pattern.fullmatch(name):
+            return lane
+    return plain_title(name).title()
+
+
+def _lane_name(ticket: Ticket) -> str:
+    extra = ticket.extra or {}
+    labels = extra.get("labels")
+    if isinstance(labels, list):
+        for label in labels:
+            if isinstance(label, str) and label.casefold().startswith("lane:"):
+                name = label.partition(":")[2].replace("-", " ").strip()
+                if name:
+                    return _canonical_lane_name(name)
+    issue_title = extra.get("issue_title")
+    title = f"{ticket.short_description} {issue_title if isinstance(issue_title, str) else ''}"
+    for lane, pattern in _LANE_TITLE_PATTERNS:
+        if pattern.search(title):
+            return lane
+    return ""
 
 
 def _pr_label(ticket: Ticket | None, url: str) -> str:
@@ -157,6 +192,17 @@ def _pr_state(pr: PullRequest) -> str:
     if pr.state == PullRequest.State.REVIEW_REQUESTED:
         return "waiting for review"
     return "being fixed"
+
+
+_ACTIVE_TICKET_STATES: dict[str, str] = {
+    Ticket.State.WORK_STARTED: "being built",
+    Ticket.State.PLAN_RECORDED: "being built",
+    Ticket.State.CODED: "waiting for the tests",
+    Ticket.State.TESTED: "waiting for review",
+    Ticket.State.SELF_REVIEWED: "ready to open a pull request",
+    Ticket.State.PR_OPENED: "waiting for review",
+    Ticket.State.REVIEW_REQUESTED: "waiting for review",
+}
 
 
 def _live_state(merged_sha: str, serving_sha: str) -> bool | None:
@@ -187,6 +233,22 @@ def _add_owner_waits(block_for: Callable[[Ticket | None], FeatureBlock], overlay
             block.unlinked_owner_waits += 1
 
 
+def _add_active_tickets(
+    block_for: Callable[[Ticket | None], FeatureBlock], overlay_names: list[str], represented_ticket_ids: set[int]
+) -> None:
+    active_tickets = Ticket.objects.filter(role=Ticket.Role.AUTHOR, state__in=_ACTIVE_TICKET_STATES)
+    if overlay_names:
+        active_tickets = active_tickets.filter(overlay__in=overlay_names)
+    for ticket in active_tickets.exclude(pk__in=represented_ticket_ids):
+        block_for(ticket).left.append(
+            FeatureLink(
+                label=plain_title(ticket.short_description),
+                url=ticket.issue_url,
+                state=_ACTIVE_TICKET_STATES[ticket.state],
+            )
+        )
+
+
 def build_feature_status(
     *,
     merged: list[tuple[MergeAudit, str, str]],
@@ -197,7 +259,11 @@ def build_feature_status(
     def block_for(ticket: Ticket | None) -> FeatureBlock:
         key = _feature_key(ticket)
         if key not in blocks:
-            title = plain_title(ticket.short_description) if key and ticket is not None else "Other maintenance"
+            title = (
+                _lane_name(ticket) or plain_title(ticket.short_description)
+                if key and ticket is not None
+                else "Other maintenance"
+            )
             blocks[key] = FeatureBlock(title=title)
         return blocks[key]
 
@@ -208,14 +274,18 @@ def build_feature_status(
         block.merged.append(FeatureLink(label=_pr_label(ticket, url), url=url))
         block.merge_shas.append(audit.merged_sha)
 
+    represented_ticket_ids = {audit.clear.ticket_id for audit, _repo, _host in merged if audit.clear.ticket_id}
+
     prs = PullRequest.objects.live().select_related("ticket").order_by("-pk")
     if overlay_names:
         prs = prs.filter(ticket__overlay__in=overlay_names)
     for pr in prs:
+        represented_ticket_ids.add(pr.ticket_id)
         block_for(pr.ticket).left.append(
             FeatureLink(label=_pr_label(pr.ticket, pr.url), url=pr.url, state=_pr_state(pr))
         )
 
+    _add_active_tickets(block_for, overlay_names, represented_ticket_ids)
     _add_owner_waits(block_for, overlay_names)
 
     serving = WorkerGeneration.objects.serving()
