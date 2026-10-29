@@ -721,7 +721,7 @@ class TestSlackMentionsScanner:
             encoding="utf-8",
         )
         monkeypatch.setattr(receiver, "default_queue_path", lambda: queue)
-        backend = FakeMessaging(mentions=[{"ts": "1.0", "text": "hey"}])
+        backend = FakeMessaging(mentions=[{"ts": "1.0", "user": "U_OWNER", "text": "hey"}])
 
         signals = SlackMentionsScanner(backend=backend).scan()
 
@@ -734,7 +734,7 @@ class TestSlackMentionsScanner:
 
     def test_event_ts_fallback_when_ts_absent(self) -> None:
         backend = FakeMessaging(
-            mentions=[{"event_ts": "11.0", "text": "without ts"}],
+            mentions=[{"event_ts": "11.0", "user": "U_OWNER", "text": "without ts"}],
         )
         signals = SlackMentionsScanner(backend=backend).scan()
         assert signals[0].payload["ts"] == "11.0"

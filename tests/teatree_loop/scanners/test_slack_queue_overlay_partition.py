@@ -74,7 +74,7 @@ def _queued_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _mention(ts: str) -> RawAPIDict:
-    return {"type": "app_mention", "ts": ts, "channel": CHANNEL, "text": f"<@{USER}> review {MR_URL}"}
+    return {"type": "app_mention", "ts": ts, "channel": CHANNEL, "user": USER, "text": f"<@{USER}> review {MR_URL}"}
 
 
 def _reaction(ts: str) -> RawAPIDict:
