@@ -13,6 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import Context
 from dataclasses import dataclass, field
+from functools import partial
 from queue import Empty, SimpleQueue
 from threading import Thread
 
@@ -20,6 +21,7 @@ from teatree.config.discovery import overlay_entry_points_scan_context
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.scan_deadline import scanner_deadline
 from teatree.utils.thread_db import close_thread_db_connections
 
 SCAN_DEADLINE_SECONDS: float = 60.0
@@ -86,7 +88,7 @@ class _AbandonableScanPool:
                 thread.join()
 
 
-def _run_job_closing_connections(job: _ScannerJob) -> _ScanResult:
+def _run_job_closing_connections(job: _ScannerJob, *, deadline: float | None = None) -> _ScanResult:
     """Run one scan job on a pool worker, then close that worker's DB connections.
 
     A scanner that touches the ORM opens a thread-local Django connection on its
@@ -95,10 +97,11 @@ def _run_job_closing_connections(job: _ScannerJob) -> _ScanResult:
     :mod:`teatree.utils.thread_db` for why that surfaces as a red in an unrelated
     test. A no-op for a scanner that never opened a connection.
     """
-    try:
-        return _run_job(job)
-    finally:
-        close_thread_db_connections()
+    with scanner_deadline(deadline):
+        try:
+            return _run_job(job)
+        finally:
+            close_thread_db_connections()
 
 
 def scan_pool_size(job_count: int) -> int:
@@ -118,10 +121,9 @@ def collect_scan(
     preview differ: live abandons a scanner past the deadline, the preview joins it.
     """
     outcome = ScanOutcome()
-    future_to_label: dict[Future[_ScanResult], str] = {
-        pool.submit(_run_job_closing_connections, job): job.label for job in jobs
-    }
     deadline = time.monotonic() + per_job_timeout
+    run_job = partial(_run_job_closing_connections, deadline=deadline)
+    future_to_label: dict[Future[_ScanResult], str] = {pool.submit(run_job, job): job.label for job in jobs}
     for future, label in future_to_label.items():
         try:
             remaining = max(0.0, deadline - time.monotonic())

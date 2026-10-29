@@ -66,6 +66,7 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
 
     attempt = retry_on_locked(
         lambda: task_attempt_model.objects.create(
+            # no-usage: core has no metered turn, or a lost result is marked usage_unknown.
             task=task,
             ended_at=timezone.now(),
             exit_code=exit_code,

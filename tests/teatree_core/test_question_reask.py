@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DeferredQuestion, Session, Task, Ticket
-from teatree.core.notify_question_drains import _REASK_BATCH, reask_escalated_questions
+from teatree.core.notify_question_drains import reask_escalated_questions
 from tests._owner_channel import OWNER_DECISION
 
 _CHANNEL = "D-USER"
@@ -199,42 +199,29 @@ class TestTheGapIsTheCadence(TestCase):
         keys = set(BotPing.objects.values_list("idempotency_key", flat=True))
         assert keys == {f"reask:{young.stable_notify_ref}:7", f"reask:{old.stable_notify_ref}:8"}
 
-    def test_the_batch_rotates_through_the_backlog(self) -> None:
-        # The five slots went to the five most urgent rows every pass, so row six
-        # was never bumped at all while rows one to five were bumped every time.
-        for i in range(_REASK_BATCH * 2):
+    def test_all_due_questions_are_bumped_in_one_pass_with_time_available(self) -> None:
+        for i in range(10):
             _mirrored(f"Widget {i}?", hours_ago=40 - i)
         backend = _backend()
 
-        _bump(backend)
-        # The second pass runs in a later hour, past the owner's hourly question-ping ceiling.
-        BotPing.objects.update(posted_at=timezone.now() - dt.timedelta(hours=2))
-        _bump(backend)
+        bumped, candidates = _bump(backend)
 
         threads = {call.kwargs["thread_ts"] for call in backend.post_message.call_args_list}
-        assert len(threads) == _REASK_BATCH * 2, "the second pass re-bumped the same five"
+        assert (bumped, candidates) == (10, 10)
+        assert len(threads) == 10
 
 
-class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
-    def test_only_the_batch_size_is_bumped_per_pass(self) -> None:
-        for i in range(_REASK_BATCH + 4):
-            _mirrored(f"Widget {i}?")
-
-        bumped, candidates = _bump(_backend())
-
-        assert bumped == _REASK_BATCH
-        assert candidates == _REASK_BATCH + 4, "the candidate count must report the backlog, not the slice"
-
+class TestDueReaskPriority(TestCase):
     def test_escalated_rows_are_bumped_before_younger_ones(self) -> None:
-        fresh = [_mirrored(f"Fresh {i}?", hours_ago=1.5) for i in range(_REASK_BATCH)]
+        fresh = [_mirrored(f"Fresh {i}?", hours_ago=1.5) for i in range(5)]
         stale = _mirrored("Stale?", hours_ago=40, escalated=True)
         backend = _backend()
 
         _bump(backend)
 
         threads = [call.kwargs["thread_ts"] for call in backend.post_message.call_args_list]
-        assert stale.slack_ts in threads, "the row past the age ceiling was crowded out by younger ones"
-        assert fresh[-1].slack_ts not in threads
+        assert threads[0] == stale.slack_ts
+        assert fresh[-1].slack_ts in threads
 
     def test_the_bump_says_how_long_the_question_has_waited_in_plain_words(self) -> None:
         _mirrored("Which DB host?", hours_ago=12, escalated=True)

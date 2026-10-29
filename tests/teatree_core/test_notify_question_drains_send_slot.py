@@ -5,6 +5,7 @@ import datetime as dt
 import itertools
 import os
 import threading
+import time
 from collections.abc import Callable, Generator
 from unittest.mock import MagicMock, patch
 
@@ -191,14 +192,40 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         assert guard.acquire(blocking=False)
         guard.release()
 
-    def test_forty_one_unposted_questions_all_send_across_passes_in_one_hour(self) -> None:
+    def test_forty_one_unposted_questions_send_in_one_pass_despite_recent_pings(self) -> None:
+        _seed_sent_question_pings(5)
         for index in range(41):
             _backlog(f"Unposted {index}?")
-        for _ in range(14):
-            self._poster()
+        self._poster()
 
         assert DeferredQuestion.unmirrored_pending().count() == 0
         assert self.backend.post_message.call_count == 41
+
+    def test_near_deadline_starts_no_question_and_next_pass_resumes(self) -> None:
+        question = _backlog("Which DB host?")
+        first = drain_unmirrored_deferred_questions(user_id="U_ME", backend=self.backend, deadline=time.monotonic() + 1)
+        assert first == (0, 1)
+        assert not BotPing.objects.exists()
+        question.refresh_from_db()
+        assert not question.slack_ts
+
+        second = drain_unmirrored_deferred_questions(
+            user_id="U_ME", backend=self.backend, deadline=time.monotonic() + 60
+        )
+        assert second == (1, 1)
+        question.refresh_from_db()
+        assert question.slack_ts
+
+    def test_resurface_has_no_count_slice_with_time_available(self) -> None:
+        for index in range(6):
+            _backlog(f"Resurface {index}?")
+
+        delivered, total = drain_deferred_questions(
+            user_id="U_ME", backend=self.backend, deadline=time.monotonic() + 60
+        )
+
+        assert (delivered, total) == (6, 6)
+        assert self.backend.post_message.call_count == 6
 
     def test_a_failed_send_keeps_the_slot_free_and_the_question_is_posted_on_the_next_pass(self) -> None:
         _seed_sent_question_pings(5)

@@ -377,6 +377,8 @@ After a clean result, an eligible `claude_sdk` session remains open for a 60-sec
 
 ### 5.6 Loop Topology
 
+**Owner question drains.** First posts, re-asks and away→present resurfaces have no per-pass count cap. The scan phase gives its question scanners one shared deadline; each drain checks for enough time before it starts another serialized send, leaving unsent durable rows for the next pass. Re-asks and resurfaces retain quiet hours and cadence.
+
 **Branch sweep reads.** Orphan scans, work-state reconciliation and done-worktree reaping share one scan-local index per run. GitLab open-MR lists and origin head refs are read once per repository, including across worker threads. An incomplete forge list or unreadable origin produces an unknown verdict for every affected branch, never verified absence; direct single-branch probes retain their independent read.
 
 **Note-driven loop work.** GitLab review findings count only open threads whose newest note is a person, excluding declared system logins, bot accounts, system notes and gate markers. The newest human note ID is the review-fix activity key: a newer note can dispatch on the same head, while a push or re-poll cannot rearm an already claimed note. CI and merge-conflict fixes remain head-keyed. GitLab automation note events are processed before parent lookup or routing; every wired scanner is declared as content-driven, state-driven or outside the forge poller set.

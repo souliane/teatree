@@ -27,6 +27,7 @@ import datetime as dt
 import logging
 import os
 import threading
+import time
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from functools import reduce
@@ -57,13 +58,8 @@ from teatree.core.owner_question_message import (
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
 from teatree.loop.preset_resolution import owner_zone
 
-# Bound first-card bursts after the owner returns; later ticks read the remaining backlog.
-_MAX_MIRRORS_PER_TICK = 3
-
 #: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
-#: The cap must bound NEW deliveries, so the selection reads this ledger back and skips
-#: what a fresh send would not re-deliver — a slice taken straight off the oldest-first
-#: queue would re-select the same settled head every call and never advance (#4064).
+#: The selection reads this ledger back so a settled head never hides a pending row.
 _RESURFACE_KEY_PREFIX = "resurface-deferred-question:"
 
 
@@ -95,9 +91,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Bound the number of distinct answerable threads bumped in one scanner pass.
-_REASK_BATCH = 5
-
 _MIRROR_KEY_PREFIX = "mirror-deferred-question:"
 _STRANDED_SEND_WINDOW = dt.timedelta(hours=1)
 
@@ -114,6 +107,16 @@ _QUESTION_PING_SLOT_TTL_SECONDS = 120
 _QUESTION_PING_THREAD_GUARD = threading.Lock()
 #: The measured 11.04s send fits this wait inside the shared 60s scan deadline.
 _QUESTION_PING_THREAD_WAIT_SECONDS = 15
+_QUESTION_DRAIN_BUDGET_SECONDS = 45
+_QUESTION_SEND_RESERVE_SECONDS = 12
+
+
+def _deadline_for_pass(deadline: float | None) -> float:
+    return deadline if deadline is not None else time.monotonic() + _QUESTION_DRAIN_BUDGET_SECONDS
+
+
+def _send_time_available(deadline: float) -> bool:
+    return time.monotonic() + _QUESTION_SEND_RESERVE_SECONDS <= deadline
 
 
 def _question_ping_keys() -> Q:
@@ -126,22 +129,27 @@ def owner_quiet_now() -> bool:
 
 
 @contextmanager
-def _question_ping_slot() -> Generator[bool]:
+def _question_ping_slot(*, deadline: float | None = None) -> Generator[bool]:
     if owner_quiet_now():
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
         return
-    if not _QUESTION_PING_THREAD_GUARD.acquire(timeout=_QUESTION_PING_THREAD_WAIT_SECONDS):
+    end = _deadline_for_pass(deadline)
+    if not _send_time_available(end):
+        yield False
+        return
+    wait = min(_QUESTION_PING_THREAD_WAIT_SECONDS, max(0.0, end - time.monotonic() - _QUESTION_SEND_RESERVE_SECONDS))
+    if not _QUESTION_PING_THREAD_GUARD.acquire(timeout=wait):
         logger.info(
             "Another drain in this process still holds the owner question-ping slot after %ss; "
             "this ping waits for the next pass",
-            _QUESTION_PING_THREAD_WAIT_SECONDS,
+            wait,
         )
         yield False
         return
     try:
         with _held_question_ping_slot() as held:
-            yield held
+            yield held and _send_time_available(end)
     finally:
         _QUESTION_PING_THREAD_GUARD.release()
 
@@ -297,6 +305,7 @@ def reask_escalated_questions(
     overlay: str = "",
     backend: "MessagingBackend | None" = None,
     now: dt.datetime | None = None,
+    deadline: float | None = None,
 ) -> tuple[int, int]:
     """Bump the oldest escalated questions IN THEIR OWN THREADS; return ``(bumped, candidates)``.
 
@@ -319,11 +328,9 @@ def reask_escalated_questions(
     :func:`drain_unmirrored_deferred_questions`, which posts its first copy and
     stamps the card timestamp this function then reuses.
 
-    A row already bumped at its current gap is dropped BEFORE the batch is cut, which is
-    what makes the five slots rotate: otherwise the same five most-urgent rows hold the
-    batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
-    at all (#4706).
+    A row already bumped at its current gap is dropped before the send walk.
     """
+    end = _deadline_for_pass(deadline)
     rows = [row for row in _checked(live_owner_questions(), backend=backend) if row.slack_ts]
     if not rows:
         return 0, 0
@@ -336,13 +343,13 @@ def reask_escalated_questions(
     urgent = sorted(
         ((row, gap) for row, gap in due if reask_key(row.stable_notify_ref, gap) not in delivered),
         key=lambda pair: (pair[0].escalated_at is None, pair[0].created_at),
-    )[:_REASK_BATCH]
+    )
 
     previous_overlay = _scoped_overlay_env(overlay)
     bumped = 0
     try:
         for row, gap in urgent:
-            with _question_ping_slot() as open_slot:
+            with _question_ping_slot(deadline=end) as open_slot:
                 if not open_slot:
                     break
                 outcome = _post(
@@ -376,7 +383,7 @@ def _restore_overlay_env(overlay: str, previous: str | None) -> None:
 
 
 def drain_deferred_questions(
-    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None
+    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None, deadline: float | None = None
 ) -> tuple[int, int]:
     """Re-post the pending :class:`DeferredQuestion` backlog to the user's Slack DM.
 
@@ -393,12 +400,8 @@ def drain_deferred_questions(
     ``resurface-deferred-question:<stable-ref>`` key — the row's
     :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`,
     never its local pk), so re-running on a later tick or after a manual
-    ``resurface`` never double-posts. The cap is applied AFTER that ledger is read
-    back, so it bounds NEW deliveries and the window advances every call until the
-    backlog is drained. **Capped per call** for the same reason the
-    mirror drain is: an away→present transition after a long absence would otherwise
-    deliver the whole accumulated backlog as one burst of DMs. Returning to present is
-    precisely when the backlog is largest, so this is the path that actually fires.
+    ``resurface`` never double-posts. The ledger is read before the walk so
+    settled rows cannot hide pending ones. Each pass stops before its deadline.
     Fails open: a delivery
     failure for one question is recorded on its ``BotPing`` row by
     :func:`notify_user` and never aborts the drain or raises. Returns
@@ -406,14 +409,11 @@ def drain_deferred_questions(
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
+    end = _deadline_for_pass(deadline)
     owner_rows = _checked(live_owner_questions(), backend=backend)
     pending_total = len(owner_rows)
-    # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
-    # is oldest-first, so capping it directly hands the same stood-down head back every
-    # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
-    # tick, on an away->present transition and on a manual resurface alike (#4064).
     settled = _refs_the_send_will_not_redeliver()
-    rows = [r for r in owner_rows if r.stable_notify_ref not in settled][:_MAX_MIRRORS_PER_TICK]
+    rows = [r for r in owner_rows if r.stable_notify_ref not in settled]
     if not rows:
         # Nothing NEW to send. The backlog total is still reported so a caller cannot read
         # "0 delivered" as "queue empty" — the distinction this drain previously erased.
@@ -425,7 +425,7 @@ def drain_deferred_questions(
         for row in rows:
             key = f"{_RESURFACE_KEY_PREFIX}{row.stable_notify_ref}"
             # A resurfaced question the owner cannot answer spends attention for nothing.
-            with _question_ping_slot() as open_slot:
+            with _question_ping_slot(deadline=end) as open_slot:
                 if not open_slot:
                     break
                 sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
@@ -437,14 +437,11 @@ def drain_deferred_questions(
     finally:
         _restore_overlay_env(overlay, previous_overlay)
 
-    # The denominator is the BACKLOG, never the capped slice: `3/3` read as "all pending
-    # delivered" while 69 were outstanding, which is how a permanently-stalled queue
-    # looked healthy (#4064).
     return delivered, pending_total
 
 
 def drain_unmirrored_deferred_questions(
-    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None
+    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None, deadline: float | None = None
 ) -> tuple[int, int]:
     """Post the un-mirrored :class:`DeferredQuestion` backlog and stamp its mirror.
 
@@ -461,17 +458,10 @@ def drain_unmirrored_deferred_questions(
     resolved in this context) is left un-mirrored — the durable row IS the
     fallback — and retried next tick. Returns ``(mirrored, total)``.
 
-    **The batch is CAPPED per tick.** The backlog grows silently whenever the
-    owner is away — the lanes keep recording rows and nobody answers them — so
-    draining it unbounded turns the moment they come back into one DM per
-    accumulated question, seconds apart — 52 in one burst is what this fix was
-    written for.
-    The owner reads that as spam and mutes the channel, which loses the next
-    genuine question too. The remainder is not dropped: `unmirrored_pending()`
-    is re-read every tick, so the backlog drains steadily instead of at once,
-    and a question that has waited hours can wait one more cadence.
+    The pass stops before its deadline; pending rows remain for the next pass.
     """
-    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)[:_MAX_MIRRORS_PER_TICK]
+    end = _deadline_for_pass(deadline)
+    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)
     if not rows:
         return 0, 0
 
@@ -480,7 +470,7 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
-            with _question_ping_slot() as open_slot:
+            with _question_ping_slot(deadline=end) as open_slot:
                 if not open_slot:
                     break
                 sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
