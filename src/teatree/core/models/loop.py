@@ -45,12 +45,15 @@ from typing import ClassVar
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import F
+from django.db.models import Case, F, FloatField, Value, When
 from django.utils import timezone
 
 from teatree.core.models.loop_state import LoopState
 
 _SECONDS_PER_DAY = 24 * 3600
+_TICK_COST_EWMA_ALPHA = 0.2
+OFF_LIVE_TICK_NAMES = frozenset({"dream", "outer_loop", "directive_loop"})
+OFF_LIVE_TICK_WAKE_SECONDS = 600
 
 
 class LoopManager(models.Manager["Loop"]):
@@ -85,6 +88,21 @@ class LoopManager(models.Manager["Loop"]):
 
     def clear_deadline_kills(self, name: str) -> None:
         self.filter(name=name).exclude(consecutive_deadline_kills=0).update(consecutive_deadline_kills=0)
+
+    def record_tick_cost(self, name: str, *, cpu_seconds: float, found_work: bool) -> int:
+        """Blend one tick's CPU into the idle or busy EWMA of *name*; returns the rows updated.
+
+        The sole writer of the cost columns: one ``UPDATE`` whose first sample is taken as is,
+        so concurrent ticks never lose each other's sample the way a read-modify-``save`` would,
+        and ``updated_at`` (config edits) stays put.
+        """
+        column = "busy_cpu_seconds" if found_work else "idle_cpu_seconds"
+        blended = Case(
+            When(**{f"{column}__isnull": True}, then=Value(cpu_seconds)),
+            default=F(column) * (1 - _TICK_COST_EWMA_ALPHA) + Value(cpu_seconds) * _TICK_COST_EWMA_ALPHA,
+            output_field=FloatField(),
+        )
+        return self.filter(name=name).update(**{column: blended})
 
     def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
         """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
@@ -169,6 +187,9 @@ class Loop(models.Model):
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     #: Ticks killed at their deadline in a row; a tick that completes resets it.
     consecutive_deadline_kills = models.PositiveIntegerField(default=0)
+    #: EWMA of the CPU a worker tick of this loop spends when it finds nothing / something to do.
+    idle_cpu_seconds = models.FloatField(null=True, blank=True)
+    busy_cpu_seconds = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -223,6 +244,14 @@ class Loop(models.Model):
         if self.daily_at is not None:
             return _SECONDS_PER_DAY
         return self.delay_seconds
+
+    @property
+    def idle_core_share(self) -> float | None:
+        """The fraction of one core spent on idle ticks at the effective wake rate."""
+        cadence = OFF_LIVE_TICK_WAKE_SECONDS if self.name in OFF_LIVE_TICK_NAMES else self.cadence_seconds
+        if self.idle_cpu_seconds is None or not cadence:
+            return None
+        return self.idle_cpu_seconds / cadence
 
     def seconds_since_run(self, now: dt.datetime) -> float | None:
         """Seconds since the last run, or ``None`` when the loop never ran."""

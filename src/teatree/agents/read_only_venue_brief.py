@@ -14,8 +14,11 @@ from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbac
 from teatree.agents.phase_blocks import intake_survey_json
 from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES, DraftFactsUnavailableError, draft_phase_facts
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models import ReproEvidence
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
@@ -34,6 +37,7 @@ ISSUE_COMMENTS_CAP_BYTES: Final = 64 * 1024
 SURVEY_CAP_BYTES: Final = 32 * 1024
 REVIEW_DIFF_CAP_BYTES: Final = 256 * 1024
 REVIEW_CHECKS_CAP_BYTES: Final = 4 * 1024
+REVIEW_EVIDENCE_CAP_BYTES: Final = 8 * 1024
 HANDOFF_CAP_BYTES: Final = 32 * 1024
 TICKET_CONTEXT_CAP_BYTES: Final = 32 * 1024
 ABSENT_TOOL: Final = "`<teatree tool, absent here>`"
@@ -62,6 +66,8 @@ class ReadOnlyFacts:
     review_head: str
     review_diff: str
     review_checks: str
+    review_plan: str = ""
+    review_red: str = ""
     draft_facts: str = ""
 
     @classmethod
@@ -70,6 +76,7 @@ class ReadOnlyFacts:
         phase = normalize_phase(task.phase)
         issue_body, issue_comments = _issue_facts(task, phase)
         review_head, review_diff, review_checks = _review_diff(task)
+        review_plan, review_red = _review_evidence(task) if review_head else ("", "")
         planning = phase == "planning"
         survey = intake_survey_json(task) if planning else ""
         if planning and not survey:
@@ -92,6 +99,8 @@ class ReadOnlyFacts:
             review_head=review_head,
             review_diff=review_diff,
             review_checks=review_checks,
+            review_plan=review_plan,
+            review_red=review_red,
             draft_facts=draft_facts,
         )
         if planning and not facts.survey:
@@ -105,6 +114,8 @@ class ReadOnlyFacts:
             ("survey", facts.survey, SURVEY_CAP_BYTES),
             ("review diff", facts.review_diff, REVIEW_DIFF_CAP_BYTES),
             ("review checks", facts.review_checks, REVIEW_CHECKS_CAP_BYTES),
+            ("review plan", facts.review_plan, REVIEW_EVIDENCE_CAP_BYTES),
+            ("review RED evidence", facts.review_red, REVIEW_EVIDENCE_CAP_BYTES),
             ("draft facts", facts.draft_facts, DRAFT_FACTS_CAP_BYTES),
         ):
             if (size := len(text.encode())) > cap:
@@ -292,6 +303,32 @@ def _review_diff(task: "Task") -> tuple[str, str, str]:
         diff_text,
         f"{status} — {checks.detail}",
     )
+
+
+def _review_evidence(task: "Task") -> tuple[str, str]:
+    ticket = gated_ticket_for_review_task(task)
+    if ticket is None:
+        return "No work ticket resolves for this pull request.", "No work ticket resolves for this pull request."
+    plan = latest_plan_artifact(ticket)
+    sentence = "No plan artifact is recorded for the work ticket."
+    if plan is not None:
+        sentence = next(
+            (
+                line.strip()
+                for line in plan.plan_text.splitlines()
+                if "live measurement" in line.casefold().replace("-", " ")
+            ),
+            "No live-measurement sentence is recorded in the plan artifact.",
+        )
+    rows = ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).order_by("-red_recorded_at", "-pk")
+    red = (
+        "\n".join(
+            f"RED exit {row.red_exit_code} at {row.red_head_sha}: {row.command} (provenance_ok={row.provenance_ok})"
+            for row in rows
+        )
+        or "No executed RED reproduction is recorded for the work ticket."
+    )
+    return sentence, red
 
 
 def _fetch_target(task: "Task") -> None:

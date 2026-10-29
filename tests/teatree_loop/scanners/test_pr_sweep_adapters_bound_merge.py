@@ -1,6 +1,6 @@
 """Tests for the forge adapters' ``merge_pr_bound`` — the real except-block, not a port fake."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from unittest.mock import patch
 
 import pytest
@@ -8,6 +8,7 @@ from django.test import TestCase
 
 import teatree.core.merge.uncleared_merge as uncleared_mod
 from teatree.core.merge import MergePreconditionError
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models import MergeAudit
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient
 from teatree.loop.scanners.pr_sweep_gitlab import GlabPrApiClient
@@ -20,11 +21,11 @@ HEAD = "331eaa1e3f0f6a4e2d1b585ea1178c9baad6de95"
 REFUSAL = "no rubric is recorded for this ticket"
 
 
-def _refuse(*, ref: PrRef, expected_head_oid: str) -> str:
+def _refuse(*, ref: PrRef, expected_head_oid: str, query: CodeHostQuery | None = None) -> str:
     raise MergePreconditionError(REFUSAL)
 
 
-def _merge(*, ref: PrRef, expected_head_oid: str) -> str:
+def _merge(*, ref: PrRef, expected_head_oid: str, query: CodeHostQuery | None = None) -> str:
     return "merged0sha"
 
 
@@ -36,6 +37,15 @@ def _glab_merge() -> BoundMergeResult:
     return GlabPrApiClient().merge_pr_bound(slug=SLUG, pr_id=4861, expected_head_oid=HEAD)
 
 
+@pytest.fixture(autouse=True)
+def _forge_account_stubs() -> Iterator[None]:
+    with (
+        patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        patch("teatree.backends.gitlab.client.GitLabCodeHost.current_user", return_value="merge-bot"),
+    ):
+        yield
+
+
 class TestAuditBoundMerge(TestCase):
     def _assert_audited(self, merge: Callable[[], BoundMergeResult], host_kind: str) -> None:
         record_owned_pr_for_test(slug=SLUG, pr_id=4861, head_sha=HEAD, host_kind=host_kind)
@@ -44,6 +54,7 @@ class TestAuditBoundMerge(TestCase):
             patch.object(uncleared_mod, "execute_bound_merge", _merge),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query,
         ):
+            query.return_value.backend.current_user.return_value = "merge-bot"
             query.return_value.required_checks_status.return_value = "green"
             result = merge()
         assert result.merged is True

@@ -116,6 +116,7 @@ def _checkout(tmp_path: Path, *, vendored: bool) -> _Checkout:
     core = root / "vendor" / "teatree" if vendored else root
     (core / "deploy").mkdir(parents=True)
     shutil.copy2(SCRIPT, core / "deploy" / "build-generation.sh")
+    shutil.copy2(SCRIPT.parent / "disk-preflight.sh", core / "deploy" / "disk-preflight.sh")
     (core / "deploy" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
     (core / "deploy" / "locked-version.sh").write_text("echo 1\n", encoding="utf-8")
@@ -230,6 +231,16 @@ class TestRefusals:
         assert run.result.returncode == 1
         assert "NOT BUILDING" in run.result.stderr
         assert "builder prune -f" in run.docker_calls
+        assert not _builds(run)
+
+    def test_sixteen_gib_is_short_of_the_measured_build_need(self, tmp_path: Path) -> None:
+        checkout = _checkout(tmp_path, vendored=True)
+
+        run = _run(tmp_path, checkout, checkout.sha, _Host(free_bytes=16 * GIB))
+
+        assert run.result.returncode == 1
+        assert "16.0 GiB free" in run.result.stderr
+        assert "17.0 GiB" in run.result.stderr
         assert not _builds(run)
 
 

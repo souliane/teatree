@@ -45,7 +45,7 @@ radius = 400
 # sets preventContinuation the task-creation consumer never reads.
 # 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
 "docs/claude-code-internals.md" = ["9abffb84c4d06aef", "0f305c8269101808", "d024d706d59515b2"]
-# 1: the default-allow policy's closing rule, then the router's registered event list.
+# 1: the branch-scoped SessionEnd probe, then the router's registered event list.
 # 2: the Agent|Task matcher's off-ramps, and do not conflate the dispatch tool with the task-LIST tools.
 # 3: a deny DELETES the already-persisted todo row, and the event has ONE producer.
 # 4: the envelope is inert (only blockingError is read); a visible gate writes systemMessage at
@@ -55,7 +55,7 @@ radius = 400
 # The delegate row is long enough that the window now OPENS inside its own `where the hook
 # reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
-  "e1fa4d124be33e99",
+  "02a640bb2cd892c2",
   "ad097129b0bd77a6",
   "8c60bb3059c07312",
   "4cb202f4e2805c65"

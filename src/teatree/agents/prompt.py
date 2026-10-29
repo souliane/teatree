@@ -200,6 +200,15 @@ def _read_only_review_diff_lines(task: Task, facts: ReadOnlyFacts, plan: ReviewP
     return diff
 
 
+def _read_only_review_evidence_lines(facts: ReadOnlyFacts) -> tuple[str, ...]:
+    lines: list[str] = []
+    if facts.review_plan:
+        lines.extend(("", "CONTROL PLANE plan live measurement:", facts.review_plan))
+    if facts.review_red:
+        lines.extend(("", "CONTROL PLANE recorded RED-first evidence:", facts.review_red))
+    return tuple(lines)
+
+
 def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     """The task message for the read-only executor: every fact inline and in full, and no CLI step."""
     ticket: Ticket = task.ticket
@@ -224,6 +233,7 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
     lines.extend(_read_only_review_diff_lines(task, facts, review_plan))
+    lines.extend(_read_only_review_evidence_lines(facts))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))

@@ -152,7 +152,7 @@ class ScratchReport(TypedDict):
     applied: bool
     refused: bool
     root: str
-    retention_days: int
+    retention_days: float
     probe_gap: str
     reclaimed_bytes: int
     candidate_bytes: int

@@ -20,6 +20,7 @@ from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
 from tests._pr_open_state_stub import pr_open_state
 from tests.factories import ImplementedIssueMarkerFactory
+from tests.teatree_loop._review_fixture import complete_review_task
 
 
 class TestPersistReviewer(TestCase):
@@ -438,7 +439,7 @@ class TestReviewerCacheUpdate(TestCase):
             kind="agent",
             zone="t3:reviewer",
             detail="Review",
-            payload={"url": "https://example.com/pr/7", "head_sha": "zzz", "overlay": "acme"},
+            payload={"url": "https://github.com/example/repo/pull/7", "head_sha": "a" * 40, "overlay": "acme"},
         )
         created = persist_agent_actions([action])
         assert len(created) == 1
@@ -446,14 +447,14 @@ class TestReviewerCacheUpdate(TestCase):
         from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
 
         record_review_context_for_test(task.ticket)
-        task.complete()
+        complete_review_task(task)
 
         # The discharge lands on its own key, never on ``last_review_state`` — that one is
         # the scanner's cache of what the FORGE reported, and it is overwritten with the
         # live value every scan.
-        ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url="https://example.com/pr/7")
-        assert ticket.extra["reviewed_sha"] == "zzz"
-        assert ticket.extra["discharged_sha"] == "zzz"
+        ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url="https://github.com/example/repo/pull/7")
+        assert ticket.extra["reviewed_sha"] == "a" * 40
+        assert ticket.extra["discharged_sha"] == "a" * 40
 
 
 class TestCrossOverlayLeak(TestCase):

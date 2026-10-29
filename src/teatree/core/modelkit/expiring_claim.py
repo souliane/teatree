@@ -57,6 +57,14 @@ def acquirable_q(
     return models.Q(**{f"{state_field}__in": list(always_acquirable)}) | expired_active
 
 
+def live_claim_q(
+    *, active: Iterable[str], now: dt.datetime, state_field: str = "state", deadline_field: str = "deadline"
+) -> models.Q:
+    return models.Q(**{f"{state_field}__in": list(active)}) & (
+        models.Q(**{f"{deadline_field}__gte": now}) | models.Q(**{f"{deadline_field}__isnull": True})
+    )
+
+
 def retire_head_claim(
     in_flight: "models.QuerySet[_ClaimT]",
     *,
@@ -87,5 +95,15 @@ def retire_head_claim(
     return bool(
         in_flight.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower()).update(
             state=to_state, resolved_at=timezone.now()
+        )
+    )
+
+
+def release_head_claim(
+    in_flight: "models.QuerySet[_ClaimT]", *, slug: str, pr_id: int, head_sha: str, to_state: str
+) -> bool:
+    return bool(
+        in_flight.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower()).update(
+            state=to_state, deadline=timezone.now() - dt.timedelta(microseconds=1), resolved_at=None
         )
     )

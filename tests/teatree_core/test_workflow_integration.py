@@ -105,7 +105,10 @@ class TestTicketLifecycle(TestCase):
         review_task = Task.objects.get(ticket=ticket, phase="reviewing")
         review_task.claim(claimed_by="headless-agent")
         review_task.save()
-        review_task.complete_with_attempt(exit_code=0, result={"summary": "LGTM", "needs_user_input": False})
+        review_task.complete_with_attempt(
+            exit_code=0,
+            result={"summary": "LGTM", "needs_user_input": False, "review_verdict": {"verdict": "merge_safe"}},
+        )
 
         ticket.refresh_from_db()
         assert ticket.state == "self_reviewed"

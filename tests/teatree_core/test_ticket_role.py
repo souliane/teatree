@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Task, Ticket
+from teatree.core.models import ReviewVerdict, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_external_review import schedule_external_review
 from tests._pr_open_state_stub import mint_open_pr_review
@@ -90,12 +90,20 @@ class TestMarkReviewedExternally(TestCase):
     def test_transitions_to_review_posted_on_review_complete(self) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
-            issue_url="https://example.com/pr/5",
+            issue_url="https://github.com/acme/widget/pull/5",
             role=Ticket.Role.REVIEWER,
-            extra={"reviewed_sha": "deadbeef"},
+            extra={"reviewed_sha": "deadbeef" + "0" * 32},
         )
         task = mint_open_pr_review(ticket)
         record_review_context_for_test(ticket)
+        TaskAttempt.objects.create(task=task, result={"review_verdict": {"verdict": "merge_safe"}})
+        ReviewVerdict.record(
+            pr_id=5,
+            slug="acme/widget",
+            reviewed_sha="deadbeef" + "0" * 32,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
 
         task.complete()
 
@@ -103,8 +111,8 @@ class TestMarkReviewedExternally(TestCase):
         assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert ticket.state != Ticket.State.DELIVERED
         # The completed review records its discharge at the reviewed head.
-        assert ticket.extra["reviewed_sha"] == "deadbeef"
-        assert ticket.extra["discharged_sha"] == "deadbeef"
+        assert ticket.extra["reviewed_sha"] == "deadbeef" + "0" * 32
+        assert ticket.extra["discharged_sha"] == "deadbeef" + "0" * 32
 
     def test_does_not_advance_author_ticket(self) -> None:
         ticket = planned_ticket(overlay="acme", issue_url="https://example.com/issues/6")

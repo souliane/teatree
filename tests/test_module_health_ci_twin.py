@@ -177,3 +177,9 @@ class TestCiTwinJobStructure:
         assert checkout.get("with", {}).get("fetch-depth") == 0, (
             "module-health-gate must checkout with fetch-depth: 0 so origin/<base>...HEAD resolves."
         )
+
+
+def test_review_refusal_module_stays_below_function_cap() -> None:
+    source = (_REPO_ROOT / "src/teatree/agents/envelope_refusal.py").read_text(encoding="utf-8")
+    functions = mod._public_module_functions(source)
+    assert len(functions) <= mod.MAX_MODULE_FUNCTIONS, functions

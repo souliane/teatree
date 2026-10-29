@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.config.discovery import overlay_entry_points, overlay_entry_points_scanned_once
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases.scan import _AbandonableScanPool, _run_job_closing_connections, scan_phase
 from teatree.loop.scanners.base import ScanSignal
@@ -37,6 +38,28 @@ class _ExplodingScanner:
     def scan(self) -> list[ScanSignal]:
         msg = "scanner blew up"
         raise RuntimeError(msg)
+
+
+@dataclass(slots=True)
+class _DiscoveryScanner:
+    name: str
+
+    def scan(self) -> list[ScanSignal]:
+        overlay_entry_points()
+        overlay_entry_points()
+        return []
+
+
+def test_scan_workers_share_the_tick_discovery_scan() -> None:
+    jobs = [_ScannerJob(scanner=_DiscoveryScanner(name=str(i)), overlay="") for i in range(4)]
+    with (
+        patch("importlib.metadata.entry_points", return_value=[]) as scan,
+        overlay_entry_points_scanned_once(),
+    ):
+        outcome = scan_phase(jobs)
+
+    assert outcome.errors == {}
+    assert scan.call_count == 1
 
 
 def test_scan_phase_aggregates_signals_from_every_job() -> None:

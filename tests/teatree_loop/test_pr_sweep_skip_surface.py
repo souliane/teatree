@@ -18,7 +18,7 @@ from teatree.cli.doctor.app import _check_aged_sweep_skips
 from teatree.core.models import BotPing, PullRequest, SkipObservation, SweepSkipStreak, Ticket
 from teatree.core.notify_ledger import already_sent_noop
 from teatree.loop import pr_sweep_skip_surface
-from teatree.loop.pr_sweep_skip_surface import REANNOUNCE_COOLDOWN, SURFACE_AFTER_TICKS, record_sweep_outcomes
+from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -97,21 +97,46 @@ class TestSurfacesOnPersistence(django.test.TestCase):
 
         assert len(notifier.sent) == 1
 
-    def test_a_new_reason_within_the_cooldown_does_not_re_arm(self) -> None:
+    def test_unchanged_reason_never_repeats_after_the_old_cooldown(self) -> None:
+        notifier = _Recorder()
+        first = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip()], notify=notifier, now=first)
+
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip()], notify=notifier, now=first + dt.timedelta(days=2))
+
+        assert len(notifier.sent) == 1
+
+    def test_reason_change_rearms_and_gets_a_fresh_key(self) -> None:
+        notifier = _Recorder()
+        first = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
+        for reason, moment in (
+            ("ci_pending", first),
+            ("changes_requested", first + dt.timedelta(minutes=1)),
+            ("ci_pending", first + dt.timedelta(minutes=2)),
+        ):
+            for _ in range(SURFACE_AFTER_TICKS):
+                record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=moment)
+
+        assert ["ci_pending" in text for text, _key in notifier.sent] == [True, False, True]
+        assert len({key for _text, key in notifier.sent}) == 3
+
+    def test_a_new_reason_rearms_after_the_threshold(self) -> None:
         notifier = _Recorder()
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="ci_pending")], notify=notifier)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="changes_requested")], notify=notifier)
 
-        assert len(notifier.sent) == 1
+        assert len(notifier.sent) == 2
 
-    def test_a_still_stuck_pr_re_arms_once_the_cooldown_has_elapsed(self) -> None:
+    def test_a_new_reason_rearms_after_elapsed_time(self) -> None:
         notifier = _Recorder()
         start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="ci_pending")], notify=notifier, now=start)
-        later = start + REANNOUNCE_COOLDOWN + dt.timedelta(minutes=1)
+        later = start + dt.timedelta(days=2)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="changes_requested")], notify=notifier, now=later)
 
@@ -129,6 +154,28 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         assert len(notifier.sent) == 1
         assert f"{SURFACE_AFTER_TICKS} consecutive" in notifier.sent[0][0]
 
+    def test_twelve_alternating_ci_ticks_announce_once(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+
+        for tick in range(12):
+            reason = "ci_pending" if tick % 2 == 0 else "ci_red"
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=start + dt.timedelta(minutes=5 * tick))
+
+        assert len(notifier.sent) == 1
+        assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == 12
+
+    def test_the_ci_group_returning_after_another_group_is_a_new_episode(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        episodes = ["ci_pending", "ci_red", "ci_pending"], ["changes_requested"] * 3, ["ci_red", "ci_pending", "ci_red"]
+
+        for tick, reason in enumerate(reason for episode in episodes for reason in episode):
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=start + dt.timedelta(minutes=tick))
+
+        assert len(notifier.sent) == 3
+        assert len({key for _text, key in notifier.sent}) == 3
+
     def test_a_pr_blocked_every_pass_ages_into_an_announcement(self) -> None:
         # A persistent refusal rides ``decision="blocked"``, not ``skip`` — the
         # shape ``keystone_refused`` always takes. Treating it as a resolution
@@ -141,16 +188,16 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         assert "keystone_refused" in notifier.sent[0][0]
         assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == SURFACE_AFTER_TICKS
 
-    def test_the_idempotency_key_pins_the_pr_and_the_cooldown_window(self) -> None:
+    def test_the_idempotency_key_pins_the_pr_reason_group_and_episode(self) -> None:
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip()], notify=notifier, now=moment)
 
-        assert notifier.sent[0][1] == "pr_sweep_aged_skip:o/r#7:20455"
+        assert notifier.sent[0][1] == f"pr_sweep_aged_skip:o/r#7:group:ci_verdict:{moment.isoformat()}"
 
 
-class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
+class TestReasonChangeSurvivesTheNotifyLedger(django.test.TestCase):
     """A reminder the notify ledger has already sent under that key is no reminder at all.
 
     ``already_sent_noop`` no-ops a delivered key forever, so keying the announcement on
@@ -163,18 +210,18 @@ class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=moment)
 
-    def test_a_same_reason_reminder_uses_a_key_the_ledger_has_not_already_sent(self) -> None:
+    def test_a_changed_reason_uses_a_key_the_ledger_has_not_already_sent(self) -> None:
         notifier = _Recorder()
         start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         self._stuck_on("ci_red", notifier, start)
         text, key = notifier.sent[0]
         BotPing.objects.create(idempotency_key=key, kind=BotPing.Kind.INFO, status=BotPing.Status.SENT, text=text)
-        self._stuck_on("ci_red", notifier, start + REANNOUNCE_COOLDOWN + dt.timedelta(minutes=1))
+        self._stuck_on("changes_requested", notifier, start + dt.timedelta(minutes=1))
 
         assert len(notifier.sent) == 2
         assert already_sent_noop(notifier.sent[1][1]) is None
 
-    def test_two_announcements_inside_one_window_share_a_key_whatever_the_reason(self) -> None:
+    def test_two_reasons_in_one_window_have_distinct_keys(self) -> None:
         # The second reason must be one that announces at all — a park is covered by
         # TestADraftNeverPages; this pins the KEY being reason-independent.
         notifier = _Recorder()
@@ -184,7 +231,7 @@ class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
         self._stuck_on("changes_requested", notifier, moment)
 
         assert len(notifier.sent) == 2
-        assert notifier.sent[0][1] == notifier.sent[1][1]
+        assert notifier.sent[0][1] != notifier.sent[1][1]
 
 
 class TestOnlyAMergeClearsAStreak(django.test.TestCase):
@@ -276,7 +323,10 @@ class TestProductionNotifyPath(django.test.TestCase):
                 pr_sweep_skip_surface.record_sweep_outcomes([_skip()], now=moment)
 
         assert sent.call_count == 1
-        assert sent.call_args.kwargs["idempotency_key"] == "pr_sweep_aged_skip:o/r#7:20455"
+        assert (
+            sent.call_args.kwargs["idempotency_key"]
+            == f"pr_sweep_aged_skip:o/r#7:group:ci_verdict:{moment.isoformat()}"
+        )
 
     def test_an_erroring_ledger_write_never_aborts_the_tick(self) -> None:
         with mock.patch.object(pr_sweep_skip_surface, "_observe", side_effect=RuntimeError("db down")):
@@ -365,7 +415,7 @@ def _fossil(*, slug: str = "o/r", pr_id: int = 4055, seen_ago: dt.timedelta, now
         first_seen_at=now - seen_ago,
         last_seen_at=now - seen_ago,
         tick_count=57,
-        surfaced_at=now - REANNOUNCE_COOLDOWN - dt.timedelta(minutes=1),
+        surfaced_at=now - dt.timedelta(days=2),
     )
 
 

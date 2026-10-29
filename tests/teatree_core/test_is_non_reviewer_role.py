@@ -200,7 +200,10 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
         )
         assert clear.pk is not None
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()

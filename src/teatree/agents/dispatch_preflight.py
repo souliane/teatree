@@ -23,6 +23,8 @@ from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.models.review_hold_disposition import ReviewHoldDisposition
+from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.rubric import Rubric
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -42,6 +44,36 @@ if TYPE_CHECKING:
 # A committer-timestamp / subject record from one `git log -1`, unit-separated so
 # a subject containing spaces or the field text is never mis-split.
 _UNIT = "\x1f"
+
+
+def standing_hold_brief_lines(task: "Task") -> tuple[str, ...]:
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return ()
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    if not holds:
+        return ()
+    lines = [
+        (
+            "A later independent merge_safe verdict must answer EVERY standing HOLD point in "
+            "review_verdict.hold_dispositions: [{hold_id, points: [{index, classification: "
+            "disproved_premise|venue_limit, citation, counter_reproduction: {command, observed_result}}]}]. "
+            "Cite fresh evidence for each point. A point marked [needs counter_reproduction] reports an "
+            "executed failure: answer it only with the command or test node id you ran at this head and "
+            "the result it printed; a citation alone leaves that point unanswered."
+        )
+    ]
+    for hold in holds:
+        lines.append(
+            f"HOLD {hold.pk} by {hold.reviewer_identity}: indices "
+            f"{sorted(ReviewHoldDisposition.blocking_indices(hold))}"
+        )
+        lines.extend(
+            f"  {index}: {finding.describe()}"
+            + (" [needs counter_reproduction]" if ReviewHoldDisposition.needs_counter_reproduction(finding) else "")
+            for index, finding in enumerate(hold.structured_findings)
+        )
+    return tuple(lines)
 
 
 @dataclass(frozen=True)

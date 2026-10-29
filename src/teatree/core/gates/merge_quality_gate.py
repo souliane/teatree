@@ -29,6 +29,7 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 """
 
 import logging
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -36,7 +37,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.merge.ticket_resolution import resolve_gated_ticket
+from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
@@ -59,9 +60,10 @@ from teatree.core.review.critic_rubric import (
 from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
-from teatree.quality.brief_constraints import extract_constraints
+from teatree.quality.brief_constraints import ConstraintViolation, extract_constraints
 from teatree.quality.changed_set import ChangedSetError
 from teatree.quality.push_gate import run_brief_constraints
+from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
@@ -269,7 +271,13 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str, *, changed_tests:
         logger.warning("merge-quality critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
-def check_merge_quality_verdict(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> None:
+def check_merge_quality_verdict(
+    ticket: "Ticket",
+    head_sha: str,
+    *,
+    related_tickets: "tuple[Ticket, ...] | None" = None,
+    changed_tests: Sequence[str] = (),
+) -> None:
     """Refuse the merge unless a clean merge-quality verdict covers *head_sha*.
 
     For every ticket, fail closed: no covering verdict → arm the async critic and refuse; a verdict
@@ -278,8 +286,11 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str, *, changed_test
     """
     head = head_sha.strip().lower()
     _check_brief_constraints(ticket)
-    verdict = covering_verdict(ticket, head)
-    if verdict is None:
+    candidates = related_tickets or (ticket,)
+    verdicts = [
+        (candidate, verdict) for candidate in candidates if (verdict := covering_verdict(candidate, head)) is not None
+    ]
+    if not verdicts:
         _arm_merge_quality_critic(ticket, head, changed_tests=changed_tests)
         from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
 
@@ -300,39 +311,74 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str, *, changed_test
             f"the exact head is required before a merge. {recovery}"
         )
         raise MergeQualityVerdictError(msg)
-    record_merge_quality_findings(verdict, ticket=ticket, head_sha=head)
-    unmet = unmet_items(verdict)
-    if unmet:
-        msg = (
-            f"the merge-quality CriticVerdict at head {head} for ticket {ticket.pk} does not clear "
-            f"{', '.join(unmet)} — refusing to merge (north-star PR-4): merely-green is not well-engineered. Each "
-            f"unmet item is recorded as a CriticFinding naming the offending test/file — resolve them and re-judge "
-            f"at the shipped head."
-        )
-        raise MergeQualityVerdictError(msg)
-    _assert_nit_receipts(ticket, head, verdict)
+    for evidence_ticket, verdict in verdicts:
+        record_merge_quality_findings(verdict, ticket=evidence_ticket, head_sha=head)
+        unmet = unmet_items(verdict)
+        if unmet:
+            msg = (
+                f"the merge-quality CriticVerdict at head {head} for ticket {evidence_ticket.pk} does not clear "
+                f"{', '.join(unmet)} — refusing to merge (north-star PR-4): merely-green is not well-engineered. Each "
+                f"unmet item is recorded as a CriticFinding naming the offending test/file — resolve them and re-judge "
+                f"at the shipped head."
+            )
+            raise MergeQualityVerdictError(msg)
+        _assert_nit_receipts(evidence_ticket, head, verdict)
+
+
+def ticket_brief_constraint_violations(
+    ticket: "Ticket", *, worktree: Path, base_ref: str, include_claimed: bool = False
+) -> tuple[ConstraintViolation, ...]:
+    plan = latest_plan_artifact(ticket)
+    plan_text = plan.plan_text if plan is not None else ""
+    own_issue_number = ticket.ticket_number if "/issues/" in ticket.issue_url else ""
+    violations = run_brief_constraints(worktree, base_ref=base_ref, brief=plan_text, own_issue_number=own_issue_number)
+    if violations:
+        return violations
+    statuses = (Task.Status.COMPLETED, Task.Status.CLAIMED) if include_claimed else (Task.Status.COMPLETED,)
+    task = (
+        Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"), status__in=statuses)
+        .order_by("-created_at", "-pk")
+        .first()
+    )
+    if task is None or not extract_constraints(task.execution_reason, own_issue_number=own_issue_number):
+        return violations
+    extra = type(ticket).objects.values_list("extra", flat=True).get(pk=ticket.pk) or {}
+    starts = extra.get("brief_start_heads") or {}
+    start = starts.get(str(task.pk)) if isinstance(starts, dict) else None
+    if not start:
+        return violations
+    if not isinstance(start, str) or re.fullmatch(r"[0-9a-fA-F]{40}", start) is None:
+        message = "recorded task brief start head is invalid"
+        raise ChangedSetError(message)
+    if not git.check(repo=str(worktree), args=["merge-base", "--is-ancestor", start, "HEAD"]):
+        start = base_ref
+    return (
+        *violations,
+        *run_brief_constraints(
+            worktree, base_ref=start, brief=task.execution_reason, own_issue_number=own_issue_number
+        ),
+    )
 
 
 def _check_brief_constraints(ticket: "Ticket") -> None:
     plan = latest_plan_artifact(ticket)
-    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
-    brief = "\n".join(
-        part
-        for part in (
-            plan.plan_text if plan is not None else "",
-            task.execution_reason if task is not None else "",
-        )
-        if part
+    task = (
+        Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"), status=Task.Status.COMPLETED)
+        .order_by("-created_at", "-pk")
+        .first()
     )
-    if not extract_constraints(brief):
+    own_issue_number = ticket.ticket_number if "/issues/" in ticket.issue_url else ""
+    if not extract_constraints(plan.plan_text if plan is not None else "", own_issue_number=own_issue_number) and not (
+        task and extract_constraints(task.execution_reason, own_issue_number=own_issue_number)
+    ):
         return
     worktree = dispatch_worktree_path(ticket)
     if not worktree:
         message = "brief constraints cannot be verified: ticket worktree is missing"
         raise MergeQualityVerdictError(message)
     try:
-        violations = run_brief_constraints(
-            Path(worktree), base_ref=resolve_target_branch(ticket, worktree), brief=brief
+        violations = ticket_brief_constraint_violations(
+            ticket, worktree=Path(worktree), base_ref=resolve_target_branch(ticket, worktree)
         )
     except (ChangedSetError, CommandFailedError, OSError) as exc:
         message = f"brief constraints could not be verified: {exc}"
@@ -383,4 +429,9 @@ def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str, change
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
         return
-    check_merge_quality_verdict(ticket, head_sha, changed_tests=changed_tests)
+    check_merge_quality_verdict(
+        ticket,
+        head_sha,
+        related_tickets=related_gated_tickets(slug=slug, pr_id=pr_id),
+        changed_tests=changed_tests,
+    )
