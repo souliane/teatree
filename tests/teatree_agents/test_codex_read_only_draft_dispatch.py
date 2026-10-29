@@ -27,6 +27,7 @@ from teatree.core.models import (
     Ticket,
     TicketSweepRun,
 )
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.types import SkillMetadata
 from teatree.utils import run, secrets
 from tests._owner_channel import assert_a_plain_card
@@ -264,6 +265,12 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
     def test_sweep_gap_host_is_a_listed_ticket_url(self) -> None:
         host_url = "https://github.com/example-org/example-repo/issues/1"
         Ticket.objects.create(issue_url=host_url, role=Ticket.Role.AUTHOR, overlay="t3-teatree")
+        Ticket.objects.create(
+            issue_url=dream_umbrella_url(),
+            role=Ticket.Role.AUTHOR,
+            overlay="t3-teatree",
+            extra={"dream_gap_pending": [{"gap_key": "gap-a"}]},
+        )
         ticket = Ticket.objects.create(
             issue_url="backlog-sweep://t3-teatree", role=Ticket.Role.AUTHOR, overlay="t3-teatree"
         )
