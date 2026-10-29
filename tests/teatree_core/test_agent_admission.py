@@ -438,6 +438,12 @@ _CEILING_PARTS = (
     "cheap_occupied",
     "review_occupied",
     "retiring_occupied",
+    "architectural_review_lane",
+    "architectural_review_occupied",
+    "architectural_review_denied",
+    "maintenance_lane",
+    "maintenance_occupied",
+    "maintenance_denied",
 )
 
 
@@ -466,6 +472,8 @@ class TestHeadlessAdmissionStatus(TestCase):
         self._claimed("coding")
         self._claimed("coding")
         self._claimed("reviewing")
+        self._claimed("architectural_review")
+        self._claimed("backlog_sweep")
         paced = QuotaSignal(
             fresh=True,
             all_accounts_exhausted=False,
@@ -491,6 +499,14 @@ class TestHeadlessAdmissionStatus(TestCase):
             "cheap_occupied": 1,
             "review_occupied": 1,
             "retiring_occupied": 0,
+            "architectural_review_lane": 1,
+            "architectural_review_occupied": 1,
+            "architectural_review_denied": (
+                "architectural review lane occupancy 1 at/over the architectural review ceiling 1"
+            ),
+            "maintenance_lane": len(MAINTENANCE_PHASES),
+            "maintenance_occupied": 1,
+            "maintenance_denied": None,
         }
         assert parts["band"] == str(status.pressure.band)
         assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
