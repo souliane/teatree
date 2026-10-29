@@ -66,29 +66,30 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 
 **GitHub webhook event inventory.**
 
-`HOOK_EVENTS` is the repository hook subscription. Every GitHub delivery is currently stored settled with no payload, so none of these events drives a scanner or task yet. A `connect` rerun removes `check_run` from an old ten-event hook; the receiver still verifies and records an old hook's `check_run` delivery. The pollers below remain active until a handler and evidence-backed fallback replace each one.
+`HOOK_EVENTS` is the repository hook subscription. Every GitHub delivery is currently stored settled with no payload, so none drives a scanner or task. A `connect` rerun removes `check_run` from an old ten-event hook; the receiver still verifies and records an old hook's `check_run` delivery. The tables record polling reads still implemented.
 
-| Event | Polling behavior that may later consume it |
-| --- | --- |
-| `pull_request_review` | `PrApprovalScanner`, `ReviewerPrsScanner`, `ReviewedPrHeadScanner` |
-| `pull_request_review_comment` | No review-comment poller exists; the review-fix handler would add this capability. |
-| `issue_comment` | No current polling scanner reads issue comments. |
-| `commit_comment` | No current scanner consumes this event. |
-| `pull_request` | PR review, CI, conflict, merge, and ticket-completion scans. |
-| `issues` | Issue intake, disposition, and ticket-completion scans. |
-| `check_suite` | `MyPrsScanner` CI and `PrSweepScanner` merge readiness. |
-| `workflow_run` | `MyPrsScanner` CI. |
-| `push` | Base-branch conflict refresh; receipt is evidence only today. |
+| Event | Subscription | Current polling reads |
+| --- | --- | --- |
+| `pull_request_review` | Subscribed | `PrApprovalScanner`, `ReviewerPrsScanner`, `ReviewedPrHeadScanner` |
+| `pull_request_review_comment` | Subscribed | No direct scanner read of inline review comments. |
+| `issue_comment` | Subscribed | `ReviewNagScanner`, `ReviewRequestResumeScanner`, and `review_taken_by_other` read PR conversation comments. |
+| `commit_comment` | Subscribed | No direct scanner read of commit comments. |
+| `pull_request` | Subscribed | PR review, CI, conflict, merge, and ticket-completion scans. |
+| `issues` | Subscribed | Issue intake, disposition, and ticket-completion scans. |
+| `check_suite` | Subscribed | `MyPrsScanner` CI and `PrSweepScanner` merge readiness. |
+| `check_run` | Legacy only | `GhMainCiStatus`, `GhPrApiClient.main_check_failed`, and `red_set_surface` read named default-branch check-runs. |
+| `workflow_run` | Subscribed | `MyPrsScanner` CI. |
+| `push` | Subscribed | Base-branch conflict refresh. |
 
 | Polling path | Shipped cadence | Forge reads still in use |
 | --- | --- | --- |
 | `inbox` / `PrApprovalScanner` | 60 s | Approvals of PRs awaiting review. |
-| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | Review requests, review state, and live head. |
-| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | Authored PRs, CI, mergeability, and merge state. |
+| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | Review requests, review state, live head, and PR conversation comments. |
+| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | Authored PRs, CI, mergeability, merge state, and default-branch check-runs. |
 | `tickets` / disposition and completion | 300 s | Issue state for tracked tickets. |
-| `followup` / review nag and review request | 1,800 s | Open PRs and review-request state. |
+| `followup` / review nag and review request | 1,800 s | Open PRs, review-request state, and PR conversation comments. |
 | `issue_implementer` / admitted backlog | 1,800 s | Open issues eligible for implementation. |
-| `housekeeping` / board reconciliation | 3,600 s | Forge truth for repair. |
+| `housekeeping` / board reconciliation and `SelfUpdateScanner` | 3,600 s | Forge truth for repair and default-branch check-runs. |
 
 **Forge relay identity.** GitLab relay rows retain the event kind, `relay` origin, project-id repository key, action and Pub/Sub publish time after the body and payload are cleared. A `body-omitted` message can retain only its header-derived event kind and publish time. Successfully drained forge rows also clear prior error text; pending and dead-lettered rows keep their diagnostic content.
 

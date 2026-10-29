@@ -113,8 +113,44 @@ def test_identity_fields_respect_source_bounds(payload: RawAPIDict, action: str,
 
 
 def test_github_subscription_inventory_matches_provisioned_events() -> None:
-    document = (Path(__file__).resolve().parents[3] / "docs/blueprint/loop-topology.md").read_text()
-    section = document.split("**GitHub webhook event inventory.**\n", 1)[1].split("\n| Polling path", 1)[0]
-    documented = {row.split("|")[1].strip(" `") for row in section.splitlines() if row.startswith("| `")}
+    root = next((parent for parent in Path(__file__).resolve().parents if (parent / "BLUEPRINT.md").is_file()), None)
+    assert root is not None
+    document = (root / "docs/blueprint/loop-topology.md").read_text()
+    marker = "**GitHub webhook event inventory.**"
+    assert marker in document
+    section = document.partition(marker)[2].partition("**Forge relay identity.**")[0]
+    header = "| Event | Subscription | Current polling reads |"
+    assert header in section
+    table = section.partition(header)[2].partition("\n\n")[0]
+    rows = [
+        tuple(cell.strip() for cell in line.strip("|").split("|"))
+        for line in table.splitlines()
+        if line.startswith("| `")
+    ]
+    events = {row[0].strip("`"): row[1:] for row in rows}
 
-    assert documented == set(HOOK_EVENTS)
+    assert set(events) == set(HOOK_EVENTS) | {"check_run"}
+    assert {event for event, (status, _) in events.items() if status == "Subscribed"} == set(HOOK_EVENTS)
+    assert events["check_run"][0] == "Legacy only"
+    assert {"ReviewNagScanner", "ReviewRequestResumeScanner", "review_taken_by_other"} <= set(
+        events["issue_comment"][1].replace("`", "").replace(",", "").split()
+    )
+    assert {"GhMainCiStatus", "GhPrApiClient.main_check_failed", "red_set_surface"} <= set(
+        events["check_run"][1].replace("`", "").replace(",", "").split()
+    )
+    assert (
+        "| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | "
+        "Review requests, review state, live head, and PR conversation comments. |"
+    ) in section
+    assert (
+        "| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | "
+        "Authored PRs, CI, mergeability, merge state, and default-branch check-runs. |"
+    ) in section
+    assert (
+        "| `followup` / review nag and review request | 1,800 s | "
+        "Open PRs, review-request state, and PR conversation comments. |"
+    ) in section
+    assert (
+        "| `housekeeping` / board reconciliation and `SelfUpdateScanner` | 3,600 s | "
+        "Forge truth for repair and default-branch check-runs. |"
+    ) in section

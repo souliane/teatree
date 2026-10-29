@@ -11,7 +11,7 @@ from teatree.types import RawAPIDict
 
 _PULL_REQUEST_EVENTS = frozenset({"pull_request", "pull_request_review", "pull_request_review_comment"})
 _CHECK_EVENTS = frozenset({"check_run", "check_suite"})
-_TIMESTAMP_PATHS = {
+_SUBSCRIBED_TIMESTAMP_PATHS = {
     "pull_request_review": ("review", "submitted_at"),
     "pull_request_review_comment": ("comment", "updated_at"),
     "issue_comment": ("comment", "updated_at"),
@@ -19,11 +19,11 @@ _TIMESTAMP_PATHS = {
     "pull_request": ("pull_request", "updated_at"),
     "issues": ("issue", "updated_at"),
     "check_suite": ("check_suite", "updated_at"),
-    "check_run": ("check_run", "completed_at"),
     "workflow_run": ("workflow_run", "updated_at"),
     "push": ("head_commit", "timestamp"),
 }
-HOOK_EVENTS = tuple(event for event in _TIMESTAMP_PATHS if event != "check_run")
+_TIMESTAMP_PATHS = {**_SUBSCRIBED_TIMESTAMP_PATHS, "check_run": ("check_run", "completed_at")}
+HOOK_EVENTS = tuple(_SUBSCRIBED_TIMESTAMP_PATHS)
 _EARLIEST_EVENT = datetime(1970, 1, 1, tzinfo=UTC)
 _LATEST_EVENT = datetime(2100, 1, 1, tzinfo=UTC)
 _MAX_REPOSITORY_ID = 2**63 - 1
