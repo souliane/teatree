@@ -1,11 +1,24 @@
 """Behaviour of the GitLab MR discussion-thread / approvals-payload helpers."""
 
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.discussions import (
     _count_unresolved_resolvable_threads,
     _note_author,
     _read_int,
     thread_opened_solely_by,
 )
+
+
+def test_discussions_non_list_page_raises() -> None:
+    client = GitLabAPI(token="test")
+    response = MagicMock()
+    response.json.return_value = {"message": "unreadable"}
+    with patch.object(client, "_get", return_value=response), pytest.raises(TypeError, match="non-list"):
+        client.get_mr_discussions(42, 9)
 
 
 class TestReadInt:

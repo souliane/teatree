@@ -105,9 +105,9 @@ def _unreadable_project_link(error: ScannerError) -> bool:
     if isinstance(cause, httpx.HTTPStatusError):
         status = cause.response.status_code
         return status == httpx.codes.NOT_FOUND or (
-            status in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN} and "scope" not in cause.response.text.lower()
+            status == httpx.codes.FORBIDDEN and "scope" not in cause.response.text.lower()
         )
-    match = re.search(r"\bHTTP (404|401|403)\b", error.detail, flags=re.IGNORECASE)
+    match = re.search(r"\bHTTP (404|403)\b", error.detail, flags=re.IGNORECASE)
     return match is not None and (match.group(1) == "404" or "scope" not in error.detail.lower())
 
 

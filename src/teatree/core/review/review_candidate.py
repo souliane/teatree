@@ -176,7 +176,7 @@ def _approver_usernames(mr: RawAPIDict) -> list[str]:
     return names
 
 
-def _self_has_non_system_note(mr: RawAPIDict, identities: set[str], actors: ForgeActors) -> bool:
+def _self_has_non_system_note(mr: RawAPIDict, identities: set[str]) -> bool:
     notes = mr.get("notes")
     if not isinstance(notes, list):
         return False
@@ -185,20 +185,13 @@ def _self_has_non_system_note(mr: RawAPIDict, identities: set[str], actors: Forg
         if not isinstance(note, dict):
             continue
         note_dict = cast("RawAPIDict", note)
+        if note_dict.get("system") is True:
+            continue
         author = note_dict.get("author")
         if isinstance(author, dict):
             author_dict = cast("RawAPIDict", author)
             username = author_dict.get("username") or author_dict.get("login")
-            kind = author_dict.get("type")
-            if (
-                isinstance(username, str)
-                and username.casefold() in own
-                and not actors.is_automation(
-                    username,
-                    user_type=kind if isinstance(kind, str) else "",
-                    system=note_dict.get("system") is True,
-                )
-            ):
+            if isinstance(username, str) and username.casefold() in own:
                 return True
     return False
 
@@ -276,7 +269,7 @@ def should_review_candidate_reasons(
         reasons.append("already_approved_by_self")
     url = mr.get("web_url") or mr.get("html_url")
     actors = ForgeActors.for_url(url if isinstance(url, str) else "")
-    if identities and _self_has_non_system_note(mr, identities, actors):
+    if (identities or actors.system_logins) and _self_has_non_system_note(mr, identities | actors.system_logins):
         reasons.append("has_self_note")
     state = mr.get("state")
     if isinstance(state, str):

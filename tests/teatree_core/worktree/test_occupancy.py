@@ -263,6 +263,20 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: task.complete(), heartbeat=False)
         self.assert_released_and_attested()
 
+    def test_read_only_completion_does_not_take_rivals_checkout(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        def finish(task: Task) -> None:
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
+
+        self.run_to(finish, heartbeat=False)
+        assert Task.objects.get(pk=self.task.pk).status == Task.Status.COMPLETED
+        holder = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
+        assert holder is not None
+        assert (holder.holder, holder.holder_session) == ("task:999", "rival")
+
     def test_nested_run_attests_with_only_host_namespace_gaps(self) -> None:
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
         table = ProcessTable(frozenset(), "/proc", (), ("host namespace unavailable",), ("host namespace unavailable",))

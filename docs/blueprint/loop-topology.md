@@ -4,7 +4,7 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 
 Each tick runs three stages:
 
-The recovery prelude runs at most once per minute across workers, using a locked stamp in the TeaTree data directory. If that stamp cannot be read or written, the prelude runs and records a warning with the path. Every due sweep still isolates its own failure, and admission checks still gate work-creating sweeps.
+The recovery prelude runs at most once per minute across workers, using a locked stamp in the TeaTree data directory. A failed sweep resets that stamp so the next tick retries it. If the stamp cannot be read or written, the prelude runs and records a warning with the path. Every due sweep still isolates its own failure, and admission checks still gate work-creating sweeps.
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Deterministic, mockable, integration-tested against stubbed backends; they never invoke Claude.
 2. **Dispatch** — the tick decides what each signal means and either acts inline (mechanical fix-and-push, n8n webhook trigger, statusline note) or delegates to one of the seven phase agents shipped with the plugin (§ 11.2), invoked via the Task tool the same way `t3:orchestrator` invokes them; the loop is just one more caller.

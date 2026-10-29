@@ -263,7 +263,7 @@ class MyPrsScanner:
         notes_count = _int_field(pr, "user_notes_count", "review_comments")
         url = str(base_payload.get("url") or "")
         activity_key = 0
-        if getattr(self.host, "forge", "") == "gitlab":
+        if getattr(self.host, "forge", "") == "gitlab" and pr.get("user_notes_count") != 0:
             activity = self._gitlab_review_activity(url)
             if activity is not None:
                 notes_count, activity_key = activity

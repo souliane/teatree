@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.forge_pr_probe import probe_gitlab_open_pr
+from teatree.core.forge_pr_probe import PrProbeOutcome, probe_gitlab_open_pr
 from teatree.core.forge_scan_index import active_branch_scan_index, branch_scan_scope
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, find_orphans_in_workspace
 from teatree.core.worktree.reconcile import reconcile_work_state_all
@@ -15,36 +15,21 @@ from teatree.core.worktree.worktree_done import reap_done_worktrees_detailed
 _REPO = "/tmp/teatree-index-test"
 
 
-def test_fifty_branch_probes_share_one_complete_mr_list() -> None:
-    host = MagicMock()
-    host.get_repo.return_value = {"id": 42}
-    host.list_prs.return_value = [
-        {"source_branch": f"feature-{number}", "web_url": f"https://gitlab.example/mr/{number}"} for number in range(50)
-    ]
-    with patch("teatree.core.backend_factory.code_host_for_repo_from_overlay", return_value=host), branch_scan_scope():
-        probes = [probe_gitlab_open_pr(_REPO, f"feature-{number}") for number in range(50)]
-    assert [probe.url for probe in probes] == [f"https://gitlab.example/mr/{number}" for number in range(50)]
-    host.list_prs.assert_called_once_with(repo=_REPO, state="open")
+def test_open_pr_probe_reads_forge_again_inside_branch_scan_scope() -> None:
+    responses = ["", "https://gitlab.example/mr/1"]
+    with (
+        patch("teatree.core.forge_pr_probe._gitlab_open_mr_url", side_effect=responses) as read,
+        branch_scan_scope(),
+    ):
+        assert probe_gitlab_open_pr(_REPO, "feature").outcome is PrProbeOutcome.NONE
+        assert probe_gitlab_open_pr(_REPO, "feature").url == "https://gitlab.example/mr/1"
+    assert read.call_count == 2
 
 
-def test_incomplete_mr_list_is_unknown_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
-    host = MagicMock()
-    host.get_repo.return_value = {"id": 42}
-    host.list_prs.side_effect = TypeError("non-list page")
-    with patch("teatree.core.backend_factory.code_host_for_repo_from_overlay", return_value=host), branch_scan_scope():
-        probes = [probe_gitlab_open_pr(_REPO, f"feature-{number}") for number in range(50)]
-    assert all(probe.is_unknown for probe in probes)
-    host.list_prs.assert_called_once_with(repo=_REPO, state="open")
-    warnings = [record for record in caplog.records if record.levelname == "WARNING" and _REPO in record.message]
-    assert len(warnings) == 1
-
-
-def test_unexpected_forge_error_is_unknown() -> None:
-    host = MagicMock()
-    host.get_repo.return_value = {"id": 42}
-    host.list_prs.side_effect = Exception("provider unavailable")
-    with patch("teatree.core.backend_factory.code_host_for_repo_from_overlay", return_value=host), branch_scan_scope():
-        assert probe_gitlab_open_pr(_REPO, "feature-1").is_unknown
+def test_open_pr_probe_does_not_report_absence_for_blank_branch() -> None:
+    with patch("teatree.core.forge_pr_probe._gitlab_open_mr_url", return_value="") as read, branch_scan_scope():
+        assert probe_gitlab_open_pr(_REPO, "").outcome is PrProbeOutcome.UNKNOWN
+    read.assert_not_called()
 
 
 def test_fifty_origin_probes_share_one_complete_ref_list() -> None:

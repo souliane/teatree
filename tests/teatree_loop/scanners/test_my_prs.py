@@ -152,6 +152,25 @@ def test_unreadable_gitlab_discussions_do_not_trigger_note_run(caplog) -> None:
     assert any(url in record.message for record in caplog.records)
 
 
+def test_gitlab_zero_notes_do_not_fetch_discussions() -> None:
+    host = MagicMock(forge="gitlab")
+    host.current_user.return_value = "alice"
+    host.list_my_prs.return_value = [
+        {
+            "iid": 9,
+            "title": "No notes",
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/9",
+            "head_pipeline": {"status": "success"},
+            "user_notes_count": 0,
+            "author": {"username": "alice"},
+        }
+    ]
+
+    assert [signal.kind for signal in MyPrsScanner(host=host).scan()] == ["my_pr.open"]
+    host.get_repo.assert_not_called()
+    host.list_pr_discussions.assert_not_called()
+
+
 class TestCiEnrichmentReachesTheRedLane:
     """A payload with no pipeline field is the GitLab cross-project MR-list shape.
 

@@ -69,6 +69,21 @@ def _recovery_prelude_due() -> bool:
         return True
 
 
+def _retry_recovery_prelude() -> None:
+    stamp = _recovery_stamp_path()
+    try:
+        descriptor = os.open(stamp, os.O_RDWR | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handle.seek(0)
+            handle.truncate()
+            handle.write("0")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        logger.exception("Recovery prelude stamp %s could not be reset after a sweep failure", stamp)
+
+
 #: The sweeps that mint or reopen work; the boot sweeps hold their own task half, so they run under any posture.
 _REDISPATCH_SWEEPS = frozenset(
     {
@@ -145,7 +160,8 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         ("recovery:shipping_hold_settle", shipping_hold_settle.settle_held_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
     )
-    blocked = _redispatch_block_reason(errors)
+    sweep_errors: dict[str, str] = {}
+    blocked = _redispatch_block_reason(sweep_errors)
     for label, sweep in sweeps:
         if blocked and label in _REDISPATCH_SWEEPS:
             logger.info("Recovery sweep %s skipped: %s", label, blocked)
@@ -154,8 +170,11 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
             sweep()
         except Exception as exc:
             logger.exception("Recovery sweep %s failed", label)
-            if errors is not None:
-                errors[label] = f"{type(exc).__name__}: {exc}"
+            sweep_errors[label] = f"{type(exc).__name__}: {exc}"
+    if errors is not None:
+        errors.update(sweep_errors)
+    if sweep_errors:
+        _retry_recovery_prelude()
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:

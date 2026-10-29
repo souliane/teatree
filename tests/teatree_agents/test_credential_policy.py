@@ -90,6 +90,15 @@ class CredentialPolicyCase(TestCase):
 
 
 class TestExhaustionRule(CredentialPolicyCase):
+    def test_admission_defers_live_health_probe_to_recovery(self) -> None:
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/plan/oauth"])
+        task = _claimed_task()
+
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe:
+            assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+        probe.assert_not_called()
+
     def test_only_the_three_plan_exhaustion_causes_count(self) -> None:
         assert (
             frozenset(
@@ -150,7 +159,7 @@ class TestExhaustionRule(CredentialPolicyCase):
             patch("teatree.credential_refresh.AccountProber.read", side_effect=(spent, reading)) as probe,
             patch("teatree.agents.credential_policy.ModeOverride.objects.clear_auto_engaged_token_outage") as clear,
         ):
-            assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
+            assert clear_stale_exhaustion_window(window, scope="overlay-a", now=timezone.now()) == 1
         assert [call.args[0] for call in probe.call_args_list] == ["anthropic/old/oauth", "anthropic/new/oauth"]
         clear.assert_called_once_with()
         window.refresh_from_db()
@@ -161,7 +170,7 @@ class TestExhaustionRule(CredentialPolicyCase):
         assert unrelated.not_before == reset
         assert task.status == Task.Status.CLAIMED
 
-    def test_missing_health_keeps_the_window_and_throttles_reprobe(self) -> None:
+    def test_missing_health_keeps_the_window_and_throttles_recovery_reprobe(self) -> None:
         window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/unreadable/oauth"])
         task = _claimed_task()
@@ -169,8 +178,10 @@ class TestExhaustionRule(CredentialPolicyCase):
             ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
         )
         with patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe:
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
             assert maybe_park_for_active_window(second, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
         probe.assert_called_once_with("anthropic/unreadable/oauth")
         window.refresh_from_db()
         assert window.cleared_at is None
@@ -189,6 +200,7 @@ class TestExhaustionRule(CredentialPolicyCase):
             reset_7d=window.resets_at,
         )
         with patch("teatree.credential_refresh.AccountProber.read", return_value=reading):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert attempt is not None
         window.refresh_from_db()
@@ -221,6 +233,7 @@ class TestExhaustionRule(CredentialPolicyCase):
             reset_7d=None,
         )
         with patch("teatree.credential_refresh.AccountProber.read", return_value=spent):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert attempt is not None
         assert "window on lane 'subscription' active" in attempt.error
@@ -271,6 +284,7 @@ class TestExhaustionRule(CredentialPolicyCase):
         )
         task = _claimed_task()
         with patch("teatree.credential_refresh.AccountProber.read", return_value=partial):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
         cached.refresh_from_db()
         window.refresh_from_db()
@@ -285,6 +299,7 @@ class TestExhaustionRule(CredentialPolicyCase):
             patch("teatree.credential_refresh.AccountProber.read", side_effect=RuntimeError("probe down")),
             self.assertLogs(_POLICY_LOGGER, level="WARNING") as log,
         ):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
             attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert attempt is not None
         assert str(window.pk) in " ".join(log.output)

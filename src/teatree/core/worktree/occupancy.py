@@ -155,7 +155,7 @@ def _prepare_task_checkout_exit(
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
     row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
-    if row is None:
+    if row is None and writes_checkout(task):
         renew_ticket_checkout(task.ticket, holder=holder, holder_session=holder_session)
         row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
     return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait, namespace=namespace)
@@ -225,8 +225,16 @@ def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str, namesp
             yield
         finally:
             pk = _task_pk_from_holder(holder)
-            terminal = pk is not None and Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists()
-            if not terminal or held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session) is not None:
+            task = Task.objects.filter(pk=pk).first() if pk is not None else None
+            terminal = task is not None and task.status in Task.Status.terminal()
+            should_renew = task is None or (
+                writes_checkout(task)
+                and (
+                    not terminal
+                    or held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session) is not None
+                )
+            )
+            if should_renew:
                 renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
             _finish_task_checkout(
                 ticket, holder=holder, holder_session=holder_session, scope=scope, namespace=namespace

@@ -114,12 +114,6 @@ class ForgeCodexPrApi:
 
     def list_open_self_prs(self, *, slug: str) -> list[PrSummary]:
         forge = forge_for_repo_slug(slug)
-        if forge == "github":
-            return self.github.list_open_self_prs(slug=slug)
         if forge == "gitlab":
             return self.gitlab.list_open_self_prs(slug=slug)
-        raise ScannerError(
-            scanner="codex_review",
-            error_class=ScannerErrorClass.UNKNOWN,
-            detail=f"no forge is declared for {slug!r}; self-review cannot choose a transport",
-        )
+        return self.github.list_open_self_prs(slug=slug)

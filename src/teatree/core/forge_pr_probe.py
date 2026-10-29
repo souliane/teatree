@@ -37,7 +37,6 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import NamedTuple
 
-from teatree.core.forge_scan_index import active_branch_scan_index
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
 from teatree.git_sha import is_full_git_sha
 from teatree.utils.forge import forge_from_remote
@@ -265,12 +264,8 @@ def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     Any failure below is UNKNOWN, including one raised while BUILDING the backend: this
     runs inside the git pre-push hook, where an exception would abort the push itself.
     """
-    index = active_branch_scan_index()
-    if index is not None:
-        if not branch:
-            return PrProbe.unknown()
-        url = index.open_pr_url(str(repo_dir), branch)
-        return PrProbe.unknown() if url is None else PrProbe.found(url) if url else PrProbe.none()
+    if not branch:
+        return PrProbe.unknown()
     try:
         url = _gitlab_open_mr_url(repo_dir, branch)
     except Exception:  # noqa: BLE001 — the probe runs in a pre-push hook and must never raise into it.

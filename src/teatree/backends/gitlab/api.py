@@ -355,7 +355,9 @@ class GitLabAPI(GitLabHTTPClient):
         cached: list[RawMR] | None = self._get_cached(cache_key, _TTL_DISCUSSIONS)
         if cached is not None:
             return cached
-        result = self.get_json_paginated(f"projects/{project_id}/merge_requests/{mr_iid}/discussions?per_page=100")
+        result = self.get_json_paginated(
+            f"projects/{project_id}/merge_requests/{mr_iid}/discussions?per_page=100", require_list=True
+        )
         self._set_cached(cache_key, result)
         return result
 

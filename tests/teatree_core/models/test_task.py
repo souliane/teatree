@@ -84,6 +84,13 @@ class TestTask(TestCase):
 
         assert dispatchable == {task_ids[Ticket.State.WORK_STARTED], task_ids[Ticket.State.MERGED]}
 
+    def test_dispatchable_query_admits_re_review_on_review_delivered_ticket(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_DELIVERED)
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+
+        assert ticket.admits_review()
+        assert Task.objects.filter(Task.dispatchable_q(), pk=task.pk).exists()
+
     def test_pr_review_attempt_without_a_verdict_cannot_complete(self) -> None:
         ticket = Ticket.objects.create(
             role=Ticket.Role.REVIEWER,

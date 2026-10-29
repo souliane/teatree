@@ -12,7 +12,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-_MAX_REVIEW_HEAD_LENGTH = 46
+_MAX_REVIEW_HEAD_LENGTH = 64
 
 
 class RedMrFixAttempt(models.Model):
@@ -38,7 +38,7 @@ class RedMrFixAttempt(models.Model):
         REVIEW_FINDINGS = "review_findings", "Review findings"
 
     pr_url = models.URLField(max_length=512)
-    head_sha = models.CharField(max_length=64)
+    head_sha = models.CharField(max_length=82)
     kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.CI_RED)
     overlay = models.CharField(max_length=64, blank=True, default="")
     dispatched_at = models.DateTimeField(default=timezone.now)

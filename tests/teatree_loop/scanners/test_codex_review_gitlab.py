@@ -1,10 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.scanners.base import ScannerError
-from teatree.loop.scanners.codex_review import GhCodexPrApi
 from teatree.loop.scanners.codex_review_gitlab import ForgeCodexPrApi, GlabCodexPrApi
 
 SLUG = "acme/team/project"
@@ -45,13 +41,15 @@ def test_gitlab_adapter_reads_only_own_mrs_with_paths_and_head_checks() -> None:
     host.fetch_required_checks_rollup.assert_called_once()
 
 
-def test_forge_adapter_refuses_a_repository_without_declared_host() -> None:
-    adapter = ForgeCodexPrApi(github=GhCodexPrApi(), gitlab=GlabCodexPrApi())
-    with (
-        patch("teatree.loop.scanners.codex_review_gitlab.forge_for_repo_slug", return_value=""),
-        pytest.raises(ScannerError, match="no forge"),
-    ):
-        adapter.list_open_self_prs(slug=SLUG)
+def test_forge_adapter_uses_existing_github_default_without_declared_host() -> None:
+    github = MagicMock()
+    github.list_open_self_prs.return_value = []
+    gitlab = MagicMock()
+    adapter = ForgeCodexPrApi(github=github, gitlab=gitlab)
+    with patch("teatree.loop.scanners.codex_review_gitlab.forge_for_repo_slug", return_value=""):
+        assert adapter.list_open_self_prs(slug=SLUG) == []
+    github.list_open_self_prs.assert_called_once_with(slug=SLUG)
+    gitlab.list_open_self_prs.assert_not_called()
 
 
 def test_gitlab_adapter_keeps_other_mrs_when_one_has_empty_diff() -> None:

@@ -68,6 +68,23 @@ class TestReapStaleTaskClaims(TestCase):
             boot.assert_called_once()
             assert str(stamp) in "\n".join(warnings.output)
 
+    def test_failed_prelude_retries_on_next_tick_inside_interval(self) -> None:
+        with (
+            TemporaryDirectory() as root,
+            patch.dict(os.environ, {"T3_DATA_DIR": root}),
+            patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+            patch(
+                "teatree.core.worktree.recovery_sweeps.run_boot_sweeps",
+                side_effect=[RuntimeError("unavailable"), None],
+            ) as boot,
+            patch("teatree.loop.question_drain.drain_pending_questions"),
+        ):
+            errors: dict[str, str] = {}
+            _reap_stale_task_claims(errors)
+            assert "recovery:boot_sweeps" in errors
+            _reap_stale_task_claims({})
+            assert boot.call_count == 2
+
     def test_unreadable_stamp_runs_prelude_and_warns_with_path(self) -> None:
         with TemporaryDirectory() as root:
             stamp = Path(root) / "recovery-prelude.stamp"

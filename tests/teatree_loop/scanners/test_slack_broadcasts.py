@@ -330,7 +330,7 @@ class TestUnreadableBroadcastLinks(TestCase):
         assert [signal.kind for signal in signals] == ["slack.broadcast_unreadable_links"]
 
     def test_scope_and_server_failures_still_raise(self) -> None:
-        for status, body in ((403, "missing_scope: api"), (500, "server error")):
+        for status, body in ((401, "token expired"), (403, "missing_scope: api"), (500, "server error")):
             with self.subTest(status=status):
                 unreadable = f"https://gitlab.example.com/team/fault/-/merge_requests/{status}"
 
