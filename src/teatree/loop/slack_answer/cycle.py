@@ -52,8 +52,11 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from django.db.models import Exists, OuterRef
+
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
@@ -66,7 +69,7 @@ from teatree.loop.question_binding import (
     bind_reply,
     log_coalesced_replies,
 )
-from teatree.loop.slack_answer.card_discussion import route_card_result
+from teatree.loop.slack_answer.card_discussion import UNROUTED_AUDIT_ACTION, route_card_result
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
@@ -528,8 +531,17 @@ def run_slack_answer_cycle(
     resolved_reader = reader or read_inbound
     report = SlackAnswerReport()
 
-    rows = list(owner_rows(PendingChatInjection.loop_unreplied(), resolver)[:_BATCH])
-    units = _coalesce(rows)
+    unrouted_audit = DeferredQuestionAudit.objects.filter(
+        action=UNROUTED_AUDIT_ACTION,
+        note=OuterRef("slack_ts"),
+        question__slack_channel=OuterRef("channel"),
+    )
+    queue = owner_rows(PendingChatInjection.loop_unreplied(), resolver).annotate(
+        unrouted_audited=Exists(unrouted_audit)
+    )
+    rows = list(queue.filter(unrouted_audited=False)[:_BATCH])
+    retries = list(queue.filter(unrouted_audited=True)[:_BATCH])
+    units = [*_coalesce(rows), *_coalesce(retries)]
     for unit in units:
         report.processed += len(unit.rows)
         try:

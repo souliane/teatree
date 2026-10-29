@@ -198,6 +198,37 @@ class TestCardDiscussion(TestCase):
         assert reply.answer_kind == "delegated"
         assert DeferredQuestion.objects.get(pk=card.pk).is_pending
 
+    def test_unrouted_card_replies_do_not_starve_new_card_and_direct_message(self) -> None:
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        for index in range(10):
+            root = f"360.{index * 2 + 1:04d}"
+            ts = f"360.{index * 2 + 2:04d}"
+            _card(root)
+            backend.message_meta[ts] = {"ts": ts, "thread_ts": root}
+            assert _event(backend, ts=ts, root=root, text="Show me the rule") is not None
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_mailbox, "shared_broker", return_value=broker),
+        ):
+            _cycle(backend)
+            assert DeferredQuestion.objects.filter(audits__action="reply_unrouted").count() == 10
+            newer = _card("361.1")
+            option_reply = _event(backend, ts="361.2", root="361.1", text="approve")
+            direct_message = _event(backend, ts="361.3", root="", text="Please inspect the build")
+            assert option_reply is not None
+            assert direct_message is not None
+            reports = [_cycle(backend) for _ in range(4)]
+
+        newer.refresh_from_db()
+        direct_message.refresh_from_db()
+        assert newer.answer_text == "Approve"
+        assert direct_message.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
+        assert sum(report.answered_question for report in reports) == 1
+        assert sum(report.dispatched for report in reports) == 1
+        assert len(backend.replies) == 10
+
     def test_the_plain_line_is_not_repeated_when_the_thread_cannot_be_read_back(self) -> None:
         _card("348.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
