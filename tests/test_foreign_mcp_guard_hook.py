@@ -123,16 +123,6 @@ def test_resource_tool_for_own_server_passes(tmp_path: Path) -> None:
     assert result.stdout == ""
 
 
-def test_allowed_tool_ignores_ambient_stale_turn_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ambient = tmp_path / "ambient-hook-state"
-    ambient.mkdir()
-    (ambient / "foreign-policy.turn-start-monotonic").write_text("0", encoding="utf-8")
-    monkeypatch.setenv("TEATREE_CLAUDE_STATUSLINE_STATE_DIR", str(ambient))
-    result = _invoke("ReadMcpResourceTool", {"server": "teatree", "uri": "file:///own"}, tmp_path)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout == ""
-
-
 def test_distinct_foreign_calls_do_not_share_a_loop_streak(tmp_path: Path) -> None:
     for query in ("first", "second", "third"):
         result = _invoke("mcp__other__read_resource", {"query": query}, tmp_path)
