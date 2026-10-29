@@ -187,8 +187,33 @@ def bot_push_error(
     return _new_commit_error(repo, remote_name, remote_url, refs, login)
 
 
+def ambient_bot_credential_error() -> str:
+    token = os.environ.get("GITLAB_TOKEN", "")
+    if not token:
+        return ""
+    try:
+        host = urlsplit(os.environ.get("GITLAB_URL", "https://gitlab.com")).hostname or ""
+    except ValueError:
+        host = ""
+    if not host:
+        return "ambient GitLab token has no readable forge host"
+    declared = _bot_logins(host)
+    if not declared:
+        return "ambient GitLab token has no readable declared bot identity"
+    authenticated = _credential_login(GITLAB, host, f"https://{host}/", token).casefold()
+    if authenticated not in declared:
+        return "ambient GitLab token is not a verified bot credential"
+    return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args == ["--verify-ambient"]:
+        error = ambient_bot_credential_error()
+        if error:
+            sys.stderr.write(f"refuse: {error}\n")
+            return 1
+        return 0
     remote_name = args[0] if args else os.environ.get("PRE_COMMIT_REMOTE_NAME", "origin")
     remote_url = args[1] if len(args) > 1 else os.environ.get("PRE_COMMIT_REMOTE_URL", "")
     if not remote_url:

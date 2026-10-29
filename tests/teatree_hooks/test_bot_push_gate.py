@@ -116,3 +116,24 @@ def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monk
         )
         == ""
     )
+
+
+@pytest.mark.parametrize(("login", "expected"), [("build-bot", 0), ("person", 1), ("", 1)])
+def test_ambient_gitlab_token_must_authenticate_as_a_declared_bot(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], login: str, expected: int
+) -> None:
+    monkeypatch.setenv("GITLAB_TOKEN", "ambient-key")
+    monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.test")
+    monkeypatch.setattr(bot_push_gate, "_bot_logins", lambda host: frozenset({"build-bot"}))
+    monkeypatch.setattr(bot_push_gate, "_credential_login", lambda forge, host, url, token: login)
+
+    assert bot_push_gate.main(["--verify-ambient"]) == expected
+    if expected:
+        assert "bot credential" in capsys.readouterr().err
+
+
+def test_ambient_gitlab_token_refuses_unreadable_bot_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITLAB_TOKEN", "ambient-key")
+    monkeypatch.setattr(bot_push_gate, "_bot_logins", lambda host: None)
+
+    assert bot_push_gate.main(["--verify-ambient"]) == 1

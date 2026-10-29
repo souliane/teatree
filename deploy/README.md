@@ -1076,8 +1076,15 @@ credential. An explicitly configured
 `TEATREE_GITLAB_TOKEN_PASS_PATH` remains the bootstrap fallback for a container
 created with no host value (the watchdog cannot reach the host's pass store).
 
-An existing env value always wins; the store is the fallback. So a box that still
-carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
+The GitLab token in this bootstrap route must authenticate as a bot login declared
+for its forge host in `self_forge_identities`. Long-running roles refuse to start
+when the token is a person's credential or the identity cannot be verified.
+`deploy/t3` applies the same check to a token forwarded into a container CLI
+command before it runs that command. Operator approvals use their sealed OAuth
+grants, not this bootstrap route.
+
+An existing env value wins the selection and the store is the fallback, but a
+literal in `teatree.env` runs only when it verifies as a declared bot. A missing `pass` entry is a
 no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
 just yields a generated one; `t3 admin` also issues a short-lived login link).
 

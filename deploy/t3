@@ -683,6 +683,12 @@ CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_
         unset GITLAB_TOKEN
     fi
 fi
+if [ -n "${TEATREE_VERIFY_GITLAB_TOKEN:-}" ] && [ -n "${GITLAB_TOKEN:-}" ]; then
+    "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m teatree.hooks.bot_push_gate --verify-ambient || {
+        echo "t3(container): refusing a GitLab token that is not a declared bot credential" >&2
+        exit 69
+    }
+fi
 exec "$@"'
 
 # Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
@@ -700,6 +706,7 @@ FORWARD_ENV_NAMES=(
     TEATREE_INVOCATION_CWD
     PYTEST_XDIST_AUTO_NUM_WORKERS
     GITLAB_TOKEN
+    TEATREE_VERIFY_GITLAB_TOKEN
     GITLAB_URL
     # The launcher `t3 setup` writes through the host-bin mount execs THIS
     # checkout's deploy/t3. An `exec` inherits the environment the stack came up
@@ -849,6 +856,8 @@ host_gitlab_token_from_pass() {
 # forwarded to the container too: the prologue holds the SAME fallback read, so
 # resolving nothing here would merely move the cost across the boundary.
 if needs_gitlab_credential "$@"; then
+    TEATREE_VERIFY_GITLAB_TOKEN=1
+    export TEATREE_VERIFY_GITLAB_TOKEN
     host_keybox_lock_is_clear
     if [ -z "${GITLAB_TOKEN:-}" ]; then
         # `|| refuse_...` runs in the PARENT: an assignment takes the substitution's
