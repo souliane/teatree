@@ -102,6 +102,7 @@ class TestResolveOverlays:
             result = _resolve_overlays("")
 
         assert result == []
+        assert "WARN  broken: missing bot or app token in pass at broken/ref" in capsys.readouterr().out
 
     def test_restricts_to_named_overlay(self, tmp_path: Path, monkeypatch) -> None:
         db = tmp_path / "config.sqlite3"
