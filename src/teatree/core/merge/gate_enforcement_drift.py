@@ -38,16 +38,6 @@ EXPECTED_MERGE_GATE_CONTEXTS: frozenset[str] = frozenset(
 )
 
 
-def unenforced_gate_contexts(required_contexts: frozenset[str] | set[str] | None) -> frozenset[str]:
-    """:data:`EXPECTED_MERGE_GATE_CONTEXTS` entries absent from the live *required_contexts*.
-
-    ``None`` is the fail-quiet read for THIS advisory: an unreadable branch-protection probe
-    is a doctor-check outage, never evidence that a gate is inert — the same direction
-    :func:`~teatree.core.merge.ci_rollup._required_context_names` takes when it cannot read
-    the required set, except that caller fails CLOSED (refuses a merge) where this one, being
-    advisory-only, reports nothing rather than manufacturing a finding from a probe that
-    could not answer.
-    """
-    if required_contexts is None:
-        return frozenset()
+def unenforced_gate_contexts(required_contexts: frozenset[str] | set[str]) -> frozenset[str]:
+    """:data:`EXPECTED_MERGE_GATE_CONTEXTS` entries absent from the live *required_contexts*."""
     return frozenset(EXPECTED_MERGE_GATE_CONTEXTS - set(required_contexts))

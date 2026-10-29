@@ -24,9 +24,10 @@ from typing import cast
 
 import typer
 
+from teatree.cli.doctor import disk_consumers
 from teatree.cli.doctor.checks_plugins import JsonObject, _check_pyright_lsp_plugin, _read_json_object
 from teatree.core.retention.liveness import held_paths
-from teatree.utils import disk_consumers, disk_probe
+from teatree.utils import disk_probe
 from teatree.utils.ram_probe import cgroup_file, host_total_ram_mib
 from teatree.utils.ram_scope import AGENT_WORKLOAD_FLOOR_ENV, RamHeadroom, agent_workload_floor_gib
 
