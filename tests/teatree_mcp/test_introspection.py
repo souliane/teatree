@@ -47,38 +47,38 @@ class TestQuestionList(TestCase):
 class TestConfigSettingGet(TestCase):
     def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
-        ConfigSetting.objects.set_value("agent_max_turns", 7)
-        assert introspection.config_setting_get(key="agent_max_turns")["value"] == 7
+        ConfigSetting.objects.set_value("agent_max_turns", 1000)
+        assert introspection.config_setting_get(key="agent_max_turns")["value"] == 1000
 
     def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
         assert isinstance(introspection.config_setting_get(key="agent_max_turns")["value"], int)
 
     def test_alias_scope_reads_the_stored_value(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 7, scope="teatree")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, scope="teatree")
 
         row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
 
-        assert row["value"] == 7
+        assert row["value"] == 1000
         assert row["source"] == "db"
         assert row["scope"] == "overlay:teatree"
 
     def test_overlay_reads_a_global_stored_value(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 7)
+        ConfigSetting.objects.set_value("agent_max_turns", 1000)
 
         row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
 
-        assert row["value"] == 7
+        assert row["value"] == 1000
         assert row["source"] == "db"
         assert row["scope"] == "global"
 
     def test_db_override_reports_db_source(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", value=400)
+        ConfigSetting.objects.set_value("agent_max_turns", value=1400)
 
         row = introspection.config_setting_get(key="agent_max_turns")
 
         assert row["known"] is True
-        assert row["value"] == 400
+        assert row["value"] == 1400
         assert row["source"] == "db"
         assert row["scope"] == "global"
 
@@ -90,7 +90,7 @@ class TestConfigSettingGet(TestCase):
         assert isinstance(row["value"], int)
 
     def test_overlay_scope_row_reports_overlay_scope(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", value=400, scope="t3-teatree")
+        ConfigSetting.objects.set_value("agent_max_turns", value=1400, scope="t3-teatree")
 
         row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
 

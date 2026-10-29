@@ -96,7 +96,7 @@ def apply_activation(directive: Directive, *, activation: Activation | None = No
     )
     effective = getattr(get_effective_settings(resolved.scope), resolved.setting_key, _MISSING)
     if effective != resolved.value:
-        ConfigSetting.objects.clear(resolved.setting_key, scope=resolved.scope)
+        ConfigSetting.objects.clear(resolved.setting_key, scope=resolved.scope, authorized_by=ratifier(directive))
         return ConfigureResult(
             applied=False, reason=f"read-back mismatch: {resolved.setting_key}={effective!r} != {resolved.value!r}"
         )
@@ -114,4 +114,6 @@ def clear_activation(directive: Directive) -> bool:
     sketch = directive.sketch
     if sketch is None or not sketch.activation_scope:
         return False
-    return ConfigSetting.objects.clear(sketch.setting_key, scope=sketch.activation_scope)
+    return ConfigSetting.objects.clear(
+        sketch.setting_key, scope=sketch.activation_scope, authorized_by=ratifier(directive)
+    )

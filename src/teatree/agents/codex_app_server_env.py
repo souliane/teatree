@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.agents.codex_app_server_options import CodexAppServerError
+from teatree.config.write_authority import CONFIG_WRITE_PHASE_ENV
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
@@ -38,7 +39,13 @@ def codex_command() -> tuple[str, ...]:
     return (executable,)
 
 
-_DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS", POOL_ROOT_ENV)
+_DISPATCH_ENV_KEYS = (
+    "GH_TOKEN",
+    ROUTED_GH_KEY_ENV,
+    "PYTEST_XDIST_AUTO_NUM_WORKERS",
+    POOL_ROOT_ENV,
+    CONFIG_WRITE_PHASE_ENV,
+)
 _ROUTER_AMBIENT_KEYS = (_PROCESS_ENV_KEYS - {POOL_ROOT_ENV}) | frozenset(
     {
         "HOME",

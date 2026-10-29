@@ -309,14 +309,13 @@ class LifecycleIncidentTests(TestCase):
             "teatree_pending_chat_injection" in query["sql"] and "LIMIT 100" in query["sql"] for query in queries
         )
 
-    def test_ack_is_not_an_answer_but_substantive_reply_is(self) -> None:
+    def test_ack_claim_is_unanswered_until_its_delivery_is_confirmed(self) -> None:
         row = _owner_dm(channel="D1", slack_ts="100.2", text="What happened?")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         row.mark_loop_replied(PendingChatInjection.AnswerKind.ACK)
         assert any(report.payload["kind"] == "inbound_unanswered" for report in self._reports())
 
-        PendingChatInjection.objects.filter(pk=row.pk).update(answer_kind=PendingChatInjection.AnswerKind.SIMPLE)
         row.observe_confirmed_loop_reply()
         assert not [report for report in self._reports() if report.payload["kind"] == "inbound_unanswered"]
 

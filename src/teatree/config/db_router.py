@@ -37,10 +37,12 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from django.core.exceptions import ValidationError
 from django.db import connections
 from django.db.models import Model
 
 from teatree.config.cold_db import canonical_config_db
+from teatree.config.write_authority import review_write_refusal
 
 #: Connection alias holding the canonical config DB, registered by the settings
 #: module only when the ``default`` connection points somewhere else.
@@ -49,7 +51,9 @@ CONFIG_DB_ALIAS = "canonical_config"
 #: ``ConfigSetting._meta.label_lower`` — matched as a string so this platform-layer
 #: module never imports the domain-layer model (a backwards tach edge).
 CONFIG_MODEL_LABEL = "core.configsetting"
-PINNED_MODEL_LABELS = frozenset({CONFIG_MODEL_LABEL, "core.sealedsecret", "core.secretcutover"})
+PINNED_MODEL_LABELS = frozenset(
+    {CONFIG_MODEL_LABEL, "core.configsettingchange", "core.sealedsecret", "core.secretcutover"}
+)
 
 
 def pinned_config_db(
@@ -99,7 +103,12 @@ class ConfigSettingRouter:
         return self._pinned_alias(model)
 
     def db_for_write(self, model: type[Model], **hints: object) -> str | None:  # noqa: ARG002 — Django router contract: hints are part of the signature
-        return self._pinned_alias(model)
+        alias = self._pinned_alias(model)
+        if model.__dict__["_meta"].label_lower in {CONFIG_MODEL_LABEL, "core.configsettingchange"} and (
+            reason := review_write_refusal(connections[alias or "default"].settings_dict["NAME"])
+        ):
+            raise ValidationError(reason)
+        return alias
 
     def allow_migrate(self, db: str, app_label: str, **hints: object) -> bool | None:  # noqa: ARG002, PLR6301 — Django router contract: instance method; app_label/hints are part of the signature
         """Refuse every migration against the canonical alias; defer for any other.

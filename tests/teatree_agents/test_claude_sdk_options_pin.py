@@ -67,7 +67,7 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "dc3394b7421f01eb486dfcf6f2ac5e50a570e1698dde980148054a8c8a5317b2"
+_OPTIONS_SHA256 = "b25d336350a5d2d9640fe94e7e56d20cb4f56c02bf5bb274e56f9dce72a728ca"
 _SYSTEM_CONTEXT_SHA256 = "07f87b5f8cbde14720262d4e2409e512cf7ba837e0355afa96defb0f1fbd621e"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
@@ -439,11 +439,11 @@ class TestInteractiveSessionsArePinned(TestCase):
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
             "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",
-            "agent_max_turns": 7,
+            "agent_max_turns": 1000,
             "subagent_spawn_ceiling": 3,
             "envelope_stop_gate_refusals": 1,
-            "pydantic_ai_request_limit": 11,
-            "pydantic_ai_max_tokens": 1234,
+            "pydantic_ai_request_limit": 300,
+            "pydantic_ai_max_tokens": 8192,
             "openai_compatible_lane": "bulk",
         }
         self._seed_config(factory_only)

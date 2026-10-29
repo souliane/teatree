@@ -57,6 +57,7 @@ from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
+from teatree.core.settings.config_setting_history import clear_with_history, latest_change, previous_value_after_set
 
 # Every key ``config_setting`` knows — the SINGLE known-key set shared by
 # get/list/set/clear AND the MCP ``config_setting_get`` read tool
@@ -201,21 +202,22 @@ class Command(TyperCommand):
         # type — scalar, list, or a ``StrEnum`` (which a ``JSONField`` persists as
         # its string value) — so the parsed value round-trips through the store
         # and the read tier re-coerces it to the same value.
+        before = latest_change(key, overlay)
+        audit_before = before.pk if before else None
         try:
             ConfigSetting.objects.set_value(key, canonical, scope=overlay)
         except ValidationError as exc:
-            # A coupled-key inconsistency (#3688) — e.g. an agent_harness_provider
-            # no resulting agent_harness would accept at dispatch. Refuse loudly at
-            # write time, leaving the store untouched, instead of a fleet-wide
-            # repair-halt flood on every later dispatch.
-            self.stderr.write(f"  refusing inconsistent config for {key!r}: {exc.messages[0]}")
+            self.stderr.write(f"  refused config write for {key!r}: {exc.messages[0]}")
             raise SystemExit(2) from exc
         except ValueError as exc:
             self.stderr.write(f"  refused: {exc}")
             raise SystemExit(2) from exc
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        self.stdout.write(f"  set {key} = {stored!r}  [{scope_label(overlay)}]{_governance_suffix(key)}")
+        previous = previous_value_after_set(key, overlay, audit_before, stored)
+        self.stdout.write(
+            f"  set {key} = {stored!r}  [{scope_label(overlay)}] previous={previous}{_governance_suffix(key)}"
+        )
 
     @command()
     def seed(
@@ -258,7 +260,7 @@ class Command(TyperCommand):
                 seeded_by=seeded_by,
                 scope=overlay,
             )
-        except ValueError as exc:
+        except (ValidationError, ValueError) as exc:
             self.stderr.write(f"  refused: {exc}")
             raise SystemExit(2) from exc
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
@@ -279,8 +281,16 @@ class Command(TyperCommand):
         non-zero when no row exists in that scope so a typo'd key is loud, not
         silent.
         """
-        if ConfigSetting.objects.clear(key, scope=overlay):
-            self.stdout.write(f"  cleared DB override for {key}  [{scope_label(overlay)}]")
+        try:
+            report = clear_with_history(key, overlay)
+        except ValidationError as exc:
+            self.stderr.write(f"  refused: {exc.messages[0]}")
+            raise SystemExit(2) from exc
+        if report is not None:
+            self.stdout.write(
+                f"  cleared DB override for {key}  [{scope_label(overlay)}] "
+                f"cleared={report.removed} previous={report.previous}"
+            )
             return
         self.stderr.write(f"  no DB override row for {key}  [{scope_label(overlay)}]")
         raise SystemExit(1)

@@ -53,9 +53,9 @@ class TestTicketBudget(TestCase):
         assert budget.breach_reason(self.ticket) is None
 
     def test_from_settings_reads_configured_cap(self) -> None:
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 12.5, scope="")
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 75, scope="")
         budget = TicketBudget.from_settings()
-        assert budget.max_cost_usd == pytest.approx(12.5)
+        assert budget.max_cost_usd == pytest.approx(75)
 
     def test_from_settings_defaults_to_disabled(self) -> None:
         budget = TicketBudget.from_settings()
@@ -63,6 +63,6 @@ class TestTicketBudget(TestCase):
 
     def test_from_settings_reads_the_db_home_config_field(self) -> None:
         # The configured cap is visible to config_setting get.
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 9.0, scope="")
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 90, scope="")
         budget = TicketBudget.from_settings()
-        assert budget.max_cost_usd == pytest.approx(9.0)
+        assert budget.max_cost_usd == pytest.approx(90)

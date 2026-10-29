@@ -69,7 +69,7 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_max_turns = 250 # int — turn ceiling for one agent run
+agent_max_turns = 3000 # int, 0 or at least 300 — turn ceiling for one agent run
 agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
@@ -79,15 +79,15 @@ eval_local_skill = "running-evals" # str — skill the local eval loop runs
 harness_skill_exclusions = [] # list — box-wide Claude Code or Codex skills removed from that harness until explicitly installed again
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
-pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
-pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
+pydantic_ai_max_tokens = 64000 # int, 0 or at least 8192 — token ceiling for one pydantic-ai request
+pydantic_ai_request_limit = 3000 # int, 0 or at least 300 — requests one pydantic-ai run may make
 regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
 scanning_news_skill = "scanning-news" # str — skill the news scanning loop runs
-subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
-ticket_budget_max_cost_usd = 0.0 # float — dollars one ticket may cost before it is halted
-watchdog_max_cost_usd = 0.0 # float — dollars a watched run may spend before the watchdog stops it
-watchdog_max_runtime_seconds = 10800 # int — seconds a watched run may take before the watchdog stops it
-watchdog_max_turns = 0 # int — turns a watched run may take before the watchdog stops it
+subagent_spawn_ceiling = 20 # int, 0 or at least 2 — sub-agents one dispatch may spawn
+ticket_budget_max_cost_usd = 0.0 # float, 0 or at least 60 — dollars one ticket may cost before it is halted
+watchdog_max_cost_usd = 0.0 # float, 0 or at least 30 — dollars a watched run may spend before the watchdog stops it
+watchdog_max_runtime_seconds = 86400 # int, 0 or at least 21600 — seconds a watched run may take before the watchdog stops it
+watchdog_max_turns = 0 # int, 0 or at least 300 — turns a watched run may take before the watchdog stops it
 
 [teatree.Loops."Cadence & throughput"]
 loop_cadence_seconds = 720 # int — default seconds between ticks of a loop that declares none
@@ -227,7 +227,7 @@ mcp_slack_write_gate_enabled = true # bool — gate MCP Slack writes behind the 
 no_self_reviewer_assign_gate_enabled = true # bool — refuse assigning the author as their own reviewer
 orchestrator_boundary_agent_gate_enabled = true # bool — refuse orchestrator work that belongs in a sub-agent
 orchestrator_delegation_gate_enabled = true # bool — refuse an unbounded orchestrator read that belongs in a sub-agent
-orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
+orchestrator_turn_budget = 25 # int — tool-call budget for one orchestrator turn
 orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
 owner_question_gate_enabled = true # bool — refuse batched or shorthand owner questions and decisions left in reply prose
@@ -262,13 +262,13 @@ task_attempt_retention_days = 30 # int — days a quiet finished ticket's task h
 task_result_retention_days = 1 # int — days a task result row is kept
 
 [teatree.Infrastructure.Provisioning]
-admission_load_brake_per_core = 2.0 # float — box load per core at which new admissions halt
-admission_load_resume_per_core = 1.5 # float — box load per core below which halted admissions resume
+admission_load_brake_per_core = 2.0 # float, between 0.5 and 6 — box load per core at which new admissions halt
+admission_load_resume_per_core = 1.5 # float, between 0.5 and 6 — box load per core below which halted admissions resume
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
-admission_write_concurrency_per_core = 0.5 # float — agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane
+admission_write_concurrency_per_core = 0.5 # float, between 0.25 and 2 — agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane
 cheap_phase_admission_ceiling = 2 # int — per-class width (min 1): reviews and shipping/review requests are each capped at this width inside a cheap lane one seat wider; machine brakes spare both classes
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
-forge_pool_max_connections = 4 # int — connections each process keeps open per forge host
+forge_pool_max_connections = 4 # int, between 1 and 16 — connections each process keeps open per forge host
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
 metered_spend_window_hours = 24 # int — the window the metered token ceiling is measured over

@@ -74,6 +74,11 @@ def test_codex_process_resolves_private_database_without_live_path(tmp_path: Pat
     assert resolved.is_relative_to(home)
 
 
+def test_codex_process_keeps_review_write_phase(tmp_path: Path) -> None:
+    env = codex_process_env(tmp_path / "private-home", {"T3_CONFIG_WRITE_PHASE": "critic_reviewing"})
+    assert env["T3_CONFIG_WRITE_PHASE"] == "critic_reviewing"
+
+
 def test_pool_root_does_not_expand_router_allowlist(tmp_path: Path) -> None:
     ambient = {
         "PATH": "/usr/bin",

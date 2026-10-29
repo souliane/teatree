@@ -12,14 +12,20 @@ the upsert, the round-trip, and the three-way :class:`WriteResult` classificatio
 against actual sqlite.
 """
 
+import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from teatree.cli import teatree_gate
 from teatree.config import cold_reader, cold_writer
 from teatree.config.cold_writer import WriteResult
 from teatree.config.host_projection import GENERATION_KEY
+from teatree.config.setting_registries import SETTING_BOUNDS
+from teatree.config.value_visibility import MASKED
+from teatree.config.write_validation import ConfigWriteValue
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 # The exact ``teatree_config_setting`` shape Django's migration emits (see
@@ -33,7 +39,16 @@ _REAL_SCHEMA = (
     '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
     '"created_at" datetime NOT NULL, '
     '"updated_at" datetime NOT NULL, '
+    '"seeded_by" varchar(255) NOT NULL, "written_by" varchar(255) NOT NULL, '
+    '"seed_value" text NULL CHECK ((JSON_VALID("seed_value") OR "seed_value" IS NULL)), '
     'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
+_AUDIT_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting_change" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, "key" varchar(255) NOT NULL, '
+    '"action" varchar(10) NOT NULL, "old_value" text NULL, "new_value" text NULL, '
+    '"written_by" varchar(255) NOT NULL, "changed_at" datetime NOT NULL)'
 )
 
 
@@ -46,6 +61,28 @@ def _make_real_schema_db(path: Path) -> None:
         conn.close()
 
 
+def _make_audited_db_with_non_json_value(path: Path, key: str, raw: str) -> None:
+    """A real-schema DB whose stored *key* is not JSON — only reachable by bypassing the CHECK."""
+    _make_real_schema_db(path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(_AUDIT_SCHEMA)
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "INSERT INTO teatree_config_setting "
+            "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+            "VALUES ('', ?, ?, '', '', '', 'hand-edit', NULL)",
+            (key, raw),
+        )
+        conn.commit()
+
+
+def _audit_values(path: Path, key: str) -> tuple[str, str]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute(
+            "SELECT old_value, new_value FROM teatree_config_setting_change WHERE key=? ORDER BY id DESC", (key,)
+        ).fetchone()
+
+
 @pytest.fixture(autouse=True)
 def _clean_canonical_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
@@ -53,6 +90,32 @@ def _clean_canonical_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestWriteRoundTrip:
+    def test_legacy_schema_keeps_rescue_write_available(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "legacy-schema.sqlite3"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting ("
+                "scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(scope, key))"
+            )
+            conn.commit()
+
+        outcome = cold_writer.write_setting("issue_implementer_label", "t3-auto", db_path=db)
+        assert outcome.result is WriteResult.WROTE
+        assert cold_reader.read_setting("issue_implementer_label", db_path=db) == "t3-auto"
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_review_phase_refuses_canonical_rescue_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "live.sqlite3"
+        _make_real_schema_db(db)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setenv("T3_CONFIG_WRITE_PHASE", "reviewing")
+        with pytest.raises(ValueError, match="review or critic"):
+            cold_writer.write_setting("autoload", value=False)
+        assert cold_reader.read_setting("autoload", db_path=db) is None
+
     def test_write_then_cold_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _make_real_schema_db(db)
@@ -86,6 +149,99 @@ class TestWriteRoundTrip:
         assert outcome.db == db
         assert outcome.detail == ""
         assert cold_reader.read_setting("completion_claim_gate_enabled", scope="", db_path=db) is False
+
+    def test_a_rescue_write_records_the_previous_value_in_the_same_db(self, tmp_path: Path) -> None:
+        db = tmp_path / "audited.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(_AUDIT_SCHEMA)
+            conn.commit()
+
+        assert cold_writer.write_setting("autoload", value=True, db_path=db).result is WriteResult.WROTE
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            rows = conn.execute(
+                "SELECT action, old_value, new_value, written_by FROM teatree_config_setting_change "
+                "WHERE key='autoload' ORDER BY id"
+            ).fetchall()
+        assert rows == [("set", None, "true", "cold-writer"), ("set", "true", "false", "cold-writer")]
+        with closing(sqlite3.connect(db)) as conn:
+            provenance = conn.execute(
+                "SELECT seeded_by, written_by FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+        assert provenance == ("", "cold-writer")
+
+    def test_unusable_audit_table_keeps_rescue_write(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        db = tmp_path / "bad-audit.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE teatree_config_setting_change (id INTEGER PRIMARY KEY)")
+            conn.commit()
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        assert cold_reader.read_setting("autoload", db_path=db) is False
+        assert "audit" in capsys.readouterr().err
+
+    def test_rescue_write_takes_ownership_from_seed(self, tmp_path: Path) -> None:
+        db = tmp_path / "seeded.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "INSERT INTO teatree_config_setting "
+                "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+                "VALUES ('', 'autoload', 'true', '', '', 'deploy', 'deploy', 'true')"
+            )
+            conn.commit()
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            row = conn.execute(
+                "SELECT value, seeded_by, written_by, seed_value FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+        assert row == ("false", "", "cold-writer", None)
+
+    def test_missing_audit_table_is_loud_but_keeps_the_rescue_write(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "legacy.sqlite3"
+        _make_real_schema_db(db)
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_a_sensitive_rescue_value_is_masked_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "sensitive.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(_AUDIT_SCHEMA)
+            conn.commit()
+        value = {"leak": ["private-marker"]}
+        assert cold_writer.write_setting("banned_term_registry", value, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            stored = conn.execute(
+                "SELECT new_value FROM teatree_config_setting_change WHERE key='banned_term_registry'"
+            ).fetchone()[0]
+        assert "private-marker" not in stored
+
+    def test_a_non_json_stored_value_is_repaired_and_kept_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "hand-edited.sqlite3"
+        _make_audited_db_with_non_json_value(db, "autoload", "yes please")
+
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+
+        assert cold_reader.read_setting("autoload", db_path=db) is False
+        old_value, new_value = _audit_values(db, "autoload")
+        assert json.loads(old_value) == "yes please"
+        assert new_value == "false"
+
+    def test_a_non_json_stored_secret_is_masked_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "hand-edited-secret.sqlite3"
+        _make_audited_db_with_non_json_value(db, "banned_term_registry", "private-marker")
+
+        outcome = cold_writer.write_setting("banned_term_registry", {"leak": ["other-marker"]}, db_path=db)
+
+        assert outcome.result is WriteResult.WROTE
+        old_value, new_value = _audit_values(db, "banned_term_registry")
+        assert json.loads(old_value) == MASKED
+        assert "private-marker" not in old_value + new_value
+        assert "other-marker" not in old_value + new_value
 
 
 class TestNoDbTierIsClassified:
@@ -207,3 +363,55 @@ class TestValueAndGenerationCommitTogether:
 
         assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
         assert cold_reader.read_setting(GENERATION_KEY, scope="", db_path=db) == 1
+
+
+def _make_audited_db(path: Path) -> None:
+    _make_real_schema_db(path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(_AUDIT_SCHEMA)
+        conn.commit()
+
+
+def _stored_tables(path: Path) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    with closing(sqlite3.connect(path)) as conn:
+        settings = conn.execute("SELECT * FROM teatree_config_setting ORDER BY id").fetchall()
+        audit = conn.execute("SELECT * FROM teatree_config_setting_change ORDER BY id").fetchall()
+    return settings, audit
+
+
+class TestRescueWriteHonoursDeclaredBounds:
+    """The Django-free writer refuses what the manager refuses, and never locks a gate out."""
+
+    def test_a_below_floor_value_is_refused_and_leaves_the_row_and_the_audit_untouched(self, tmp_path: Path) -> None:
+        db = tmp_path / "bounded.sqlite3"
+        _make_audited_db(db)
+        assert cold_writer.write_setting("agent_max_turns", 3000, db_path=db).result is WriteResult.WROTE
+        before = _stored_tables(db)
+
+        with pytest.raises(ValueError, match=r"agent_max_turns must be 0 .* or at least 300, got 9"):
+            cold_writer.write_setting("agent_max_turns", 9, db_path=db)
+
+        assert cold_reader.read_setting("agent_max_turns", db_path=db) == 3000
+        assert _stored_tables(db) == before
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("agent_max_turns", 3000), ("agent_max_turns", 300), ("agent_max_turns", 0), ("autoload", False)],
+    )
+    def test_an_in_range_or_boolean_gate_value_still_writes_and_is_audited(
+        self, tmp_path: Path, key: str, value: ConfigWriteValue
+    ) -> None:
+        db = tmp_path / "in-range.sqlite3"
+        _make_audited_db(db)
+
+        assert cold_writer.write_setting(key, value, db_path=db).result is WriteResult.WROTE
+
+        assert cold_reader.read_setting(key, db_path=db) == value
+        assert _audit_values(db, key) == (None, json.dumps(value))
+
+    def test_no_key_the_gate_cli_writes_carries_a_declared_bound(self) -> None:
+        gate_keys = {
+            value for name, value in vars(teatree_gate).items() if name.endswith("_KEY") and isinstance(value, str)
+        }
+        assert teatree_gate.DANGER_GATE_FAIL_OPEN_KEY in gate_keys
+        assert gate_keys & SETTING_BOUNDS.keys() == set()

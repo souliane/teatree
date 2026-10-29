@@ -102,7 +102,11 @@ def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
     """Report the write cause, then verify the gate's own resolved value."""
     from teatree.config import cold_writer  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    outcome = cold_writer.write_setting(key, enabled)
+    try:
+        outcome = cold_writer.write_setting(key, enabled)
+    except (ValueError, cold_writer.DbBoundaryError) as exc:
+        typer.echo(f"ERROR: `{key}` did NOT take: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if outcome.result is not cold_writer.WriteResult.WROTE:
         typer.echo(f"ERROR: `{key}` did NOT take at {outcome.db}: {outcome.detail}", err=True)
         raise typer.Exit(code=1)
