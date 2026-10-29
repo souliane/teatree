@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0030_disk_reclaim_cursor"),
+        ("core", "0031_review_hold_disposition_and_merge_attribution"),
     ]
 
     operations = [

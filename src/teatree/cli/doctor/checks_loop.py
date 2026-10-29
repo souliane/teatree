@@ -8,6 +8,8 @@ import datetime as dt
 from typing import TYPE_CHECKING
 
 import typer
+from django.apps import apps
+from django.db import DatabaseError
 
 from teatree.loop.preset_resolution import consistency_findings
 
@@ -382,6 +384,17 @@ def _check_unconsumed_merge_clears() -> bool:
     for line in report.lines():
         typer.echo(line)
     return not report.stalled
+
+
+def _check_missing_clear_actor_kind() -> bool:
+    try:
+        missing = apps.get_model("core", "MergeClear").objects.filter(actor_kind="", consumed_at__isnull=True).count()
+    except (DatabaseError, LookupError) as exc:
+        typer.echo(f"WARN  Clearance actor-kind check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if missing:
+        typer.echo(f"WARN  {missing} merge clearances have no recorded actor kind")
+    return True
 
 
 def _check_t3_master_unheld_while_loops_tick() -> bool:

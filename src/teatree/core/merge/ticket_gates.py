@@ -18,7 +18,7 @@ from teatree.core.gates import anti_vacuity_gate, rubric_gate
 from teatree.core.gates.anti_vacuity_gate import AntiVacuityAttestationError
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.merge.ticket_resolution import resolve_gated_ticket
+from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,17 @@ def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
         logger.warning("merge of %s#%s is outside the ticket-scoped gates: no owning ticket resolves", slug, pr_id)
         return
     try:
-        anti_vacuity_gate.check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
+        attestation_error: AntiVacuityAttestationError | None = None
+        for candidate in related_gated_tickets(slug=slug, pr_id=pr_id):
+            try:
+                anti_vacuity_gate.check_anti_vacuity_attestation(candidate, head_sha, transition="merge")
+                break
+            except AntiVacuityAttestationError as exc:
+                attestation_error = attestation_error or exc
+        else:
+            if attestation_error is not None:
+                raise attestation_error
+            anti_vacuity_gate.check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
         rubric_gate.check_rubric_satisfied(ticket, head_sha, transition="merge")
     except (AntiVacuityAttestationError, RubricNotSatisfiedError) as exc:
         raise MergePreconditionError(str(exc)) from exc

@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.agents.codex_read_only_executor import DRAFT_PHASES
 from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES
 from teatree.agents.read_only_venue_brief import (
@@ -17,6 +18,7 @@ from teatree.agents.read_only_venue_brief import (
     READ_ONLY_DIRECTIVE,
     REVIEW_CHECKS_CAP_BYTES,
     REVIEW_DIFF_CAP_BYTES,
+    REVIEW_EVIDENCE_CAP_BYTES,
     SURVEY_CAP_BYTES,
     TICKET_CONTEXT_CAP_BYTES,
     ReadOnlyFacts,
@@ -52,10 +54,15 @@ class TestReadOnlyPhaseBudget(TestCase):
             "survey": SURVEY_CAP_BYTES,
             "review_diff": REVIEW_DIFF_CAP_BYTES,
             "review_checks": REVIEW_CHECKS_CAP_BYTES,
+            "review_plan": REVIEW_EVIDENCE_CAP_BYTES,
+            "review_red": REVIEW_EVIDENCE_CAP_BYTES,
             "draft_facts": DRAFT_FACTS_CAP_BYTES,
         }
         assert {field.name for field in fields(ReadOnlyFacts)} == {*caps, "review_head"}
-        worst_bytes = MAX_APPEND_BYTES + sum(caps.values()) + 8 * 1024 + 40
+        assert "reviewing" not in DRAFT_PHASES
+        shared_caps = sum(cap for name, cap in caps.items() if name not in {"review_plan", "review_red", "draft_facts"})
+        phase_caps = max(2 * REVIEW_EVIDENCE_CAP_BYTES, DRAFT_FACTS_CAP_BYTES)
+        worst_bytes = MAX_APPEND_BYTES + shared_caps + phase_caps + 8 * 1024 + 40
         assert 5 * worst_bytes <= 4 * _CODEX_WINDOW_TOKENS * _MEASURED_BYTES_PER_TOKEN
 
     def test_an_overrun_names_the_skill_sections_and_what_this_branch_changed(self) -> None:

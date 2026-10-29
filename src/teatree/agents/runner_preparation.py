@@ -16,6 +16,7 @@ from teatree.agents._runner_env import (
 )
 from teatree.agents._runner_options import SpawnOverrides, _build_options, _turn_ceiling
 from teatree.agents.compaction_guard import CompactionGuard
+from teatree.agents.dispatch_preflight import resolve_head_state
 from teatree.agents.harness import Harness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
@@ -116,6 +117,21 @@ def _native_compaction_env(env: dict[str, str] | None, dispatch: DispatchHarness
     return child_env
 
 
+def _record_brief_start_head(task: Task, phase: str) -> None:
+    if phase not in {"coding", "debugging"} or (state := resolve_head_state(task)) is None:
+        return
+    task.ticket.refresh_from_db(fields=["extra"])
+    prior = (task.ticket.extra or {}).get("brief_start_heads") or {}
+    if isinstance(prior, dict) and str(task.pk) in prior:
+        return
+    task.ticket.merge_extra(merge_into_dicts={"brief_start_heads": {str(task.pk): state.sha}})
+    task.ticket.refresh_from_db(fields=["extra"])
+    recorded = (task.ticket.extra or {}).get("brief_start_heads") or {}
+    if recorded.get(str(task.pk)) != state.sha:
+        message = f"dispatch head could not be recorded for task {task.pk}"
+        raise RuntimeError(message)
+
+
 def prepare_run(
     task: Task,
     preflight: Preflight,
@@ -183,6 +199,7 @@ def prepare_run(
             effort=dispatch.effort,
         ),
     )
+    _record_brief_start_head(task, phase)
     return PreparedRun(prompt, options, guard, assurance)
 
 

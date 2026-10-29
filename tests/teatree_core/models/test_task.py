@@ -12,16 +12,121 @@ from django.test import TestCase
 from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
-from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import (
+    DeferredQuestion,
+    InvalidTransitionError,
+    PullRequest,
+    ReviewVerdict,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.review_target import REVIEW_RETRY_HEAD_KEY
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
 from tests.factories import planned_ticket
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+_LIVE_SLUG = "souliane/teatree"
+_LIVE_PR = 77
+_HEAD_A = "a" * 40
+_HEAD_B = "b" * 40
+
+
+def _live_head_review(*, returned_head: str) -> Task:
+    """A claimed reviewing task for an author ticket's one open PR, whose attempt returned a verdict."""
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=f"https://github.com/{_LIVE_SLUG}/issues/5")
+    PullRequest.objects.create(
+        ticket=ticket,
+        url=f"https://github.com/{_LIVE_SLUG}/pull/{_LIVE_PR}",
+        repo=_LIVE_SLUG,
+        iid=str(_LIVE_PR),
+        state=PullRequest.State.OPEN,
+    )
+    task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+    task.claim(claimed_by="worker")
+    TaskAttempt.objects.create(
+        task=task, result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": returned_head}}
+    )
+    return task
+
+
+def _record_pass(*, head: str, ticket: Ticket | None) -> None:
+    ReviewVerdict.record(
+        pr_id=_LIVE_PR,
+        slug=_LIVE_SLUG,
+        reviewed_sha=head,
+        verdict="merge_safe",
+        reviewer_identity="cold-reviewer",
+        ticket=ticket,
+    )
 
 
 class TestTask(TestCase):
+    def test_pr_review_attempt_without_a_verdict_cannot_complete(self) -> None:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url="https://github.com/souliane/teatree/pull/42",
+            extra={"reviewed_sha": "a" * 40},
+        )
+        ticket.record_review_context("issue", ["spec"], "checked against spec")
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.claim(claimed_by="worker")
+        TaskAttempt.objects.create(task=task, result={"summary": "finished"})
+
+        with pytest.raises(InvalidTransitionError, match="review outcome"):
+            task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.attempts.count() == 1
+
+    def test_review_cannot_complete_without_a_recorded_attempt(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER)
+        ticket.record_review_context("issue", ["spec"], "checked against spec")
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.claim(claimed_by="worker")
+
+        with pytest.raises(InvalidTransitionError, match=r"review.*attempt"):
+            task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_live_head_review_completes_on_its_tickets_verdict_at_the_returned_head(self) -> None:
+        task = _live_head_review(returned_head=_HEAD_A)
+        _record_pass(head=_HEAD_A, ticket=task.ticket)
+
+        task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_live_head_review_cannot_complete_on_a_verdict_at_another_head(self) -> None:
+        task = _live_head_review(returned_head=_HEAD_A)
+        _record_pass(head=_HEAD_B, ticket=task.ticket)
+
+        with pytest.raises(InvalidTransitionError, match="review outcome"):
+            task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_live_head_review_keeps_the_head_bound_lookup_for_a_retry_head(self) -> None:
+        task = _live_head_review(returned_head=_HEAD_B)
+        task.ticket.merge_extra(merge_into_dicts={REVIEW_RETRY_HEAD_KEY: {str(task.pk): _HEAD_A}})
+        _record_pass(head=_HEAD_A, ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR))
+
+        task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")

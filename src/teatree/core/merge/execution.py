@@ -17,12 +17,9 @@ are documented on :func:`assert_merge_preconditions` / :func:`execute_bound_merg
 import dataclasses
 import logging
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import wraps
 from typing import TYPE_CHECKING
 
-from teatree import forge_credentials
 from teatree.core.backend_protocols import DraftState, PrMessage
 from teatree.core.merge.authorization import (
     MergePrecheck,
@@ -35,7 +32,7 @@ from teatree.core.merge.authorization import (
     assert_no_active_review_lock,
     assert_review_verdict_gate,
 )
-from teatree.core.merge.bound_token import bound_merge_token, bound_token_active
+from teatree.core.merge.bound_token import bind_repository_merge_token
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
@@ -60,17 +57,16 @@ MERGE_TRANSIENT_ATTEMPTS = 3
 MERGE_TRANSIENT_BASE_DELAY = 0.5
 
 
-def _bind_repository_merge_token(merge: Callable[..., str]) -> Callable[..., str]:
-    @wraps(merge)
-    def bound(*, ref: PrRef, expected_head_oid: str, squash: bool = True) -> str:
-        if ref.host_kind == "gitlab" and not bound_token_active(ref.slug):
-            resolution = forge_credentials.resolve_slug_token(ref.slug, forge="gitlab", credential="gitlab_token")
-            if resolution.state is forge_credentials.ForgeTokenState.TOKEN:
-                with bound_merge_token(ref.slug, resolution.token):
-                    return merge(ref=ref, expected_head_oid=expected_head_oid, squash=squash)
-        return merge(ref=ref, expected_head_oid=expected_head_oid, squash=squash)
-
-    return bound
+def verified_merge_forge_account(query: CodeHostQuery) -> str:
+    try:
+        account = query.backend.current_user().strip()
+    except Exception as exc:
+        msg = "merge forge account could not be verified before execution"
+        raise MergePreconditionError(msg) from exc
+    if not account:
+        msg = "merge forge account could not be verified before execution"
+        raise MergePreconditionError(msg)
+    return account
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,12 +314,13 @@ def assert_ci_not_failed(query: CodeHostQuery) -> None:
         raise MergePreconditionError(msg)
 
 
-@_bind_repository_merge_token
+@bind_repository_merge_token
 def execute_bound_merge(
     *,
     ref: PrRef,
     expected_head_oid: str,
     squash: bool = True,
+    query: CodeHostQuery | None = None,
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
 
@@ -371,7 +368,10 @@ def execute_bound_merge(
     argument the gates above rest on, applied to the one post-merge fact that was
     written only by the keystone before (#3984).
     """
-    query = CodeHostQuery.for_ref(ref)
+    query = query or CodeHostQuery.for_ref(ref)
+    if query.ref != ref:
+        msg = "bound merge query does not match the reviewed pull request"
+        raise MergePreconditionError(msg)
     slug, pr_id = ref.slug, ref.pr_id
     # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_bound`` →
     # here) reaches this shared chokepoint with NO keystone preconditions run, so
@@ -595,7 +595,13 @@ def _merge_ticket_pr_inner(
         reconciled = True
     else:
         clear.bind_merge_mode(squash=squash)
-        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha, squash=squash)
+        merge_query = CodeHostQuery.for_ref(ref)
+        if clear.actor_kind:
+            clear.merge_forge_account = verified_merge_forge_account(merge_query)
+            clear.save(update_fields=["merge_forge_account"])
+        merged_sha = execute_bound_merge(
+            ref=ref, expected_head_oid=precheck.verified_sha, squash=squash, query=merge_query
+        )
         reconciled = False
     # Post-merge, for the AUDIT only: no gate reads this back, so an ``unreadable``
     # verdict is stamped as-is rather than laundered into a false ``failed``.
@@ -609,6 +615,7 @@ def _merge_ticket_pr_inner(
             expedited_by=precheck.expedited_by,
             standing_delegation_by=precheck.standing_delegation_by,
             merged_without_squash=clear.merged_without_squash,
+            forge_account=clear.merge_forge_account,
         ),
     )
     logger.info(
