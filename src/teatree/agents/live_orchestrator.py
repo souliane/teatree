@@ -5,7 +5,7 @@ import json
 import logging
 import threading
 from contextlib import suppress
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from django.db import DatabaseError, close_old_connections
 from django.db.models import Q
@@ -33,6 +33,7 @@ class OrchestratorAnswer(TypedDict):
     answer_to: str | None
     verdict: str
     decisions: list[dict[str, str]]
+    limit: NotRequired[str]
 
 
 def _recorded_decisions(ticket: str, kind: OwnerDecision) -> list[dict[str, str]]:
@@ -72,7 +73,7 @@ def _answer(text: str, ticket: str) -> OrchestratorAnswer:
     if kind not in OWNER_RAISABLE_DECISIONS:
         return {"type": "answer", "answer_to": nonce, "verdict": "unsupported", "decisions": []}
     if kind in OWNER_KEPT_DECISIONS:
-        return {"type": "answer", "answer_to": nonce, "verdict": "owner_only", "decisions": []}
+        return {"type": "answer", "answer_to": nonce, "verdict": "owner_only", "decisions": [], "limit": kind.value}
     try:
         decisions = _recorded_decisions(ticket, kind)
     except DatabaseError:
@@ -91,6 +92,7 @@ def _answer(text: str, ticket: str) -> OrchestratorAnswer:
 async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdentity, stop: threading.Event) -> None:
     cursor = 0
     replies = 0
+    reply_identity = broker.register(room="0", harness="orchestrator_reply", label="orchestrator reply")
     try:
         while not stop.is_set():
             client = MailboxClient(identity.socket_path, identity.token)
@@ -108,18 +110,20 @@ async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdenti
                 sender = next((peer for peer in peers if peer["address"] == message["from"]), None)
                 response = await asyncio.to_thread(_answer, message["text"], sender.get("ticket", "") if sender else "")
                 try:
-                    await client.send(message["from"], json.dumps(response), f"re:{message['id']}", timeout_seconds=0.1)
+                    await MailboxClient(reply_identity.socket_path, reply_identity.token).send(
+                        message["from"], json.dumps(response), f"re:{message['id']}", timeout_seconds=0.1
+                    )
                 except MailboxError:
                     logger.warning("Orchestrator mailbox reply was not accepted", exc_info=True)
                 replies += 1
                 if replies >= MAX_SENT_KEYS // 2:
-                    replacement = broker.register(room="0", harness="orchestrator", label="orchestrator")
-                    broker.unregister(identity.address)
-                    identity = replacement
-                    client = MailboxClient(identity.socket_path, identity.token)
+                    replacement = broker.register(room="0", harness="orchestrator_reply", label="orchestrator reply")
+                    broker.unregister(reply_identity.address)
+                    reply_identity = replacement
                     replies = 0
-                    logger.info("Orchestrator mailbox identity rotated")
+                    logger.info("Orchestrator reply sender rotated")
     finally:
+        broker.unregister(reply_identity.address)
         broker.unregister(identity.address)
         close_thread_db_connections()
 

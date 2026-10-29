@@ -14,11 +14,7 @@ Six report groups with these scopes:
 * **In-flight** — the latest :class:`TicketTransition` per ticket inside the
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
-* **Needs you** — all four live waiting kinds (NOT window-bounded: a
-    pending wait still needs the user however old it is) plus failed
-    ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
-    proxy for "blocked" — core makes no live forge calls; an overlay opts into
-    richer signals via :meth:`OverlayBase.get_checking_sources`.
+* **Needs you** — live owner waits, independent of the report window.
 * **Triage suggestions** — pending assessor recommendations, listed for review
     without counting them as owner decisions.
 * **Metered** — one row per ticket with metered attempts inside the window,
@@ -44,7 +40,6 @@ from django.db.models import Count, Max, Sum
 from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
-    failed_attempts,
     merged_entries_from_qs,
     merged_group_from_qs,
     motion_for_overlay,
@@ -65,13 +60,13 @@ from teatree.core.models.pending_triage_recommendation import PendingTriageRecom
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.waiting import WaitingKind, format_age, gather_waiting
+from teatree.core.waiting import WaitingKind, format_age, gather_owner_waiting
 
 CheckItemDict = checking_types.CheckItemDict
 
 
 def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
-    waits = sorted(gather_waiting(overlay), key=lambda entry: entry.age, reverse=True)
+    waits = sorted(gather_owner_waiting(), key=lambda entry: entry.age, reverse=True)
     items: list[OwnerWaitItem] = []
     for wait in waits:
         question = wait.kind == WaitingKind.QUESTION
@@ -314,7 +309,7 @@ def gather_all_overlays_report(
     Overlay-scoped items (merged, in-flight, failed attempts) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
     """
-    merged_entries, in_flight_items, failed_items, earliest_since = _accumulate_overlays(
+    merged_entries, in_flight_items, earliest_since = _accumulate_overlays(
         overlay_windows=overlay_windows, overlay_configs=overlay_configs
     )
     in_flight_items.sort(
@@ -323,7 +318,6 @@ def gather_all_overlays_report(
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
     needs_you_items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug))
-    needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
         _metered_entries(since=since, now=now, overlay_name=name, overlay_tag=f"[{name}]", cap=cap)
@@ -361,12 +355,10 @@ def _accumulate_overlays(
     *,
     overlay_windows: dict[str, tuple[datetime, datetime]],
     overlay_configs: dict[str, tuple[str, list[str]]],
-) -> tuple[list[tuple[datetime, CheckItem]], list[CheckItem], list[CheckItem], datetime | None]:
+) -> tuple[list[tuple[datetime, CheckItem]], list[CheckItem], datetime | None]:
     merged_entries: list[tuple[datetime, CheckItem]] = []
     in_flight_items: list[CheckItem] = []
-    failed_items: list[CheckItem] = []
     seen_in_flight: set[int] = set()
-    seen_failed: set[int] = set()
     earliest_since: datetime | None = None
 
     for overlay_name, window in overlay_windows.items():
@@ -378,18 +370,16 @@ def _accumulate_overlays(
         merged_entries.extend(
             merged_entries_from_qs(since=window[0], now=window[1], scope=scope, overlay_tag=overlay_tag)
         )
-        new_in_flight, new_failed = motion_for_overlay(
+        new_in_flight = motion_for_overlay(
             window=window,
             overlay_name=overlay_name,
             overlay_tag=overlay_tag,
             seen_in_flight=seen_in_flight,
-            seen_failed=seen_failed,
         )
         in_flight_items.extend(new_in_flight)
-        failed_items.extend(new_failed)
 
     merged_entries.sort(key=operator.itemgetter(0), reverse=True)
-    return merged_entries, in_flight_items, failed_items, earliest_since
+    return merged_entries, in_flight_items, earliest_since
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -422,7 +412,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         since=since,
         merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
-        needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        needs_you=_needs_you_group(overlay_name=overlay_name, cap=cap),
         triage_suggestions=_triage_suggestions_group(overlay_name=overlay_name, cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
@@ -505,24 +495,7 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
     return CheckGroup(title="In-flight", items=items[:cap], total=len(items))
 
 
-def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
+def _needs_you_group(*, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
     items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name))
-
-    failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
-    seen_tickets: set[int] = set()
-    for attempt in failed:
-        tick = attempt.task.ticket
-        if tick.pk in seen_tickets:
-            continue
-        seen_tickets.add(tick.pk)
-        items.append(
-            CheckItem(
-                label=f"#{tick.ticket_number}",
-                url=ticket_url(tick),
-                detail="failed agent run",
-                title=tick.short_description,
-            ),
-        )
-
     return CheckGroup(title="Needs you", items=items[:cap], total=len(items))

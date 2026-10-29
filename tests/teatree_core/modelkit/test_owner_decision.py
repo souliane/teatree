@@ -1,3 +1,5 @@
+from teatree.core.modelkit.escape_scope import ESCAPE_SCOPE_FIELDS
+from teatree.core.modelkit.owner_action import OwnerActionKind, read_action
 from teatree.core.modelkit.owner_decision import (
     OWNER_QUESTION_ROUTE,
     OWNER_RAISABLE_DECISIONS,
@@ -25,6 +27,15 @@ class TestOwnerQuestionRoute:
 
 
 class TestOwnerDecision:
+    def test_every_decision_and_action_kind_has_an_explicit_classification(self) -> None:
+        assert set(OWNER_RAISABLE_DECISIONS) == set(OwnerDecision) - {OwnerDecision.PRODUCT_SCOPE}
+        assert all(owner_decision(kind.value) is kind for kind in OwnerDecision)
+        for kind in OwnerActionKind:
+            action: dict[str, object] = {"kind": kind.value, "target": "one", "binding": "head"}
+            if kind is OwnerActionKind.ESCAPE:
+                action["scope"] = dict.fromkeys(ESCAPE_SCOPE_FIELDS, "one")
+            assert read_action({"action": action}) == action
+
     def test_parses_a_known_kind_and_rejects_anything_else(self) -> None:
         assert owner_decision("architecture") is OwnerDecision.ARCHITECTURE
         assert owner_decision("whim") is None

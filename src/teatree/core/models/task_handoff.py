@@ -197,9 +197,13 @@ def schedule_card_discussion(task: Task, *, event_id: str, message: str) -> Task
             status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
         ).first()
         if pending is not None:
-            pending.execution_reason = f"{pending.execution_reason}\n{marker}{message}"
-            pending.save(update_fields=["execution_reason"])
-            return pending
+            expanded = f"{pending.execution_reason}\n{marker}{message}"
+            still_pending = Task.objects.filter(
+                pk=pending.pk, status=Task.Status.PENDING, execution_reason=pending.execution_reason
+            )
+            if still_pending.update(execution_reason=expanded):
+                pending.execution_reason = expanded
+                return pending
         refuse_unplanned_mint(task.ticket, phase=task.phase)
         last = task.attempts.order_by("-pk").first()
         agent_session_id = last.agent_session_id if last else ""

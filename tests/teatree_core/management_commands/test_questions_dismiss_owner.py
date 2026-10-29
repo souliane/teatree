@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.modelkit.owner_action import OwnerActionKind
 from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision
 from teatree.core.models import Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
@@ -11,11 +12,16 @@ from tests._owner_channel import owner_card
 from tests.factories import planned_ticket
 
 
-def _dismiss(*ids: int, owner: bool = False, dispatched: bool = False, resolver: str = "") -> tuple[int, str]:
+def _dismiss(
+    *ids: int, owner: bool = False, dispatched: bool = False, resolver: str = "", agent_env: str = ""
+) -> tuple[int, str]:
     stderr = StringIO()
+    environment = {"T3_DISPATCHED_AGENT": "1"} if dispatched else {}
+    if agent_env:
+        environment[agent_env] = "agent-session"
     with (
         patch("teatree.core.management.commands.owner_action_auth.sys.stdin.isatty", return_value=owner),
-        patch.dict("os.environ", {"T3_DISPATCHED_AGENT": "1"} if dispatched else {}, clear=True),
+        patch.dict("os.environ", environment, clear=True),
     ):
         try:
             call_command("questions", "dismiss", *ids, "--resolver", resolver, stderr=stderr)
@@ -57,12 +63,22 @@ class TestOwnerDismissal(TestCase):
         assert DeferredQuestion.objects.get(pk=row.pk).status == "dismissed"
         assert DeferredQuestionAudit.objects.filter(question=row, action="dismissed").exists()
 
+    def test_attended_and_codex_session_markers_cannot_claim_direct_owner_authority(self) -> None:
+        for agent_env in ("CLAUDECODE", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            with self.subTest(agent_env=agent_env):
+                row = self._card(OwnerDecision.CREDENTIALS)
+                code, error = _dismiss(row.pk, owner=True, agent_env=agent_env)
+                assert code == 2
+                assert "credentials" in error
+                assert DeferredQuestion.objects.get(pk=row.pk).is_pending
+
     def test_mixed_batch_dismisses_allowed_cards_and_names_refused_ids(self) -> None:
         kept = self._card(OwnerDecision.CREDENTIALS)
         allowed = self._card(OwnerDecision.ARCHITECTURE)
         code, error = _dismiss(kept.pk, allowed.pk)
         assert code == 0
         assert str(kept.pk) in error
+        assert "credentials" in error
         assert DeferredQuestion.objects.get(pk=kept.pk).is_pending
         assert DeferredQuestion.objects.get(pk=allowed.pk).status == "dismissed"
 
@@ -89,6 +105,17 @@ class TestOwnerDismissal(TestCase):
             ).count()
             == 3
         )
+
+    def test_escape_and_void_action_cards_cannot_be_dismissed_by_an_agent(self) -> None:
+        for action in OwnerActionKind.ESCAPE, OwnerActionKind.VOID:
+            with self.subTest(action=action):
+                row = self._card(OwnerDecision.IRREVERSIBLE)
+                row.evidence = {**row.evidence, "action": {"kind": action.value, "target": "one", "binding": "head"}}
+                row.save(update_fields=["evidence"])
+                code, error = _dismiss(row.pk, dispatched=True)
+                assert code == 2
+                assert "irreversible" in error
+                assert DeferredQuestion.objects.get(pk=row.pk).is_pending
 
     def test_finished_subject_remains_dismissible(self) -> None:
         ticket = planned_ticket()

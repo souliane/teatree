@@ -455,7 +455,7 @@ class Command(MachineOutputCommand):
         clean_reason = reason.strip() or "no longer relevant"
         dismissed: list[int] = []
         skipped: list[int] = []
-        refused: list[int] = []
+        refused: list[tuple[int, str]] = []
         direct_owner = direct_owner_action()
         dispatched = is_dispatched_agent_process()
         for question_id in question_ids:
@@ -469,7 +469,8 @@ class Command(MachineOutputCommand):
                     if pending is not None and dismiss_kept_for_owner(
                         pending, direct_owner=direct_owner, dispatched=dispatched
                     ):
-                        refused.append(question_id)
+                        card = QuestionCard.from_row(pending.evidence, pending.options_json)
+                        refused.append((question_id, card.decision.value if card is not None else "unknown decision"))
                         continue
                     row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
                     if row is None:
@@ -490,7 +491,7 @@ class Command(MachineOutputCommand):
         if skipped:
             self.stderr.write(f"not found or already resolved: {', '.join(str(i) for i in skipped)}")
         if refused:
-            self.stderr.write(f"owner decision required: {', '.join(f'#{pk}' for pk in refused)}")
+            self.stderr.write(f"owner decision required: {', '.join(f'#{pk} ({kind})' for pk, kind in refused)}")
         if not dismissed:
             raise SystemExit(2 if refused else 1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."

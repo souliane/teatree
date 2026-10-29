@@ -18,7 +18,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (READ-ONLY — never starts work, never transitions a ticket, never posts), then advances per-overlay markers. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` reconciles pending owner questions against recorded answers, then prints a terse, grouped, clickable report of important changes since the user's last check and advances per-overlay markers. That reconciliation can close exact repeats and resume their parked tasks. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -26,7 +26,7 @@ The user does NOT want a long report. Answer first; one idea per line.
 
 Load `/t3:checking` when the user wants a quick "what happened while I was away?" — phrasings like "what did I miss", "catch me up", "what changed since" — or when they want to answer the backlog from here ("ask me the questions", "shoot me the questions").
 
-The catch-up report stays read-only. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
+The report gatherer stays read-only; the command's prior reconciliation can write question and task rows. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
 
 ## Walking the owner waits (no mode flip)
 
@@ -66,7 +66,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
-- **Needs you** — all four live `gather_waiting` kinds, oldest first and not window-bounded, then failed `TaskAttempt` runs excluding operator cancellations. Question items carry their row id and subject link; each wait carries its kind, age in days and owner-only flag. Internal escalations are a separate count and trailing terse line, not Needs you items. The waiting gather runs once for the whole default report, so a global question never appears twice. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
+- **Needs you** — unresolved cards for the four owner limits or an architecture decision, oldest first and not window-bounded. Question items carry their row id and subject link; each carries its age in days and owner-only flag. Failed runs, review waits, merge waits, manual waits and internal escalations stay in the factory inventory. The owner waiting gather runs once for the whole default report, so a global question never appears twice.
 - **Triage suggestions** — PENDING recommendations from the assessor, shown for review without adding owner decisions to Needs you.
 - **Metered** — one row per ticket with metered attempts inside the window, overlay-scoped, with attempt count and total cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
 - **Remaining** — live PR and active pre-PR steps, a global queue by phase with oldest pending age and phase and admission seats, held tickets with reasons, and per-item and total ETA ranges. Rows run Total, Queue, open PRs, pre-PR tickets, then held tickets. A dormant count alone still renders Total and Queue. The range sums median and p80 of completed-task durations (`Task.admitted_at` to the last real `TaskAttempt.ended_at`), merge CLEAR-to-audit spans, and merge-to-delivered spans. Each duration names its source, sample count, and 24h or 7d window. Sparse steps use the slowest measured median and p80 sources as named defaults; fewer than five samples in every source yield `ETA unknown` with no numeric default. Running steps use only samples that outlast elapsed time, widening from 24h to 7d for the same measured step when recent samples have no survivors; sparse defaults are reselected after that filter and name their window. Total and Queue are fixed meta rows, so the cap and `total` count only work rows. A merge-safe pass is compared with the newest recorded review head, not the PR live head: a later push without a new verdict can make Remaining omit review steps. Remaining is a snapshot, independent of `--since` and checkpoints, and never enters the `--notify` recap hash or DM. `--json` carries the same item details and figures.

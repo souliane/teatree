@@ -590,15 +590,15 @@ def _waiting_clause() -> str:
 
 
 def _waiting_count() -> int:
-    """Count every entry waiting on the user across all kinds (PR-21).
+    """Count only unresolved decisions addressed to the owner.
 
     Thin DB-read seam so :func:`live_loops_anchor` stays a pure formatter —
     tests stub this rather than constructing the underlying fixtures. Scoped to
-    every overlay (``""``) so the loop line shows the operator's whole backlog.
+    all overlays so the loop line shows the owner's actual decision backlog.
     """
-    from teatree.core.waiting import gather_waiting  # noqa: PLC0415 — deferred: keep this module Django-free at import
+    from teatree.core import waiting  # noqa: PLC0415 — deferred: keep this module Django-free at import
 
-    return len(gather_waiting(""))
+    return len(waiting.gather_owner_waiting())
 
 
 def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:

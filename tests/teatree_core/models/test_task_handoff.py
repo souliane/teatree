@@ -16,8 +16,10 @@ decision (``user_input_kind``) is an owner question (#5096).
 
 import dataclasses
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
+from django.db.models import QuerySet
 from django.test import TestCase
 from django.utils import timezone
 
@@ -319,6 +321,30 @@ class TestResumeNeedsAPlan(TestCase):
 
 
 class TestCardDiscussionContinuation(TestCase):
+    def test_claim_between_read_and_append_preserves_running_discussion_prompt(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        discussion = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        prompt = discussion.execution_reason
+        original_first = QuerySet.first
+        claimed = False
+
+        def claim_after_read(queryset: QuerySet[Task]) -> Task | None:
+            nonlocal claimed
+            row = original_first(queryset)
+            if row is not None and row.pk == discussion.pk and not claimed:
+                Task.objects.filter(pk=discussion.pk).update(status=Task.Status.CLAIMED)
+                claimed = True
+            return row
+
+        with patch.object(QuerySet, "first", claim_after_read):
+            next_discussion = schedule_card_discussion(parked, event_id="two", message="Explain the exception")
+
+        assert claimed
+        assert next_discussion.pk != discussion.pk
+        assert Task.objects.get(pk=discussion.pk).execution_reason == prompt
+        assert "Explain the exception" in next_discussion.execution_reason
+
     def test_claimed_discussion_keeps_its_prompt_and_a_new_resume_child_carries_the_answer(self) -> None:
         ticket = planned_ticket()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")

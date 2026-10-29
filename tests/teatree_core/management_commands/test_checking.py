@@ -28,7 +28,7 @@ from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import BotPing, PendingTriageRecommendation, Session, Task, TaskAttempt, WaitingItem
+from teatree.core.models import BotPing, PendingTriageRecommendation, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -556,10 +556,7 @@ class TestCheckingRemaining:
             with _two_overlay_patch():
                 payload = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
             labels = [item["label"] for item in payload["needs_you"]["items"]]
-            assert "#801" not in labels
-            assert "#802" in labels
-            assert "#803" in labels
-            assert "#804" not in labels
+            assert not labels
 
     def test_remaining_alone_does_not_notify(self, checkpoint_file: Path) -> None:
         self._open_pr()
@@ -1369,9 +1366,13 @@ class TestCheckingNotify:
 
     @pytest.mark.parametrize("aged", [timedelta(minutes=5), timedelta(hours=5), timedelta(days=2)])
     def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path, aged: timedelta) -> None:
-        wait = WaitingItem.objects.add("Read the pending review")
+        wait = DeferredQuestion.record(
+            "May I widen this credential's use?",
+            card=owner_card(OwnerDecision.CREDENTIALS),
+            dedupe_marker="checking-recap-owner-wait",
+        )
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
+        DeferredQuestion.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
 
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 

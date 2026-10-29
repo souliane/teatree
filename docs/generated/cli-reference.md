@@ -12163,7 +12163,7 @@ Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree checking show [OPTIONS]
 
- Print a terse, grouped, clickable report of changes since the last check.
+ Reconcile owner questions and print changes since the last check.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --since               TEXT  ISO timestamp override for the window start      │
@@ -12267,9 +12267,10 @@ Usage: t3 teatree waiting [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree waiting list [OPTIONS]
 
- List everything currently waiting on the user.
+ List owner decisions, or the full factory inventory with --all.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all                  Include internal merge, review, and manual waits.     │
 │ --overlay        TEXT  Scope merge/review entries to this overlay (default:  │
 │                        all).                                                 │
 │ --json                 Emit the entries as JSON instead of the table view.   │

@@ -14,6 +14,7 @@ from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.task_handoff import schedule_resume
 
 logger = logging.getLogger(__name__)
+_HEADLESS_MARKER_PARTS = 3
 
 
 def eligible_for_coordination(row: DeferredQuestion) -> bool:
@@ -70,10 +71,24 @@ def _basis_matches(row: DeferredQuestion, basis: DeferredQuestion) -> bool:
         return False
     return (
         not is_action_question(basis)
-        and row.dedupe_marker == basis.dedupe_marker
+        and _same_producer(row.dedupe_marker, basis.dedupe_marker)
         and row_card.checked == basis_card.checked
         and row_card.subject == basis_card.subject
         and row_card.quoted == basis_card.quoted
+    )
+
+
+def _same_producer(marker: str, basis_marker: str) -> bool:
+    if marker == basis_marker:
+        return True
+    parts = marker.split(":")
+    basis_parts = basis_marker.split(":")
+    return (
+        len(parts) == len(basis_parts) == _HEADLESS_MARKER_PARTS
+        and parts[0] == basis_parts[0] == "needs-input"
+        and parts[1].isdecimal()
+        and basis_parts[1].isdecimal()
+        and parts[2] == basis_parts[2]
     )
 
 

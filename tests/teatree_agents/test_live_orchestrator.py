@@ -3,7 +3,6 @@ import json
 import sqlite3
 import tempfile
 import threading
-import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
@@ -151,6 +150,15 @@ class TestLiveOrchestrator(TransactionTestCase):
             resolved_via=DeferredQuestion.ResolvedVia.SLACK,
             task_session=Session.objects.create(ticket=ticket),
         )
+        DeferredQuestion.objects.create(
+            question="May I use the approved test credential?",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            evidence=owner_card(OwnerDecision.CREDENTIALS).to_evidence(),
+            answered_at=timezone.now(),
+            answer_text="Use the approved test route.",
+            resolved_via=DeferredQuestion.ResolvedVia.SLACK,
+            task_session=Session.objects.create(ticket=ticket),
+        )
         before = DeferredQuestion.objects.count()
         with (
             tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
@@ -166,7 +174,13 @@ class TestLiveOrchestrator(TransactionTestCase):
             reply = self._ask(client, address, "nonce-valid", "credentials")
             assert reply["answer_to"] == "nonce-valid"
             assert reply["verdict"] == "owner_only"
+            assert reply["limit"] == "credentials"
             assert reply["decisions"] == []
+            for kind in ("money_or_plan", "public_post", "irreversible"):
+                kept = self._ask(client, address, f"nonce-{kind}", kind)
+                assert kept["verdict"] == "owner_only"
+                assert kept["limit"] == kind
+                assert kept["decisions"] == []
             legacy = self._ask(client, address, "nonce-legacy", "product_scope")
             assert legacy["verdict"] == "unsupported"
             assert legacy["decisions"] == []
@@ -174,6 +188,33 @@ class TestLiveOrchestrator(TransactionTestCase):
                 unavailable = self._ask(client, address, "nonce-unavailable", "architecture")
             assert unavailable["verdict"] == "unavailable"
             assert unavailable["decisions"] == []
+            broker.unregister(address)
+            peer.join(timeout=3)
+        assert DeferredQuestion.objects.count() == before
+
+    def test_malformed_frames_are_rejected_before_a_database_read(self) -> None:
+        frames = (
+            "[]",
+            json.dumps({"type": "ask", "nonce": "", "kind": "architecture"}),
+            json.dumps({"type": "ask", "nonce": "n" * 65, "kind": "architecture"}),
+            json.dumps({"type": "note", "nonce": "valid", "kind": "architecture"}),
+        )
+        ticket = planned_ticket()
+        before = DeferredQuestion.objects.count()
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
+            LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+        ):
+            peer = start_orchestrator_peer(broker)
+            asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
+            client = MailboxClient(asker.socket_path, asker.token)
+            address = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
+            cursor = 0
+            for index, frame in enumerate(frames):
+                asyncio.run(client.send(address, frame, f"malformed:{index}", timeout_seconds=0.1))
+                page = asyncio.run(client.wait(after_id=cursor, timeout_seconds=2))
+                cursor = page["next_cursor"]
+                assert json.loads(page["messages"][0]["text"])["verdict"] == "malformed"
             broker.unregister(address)
             peer.join(timeout=3)
         assert DeferredQuestion.objects.count() == before
@@ -209,7 +250,7 @@ class TestLiveOrchestrator(TransactionTestCase):
             broker.unregister(address)
             peer.join(timeout=3)
 
-    def test_peer_rotates_before_its_send_key_cap(self) -> None:
+    def test_peer_address_stays_stable_while_reply_sender_rotates(self) -> None:
         ticket = planned_ticket()
         with (
             tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
@@ -222,19 +263,7 @@ class TestLiveOrchestrator(TransactionTestCase):
             first = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
             self._ask(client, first, "one", "architecture")
             self._ask(client, first, "two", "architecture")
-            for _ in range(50):
-                second = next(
-                    (
-                        p["address"]
-                        for p in broker.identities()
-                        if p["harness"] == "orchestrator" and p["address"] != first
-                    ),
-                    first,
-                )
-                if second != first:
-                    break
-                time.sleep(0.01)
-            assert first != second
-            assert self._ask(client, second, "three", "architecture")["answer_to"] == "three"
-            broker.unregister(second)
+            assert self._ask(client, first, "three", "architecture")["answer_to"] == "three"
+            assert [p["address"] for p in broker.identities() if p["harness"] == "orchestrator"] == [first]
+            broker.unregister(first)
             peer.join(timeout=3)

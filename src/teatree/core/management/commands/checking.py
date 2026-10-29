@@ -1,4 +1,4 @@
-"""``t3 <overlay> checking show`` — terse, read-only "what did I miss" report (#1529).
+"""``t3 <overlay> checking show`` — terse "what did I miss" report (#1529).
 
 Thin wrapper over :func:`teatree.core.checking.gather_checking_report`. The
 command reads the prior checkpoint, gathers the window ``[window_start, now)``,
@@ -12,8 +12,9 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-Read-only: every query underneath is a select; the command never transitions a
-ticket nor writes any row except the checkpoint marker. The report is routed
+Before gathering, the command reconciles owner questions: stale rows may be dismissed
+and exact repeats may be answered and resume their parked tasks. ``--no-advance``
+only leaves the report checkpoint unchanged. The report is routed
 through the machine-output seam — JSON on stdout under ``--json``, the terse
 human view on stderr — and returned as the typed payload.
 """
@@ -205,7 +206,7 @@ class Command(MachineOutputCommand):
             ),
         ] = False,
     ) -> CheckingReportDict | AllOverlaysReportDict:
-        """Print a terse, grouped, clickable report of changes since the last check."""
+        """Reconcile owner questions and print changes since the last check."""
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
 

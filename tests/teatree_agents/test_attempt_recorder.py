@@ -98,6 +98,12 @@ class TestValidateResultKeys(TestCase):
         for kind in OWNER_RAISABLE_DECISIONS:
             assert validate_result_keys(owner_stop("Rotate the deploy token?", kind) | {"summary": "x"}) == ""
 
+    def test_legacy_product_scope_stop_names_the_current_owner_kinds(self) -> None:
+        error = validate_result_keys(owner_stop("Choose the scope?", "product_scope") | {"summary": "x"})
+
+        assert "product_scope" in error
+        assert all(kind.value in error for kind in OWNER_RAISABLE_DECISIONS)
+
     def test_user_input_kind_without_checked_is_refused(self) -> None:
         stop = owner_stop("Rotate the deploy token?") | {"summary": "x"}
         for checked in ([], ["  "], "a"):

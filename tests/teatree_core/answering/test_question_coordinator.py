@@ -8,12 +8,37 @@ from django.test import TestCase
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models.question_text import question_fingerprint
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from tests._owner_channel import owner_card
 from tests.factories import planned_ticket
 
 
 class TestQuestionCoordinator(TestCase):
+    def test_headless_producer_markers_share_an_exact_answer_across_tickets(self) -> None:
+        question = "Should we adopt the new dependency?"
+        first_ticket = planned_ticket()
+        second_ticket = planned_ticket()
+        fingerprint = question_fingerprint(question)
+        basis = DeferredQuestion.record(
+            question,
+            card=owner_card(),
+            task_session=Session.objects.create(ticket=first_ticket),
+            dedupe_marker=f"needs-input:{first_ticket.pk}:{fingerprint}",
+        )
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(
+            question,
+            card=owner_card(),
+            task_session=Session.objects.create(ticket=second_ticket),
+            dedupe_marker=f"needs-input:{second_ticket.pk}:{fingerprint}",
+        )
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 0
+        assert DeferredQuestion.objects.get(pk=pending.pk).answer_text == "Yes."
+
     def test_same_architecture_question_on_another_ticket_uses_owner_answer(self) -> None:
         question = "Should we adopt the new dependency?"
         basis = DeferredQuestion.record(

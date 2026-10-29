@@ -17,7 +17,7 @@ Edit the source command, not this file.
 
 | Subcommand | Description |
 | --- | --- |
-| `show` | Print a terse, grouped, clickable report of changes since the last check |
+| `show` | Reconcile owner questions and print changes since the last check |
 
 ## `config_setting`
 
@@ -708,7 +708,7 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 
 | Subcommand | Description |
 | --- | --- |
-| `list` | List everything currently waiting on the user |
+| `list` | List owner decisions, or the full factory inventory with --all |
 | `add` | Record a manual waiting item the live sources cannot see |
 | `resolve` | Resolve a manual waiting item by id |
 

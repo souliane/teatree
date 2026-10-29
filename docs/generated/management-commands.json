@@ -23,7 +23,7 @@
       "name": "checking",
       "subcommands": [
         {
-          "help": "Print a terse, grouped, clickable report of changes since the last check",
+          "help": "Reconcile owner questions and print changes since the last check",
           "name": "show"
         }
       ]
@@ -1475,7 +1475,7 @@
       "name": "waiting",
       "subcommands": [
         {
-          "help": "List everything currently waiting on the user",
+          "help": "List owner decisions, or the full factory inventory with --all",
           "name": "list"
         },
         {
