@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from teatree.utils import disk_consumers
+from teatree.cli.doctor import disk_consumers
 
 
 def test_docker_sizes_parse_without_shelling_out() -> None:

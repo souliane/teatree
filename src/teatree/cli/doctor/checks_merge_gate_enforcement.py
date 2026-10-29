@@ -96,9 +96,12 @@ def _check_merge_gates_enforced() -> None:
         if not _declares_expected_gate_jobs(repo_root):
             return
         required = _live_required_contexts(repo_root)
-        missing = unenforced_gate_contexts(required)
+        missing = unenforced_gate_contexts(required) if required is not None else None
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Merge-gate-enforcement check crashed: {exc.__class__.__name__}: {exc}")
+        return
+    if missing is None:
+        typer.echo("WARN  Merge-gate enforcement is unverified: branch protection could not be read from the forge.")
         return
     if not missing:
         return
