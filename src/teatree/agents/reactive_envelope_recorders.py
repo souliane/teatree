@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from teatree.agents.result_payloads import answer_text, recommendation_issue_url, suggestion_url
 from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, ArticleSuggestion, TriageRecommendation
+from teatree.core.answering.coordinator_actions import run_coordinator_actions
 from teatree.core.issue_hygiene import (
     DescriptionSection,
     IssueDraft,
@@ -78,7 +79,9 @@ def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str
     """
     _maybe_record_article_suggestions(task, result, phase=phase)
     _maybe_record_triage_recommendations(task, result, phase=phase)
-    _maybe_record_answer_draft(task, result, phase=phase, work_item=_maybe_file_work_item(task, result, phase=phase))
+    work_item = _maybe_file_work_item(task, result, phase=phase)
+    receipts = _run_coordinator_actions(task, result, phase=phase)
+    _maybe_record_answer_draft(task, result, phase=phase, work_item=work_item, receipts=receipts)
 
 
 def announce_completed_architectural_review(task: Task, result: AgentResultBlob, *, phase: str) -> None:
@@ -272,6 +275,17 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
     )
 
 
+def _run_coordinator_actions(task: Task, result: AgentResultBlob, *, phase: str) -> list[str]:
+    """The receipt lines of the actions the answering agent proposed and code ran; a failure costs only the receipt."""
+    if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
+        return []
+    try:
+        return run_coordinator_actions(task, result.get("actions"))
+    except Exception:
+        logger.exception("Coordinator actions failed for task %s; the reply is still delivered", task.pk)
+        return []
+
+
 def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) -> "WorkItemOutcome | None":
     """File what the answering agent said the request becomes; ``None`` when it said nothing (#4527).
 
@@ -349,6 +363,7 @@ def _maybe_record_answer_draft(
     *,
     phase: str,
     work_item: "WorkItemOutcome | None" = None,
+    receipts: list[str] | None = None,
 ) -> None:
     """Deliver an answering agent's returned ``answer`` draft (corr-11, #9).
 
@@ -375,6 +390,7 @@ def _maybe_record_answer_draft(
         return
     if work_item is not None:
         text = f"{text}\n{work_item.thread_note()}"
+    text = "\n".join([text, *(receipts or [])])
     if _post_owner_dm_reply(task, text):
         return
     answer = cast("AnswerEnvelope", raw_answer)

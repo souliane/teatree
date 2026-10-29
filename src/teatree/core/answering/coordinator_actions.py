@@ -1,0 +1,111 @@
+"""Run the coordinator's proposed actions: the closed table, then the owner's four limits, then one write (#5685).
+
+The answering phase reads untrusted thread text and holds no write tool, so it can only RETURN an
+``actions`` list. Each entry runs here, in order, only when its kind is in the table, it declares
+no argument beyond the kind's own, and the evidence the owner's own message carries still holds.
+A refusal runs nothing and is recorded with its reason; the receipt the owner reads is built from
+the actions that ran, never from what the model said happened.
+"""
+
+import hashlib
+import json
+import logging
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+
+from django.db import transaction
+
+from teatree.core.managers_issue_match import reference_issue_q
+from teatree.core.modelkit.coordinator_action import CoordinatorActionKind, action_refusal
+from teatree.core.models import Task, ThreadBinding, Ticket
+from teatree.url_classify import find_forge_refs
+
+logger = logging.getLogger(__name__)
+
+AUDIT_KEY = "coordinator_actions"
+
+
+class ActionRefusedError(Exception):
+    """The action is well-formed but its evidence does not hold; nothing was written."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActionOutcome:
+    executed: bool
+    detail: str
+
+
+def _owner_message(conversation: Ticket) -> str:
+    extra = conversation.extra if isinstance(conversation.extra, dict) else {}
+    origin = extra.get("slack_answer")
+    return str(origin.get("question") or "") if isinstance(origin, dict) else ""
+
+
+def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
+    conversation = task.ticket
+    if not conversation.is_conversation():
+        message = "the task's ticket is not a Slack conversation"
+        raise ActionRefusedError(message)
+    named = str(arguments.get("ticket") or "")
+    if named not in find_forge_refs(_owner_message(conversation)):
+        message = "the owner's message does not name that ticket"
+        raise ActionRefusedError(message)
+    target = Ticket.objects.in_flight(conversation.overlay).filter(reference_issue_q(named)).order_by("-pk").first()
+    if target is None or not target.is_admissible():
+        message = "no open tracked ticket matches it"
+        raise ActionRefusedError(message)
+    with transaction.atomic():
+        bindings = ThreadBinding.objects.select_for_update().filter(ticket=conversation)
+        if not bindings.exists():
+            message = "this thread is not bound"
+            raise ActionRefusedError(message)
+        bindings.update(ticket=target)
+    return f"Bound this thread to <{target.issue_url}|#{target.ticket_number}>."
+
+
+_PROCESSORS: Mapping[CoordinatorActionKind, Callable[[Task, Mapping[str, object]], str]] = {
+    CoordinatorActionKind.BIND_THREAD: _bind_thread,
+}
+
+
+def _key(task: Task, kind: str, arguments: Mapping[str, object]) -> str:
+    identity = json.dumps([task.pk, kind, sorted(arguments.items())], default=str)
+    return hashlib.sha256(identity.encode()).hexdigest()[:24]
+
+
+def _run_one(task: Task, request: object) -> ActionOutcome | None:
+    if not isinstance(request, dict):
+        return ActionOutcome(executed=False, detail="an action must be an object")
+    kind = str(request.get("kind") or "")
+    arguments = {name: value for name, value in request.items() if name != "kind"}
+    key = _key(task, kind, arguments)
+    if key in _audit(task.ticket):
+        return None
+    if refusal := action_refusal(kind, arguments):
+        outcome = ActionOutcome(executed=False, detail=refusal)
+    else:
+        try:
+            outcome = ActionOutcome(executed=True, detail=_PROCESSORS[CoordinatorActionKind(kind)](task, arguments))
+        except ActionRefusedError as exc:
+            outcome = ActionOutcome(executed=False, detail=str(exc))
+    task.ticket.merge_extra(
+        merge_into_dicts={AUDIT_KEY: {key: {"kind": kind, "executed": outcome.executed, "detail": outcome.detail}}}
+    )
+    if not outcome.executed:
+        logger.warning("Coordinator action %s refused for task %s: %s", kind or "(none)", task.pk, outcome.detail)
+    return outcome
+
+
+def _audit(ticket: Ticket) -> Mapping[str, object]:
+    ticket.refresh_from_db(fields=["extra"])
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    audit = extra.get(AUDIT_KEY)
+    return audit if isinstance(audit, dict) else {}
+
+
+def run_coordinator_actions(task: Task, requests: object) -> list[str]:
+    """The receipt line of each proposed action that ran; refused and already-run ones add none."""
+    if not isinstance(requests, list):
+        return []
+    outcomes = (_run_one(task, request) for request in requests)
+    return [outcome.detail for outcome in outcomes if outcome is not None and outcome.executed]

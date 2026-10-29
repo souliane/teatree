@@ -141,3 +141,25 @@ class TestDispatchablePhaseTotality:
         # agents past the admission governor, which does not meter the sub-agent path.
         assert "dispatch_subtask" not in tools_for_phase("architectural_review")
         assert "dispatch_subtask" in disallowed_tools_for_phase("architectural_review")
+
+
+class TestTheCoordinatorsPhaseStaysReadOnly:
+    """The coordinator reads untrusted thread text, so proposing actions never widened its tools."""
+
+    def test_answering_reads_searches_recalls_and_browses_and_nothing_else(self) -> None:
+        assert tools_for_phase("answering") == {
+            "read_file",
+            "recall_memory",
+            "search_files",
+            "web_fetch",
+            "web_search",
+        }
+        assert disallowed_tools_for_phase("answering") == {
+            "dispatch_subtask",
+            "edit_file",
+            MCP_WRITE,
+            "record_attempt",
+            "shell",
+            "write_file",
+        }
+        assert mcp_write_tools_for_phase("answering") == frozenset()
