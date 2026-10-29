@@ -102,8 +102,7 @@ def _port_of(listener: socket.socket) -> int:
 
 class TestTheForwardBindsLoopbackOnly:
     def test_the_bound_address_is_loopback(self, marker_home: Path, forwards: Callable[..., LoopbackForward]) -> None:
-        # The trust boundary: gunicorn auto-logins a loopback peer, so a bind on
-        # any other interface hands that auto-login to the network.
+        # A wider bind would put the admin's login page on the network.
         address = forwards().address
 
         assert address is not None
