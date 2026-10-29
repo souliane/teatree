@@ -62,3 +62,19 @@ class OperatorLoginCliTestCase(TestCase):
         selected = runner.invoke(app, ["logout", "gitlab", "--user", "bob"])
         assert selected.exit_code == 0
         revoke.assert_called_once_with(bob, "gitlab")
+
+    @patch(
+        "teatree.core.operator_oauth.revoke_operator_grant",
+        side_effect=RuntimeError("operator gitlab grant is still active or could not be verified"),
+    )
+    def test_a_failed_revoke_exits_one_and_keeps_the_grant(self, revoke: Mock) -> None:
+        alice = get_user_model().objects.create_superuser("alice", email="", password="unused")
+        tokens = OperatorGrantTokens("access", "refresh", timezone.now())
+        OperatorGrant.objects.store(user=alice, forge="gitlab", tokens=tokens, key=MasterKey(b"a" * 32))
+
+        result = runner.invoke(app, ["logout", "gitlab"])
+
+        assert result.exit_code == 1
+        assert "still active" in result.output
+        assert OperatorGrant.objects.filter(user=alice, forge="gitlab").exists()
+        revoke.assert_called_once_with(alice, "gitlab")

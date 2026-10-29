@@ -6,12 +6,12 @@ import hmac
 import secrets
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 from urllib.parse import urlencode
 
 import httpx
 from django.contrib.auth import login
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import redirect
 from django.utils import timezone
@@ -21,7 +21,7 @@ from django.views.decorators.http import require_GET
 from teatree.config.operator_oauth_apps import parse_operator_oauth_apps
 from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity
 from teatree.core.models.operator_grant import OperatorGrantTokens
-from teatree.utils.master_key import master_key_source
+from teatree.utils.master_key import MasterKeySourceError, master_key_source
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
@@ -32,6 +32,15 @@ _BACKEND = "django.contrib.auth.backends.ModelBackend"
 _STATE_LIFETIME_SECONDS = 600
 _REFRESH_SKEW = timedelta(minutes=1)
 _TIMEOUT_SECONDS = 10.0
+
+
+class _PendingLogin(TypedDict):
+    forge: str
+    state: str
+    verifier: str
+    expires: float
+    next: str
+    initiator: str
 
 
 class OperatorOAuthUnavailableError(RuntimeError):
@@ -156,19 +165,60 @@ def _forge_identity(forge: str, app: dict[str, str], access_token: str) -> tuple
     return str(external_id), str(handle)
 
 
-@require_GET
-def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
+def _consume_pending(request: "HttpRequest", forge: str) -> _PendingLogin | None:
     pending = request.session.pop("operator_oauth_pending", None)
     state = request.GET.get("state", "")
     if not isinstance(pending, dict):
-        return HttpResponseForbidden("operator OAuth state expired or invalid")
-    if (
-        pending.get("forge") != forge
-        or not state
-        or not hmac.compare_digest(state, str(pending.get("state", "")))
-        or time.time() > float(pending.get("expires", 0))
-        or pending.get("initiator", "") != (str(request.user.pk) if request.user.is_authenticated else "")
-    ):
+        return None
+    initiator = str(request.user.pk) if request.user.is_authenticated else ""
+    fresh = (
+        pending.get("forge") == forge
+        and state
+        and hmac.compare_digest(state, str(pending.get("state", "")))
+        and time.time() <= float(pending.get("expires", 0))
+        and pending.get("initiator", "") == initiator
+    )
+    return cast("_PendingLogin", pending) if fresh else None
+
+
+def _admit_forge_account(
+    forge: str, external_id: str, handle: str, tokens: OperatorGrantTokens
+) -> "AbstractBaseUser | None":
+    with transaction.atomic():
+        identity = OperatorIdentity.objects.filter(platform=forge, external_id=external_id).first()
+        if identity is None or not identity.user.is_active or not identity.user.is_superuser:
+            return None
+        identity.handle = handle
+        identity.save(update_fields=["handle"])
+        OperatorGrant.objects.store(user=identity.user, forge=forge, tokens=tokens, key=master_key_source().load())
+        return identity.user
+
+
+_LOGIN_FAILURES = (
+    IntegrityError,
+    MasterKeySourceError,
+    OperatorOAuthUnavailableError,
+    httpx.HTTPError,
+    ValueError,
+    KeyError,
+    TypeError,
+    OverflowError,
+)
+
+
+def _login_refusal(forge: str, exc: Exception) -> HttpResponse:
+    if isinstance(exc, IntegrityError):
+        return HttpResponseForbidden("forge handle already belongs to another approved account")
+    if isinstance(exc, MasterKeySourceError):
+        message = f"operator grants are sealed under the installation master key, which is unavailable ({exc}); "
+        return HttpResponse(message + "create it as deploy/README.md describes", status=503)
+    return HttpResponse(f"operator OAuth login failed: {type(exc).__name__}; run `t3 login {forge}`", status=502)
+
+
+@require_GET
+def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
+    pending = _consume_pending(request, forge)
+    if pending is None:
         return HttpResponseForbidden("operator OAuth state expired or invalid")
     code = request.GET.get("code", "")
     if not code:
@@ -176,21 +226,16 @@ def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
     try:
         app = _app(forge)
         tokens = _token_response(
-            forge, app, grant_type="authorization_code", credential=code, verifier=str(pending["verifier"])
+            forge, app, grant_type="authorization_code", credential=code, verifier=pending["verifier"]
         )
         external_id, handle = _forge_identity(forge, app, tokens.access_token)
-        with transaction.atomic():
-            identity = OperatorIdentity.objects.filter(platform=forge, external_id=external_id).first()
-            if identity is None or not identity.user.is_active or not identity.user.is_superuser:
-                return HttpResponseForbidden("forge account needs administrator approval before sign-in")
-            user = identity.user
-            identity.handle = handle
-            identity.save(update_fields=["handle"])
-            OperatorGrant.objects.store(user=user, forge=forge, tokens=tokens, key=master_key_source().load())
-    except (OperatorOAuthUnavailableError, httpx.HTTPError, ValueError, KeyError, TypeError, OverflowError) as exc:
-        return HttpResponse(f"operator OAuth login failed: {type(exc).__name__}; run `t3 login {forge}`", status=502)
+        user = _admit_forge_account(forge, external_id, handle, tokens)
+    except _LOGIN_FAILURES as exc:
+        return _login_refusal(forge, exc)
+    if user is None:
+        return HttpResponseForbidden("forge account needs administrator approval before sign-in")
     login(request, user, backend=_BACKEND)
-    return redirect(str(pending.get("next", "/admin/")))
+    return redirect(pending["next"])
 
 
 def operator_access_token(user: "AbstractBaseUser", forge: str) -> str:

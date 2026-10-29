@@ -1,3 +1,6 @@
+import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -8,9 +11,10 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity
+from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity, SealedSecret
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.core.operator_oauth import operator_access_token, revoke_operator_grant
+from teatree.utils.master_key import MasterKeySourceError
 from teatree.utils.sealing import MasterKey
 
 
@@ -166,6 +170,9 @@ class OperatorOAuthTestCase(TestCase):
         grant = OperatorGrant.objects.get(user=user, forge="github")
         assert b"refresh-secret" not in bytes(grant.ciphertext)
         assert grant.reveal(self.key).refresh_token == "refresh-secret"
+        assert not SealedSecret.objects.exists()
+        assert not ConfigSetting.objects.filter(value__icontains="refresh-secret").exists()
+        assert not any("refresh-secret" in value or "access-secret" in value for value in os.environ.values())
         assert self.client.get("/admin/").status_code == 200
         assert post.call_args.kwargs["data"]["code_verifier"]
         assert post.call_args.kwargs["data"]["client_secret"] == "app-secret"
@@ -174,8 +181,127 @@ class OperatorOAuthTestCase(TestCase):
 
     @patch("teatree.core.operator_oauth.httpx.post")
     def test_wrong_state_never_exchanges_code(self, post: Mock) -> None:
+        self._start_github_login()
         assert self.client.get("/login/oauth/github/callback/", {"code": "x", "state": "wrong"}).status_code == 403
         post.assert_not_called()
+
+    @contextmanager
+    def _forge_account(self, profile: dict[str, object], *, key_error: Exception | None = None) -> Generator[Mock]:
+        tokens = {"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_in": 3600}
+        with (
+            patch("teatree.core.operator_oauth.master_key_source") as source,
+            patch("teatree.core.operator_oauth.read_pass", return_value="app-secret"),
+            patch(
+                "teatree.core.operator_oauth.httpx.get",
+                return_value=httpx.Response(
+                    200, request=httpx.Request("GET", "https://api.github.com/user"), json=profile
+                ),
+            ),
+            patch(
+                "teatree.core.operator_oauth.httpx.post",
+                return_value=httpx.Response(
+                    200, request=httpx.Request("POST", "https://github.com/login/oauth/access_token"), json=tokens
+                ),
+            ) as post,
+        ):
+            source.return_value.load.return_value = self.key
+            source.return_value.load.side_effect = key_error
+            yield post
+
+    def _start_github_login(self, query: str = "") -> str:
+        location = self.client.get(f"/login/oauth/github/start/{query}").headers["Location"]
+        return parse_qs(urlsplit(location).query)["state"][0]
+
+    @staticmethod
+    def _invited_github_operator(handle: str, external_id: str) -> object:
+        user = get_user_model().objects.create_superuser(f"github:{external_id}", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="github", handle=handle, external_id=external_id)
+        return user
+
+    def test_callback_without_state_exchanges_nothing_and_signs_nobody_in(self) -> None:
+        self._invited_github_operator("alice", "123")
+        self._start_github_login()
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code"})
+        assert response.status_code == 403
+        assert "_auth_user_id" not in self.client.session
+        post.assert_not_called()
+
+    def test_callback_without_the_session_verifier_signs_nobody_in(self) -> None:
+        self._invited_github_operator("alice", "123")
+        state = self._start_github_login()
+        session = self.client.session
+        del session["operator_oauth_pending"]["verifier"]
+        session.save()
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+        assert response.status_code == 502
+        assert "_auth_user_id" not in self.client.session
+        post.assert_not_called()
+        assert not OperatorGrant.objects.exists()
+
+    def test_a_renamed_forge_handle_signs_in_the_same_user(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        with self._forge_account({"id": 123, "login": "Alice-Renamed"}):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 302
+        identity = OperatorIdentity.objects.get(platform="github", external_id="123")
+        assert (identity.user, identity.handle) == (user, "alice-renamed")
+        assert self.client.session["_auth_user_id"] == str(user.pk)
+        assert get_user_model().objects.count() == 1
+
+    def test_a_recycled_handle_with_another_forge_id_is_refused(self) -> None:
+        self._invited_github_operator("alice", "123")
+        with self._forge_account({"id": 999, "login": "alice"}):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 403
+        assert "_auth_user_id" not in self.client.session
+        assert OperatorIdentity.objects.get(platform="github", handle="alice").external_id == "123"
+        assert get_user_model().objects.count() == 1
+        assert not OperatorGrant.objects.exists()
+
+    def test_a_rename_onto_another_operators_handle_is_refused_and_changes_nothing(self) -> None:
+        self._invited_github_operator("alice", "123")
+        self._invited_github_operator("carol", "999")
+        with self._forge_account({"id": 123, "login": "carol"}):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 403
+        assert "_auth_user_id" not in self.client.session
+        assert OperatorIdentity.objects.get(external_id="123").handle == "alice"
+        assert OperatorIdentity.objects.get(external_id="999").handle == "carol"
+        assert not OperatorGrant.objects.exists()
+
+    def test_sign_in_without_a_master_key_is_refused_with_the_remedy(self) -> None:
+        self._invited_github_operator("alice", "123")
+        missing = MasterKeySourceError("file:/etc/teatree/master.key", "is unreadable: FileNotFoundError")
+        with self._forge_account({"id": 123, "login": "alice-renamed"}, key_error=missing):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 503
+        assert b"master key" in response.content
+        assert b"deploy/README.md" in response.content
+        assert "_auth_user_id" not in self.client.session
+        assert OperatorIdentity.objects.get(external_id="123").handle == "alice"
+        assert not OperatorGrant.objects.exists()
+
+    def test_only_a_same_host_next_path_survives_sign_in(self) -> None:
+        self._invited_github_operator("alice", "123")
+        for requested, landing in (
+            ("https://evil.example/steal", "/admin/"),
+            ("//evil.example/steal", "/admin/"),
+            ("/dash/board/", "/dash/board/"),
+        ):
+            with self.subTest(requested=requested), self._forge_account({"id": 123, "login": "alice"}):
+                state = self._start_github_login(f"?next={requested}")
+                response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+                assert response.headers["Location"] == landing
 
     @patch("teatree.core.operator_oauth.master_key_source")
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
