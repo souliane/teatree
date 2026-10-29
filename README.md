@@ -458,7 +458,7 @@ An answering task started from Slack binds its thread root to the ticket. A dire
 
 ### Live agent mailbox
 
-Opt-in live proof nodes under `tests/integration/live_control/` record mailbox receipts for the provider pairings and attended sessions when run in a credentialed venue.
+Opt-in live proof nodes under `tests/integration/live_control/` record mailbox receipts for the provider pairings and attended sessions when run in a credentialed venue. Pydantic nodes use `T3_LIVE_PYDANTIC_MAILBOX=1` and the unset-by-default `T3_LIVE_PYDANTIC_CREDENTIAL_ENTRY` naming an approved `pass` entry; they skip with a named reason if either is absent.
 
 Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. New Codex threads use App Server `dynamicTools` handled by their worker, including the isolated read-only phases; older Codex threads retain their creation-time tool catalog when resumed. Workers
 

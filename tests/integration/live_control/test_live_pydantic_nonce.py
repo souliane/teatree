@@ -22,6 +22,7 @@ from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.agents.runner_heartbeat import drive_with_heartbeat
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.core.models import Session, Task
+from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
 from tests.integration.live_control.live_pydantic import live_runtime, resolve_live_route
 from tests.teatree_agents.test_live_control_integration import _until as wait_until
@@ -41,7 +42,7 @@ class LivePydanticNonceTests(TestCase):
         os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
         try:
             self.route = resolve_live_route()
-        except RuntimeError as exc:
+        except CredentialError as exc:
             self.skipTest(str(exc))
 
     def test_a_real_router_run_carries_the_admitted_nonce_in_its_next_request_body(self) -> None:
