@@ -16,6 +16,7 @@ with, which from the container is often the host's real path rather than the ven
 """
 
 import dataclasses
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -66,7 +67,11 @@ class VenuePopulation:
 
 def venue_checkout_roots(workspace: Path) -> tuple[Path, ...]:
     """The roots THIS venue provisions checkouts into — never home, never a row's parent."""
-    return outermost_roots({clone_root(), canonical_worktree_root(), workspace})
+    codex_home = Path(os.environ.get("T3_CODEX_HOME") or Path.home() / ".codex")
+    roots = {clone_root(), canonical_worktree_root(), workspace}
+    if (codex_home / "workspace").is_dir():
+        roots.add(codex_home / "workspace")
+    return outermost_roots(roots)
 
 
 def venue_candidates(workspace: Path, *, deadline: float | None = None) -> VenuePopulation:
