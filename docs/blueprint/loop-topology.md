@@ -72,7 +72,7 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 | --- | --- |
 | `pull_request_review` | `PrApprovalScanner`, `ReviewerPrsScanner`, `ReviewedPrHeadScanner` |
 | `pull_request_review_comment` | No review-comment poller exists; the review-fix handler would add this capability. |
-| `issue_comment` | Issue and review intent intake. |
+| `issue_comment` | No current polling scanner reads issue comments. |
 | `commit_comment` | No current scanner consumes this event. |
 | `pull_request` | PR review, CI, conflict, merge, and ticket-completion scans. |
 | `issues` | Issue intake, disposition, and ticket-completion scans. |
@@ -86,7 +86,7 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 | `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | Review requests, review state, and live head. |
 | `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | Authored PRs, CI, mergeability, and merge state. |
 | `tickets` / disposition and completion | 300 s | Issue state for tracked tickets. |
-| `followup` / issue intake and review nag | 1,800 s | Assigned issues and review-request state. |
+| `followup` / review nag and review request | 1,800 s | Open PRs and review-request state. |
 | `issue_implementer` / admitted backlog | 1,800 s | Open issues eligible for implementation. |
 | `housekeeping` / board reconciliation | 3,600 s | Forge truth for repair. |
 
