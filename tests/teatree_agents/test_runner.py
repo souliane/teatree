@@ -1159,13 +1159,13 @@ class TestLoopWatchdog(TestCase):
         assert watchdog.breach_reason(self.task, elapsed_seconds=60) is None
 
     def test_from_settings_reads_defaults(self) -> None:
-        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 42, scope="")
-        ConfigSetting.objects.set_value("watchdog_max_turns", 7, scope="")
-        ConfigSetting.objects.set_value("watchdog_max_cost_usd", 1.5, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 21600, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_turns", 1000, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_cost_usd", 30, scope="")
         watchdog = LoopWatchdog.from_settings()
-        assert watchdog.max_runtime_seconds == 42
-        assert watchdog.max_turns == 7
-        assert watchdog.max_cost_usd == pytest.approx(1.5)
+        assert watchdog.max_runtime_seconds == 21600
+        assert watchdog.max_turns == 1000
+        assert watchdog.max_cost_usd == pytest.approx(30)
 
     def test_from_settings_uses_shipped_defaults(self) -> None:
         watchdog = LoopWatchdog.from_settings()
@@ -1175,10 +1175,10 @@ class TestLoopWatchdog(TestCase):
 
     def test_from_settings_reads_the_db_home_config_tier(self) -> None:
         # ConfigSetting rows supply the configured dimensions; others use defaults.
-        ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_turns", 1000, scope="")
         watchdog = LoopWatchdog.from_settings()
-        assert watchdog.max_turns == 250
-        assert watchdog.max_runtime_seconds == 3 * 60 * 60
+        assert watchdog.max_turns == 1000
+        assert watchdog.max_runtime_seconds == 24 * 60 * 60
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
 
@@ -1477,7 +1477,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         TaskAttempt.objects.create(task=spent, cost_usd=8.0)
         task = Task.objects.create(ticket=self.ticket, session=self.session)
 
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
+        ConfigSetting.objects.create(key="ticket_budget_max_cost_usd", value=5.0, scope="")
         with (
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
@@ -1500,7 +1500,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=self.session)
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
 
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
+        ConfigSetting.objects.create(key="ticket_budget_max_cost_usd", value=5.0, scope="")
         with (
             _fake_sdk(_success_stream(result)),
         ):
@@ -1529,7 +1529,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         TaskAttempt.objects.create(task=spent, cost_usd=8.0)
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parked)
 
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
+        ConfigSetting.objects.create(key="ticket_budget_max_cost_usd", value=5.0, scope="")
         attempt = run_agent(resumed, phase="coding", overlay_skill_metadata={})
 
         resumed.refresh_from_db()

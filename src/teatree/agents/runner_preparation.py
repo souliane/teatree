@@ -41,6 +41,7 @@ from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider, cold_reader
+from teatree.config.write_authority import CONFIG_WRITE_PHASE_ENV
 from teatree.core.autocompact_advisory import native_context_window
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import AllTokensExhaustedError
@@ -240,7 +241,11 @@ def _resolve_child_env_or_failure(
 ) -> DispatchCredential | TaskAttempt:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
-        return DispatchCredential(env=_capped_forge_env(task, None) if harness.capabilities.managed_lane else None)
+        return DispatchCredential(
+            env=_capped_forge_env(task, None)
+            if harness.capabilities.managed_lane
+            else {CONFIG_WRITE_PHASE_ENV: task.phase}
+        )
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:
@@ -269,7 +274,11 @@ def _resolve_child_env_or_failure(
 
 def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str]:
     capped = with_test_worker_cap(env, active_agents=_active_agent_count())
-    return {**(with_routed_github_token(capped, overlay=_overlay_scope(task)) or {}), **dispatched_agent_env()}
+    return {
+        **(with_routed_github_token(capped, overlay=_overlay_scope(task)) or {}),
+        **dispatched_agent_env(),
+        CONFIG_WRITE_PHASE_ENV: task.phase,
+    }
 
 
 def _active_agent_count() -> int:

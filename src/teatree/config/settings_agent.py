@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, parse_harness_name
-from teatree.config.declaration import Category, SettingSpec, setting
+from teatree.config.declaration import Bounds, Category, SettingSpec, setting
 from teatree.config.enums import Autonomy, Mode
 from teatree.config.setting_parsers import (
     _parse_harness_skill_exclusions,
@@ -142,22 +142,14 @@ class _ModeHarnessSettings:
     regulated_path_model_allowlist: list[str] = setting(
         default_factory=list, spec=SettingSpec(help="models allowed to touch a regulated path", parse=_parse_str_list)
     )
-    # Per-run sequential-request cap for the ``pydantic_ai`` harness
-    # (the metered-lane guardrail). Passed as pydantic_ai
-    # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
-    # so a cheap-model maker cannot drift on a long tool loop — the FSM already
-    # chunks work into phases and the orchestrator re-dispatches, so a per-run cap
-    # composes with orchestration rather than killing tasks. The default is a REAL
-    # turn budget: a live Lane-B task runs ~16 model requests, so the earlier cap of
-    # 5 refused mid-task before the run ever reached ``open()``. 40 clears that
-    # measured reality with generous headroom; a positive caller ``max_turns`` (an
-    # ``OneShotSpec`` cap, an eval override) still wins over it (``harness.py`` /
-    # ``eval/pydantic_ai_runner.py``). Applies ONLY to the ``pydantic_ai`` harness
-    # (the default ``claude_sdk`` harness is bounded by the loop watchdog instead),
-    # so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
-    # disables the cap (the escape hatch). Per-overlay overridable.
+    # Explicit per-scenario caps still win over this generous pydantic-ai limit.
     pydantic_ai_request_limit: int = setting(
-        40, spec=SettingSpec(help="requests one pydantic-ai run may make", parse=_parse_strict_int)
+        3000,
+        spec=SettingSpec(
+            help="requests one pydantic-ai run may make",
+            parse=_parse_strict_int,
+            bounds=Bounds(300, zero_disables=True, why="a smaller cap can strand a run"),
+        ),
     )
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
@@ -175,7 +167,11 @@ class _ModeHarnessSettings:
     # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
     pydantic_ai_max_tokens: int = setting(
         PYDANTIC_AI_MAX_TOKENS_DEFAULT,
-        spec=SettingSpec(help="token ceiling for one pydantic-ai request", parse=_parse_strict_int),
+        spec=SettingSpec(
+            help="token ceiling for one pydantic-ai request",
+            parse=_parse_strict_int,
+            bounds=Bounds(8192, zero_disables=True, why="a smaller cap can truncate a result"),
+        ),
     )
     # The generic OpenAI-compatible backend (#3666) — where, which model, whose key.
     # A provider is ORDINARY CONFIGURATION here, never a code path: pointing the
@@ -246,30 +242,51 @@ class _ModeHarnessSettings:
     # matching the shipped-off turn/cost caps (only the generous runtime ceiling is
     # armed by default). Per-overlay overridable.
     watchdog_max_runtime_seconds: int = setting(
-        3 * 60 * 60,
-        spec=SettingSpec(help="seconds a watched run may take before the watchdog stops it", parse=_parse_strict_int),
+        24 * 60 * 60,
+        spec=SettingSpec(
+            help="seconds a watched run may take before the watchdog stops it",
+            parse=_parse_strict_int,
+            bounds=Bounds(21600, zero_disables=True, why="a shorter window can stop healthy runs"),
+        ),
     )
     watchdog_max_turns: int = setting(
-        0, spec=SettingSpec(help="turns a watched run may take before the watchdog stops it", parse=_parse_strict_int)
+        0,
+        spec=SettingSpec(
+            help="turns a watched run may take before the watchdog stops it",
+            parse=_parse_strict_int,
+            bounds=Bounds(300, zero_disables=True, why="a smaller cap can strand a run"),
+        ),
     )
     watchdog_max_cost_usd: float = setting(
         0.0,
         spec=SettingSpec(
-            help="dollars a watched run may spend before the watchdog stops it", parse=_parse_strict_float
+            help="dollars a watched run may spend before the watchdog stops it",
+            parse=_parse_strict_float,
+            bounds=Bounds(30, zero_disables=True, why="a smaller cap can strand a run"),
         ),
     )
     # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5).
     # ``TicketBudget.from_settings`` reads it through the DB-home config tier.
     # ``0.0`` disables the cap. Per-overlay overridable.
     ticket_budget_max_cost_usd: float = setting(
-        0.0, spec=SettingSpec(help="dollars one ticket may cost before it is halted", parse=_parse_strict_float)
+        0.0,
+        spec=SettingSpec(
+            help="dollars one ticket may cost before it is halted",
+            parse=_parse_strict_float,
+            bounds=Bounds(60, zero_disables=True, why="a smaller cap can strand a ticket"),
+        ),
     )
     # Deterministic ceiling on how many sub-agents ONE headless run may spawn
     # (``agents/subagent_ceiling.py``). The runtime watchdog bounds a run's duration,
     # not its fan-out, so a wall clock cannot see a delegation runaway. ``0`` disables
     # the gate, matching the watchdog convention above. Per-overlay overridable.
     subagent_spawn_ceiling: int = setting(
-        20, spec=SettingSpec(help="sub-agents one dispatch may spawn", parse=_parse_strict_int)
+        20,
+        spec=SettingSpec(
+            help="sub-agents one dispatch may spawn",
+            parse=_parse_strict_int,
+            bounds=Bounds(2, zero_disables=True, why="one sub-agent can strand review fan-out"),
+        ),
     )
     # How many envelope-less turn-ends ONE headless run may have refused before the
     # Stop gate (``agents/envelope_stop_gate.py``) stands down. The gate fails open
@@ -293,5 +310,10 @@ class _ModeHarnessSettings:
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
     agent_max_turns: int = setting(
-        250, spec=SettingSpec(help="turn ceiling for one agent run", parse=_parse_strict_int)
+        3000,
+        spec=SettingSpec(
+            help="turn ceiling for one agent run",
+            parse=_parse_strict_int,
+            bounds=Bounds(300, zero_disables=True, why="a smaller cap can strand a run"),
+        ),
     )

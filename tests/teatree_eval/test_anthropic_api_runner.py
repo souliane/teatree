@@ -300,6 +300,29 @@ class TestMissingKeyGate:
 
 
 class TestRunnerWithSettings(TestCase):
+    def test_scenario_budget_remains_active_with_a_generous_lane_limit(self) -> None:
+        spec = dataclasses.replace(
+            _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")),
+            max_turns=1,
+            lane="under_load",
+        )
+        runner = build_anthropic_api_eval_runner()
+        assert runner._caps.request_limit == 3000
+        run = AnthropicApiRunner(model=_tool_call_then_text("uv run pytest", "done"), caps=runner._caps).run(spec)
+        assert run.terminal_reason == "error_max_turns"
+        overridden = build_anthropic_api_eval_runner(max_turns_override=7)
+        override_run = AnthropicApiRunner(
+            model=_tool_call_then_text("uv run pytest", "done"), caps=overridden._caps
+        ).run(spec)
+        assert override_run.terminal_reason == "success"
+
+    def test_configured_lane_limit_tightens_the_scenario_budget(self) -> None:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        runner = AnthropicApiRunner(
+            model=_tool_call_then_text("uv run pytest", "done"), caps=EvalDriveCaps(request_limit=1)
+        )
+        assert runner.run(spec).terminal_reason == "error_max_turns"
+
     def test_make_runner_builds_the_anthropic_api_runner(self) -> None:
         runner = make_runner(ANTHROPIC_API_BACKEND)
         assert isinstance(runner, AnthropicApiRunner)

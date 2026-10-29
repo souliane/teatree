@@ -220,6 +220,7 @@ class EvalDriveCaps:
 
     *   ``turn_cap`` — an explicit ``--max-turns``; ``None`` defers to the scenario's own
         ``max_turns`` budget, tightened by the backend's per-run request-loop guardrail.
+    *   ``request_limit`` — the Anthropic API lane guardrail, separate from an explicit override.
     *   ``effort`` — the lane-level representative reasoning effort, applied when a
         scenario declares no ``model@effort`` of its own (a declared effort wins).
     *   ``max_tokens`` — the per-request output-token ceiling. Defaulted rather than
@@ -229,6 +230,7 @@ class EvalDriveCaps:
     """
 
     turn_cap: int | None = None
+    request_limit: int | None = None
     effort: EffortLevel | None = None
     max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
 

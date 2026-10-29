@@ -15192,8 +15192,8 @@ Usage: t3 teatree notify digest [OPTIONS]
  Read the status signals the classifier kept off the DM channel (#4524).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --since-hours        INTEGER  How far back to read the pulled status         │
-│                               signals.                                       │
+│ --since-hours        INTEGER  How far back to read status signals and        │
+│                               setting changes.                               │
 │                               [default: 24]                                  │
 │ --overlay            TEXT     Set T3_OVERLAY_NAME for the call (per-overlay  │
 │                               bot routing).                                  │

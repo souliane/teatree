@@ -75,6 +75,11 @@ class TestNotifyTicketRouting(TestCase):
 
 
 class TestConfigSettingSetGateRefusal(TestCase):
+    def test_run_floor_is_refused_without_storing_a_row(self) -> None:
+        with pytest.raises(Exception, match="at least 300"):
+            _call("config_setting_set", {"key": "agent_max_turns", "value": "9"})
+        assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
+
     def test_plain_setting_is_written_with_registry_validation(self) -> None:
         result = _call("config_setting_set", {"key": "loop_cadence_seconds", "value": "120"})
 
@@ -124,7 +129,7 @@ class TestCliErrorPrimitiveSurfacesStructured(TestCase):
         # #3688: the same write-time cross-key guard fires through the MCP seam
         # (which wraps the CLI), surfacing the refusal as a structured error with
         # the store left untouched — not a silent accept that dooms every dispatch.
-        with pytest.raises(Exception, match="inconsistent config"):
+        with pytest.raises(Exception, match="refused config write"):
             _call("config_setting_set", {"key": "agent_harness_provider", "value": '"openai_compatible"'})
         assert not ConfigSetting.objects.filter(key="agent_harness_provider").exists()
 
