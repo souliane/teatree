@@ -225,6 +225,14 @@ class EvalRunRecord(models.Model):
         return self.results.filter(verdict=EvalVerdict.ERROR).count()
 
     @property
+    def executed(self) -> int:
+        return self.results.graded().count()
+
+    @property
+    def measured_nothing(self) -> bool:
+        return self.executed == 0
+
+    @property
     def models(self) -> list[str]:
         seen = {r for r in self.results.values_list("model", flat=True) if r}
         return sorted(seen) if seen else [self.model]

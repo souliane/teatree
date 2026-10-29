@@ -31,6 +31,7 @@ from teatree.core.checking import (
 )
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.eval_run import EvalRunRecord, EvalVerdict
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
@@ -510,6 +511,16 @@ class TestNeedsYouGroup(CheckingTestBase):
 
 
 class TestTerseFormatting(CheckingTestBase):
+    def test_measured_nothing_survives_an_otherwise_empty_report(self) -> None:
+        run = EvalRunRecord.objects.create(model="subscription", started_at=self.now)
+        run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.SKIP)
+
+        with patch("teatree.loops.enable_verdict.loop_admits", return_value=True):
+            report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert "evals" in report.to_terse(overlay_name=self.OVERLAY).lower()
+        assert "measured nothing" in report.to_terse(overlay_name=self.OVERLAY).lower()
+
     def test_all_empty_collapses_to_single_line(self) -> None:
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         terse = report.to_terse(overlay_name=self.OVERLAY)

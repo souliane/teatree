@@ -1348,6 +1348,8 @@ explicit `action_needed` signals. A successful reconciliation is an explicitly
 dropped housekeeping observation. None may fall through the generic in-flight
 route silently.
 
+**Local behavioral eval measurement (#5805).** The `eval_local` task uses the deterministic phase registry rather than an agent prompt. Its runner pins `t3 eval run --backend api --credential subscription_oauth --local --persist`, removes the metered API key from the child environment, and reads the recorded run ledger after the child exits. A run that grades no selected scenario fails the task and is recorded as skipped if the child could not write a run. The health chip, check-in report, and `t3 eval page` read that ledger; the page dates the newest run, names an empty measurement, and marks runs older than a week stale. Selective PR eval selection and CI workflows are separate.
+
 ## Architectural Appendices
 
 This file holds the architecture. The appendices below carry detail that is genuinely architectural but too long to inline. This table is the roster — every file in `docs/blueprint/` appears here, and the regeneration set is this file plus these:
