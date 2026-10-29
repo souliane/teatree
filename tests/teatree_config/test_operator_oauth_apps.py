@@ -1,7 +1,7 @@
 import pytest
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.registries import parse_operator_oauth_apps
+from teatree.config.operator_oauth_apps import parse_operator_oauth_apps
 
 
 def test_oauth_app_config_uses_only_bootstrap_secret_references() -> None:

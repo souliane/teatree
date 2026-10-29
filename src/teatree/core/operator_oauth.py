@@ -18,7 +18,7 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET
 
-from teatree.config.registries import parse_operator_oauth_apps
+from teatree.config.operator_oauth_apps import parse_operator_oauth_apps
 from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.utils.master_key import master_key_source

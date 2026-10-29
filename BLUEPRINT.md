@@ -94,7 +94,7 @@ The review live-post authorization resolves a recorded PR to its work ticket, th
 
 GitLab MR approval and unapproval require a recorded requester, that requester's unconsumed consent for the exact action and target, and that requester's sealed OAuth grant. The API must report the same GitLab identity before the write. A failed write or failed readback leaves consent unconsumed; ambient or stored owner tokens cannot satisfy this path.
 
-Forge issue sync, loop issue intake, unlinked GitLab MR sync, and Slack work dispatch record the first requester; a work ticket filed from a Slack conversation inherits that requester. A linked MR leaves requester attribution to the issue intake.
+Forge issue sync, loop issue intake, workspace ticket intake (the forge issue's author), unlinked GitLab MR sync, and Slack work dispatch record the first requester; a work ticket filed from a Slack conversation inherits that requester. A linked MR leaves requester attribution to the issue intake.
 
 `ReviewVerdict` records `merge_safe`, `hold`, or typed `unverified` evidence gaps at one PR head. `ReviewHoldDisposition` stores an independent later review's cited answer to each held point, and a point whose finding carries an executed reproduction is answered only by a `counter_reproduction` (the command or test node id run at that head and the result it printed); `MergeClear` snapshots the disposition ids that released a same-head hold. An unanswered or appended point keeps the hold active (§17.4).
 
