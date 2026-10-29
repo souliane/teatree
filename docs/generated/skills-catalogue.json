@@ -102,7 +102,7 @@
     },
     {
       "name": "scanning-news",
-      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user"
+      "summary": "Scans today's AI news for scoped teatree improvements, checks backlog fit and duplicates, and returns article decisions for the server to settle and file through the issue facade"
     },
     {
       "name": "setup",

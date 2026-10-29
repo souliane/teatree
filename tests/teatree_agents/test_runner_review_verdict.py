@@ -22,6 +22,7 @@ from django.utils import timezone
 from teatree.agents import review_envelope_recorder
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead, LiveHeadRead
 from teatree.core.modelkit.review_state import ReviewState
@@ -293,7 +294,7 @@ class TestAnEmittedVerdictIsPersistedOrTheTaskFails(TestCase):
 
     def test_a_verdict_the_read_back_cannot_find_fails_instead_of_completing(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
-        with patch("teatree.agents.review_envelope_recorder.ReviewVerdict.record", return_value=None):
+        with patch("teatree.agents.review_envelope_recorder.verdict_at", return_value=None):
             attempt = record_result_envelope(task, _verdict_envelope(), phase="reviewing")
 
         task.refresh_from_db()
@@ -499,6 +500,16 @@ def _exhaust_marker(*, head_sha: str = _HEAD, pr_id: int = _PR_ID) -> CodexRevie
     """
     row = CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=pr_id, head_sha=head_sha).first()
     if row is None:
+        if AutoReviewDispatch.objects.filter(slug=_SLUG, pr_id=pr_id, head_sha=head_sha).exists():
+            return CodexReviewMarker.objects.create(
+                slug=_SLUG,
+                pr_id=pr_id,
+                head_sha=head_sha,
+                variant="claude:review",
+                state=CodexReviewMarker.State.DISPATCHED,
+                attempts=MAX_DISPATCH_ATTEMPTS,
+                deadline=timezone.now() - dt.timedelta(minutes=1),
+            )
         row = CodexReviewMarker.claim(slug=_SLUG, pr_id=pr_id, head_sha=head_sha, variant="claude:review")
     assert row is not None
     while row.attempts < MAX_DISPATCH_ATTEMPTS:
@@ -1103,7 +1114,7 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
         dispatch.refresh_from_db()
         assert dispatch.state == AutoReviewDispatch.State.SUPERSEDED
 
-    def test_a_wrong_checkout_retries_once_at_live_head_then_raises_a_card(self) -> None:
+    def test_a_wrong_checkout_retries_once_at_live_head_then_records_a_halt(self) -> None:
         task, dispatch = _reviewing_task_via_dispatch()
 
         with _live_head(_HEAD):
@@ -1140,7 +1151,8 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 1
 
     def test_an_unavailable_checkout_retries_at_the_live_head(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
@@ -1221,7 +1233,8 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
             assert requeue_transient_failed() == 0
         retried.refresh_from_db()
         assert retried.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 1
 
     def test_a_superseded_head_is_never_re_armed_even_once_its_deadline_lapses(self) -> None:
         # A DISPATCHED claim refuses re-arming too, but only until its deadline passes —

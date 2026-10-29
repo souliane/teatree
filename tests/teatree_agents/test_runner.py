@@ -35,7 +35,6 @@ from teatree.agents.runner import (
     _resolve_dispatch_lane,
     run_agent,
 )
-from teatree.agents.runner_result import parse_result
 from teatree.agents.runner_usage import _safe_float, _safe_int
 from teatree.agents.session_lineage import resume_session_id
 from teatree.config import AgentHarnessProvider
@@ -870,39 +869,6 @@ def test_limit_match_handles_missing_message() -> None:
     assert _limit_match(None) is None
 
 
-# --- Pure function tests (no DB) ---
-
-
-def test_parse_result_extracts_last_json_line() -> None:
-    stdout = "Loading skills...\nRunning task...\n" + json.dumps({"summary": "OK"}) + "\n"
-    assert parse_result(stdout) == {"summary": "OK"}
-
-
-def test_parse_result_returns_empty_dict_for_no_json() -> None:
-    assert parse_result("no json here\n") == {}
-
-
-def test_parse_result_skips_malformed_json() -> None:
-    assert parse_result("{bad json\n") == {}
-
-
-def test_parse_result_extracts_pretty_printed_multiline_json() -> None:
-    # A pretty-printed final object spans multiple lines; a line-based scan never
-    # parsed it and degraded to truncated prose (breaking the #1284 gate).
-    stdout = 'Running task...\n{\n  "summary": "done",\n  "phase": "review"\n}\n'
-    assert parse_result(stdout) == {"summary": "done", "phase": "review"}
-
-
-def test_parse_result_returns_last_object_when_several_present() -> None:
-    stdout = '{"summary": "first"}\nmore progress\n{\n  "summary": "final"\n}\n'
-    assert parse_result(stdout) == {"summary": "final"}
-
-
-def test_parse_result_ignores_inner_braces_of_multiline_object() -> None:
-    stdout = 'progress\n{\n  "summary": "ok",\n  "nested": {"k": "v"}\n}\n'
-    assert parse_result(stdout) == {"summary": "ok", "nested": {"k": "v"}}
-
-
 # --- Session resume tests ---
 
 FAKE_SESSION_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1071,6 +1037,17 @@ class TestResolveTaskCwd(TestCase):
             patch("teatree.core.worktree.clone_paths.find_clone_path", return_value=Path("/ws/souliane/teatree")),
         ):
             assert _resolve_task_cwd(task) == "/ws/souliane/teatree"
+
+    def test_triage_and_directive_phases_with_no_worktree_start_in_the_main_clone(self) -> None:
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
+
+        with tempfile.TemporaryDirectory() as clone_dir:
+            (Path(clone_dir) / ".git").mkdir()
+            for phase in ("triage_assessing", "directive_interpreting"):
+                ticket = planned_ticket()
+                task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
+                with self.subTest(phase=phase), patch.dict(os.environ, {"T3_REPO": clone_dir}):
+                    assert _resolve_task_cwd(task) == clone_dir
 
     def test_non_dispatch_phase_with_no_worktree_keeps_unset_cwd(self) -> None:
         # Only the scanner-dispatched review phase falls back to the main clone; every

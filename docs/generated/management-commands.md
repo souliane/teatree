@@ -159,6 +159,15 @@ Generate the skills catalogue from skills/*/SKILL.md frontmatter.
 
 Generate deterministic TeaTree skill delegation documentation.
 
+## `github_webhook`
+
+Create or remove a signed GitHub repository webhook.
+
+| Subcommand | Description |
+| --- | --- |
+| `connect` |  |
+| `disconnect` |  |
+
 ## `handover`
 
 Hand all current work from this session to another session.
@@ -591,10 +600,6 @@ Print the factory signals over the trailing window vs its baseline.
 
 Report which live global settings differ from the shipped defaults (writes nothing).
 
-## `speak`
-
-Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
-
 ## `standing_goal`
 
 Register, clear, or list standing verified-green goals (PR-25).
@@ -659,12 +664,14 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
+| `partial-merge-report` | List merged tickets whose open issue has a declared remainder |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
+| `merge-item-waive` | Request an owner button answer for one LLM merge item |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
@@ -723,7 +730,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
-| `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none |
+| `list-orphans` | List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no branch |
 | `branch-verdict` | Is this branch's work already on the default branch? The canonical answer (#4070) |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |

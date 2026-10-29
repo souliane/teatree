@@ -13,8 +13,10 @@ thin pipeline of named phases — ``sweep`` then ``scan`` then ``act`` then
 exists as one unit.
 """
 
+import datetime as dt
 import logging
 import re
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from teatree.loop.tick import TickReport, TickRequest
 
 logger = logging.getLogger(__name__)
+_SELF_IMPROVE_WIDTH = 200
 
 
 def render_phase(
@@ -73,25 +76,88 @@ def render_phase(
 
 
 def _append_self_improve_firings(zones: StatuslineZones) -> None:
-    """Show active statusline-rung incidents on both busy and idle ticks."""
+    """Show one counted line for active statusline-rung incidents."""
     try:
         from teatree.core.models.self_improve_firing import SelfImproveFiring  # noqa: PLC0415 — ORM at render time
 
         active = SelfImproveFiring.objects.filter(
             resolved_at__isnull=True,
             last_action=SelfImproveFiring.Action.STATUSLINE,
-        ).order_by("-last_fired_at")[:5]
-        for firing in active:
-            payload = firing.payload if isinstance(firing.payload, dict) else {}
-            kind = payload.get("kind", "unknown")
-            cause = payload.get("cause", "unknown")
+        ).values_list("detector", "payload", "first_fired_at")
+        by_kind: dict[str, Counter[str]] = defaultdict(Counter)
+        now = dt.datetime.now(tz=dt.UTC)
+        age_days = 0
+        for detector, raw_payload, first_fired_at in active:
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
+            kind = payload.get("kind")
+            cause = payload.get("cause", "cause unreported")
             count = payload.get("count", 1)
-            kind = kind if isinstance(kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", kind) else "unknown"
-            cause = cause if isinstance(cause, str) and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause) else "unknown"
+            if not isinstance(kind, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", kind) or kind == "unknown":
+                kind = detector if re.fullmatch(r"[a-z0-9_]{1,128}", detector) else "detector_unreported"
+            cause = (
+                cause
+                if isinstance(cause, str) and cause != "unknown" and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause)
+                else "cause unreported"
+            )
             count = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1
-            zones.action_needed.append(f"self-improve: {kind} ({cause}; {count})")
+            by_kind[kind][cause] += count
+            age_days = max(age_days, (now - first_fired_at).days)
+        if not by_kind:
+            return
+        zones.action_needed.append(_SelfImproveSummary(by_kind, age_days).render())
     except Exception:  # statusline must still render if the ledger is unavailable
         logger.debug("self-improve statusline ledger unavailable", exc_info=True)
+
+
+class _SelfImproveSummary:
+    def __init__(self, by_kind: dict[str, Counter[str]], age_days: int) -> None:
+        self.kinds = [
+            (kind, sorted(causes.items(), key=lambda item: (-item[1], item[0])))
+            for kind, causes in sorted(by_kind.items(), key=lambda item: (-sum(item[1].values()), item[0]))
+        ]
+        self.age_days = age_days
+        self.visible_kinds = len(self.kinds)
+        self.visible_causes = [len(causes) for _, causes in self.kinds]
+
+    def render(self) -> str:
+        line = self._line()
+        while len(line) > _SELF_IMPROVE_WIDTH:
+            if self.visible_causes[self.visible_kinds - 1] > 1:
+                self.visible_causes[self.visible_kinds - 1] -= 1
+            elif self.visible_kinds > 1:
+                self.visible_kinds -= 1
+            else:
+                break
+            line = self._line()
+        if len(line) <= _SELF_IMPROVE_WIDTH:
+            return line
+        tail = []
+        omitted_kinds = len(self.kinds) - self.visible_kinds
+        if omitted_kinds:
+            tail.append(f"+{omitted_kinds} more {'kind' if omitted_kinds == 1 else 'kinds'}")
+        if self.age_days >= 1:
+            tail.append(f"oldest {self.age_days}d")
+        suffix = f" | {' | '.join(tail)}" if tail else ""
+        return f"{line.split(' | ', maxsplit=1)[0][: _SELF_IMPROVE_WIDTH - len(suffix) - 1]}…{suffix}"
+
+    def _line(self) -> str:
+        parts = []
+        for index, (kind, causes) in enumerate(self.kinds[: self.visible_kinds]):
+            total = sum(count for _, count in causes)
+            if kind == "detector_unreported" and causes == [("cause unreported", total)]:
+                parts.append(f"unknown {total}")
+                continue
+            cause_parts = [f"{cause} {count}" for cause, count in causes[: self.visible_causes[index]]]
+            omitted = len(causes) - self.visible_causes[index]
+            if omitted:
+                cause_parts.append(f"+{omitted} more {'cause' if omitted == 1 else 'causes'}")
+            parts.append(f"{kind} {total} ({', '.join(cause_parts)})")
+        omitted_kinds = len(self.kinds) - self.visible_kinds
+        if omitted_kinds:
+            parts.append(f"+{omitted_kinds} more {'kind' if omitted_kinds == 1 else 'kinds'}")
+        if self.age_days >= 1:
+            parts.append(f"oldest {self.age_days}d")
+        return f"self-improve: {' | '.join(parts)}"
 
 
 def _reconcile_health() -> None:

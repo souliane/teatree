@@ -34,7 +34,7 @@ pre-app-registry and raise ``ImproperlyConfigured``.
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING
@@ -146,6 +146,7 @@ class SendVerdict:
     redaction_matches: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
     redaction_failed: bool = False
+    audit_id: int | None = None
 
     @property
     def payload_redacted(self) -> bool:
@@ -283,8 +284,8 @@ def route_send(request: SendRequest) -> SendVerdict:
         ),
         redaction_failed=redaction_failed,
     )
-    _record_audit(request, verdict)
-    return verdict
+    audit = _record_audit(request, verdict)
+    return replace(verdict, audit_id=audit.pk if audit is not None else None)
 
 
 def _safe_allowlist_check(request: SendRequest) -> bool:
@@ -324,7 +325,7 @@ def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...], bool]:
 
 def _record_audit(
     request: SendRequest, verdict: SendVerdict | None, *, summary_chars: int | None = _PAYLOAD_SUMMARY_CHARS
-) -> None:
+) -> "SendAudit | None":
     """Write the :class:`SendAudit` row; a missing verdict denotes private data.
 
     Fields are pre-truncated to their column widths here (SQLite does not enforce
@@ -336,7 +337,7 @@ def _record_audit(
     overlay = request.overlay or os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
         with transaction.atomic():
-            SendAudit.objects.create(
+            return SendAudit.objects.create(
                 channel=request.channel.value,
                 destination=request.destination[:512],
                 action=request.action[:64],
@@ -354,6 +355,15 @@ def _record_audit(
         logger.warning("send_proxy: audit write failed for destination=%s: %s", request.destination, exc)
     except Exception as exc:  # noqa: BLE001 — the audit is a side ledger; never break the send.
         logger.debug("send_proxy: audit record failed for destination=%s: %s", request.destination, exc)
+    return None
+
+
+def record_allowed_write(*, item: str, action: str) -> "SendAudit | None":
+    request = SendRequest(
+        channel=SendChannel.GITLAB, destination=item, payload="", action=f"guard:{action}", target=item
+    )
+    verdict = SendVerdict(allowed=True, payload="", allowlist_ok=True)
+    return _record_audit(request, verdict)
 
 
 def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":

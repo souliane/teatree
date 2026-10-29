@@ -64,7 +64,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 # A `[mr_reminder]` table left here is ignored on read; set it as a JSON dict:
 #   t3 <overlay> config_setting set mr_reminder \
 #     '{"default_channel":"C_FALLBACK","channels":{"souliane/teatree":"C_TEATREE","acme-engineering":"C_ACME"}}'
-# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"all","slack":true}'
+# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"dm","slack":true}'
 #   (per-overlay override: add --overlay <name>; it MERGES onto the global speak row).
 
 ```
@@ -183,8 +183,7 @@ value is ignored on read and the how-to advisory points at
 tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
 (`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
 resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
-per-overlay MERGE; the cold Stop-hook `speak` reader uses `cold_reader.read_setting`
-— to the DB. The last NON-`UserSettings` config — the definition registries
+per-overlay MERGE — to the DB. The last NON-`UserSettings` config — the definition registries
 (`REGISTRY_SETTINGS`: `[overlays]`, `[e2e_repos]`, `[peer_instances]`) — is DB-home too:
 each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
 `loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
@@ -380,13 +379,15 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `scratch_retention_days` | #4165: retention window (days) for agent scratch under the temp root (default `0` — the lane ships OFF, as every destructive lever does; set a positive window to arm it). On a RAM-backed `/tmp` this is MEMORY, not idle disk — the measured box carried 8.8 GB of week-old sqlite/venv scratch inside a 15 GB tmpfs on 31 GB of RAM, 28% of the working pool. `t3 <overlay> retention scratch` reclaims a top-level entry only when it is older than the window, owned by this uid, held open (fd or cwd) by no live process the probe can see, not a registered worktree checkout nor a parent/child of one, and not protected by name. Every guard that cannot be answered KEEPS the entry with its reason printed; an unreadable process table or worktree read makes the whole plan removable-empty. Dry-run by default (`--apply` reclaims). Per-overlay overridable; enforced by `teatree.core.retention.scratch`. |
 
 | `scratch_sweep_root` | #4165: temp root the scratch sweep reclaims from (default `""` = auto-resolve). Blank resolves to the HOST view `/host-tmp` when the deployment mounts it paired with the host process table at `/host-proc`, else to this venue's own `/tmp`. The pairing is the point: containers do not share the host temp root, so a container-scoped sweep of the container's own `/tmp` reclaims nothing of what fills the box — and sweeping one namespace's files while reading another's process table is exactly what blinds the open-file guard. An explicitly configured root that is not the host mount is swept against this venue's own `/proc`. Per-overlay overridable. |
+
+The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and `/var/tmp` with a fixed four-hour idle window. Each root resumes after the last checked entry when a pass runs out of time. `scratch_retention_days` and `scratch_sweep_root` still control the separate manual retention command; their default off state does not disable the worker pass.
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
 | `provision_ram_ceiling_percent` | #2949: RAM-used-percent ceiling above which a new worktree provision is HELD (queued, not started) rather than admitted (default `75`) — tighter than the self-improve budget gate's `DEFAULT_RAM_USED_CEILING_PCT` (85) because provisioning arrives in bursts a per-sample gate reads too late. A held request drains automatically once RAM frees, bounded by an internal max-hold ceiling. Per-overlay overridable; enforced by `teatree.core.gates.provision_admission_gate`. |
 | `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
-| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker runs W+1 `cheap` executors. Both classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
+| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker runs W+1 `cheap` executors plus one per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned, not this setting). Both classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
 | `single_branch_repo_gate_enabled` | Kill-switch for `single_branch_repos` (default `true`). `false` reverts both seams to the pre-gate behaviour byte-for-byte while leaving the entries declared. Per-call escape on the Bash seam: append `[gate-escape:single_branch_repo: <reason>]` to the command. Per-overlay overridable. |
 | `dream_memory_promote` | Whether Pass-2 memory→fix promotion runs (default `true`, #2426, #4776) — a pass batches its promotions into ONE ticket. |
@@ -413,44 +414,40 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `private_repos` | Host-qualified `host/owner` or `host/owner/repo` entries. A namespace entry declares EVERY repo below it private, so use one only for a group with no public repo; otherwise list individual repos. A reachable forge answer PUBLIC wins over a declaration. Matching preserves the host and path-segment boundaries. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[gate-escape:unknown_repo_push: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"dm","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
 ### 10.1.1 Local text-to-speech (#2060)
 
 The `speak` config reads agent output aloud, gated on the macOS `say` binary (the
 whole feature is inert when it is absent). DB-home (#1775, config-unify):
 a JSON-dict `ConfigSetting` row, rebuilt bespoke by the resolver. Per-overlay
-overridable via a `--overlay <name>` row that MERGES onto the global row; ad-hoc local
-read via `t3 speak "…"`. The cold Stop hook reads the global row via `cold_reader`.
+overridable via a `--overlay <name>` row that MERGES onto the global row.
 
 ```bash
-# local: "off" (default) | "dm" | "all" — what plays through this machine's speakers
+# local: "off" (default) | "dm" — what plays through this machine's speakers
 # slack: false (default) | attach a spoken audio file to each Slack DM you receive
-t3 <overlay> config_setting set speak '{"local": "all", "slack": true}'
+t3 <overlay> config_setting set speak '{"local": "dm", "slack": true}'
 ```
 
 `local` is what plays through the speakers (macOS `say`): `off` nothing, `dm`
-the bot→user DM texts, `all` those DM texts **and** the Stop-hook reading of
-in-client turn ends. `slack` attaches the spoken audio to each bot→user DM in
+the bot→user DM texts. Stored legacy `all` values resolve as `dm`. `slack`
+attaches the spoken audio to each bot→user DM in
 the **same message** (text + inline player, one DM) via
 `SlackBotBackend.post_audio_dm` — no separate audio-only post; it applies to
 DMs only by nature. This needs the token's **`files:write`** scope (else
 `ok:false` / `missing_scope` — the DM degrades to text-only and the failure
 surfaces once per error class to the user's DM with the scope-fix hint; re-run
-`t3 setup slack-bot` to grant it). Both the `notify_user` DM and the on-behalf
-self-DM run through one shared `teatree.core.speak.deliver_user_dm` chokepoint.
+`t3 setup slack-bot` to grant it). On-behalf self-DMs use
+`teatree.core.speak.deliver_user_dm`; `notify_user` enriches its already-posted
+text DM through `deliver_user_dm_sidecar`.
 
 The two axes are fully independent. Slack never auto-plays, so local playback
-is never suppressed by `slack`. The Stop-hook in-client read fires whenever
-`local = all` — in-client turns are never Slack messages, so there is no
-double-play to suppress. The config lives in the DB store (read cold via
-`cold_reader` on the Stop path); there is no other per-run state.
+is never suppressed by `slack`. The config lives in the DB store.
 
 **Meeting-mute (#2171).** `_speak_local` silences local playback while a
 configured presence backend reports the user IN A MEETING — the gate lives at
 the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
-config is never mutated and every local consumer (`speak()` and the local leg of
-`deliver_user_dm`) is gated by the one check. The `slack` arm is exempt (a
+config is never mutated and the local leg of `deliver_user_dm` is gated by the one check. The `slack` arm is exempt (a
 Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
 presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
 token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
@@ -474,24 +471,20 @@ Slack ask they served. An attended question renders in the terminal only, so it 
 no DM to carry audio.
 
 **Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
-playback fans out from two independent sources — each DM's local-read leg and
-the detached `t3 speak` Stop-hook read — each spawning its own `say`. To stop
+playback fans out from independent DM deliveries, each spawning its own `say`. To stop
 concurrent reads talking over each other, `_speak_local()` wraps the actual
 `say` call in a single cross-process `fcntl.flock` on a lockfile under the
 teatree state dir (`get_data_dir("speak")/speaker.lock`), guaranteeing **mutual
 exclusion** (no two `say` calls overlap) across both the in-process daemon
-threads and the separate detached subprocesses (a per-process queue would not
-serialize the subprocesses). The lock is acquired with a **bounded wait**, not
+threads and separate DM delivery processes (a per-process queue would not
+serialize separate processes). The lock is acquired with a **bounded wait**, not
 blocking: `_serial_speaker()` retries a non-blocking acquire for a short total
 budget (`_SPEAKER_LOCK_WAIT_BUDGET_S`) and, if the speaker is still busy,
-**drops the read as stale** rather than queuing it. A blocking acquire is not
+plays without the lock rather than queuing indefinitely. A blocking acquire is not
 FIFO and builds an unbounded backlog under a flood of fan-out reads — a message
-could play many minutes after it was printed — so the bounded-wait-then-drop
-caps latency at the budget: a read either plays promptly or is dropped, never
-multi-minute late. The non-blocking daemon-thread dispatch is unchanged — the
-thread waits on the lock, never the caller's egress path — so the bounded wait
-never delays a DM or turn. The lock is best-effort: a lockfile that cannot be
-opened fails **open** (the read still plays) so a lock error never mutes audio.
+could play many minutes after it was printed. The non-blocking daemon-thread
+dispatch keeps lock waiting off the caller's egress path. The lock is best-effort:
+a busy or unavailable lock never mutes audio.
 
 Callers read `get_effective_settings().speak`. Adding a new overridable key
 is a one-line registry change picked up via `dataclasses.replace`; `speak` is

@@ -9,24 +9,17 @@ from django.db import transaction
 from django.db.models import Max, Min
 from django.utils import timezone
 
+from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, waive_merge_item
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
 from teatree.core.modelkit.escape_scope import EscapeScope
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
-from teatree.core.models import Task, Worktree
+from teatree.core.models import Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
-from teatree.core.models.task_handoff import release_checkout_park
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import (
-    AttestRefusedError,
-    CheckoutAttestation,
-    declined_attest_tasks,
-    read_attestation,
-    retire_card,
-)
 
 logger = logging.getLogger(__name__)
 _RETRY_AFTER = timedelta(minutes=5)
@@ -49,52 +42,6 @@ class _Decision:
     note: str = ""
     notify: bool = False
     write: _Write | None = None
-
-
-def _prepare_attest(row: DeferredQuestion, action: ActionRequest, _actor: str) -> _Write:
-    worktree = Worktree.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
-    if worktree is None:
-        message = "The checkout no longer has a record."
-        raise OwnerActionRefusedError(message)
-
-    def read() -> CheckoutAttestation:
-        try:
-            return read_attestation(
-                worktree,
-                expected_digest=action["binding"],
-                requested_host_evidence=action.get("host_evidence"),
-            )
-        except AttestRefusedError as exc:
-            message = f"The checkout {exc}"
-            if exc.retryable:
-                raise OwnerActionDeferredError(message) from exc
-            raise OwnerActionRefusedError(message) from exc
-
-    read()
-
-    def write() -> str:
-        attestation = read()
-        attestation.record()
-        with transaction.atomic():
-            other_cards = (
-                DeferredQuestion.owner_pending()
-                .select_for_update()
-                .filter(evidence__action__kind=OwnerActionKind.ATTEST, evidence__action__target=str(worktree.pk))
-                .exclude(pk=row.pk)
-            )
-            for other in other_cards:
-                retire_card(other, "The checkout was accepted through another card", resolver_id="owner_actions")
-        declined = declined_attest_tasks(worktree, attestation.state.digest)
-        parked_tasks = Task.objects.filter(ticket=worktree.ticket, status=Task.Status.PENDING, not_before__isnull=False)
-        for parked in parked_tasks.exclude(pk__in=declined):
-            latest = parked.attempts.order_by("-pk").values("result").first()
-            result = latest["result"] if latest is not None else {}
-            checkout_id = result.get("checkout_worktree_id") if isinstance(result, dict) else None
-            if checkout_id == worktree.pk or (checkout_id is None and parked.pk == row.parked_task_id):
-                release_checkout_park(parked)
-        return f"Attested the checkout at {attestation.state.digest}."
-
-    return write
 
 
 def _prepare_void(_row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
@@ -132,10 +79,32 @@ def _prepare_escape(_row: DeferredQuestion, action: ActionRequest, actor: str) -
     return write
 
 
+def _prepare_merge_item_waiver(row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
+    ticket = Ticket.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
+    if ticket is None:
+        message = "The ticket no longer exists."
+        raise OwnerActionRefusedError(message)
+
+    def write() -> str:
+        try:
+            waiver = waive_merge_item(
+                ticket,
+                slug=action["binding"],
+                waived_by=actor,
+                reason=action.get("note", ""),
+                owner_question=row,
+            )
+        except MergeItemWaiverError as exc:
+            raise OwnerActionRefusedError(str(exc)) from exc
+        return f"Waived the {action['binding']} merge item for ticket {ticket.pk} by {waiver['waived_by']}."
+
+    return write
+
+
 _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
-    OwnerActionKind.ATTEST: _prepare_attest,
     OwnerActionKind.ESCAPE: _prepare_escape,
     OwnerActionKind.VOID: _prepare_void,
+    OwnerActionKind.MERGE_ITEM_WAIVER: _prepare_merge_item_waiver,
 }
 
 

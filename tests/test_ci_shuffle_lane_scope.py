@@ -153,6 +153,10 @@ def _shuffle_uv_commands() -> str:
     )
 
 
+def test_shuffle_runner_declares_its_large_curated_selection() -> None:
+    assert "--teatree-selected-full" in _shuffle_pytest_invocation()
+
+
 class TestShuffleRunnerCannotReportAFalseGreen:
     """The local twin exists, matches CI's scope, and cannot swallow a failing exit code.
 

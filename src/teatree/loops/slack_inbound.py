@@ -39,9 +39,18 @@ def reset_dm_recorders() -> None:
     _dm_recorders.clear()
 
 
+def _is_dm(event: dict) -> bool:
+    return event.get("type") == "message" and event.get("channel_type") == "im"
+
+
+def _is_colleague_dm(overlay: str, event: dict) -> bool:
+    recorder = _dm_recorder(overlay) if _is_dm(event) else None
+    return recorder is not None and not recorder.is_from_operator(event)
+
+
 def record_slack_dm(overlay: str, event: dict) -> bool:
     """Record *event* when it is a DM; ``True`` only when a NEW row was written."""
-    if event.get("type") != "message" or event.get("channel_type") != "im":
+    if not _is_dm(event):
         return False
     recorder = _dm_recorder(overlay)
     if recorder is None:
@@ -56,8 +65,11 @@ def record_and_wake_slack_answer(overlay: str, event: dict) -> None:
 
     Recording FIRST is what makes the wake worth firing: the answer cycle reads
     ``PendingChatInjection.loop_unreplied()``, so a wake that lands before the row
-    finds an empty queue and stops without re-arming. Nothing is posted to Slack here.
+    finds an empty queue and stops without re-arming. A DM identified as coming from someone other than the owner
+    records no row and wakes nothing. Nothing is posted to Slack here.
     """
+    if _is_colleague_dm(overlay, event):
+        return
     recorded = record_slack_dm(overlay, event)
     if event.get("channel_type") == "im" and is_on_behalf_posted(event) and not recorded:
         return

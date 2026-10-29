@@ -131,6 +131,26 @@ class TestResolvingClearsEntryByConstruction:
         )
         assert WaitingKind.MERGE_AUTHORIZATION not in _kinds("teatree")  # absent after
 
+    def test_substrate_clear_without_human_authorizer_keeps_merge_wait_visible(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", issue_url="https://x/430")
+        pr = PullRequest.objects.create(
+            ticket=ticket, overlay="teatree", url="https://github.com/o/r/pull/430", repo="o/r", iid="430"
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=430,
+            slug="o/r",
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+        )
+
+        assert WaitingKind.MERGE_AUTHORIZATION in _kinds("teatree")
+
     def test_resolving_a_manual_item_removes_its_entry(self) -> None:
         item = WaitingItem.objects.add("call the bank")
         assert WaitingKind.MANUAL in _kinds()

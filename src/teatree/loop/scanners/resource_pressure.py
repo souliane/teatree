@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING
 from django.utils import timezone
 
 from teatree.config import worktree_root
+from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb
 from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.ram_probe import linux_mem_available_kb
 from teatree.utils.ram_scope import cgroup_headroom_mib, cgroup_memory_probe_inert
@@ -88,6 +89,7 @@ class ResourceReading:
     #: have moved since.
     disk_probed_paths: tuple[str, ...] = ()
     disk_answered_by: str = ""
+    disk_reserved_gb: float | None = None
     cgroup_probe_inert: bool = False
 
     @property
@@ -141,6 +143,15 @@ def read_disk_free_gb(path: str) -> float | None:
         logger.warning("resource_pressure: os.statvfs(%r) failed", path)
         return None
     return (stat.f_bavail * stat.f_frsize) / _GIB
+
+
+def read_disk_reserved_gb(path: str) -> float | None:
+    try:
+        stat = os.statvfs(path)
+    except OSError:
+        logger.warning("resource_pressure: reserved blocks on %r could not be measured", path)
+        return None
+    return max(stat.f_bfree - stat.f_bavail, 0) * stat.f_frsize / _GIB
 
 
 def read_ram_avail_gb() -> float | None:
@@ -266,6 +277,7 @@ def measure_resources() -> ResourceReading:
         ram_avail_gb=read_ram_avail_gb(),
         disk_probed_paths=paths,
         disk_answered_by=answered_by,
+        disk_reserved_gb=read_disk_reserved_gb(answered_by) if answered_by else None,
         cgroup_probe_inert=cgroup_memory_probe_inert(),
     )
 
@@ -444,7 +456,26 @@ class ResourcePressureScanner:
 
     def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
         inert = _inert_signals(reading)
-        disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
+        disk_crit = reading.disk_ladder_gb < effective_disk_floor_gb(self.disk_crit_free_gb)
+        if disk_crit and getattr(marker, "reclaim_blocked_since", None) is not None:
+            reclaimed = getattr(marker, "last_reclaimed_gb", 0.0) or 0.0
+            reserved = (
+                f"{reading.disk_reserved_gb:.1f} GB reserved"
+                if reading.disk_reserved_gb is not None
+                else "reserved space unmeasured"
+            )
+            inert.append(
+                ScanSignal(
+                    kind="resource.reclaim_blocked",
+                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free; {reserved}; last reclaimed {reclaimed:.2f} GB",
+                    payload={
+                        "resource": "disk",
+                        "free_gb": reading.disk_ladder_gb,
+                        "reserved_gb": reading.disk_reserved_gb,
+                        "last_reclaimed_gb": reclaimed,
+                    },
+                )
+            )
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
         if disk_crit or ram_crit:
@@ -513,7 +544,7 @@ class ResourcePressureScanner:
 
     def _cleanup_needed_signal(self, *, resource: str, reading: ResourceReading, marker: object) -> ScanSignal:
         free_gb = reading.disk_ladder_gb if resource == "disk" else reading.ram_ladder_gb
-        crit_gb = self.disk_crit_free_gb if resource == "disk" else self.ram_crit_avail_gb
+        crit_gb = effective_disk_floor_gb(self.disk_crit_free_gb) if resource == "disk" else self.ram_crit_avail_gb
         return ScanSignal(
             kind="resource.cleanup_needed",
             summary=f"{resource} CRITICAL: {free_gb:.1f} GB (< {crit_gb:.1f} GB) — freeing",
@@ -526,7 +557,7 @@ class ResourcePressureScanner:
                 # so it needs the shape of the ladder it was dispatched from, not just
                 # the reading.
                 "disk_warn_free_gb": self.disk_warn_free_gb,
-                "disk_crit_free_gb": self.disk_crit_free_gb,
+                "disk_crit_free_gb": effective_disk_floor_gb(self.disk_crit_free_gb),
                 "scratch_retention_days": self.scratch_retention_days,
                 "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,

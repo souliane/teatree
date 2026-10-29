@@ -24,9 +24,12 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
+from teatree.core.review import author_trust
 from teatree.core.review.review_taken import ReviewTaken
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.hooks import foreign_mr_cli
 from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
@@ -50,6 +53,8 @@ def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _routed_forge_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: httpx)
+
     def _resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
         return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
 
@@ -367,6 +372,92 @@ class TestTrustedSetAndAdversarial(TestCase):
         assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
         assert signals[0].payload["adversarial"] is True
         assert signals[0].payload["requires_human_authorization"] is True
+
+
+class TestPrivateRepoBroadcastOwnership(TestCase):
+    def test_colleague_mr_is_reviewed_as_a_colleague(self) -> None:
+        state = MrState(url=MR_OPEN, merged=False, approved=False, author_username="colleague")
+        scanner = SlackBroadcastsScanner(
+            backend=FakeMessaging(),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher({CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}),
+            classify_mrs=_classifier({MR_OPEN: state}),
+            current_gitlab_username="me",
+        )
+
+        with patch.object(author_trust, "repo_is_internal", return_value=True):
+            signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["slack.review_intent"]
+        assert signals[0].payload["mr_url"] == MR_OPEN
+        assert signals[0].payload["adversarial"] is False
+        assert signals[0].payload["requires_human_authorization"] is False
+
+    def test_colleague_mr_with_mention_is_picked_up(self) -> None:
+        state = MrState(url=MR_OPEN, merged=False, approved=False, author_username="colleague")
+        scanner = SlackBroadcastsScanner(
+            backend=FakeMessaging(),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher({CHANNEL: [_message(f"<@{USER_SLACK_ID}> {MR_OPEN}", TS_A)]}),
+            classify_mrs=_classifier({MR_OPEN: state}),
+            current_gitlab_username="me",
+            user_slack_id=USER_SLACK_ID,
+            reviewer_username="me",
+        )
+
+        with patch.object(author_trust, "repo_is_internal", return_value=True):
+            signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["slack.review_intent", "review_request_in_slack"]
+        assert [signal.payload["mr_url"] for signal in signals] == [MR_OPEN, MR_OPEN]
+
+    def test_owner_alias_is_skipped_on_private_and_public_repos(self) -> None:
+        state = MrState(url=MR_OPEN, merged=False, approved=False, author_username="OWNER.ALIAS")
+        for internal, ts, text in (
+            (True, TS_A, f"<@{USER_SLACK_ID}> {MR_OPEN}"),
+            (False, TS_B, f"please review {MR_OPEN}"),
+        ):
+            with self.subTest(internal=internal):
+                scanner = SlackBroadcastsScanner(
+                    backend=FakeMessaging(),
+                    channels=[CHANNEL],
+                    fetch_channel_history=_fetcher({CHANNEL: [_message(text, ts)]}),
+                    classify_mrs=_classifier({MR_OPEN: state}),
+                    current_gitlab_username="me",
+                    owner_identities=("Owner.Alias",),
+                    user_slack_id=USER_SLACK_ID,
+                    reviewer_username="me",
+                )
+
+                with patch.object(author_trust, "repo_is_internal", return_value=internal):
+                    assert scanner.scan() == []
+
+    def test_declared_bot_is_skipped_only_on_its_own_host(self) -> None:
+        state = MrState(url=MR_OPEN, merged=False, approved=False, author_username="OWNERBOT")
+        for declared_host, ts, expected_kinds in (
+            ("gitlab.example.com", TS_A, []),
+            ("other.example.com", TS_B, ["slack.review_intent"]),
+        ):
+            with self.subTest(declared_host=declared_host):
+                scanner = SlackBroadcastsScanner(
+                    backend=FakeMessaging(),
+                    channels=[CHANNEL],
+                    fetch_channel_history=_fetcher({CHANNEL: [_message(f"please review {MR_OPEN}", ts)]}),
+                    classify_mrs=_classifier({MR_OPEN: state}),
+                    current_gitlab_username="me",
+                )
+
+                with (
+                    patch.object(author_trust, "repo_is_internal", return_value=True),
+                    patch.object(
+                        foreign_mr_cli,
+                        "declared_self_identities_raw",
+                        side_effect=lambda host, own_host=declared_host: ("OwnerBot",) if host == own_host else (),
+                    ),
+                ):
+                    signals = scanner.scan()
+
+                assert [signal.kind for signal in signals] == expected_kinds
 
 
 class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):

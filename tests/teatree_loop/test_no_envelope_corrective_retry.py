@@ -19,7 +19,9 @@ strings drift apart is pinned on the runner side, in
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, corrective_instruction
+from teatree.agents.envelope_contract import corrective_instruction
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.transient_requeue import requeue_transient_failed
@@ -93,7 +95,8 @@ class TestNoEnvelopeCorrectiveRetry(TestCase):
         assert reopened == 0
         assert task.status == Task.Status.FAILED
         assert "[repair-halt-parked]" in task.execution_reason
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 1
         # Durably parked — a later sweep never resurrects another retry.
         assert requeue_transient_failed() == 0
 
@@ -141,4 +144,5 @@ class TestNoEnvelopeCorrectiveRetry(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 1

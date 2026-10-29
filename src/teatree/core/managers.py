@@ -10,7 +10,6 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
-from teatree.core.admission.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.claim_liveness import current_owner
 from teatree.core.intake.ticket_findability import unfindable_tickets
 from teatree.core.loop_lease_liveness import OwnershipStatus
@@ -376,9 +375,7 @@ class TaskQuerySet(models.QuerySet):
         if claim_admission_block_reason():
             return None
         now = timezone.now()
-        candidates = self.filter(status=task_model.Status.PENDING).filter(
-            _claimable_now_q(now), new_pr_start_allowed_q()
-        )
+        candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
         if ordering is not None:
@@ -393,11 +390,11 @@ class TaskQuerySet(models.QuerySet):
             # Compare-and-swap on status: only the writer that still sees
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
-            # predicate keeps the status CAS, park deadline and new-PR cap aligned.
+            # predicate keeps the status CAS and park deadline aligned.
             owner_pid, owner_pid_namespace = current_owner()
             claimed_count = (
                 self.filter(pk=oldest_pk, status=task_model.Status.PENDING)
-                .filter(_claimable_now_q(now), new_pr_start_allowed_q())
+                .filter(_claimable_now_q(now))
                 .update(
                     status=task_model.Status.CLAIMED,
                     claimed_by=claimed_by,
@@ -491,6 +488,10 @@ class TaskQuerySet(models.QuerySet):
         """
         return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.EXPENSIVE)).count()
 
+    def answering_lane_occupancy(self) -> int:
+        """Occupancy of the owner-answering class, including recent pending seats."""
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.ANSWERING)).count()
+
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
 
@@ -517,6 +518,7 @@ class TaskQuerySet(models.QuerySet):
         cheap_class: CheapClass | None,
         lane_ceiling: int | None = None,
         class_ceiling: int | None = None,
+        lane: PhaseCost | None = None,
     ) -> bool:
         """Take *task_pk*'s seat — ``True`` when this call got it.
 
@@ -524,20 +526,20 @@ class TaskQuerySet(models.QuerySet):
         (#4125): a probe is stale the moment it returns, so two processes reaching a chokepoint
         in one window each saw room and each admitted. Re-checking occupancy in the ``WHERE``
         makes the loser match no row and be refused. ``lane_ceiling`` bounds the row's lane —
-        the whole cheap lane for a cheap row — and ``class_ceiling`` its cheap class; ``None``
-        lifts that bound.
+        the whole cheap lane for a cheap row, the answering class for an answering row — and
+        ``class_ceiling`` its cheap class; ``None`` lifts that bound. ``lane`` names the row's
+        lane when it is not derivable from ``cheap_class``.
 
         A row still holding a live seat is refused too: a second booking is a duplicate dispatch.
-        The same write refuses a new PR starter while the live PR cap is full.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save`` auto-enqueue is
         itself a ``post_save`` receiver, so saving the instance from inside it would re-enter the
         receiver, and the stamp must not be able to re-arm the dispatch it is recording.
         """
         now = timezone.now()
-        seat = self.filter(_unseated_q(now), new_pr_start_allowed_q(), pk=task_pk)
+        seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:
-            lane = PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE
+            lane = lane or (PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE)
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))
         if cheap_class is not None and class_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=cheap_class))

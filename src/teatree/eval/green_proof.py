@@ -1,21 +1,33 @@
 """Verify one row per catalog scenario and version at the evaluated commit.
 
-The weekly and eval-heal combine jobs use this pure gate after merging shard
+The ``eval-ci-heal`` combine job uses this pure gate after merging shard
 summaries. A passing proof needs the exact catalog identity set, a matching SHA,
 consistent totals and no gating red. Retry recoveries are FLAKY, never PASS.
 Interactive behavioral reds remain visible but advisory; missing grading and
 infrastructure failures always block.
+
+:func:`evaluate_baseline` reuses the proof to answer the standing question a one-shard
+smoke run cannot: is a recent full-suite proof over the CURRENT catalog on record at all.
 """
 
 import dataclasses
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 from teatree.eval.api_errors import is_usage_limit_skip_reason
 
 #: The triage class a row carries when the producer wrote none — gating by construction.
 UNCLASSIFIED = "unclassified"
+
+#: How old the newest full-suite proof may be before the baseline reads STALE.
+BASELINE_MAX_AGE = timedelta(days=7)
+
+#: How far ahead of the judging clock a proof's stamp may sit before it reads STALE; the machine that
+#: stamped it and the one judging it do not share a clock, so a few minutes ahead is skew, not a future proof.
+CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -210,3 +222,123 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, s
         rows=len(scenarios),
         outcome_counts=counts,
     )
+
+
+class BaselineState(StrEnum):
+    MISSING = "missing"
+    STALE = "stale"
+    NOT_GREEN = "not_green"
+    GREEN = "green"
+
+
+@dataclasses.dataclass(frozen=True)
+class BaselineStatus:
+    """Whether a recent full-catalog green proof is on record, and why not when it is not."""
+
+    state: BaselineState
+    detail: str
+
+    @property
+    def is_green(self) -> bool:
+        return self.state is BaselineState.GREEN
+
+    @property
+    def summary(self) -> str:
+        return f"BASELINE {self.state.name}: {self.detail}"
+
+
+def evaluate_baseline(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    expected: Mapping[str, str],
+    now: datetime,
+    max_age: timedelta = BASELINE_MAX_AGE,
+) -> BaselineStatus:
+    """Judge the newest measured merged summary (*payloads*, newest first) against the CURRENT catalog.
+
+    An empty summary measured nothing and is skipped. A parked merge can still contain measured
+    rows from other shards, so the first summary with rows must
+    cover *expected* exactly (:attr:`GreenProof.covers_the_catalog`, bound to its own SHA),
+    be no older than *max_age*, and carry no gating red; the verdict names the first check it fails.
+    """
+    payload = next((p for p in payloads if _measured_something(p)), None)
+    if payload is None:
+        return BaselineStatus(
+            BaselineState.MISSING,
+            "no full-suite eval-heal run is on record; dispatch eval-ci-heal.yml with no scenarios on main",
+        )
+    sha = str(payload.get("head_sha", ""))
+    proof = evaluate_green_proof(payload, expected=expected, expected_sha=sha)
+    if not proof.covers_the_catalog:
+        return BaselineStatus(
+            BaselineState.STALE,
+            f"the newest proof ({sha[:9]}) measured {proof.total} of {len(expected)} current scenario(s), "
+            f"so it does not cover the catalog as it stands now{_after(proof, '; ')}",
+        )
+    generated_at = _instant(payload.get("generated_at"))
+    age = _age_at(generated_at, now)
+    if age is None or age < timedelta(0) or age > max_age:
+        return BaselineStatus(BaselineState.STALE, _age_detail(sha, age, max_age))
+    if not proof.is_green:
+        return BaselineStatus(
+            BaselineState.NOT_GREEN,
+            f"the newest proof ({sha[:9]}) has {len(proof.reds)} gating red(s), "
+            f"{proof.incomplete} incomplete, {len(proof.unmeasured)} unmeasured{_after(proof, ' - ')}",
+        )
+    return BaselineStatus(
+        BaselineState.GREEN, f"{proof.passed}/{proof.total} passed at {sha[:9]}, {age.days} day(s) old"
+    )
+
+
+def _age_at(generated_at: datetime | None, now: datetime) -> timedelta | None:
+    """How old a proof is at *now*; a stamp within the clock-skew allowance ahead of *now* counts as brand new."""
+    if generated_at is None:
+        return None
+    age = now - generated_at
+    return timedelta(0) if -CLOCK_SKEW_TOLERANCE <= age < timedelta(0) else age
+
+
+def _span(delta: timedelta) -> str:
+    """*delta* in its largest whole unit, so a ten-minute offset reads minutes rather than ``0 day(s)``."""
+    seconds = int(delta.total_seconds())
+    for unit_seconds, unit in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= unit_seconds:
+            return f"{seconds // unit_seconds} {unit}(s)"
+    return f"{seconds} second(s)"
+
+
+def _age_detail(sha: str, age: timedelta | None, max_age: timedelta) -> str:
+    if age is None:
+        return f"the newest proof ({sha[:9]}) carries no readable generated_at"
+    if age < timedelta(0):
+        return (
+            f"the newest proof ({sha[:9]}) is stamped {_span(-age)} in the future, "
+            f"beyond the {_span(CLOCK_SKEW_TOLERANCE)} clock-skew allowance"
+        )
+    return f"the newest full-suite proof ({sha[:9]}) is {age.days} day(s) old, limit {max_age.days}"
+
+
+_UNMEASURED_NAMES_SHOWN = 5
+
+
+def _after(proof: GreenProof, joiner: str) -> str:
+    if not proof.unmeasured:
+        return ""
+    names = [row.name for row in proof.unmeasured]
+    more = f" (+{len(names) - _UNMEASURED_NAMES_SHOWN} more)" if len(names) > _UNMEASURED_NAMES_SHOWN else ""
+    return f"{joiner}unmeasured: {', '.join(names[:_UNMEASURED_NAMES_SHOWN])}{more}"
+
+
+def _measured_something(payload: Mapping[str, Any]) -> bool:
+    scenarios = payload.get("scenarios")
+    return isinstance(scenarios, list) and bool(scenarios)
+
+
+def _instant(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)

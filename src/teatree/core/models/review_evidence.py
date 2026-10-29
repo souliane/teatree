@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.project_repo_identity import ProjectRepoIdentity, project_repo_identity_for_ticket
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 from teatree.core.models.ticket import Ticket
@@ -35,16 +36,6 @@ _MIN_INTEGRATION_REPOS = 2
 
 class ReviewEvidenceError(ValueError):
     """A ``ReviewEvidence`` row was rejected at record time — the contract failed."""
-
-
-def _normalize_repos(repos: list[str] | None) -> list[str]:
-    """Strip, drop blanks, de-duplicate while preserving first-seen order."""
-    seen: dict[str, None] = {}
-    for repo in repos or []:
-        cleaned = str(repo).strip()
-        if cleaned and cleaned not in seen:
-            seen[cleaned] = None
-    return list(seen)
 
 
 class ReviewEvidenceManager(models.Manager["ReviewEvidence"]):
@@ -61,18 +52,18 @@ class ReviewEvidenceManager(models.Manager["ReviewEvidence"]):
     def has_integration_review_covering(self, ticket: "Ticket", repos: list[str]) -> bool:
         """Whether a NON-BLOCKING integration-review row covers every repo in *repos*.
 
-        Coverage is set-inclusion: a single integration review must cover the
-        whole combined changeset, so ``set(repos) <= set(row.repos)``. An empty
+        Coverage is project-identity set-inclusion: a single integration review must cover the
+        whole combined changeset. An empty
         *repos* is trivially covered (no cross-repo obligation). A row whose
         verdict is a HOLD is skipped — the reviewer of the combined changeset
         said do NOT ship it, so counting it as coverage let the very finding it
         recorded clear the close gate.
         """
-        required = set(_normalize_repos(repos))
-        if not required:
+        if not ProjectRepoIdentity({}).distinct(repos):
             return True
+        identity = project_repo_identity_for_ticket(ticket)
         for row in self.for_ticket(ticket, ReviewEvidence.Kind.INTEGRATION_REVIEW):
-            if not row.is_blocking() and required <= set(_normalize_repos(row.repos)):
+            if not row.is_blocking() and identity.covers(repos, row.repos):
                 return True
         return False
 
@@ -179,7 +170,9 @@ class ReviewEvidence(models.Model):
             )
             raise ReviewEvidenceError(msg)
 
-        normalized_repos = _normalize_repos(repos)
+        normalized_repos = ProjectRepoIdentity({}).distinct(repos)
+        if normalized_kind == cls.Kind.INTEGRATION_REVIEW and len(normalized_repos) >= _MIN_INTEGRATION_REPOS:
+            normalized_repos = project_repo_identity_for_ticket(ticket).distinct(normalized_repos)
         if normalized_kind == cls.Kind.INTEGRATION_REVIEW and len(normalized_repos) < _MIN_INTEGRATION_REPOS:
             msg = (
                 f"an integration review must cover ≥ {_MIN_INTEGRATION_REPOS} distinct repos (got "

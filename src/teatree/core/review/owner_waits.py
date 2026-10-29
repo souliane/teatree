@@ -1,12 +1,12 @@
-"""Durable owner cards for PR and live-post waits."""
+"""Durable owner cards for live-post waits."""
 
 import hashlib
 import logging
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision, owner_kept_decision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_ticket_card_title
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.live_post_approval import canonical_mr_scope
 
@@ -24,53 +24,6 @@ def canonical_wait_subject(subject: str) -> str:
 
 def _subject_key(subject: str) -> str:
     return hashlib.sha256(canonical_wait_subject(subject).encode()).hexdigest()[:20]
-
-
-def _held_card(subject: str, title: str) -> QuestionCard:
-    safe_title = safe_ticket_card_title(title, {}, "this pull request")
-    return QuestionCard(
-        decision=OwnerDecision.ARCHITECTURE,
-        checked=(
-            f"The reviewed pull request is ready here: {subject}.",
-            f"Its title is {safe_title}.",
-        ),
-        blocker="The merge waits for your review.",
-        why=f"Read <{subject}|{safe_title}> before deciding whether to merge it.",
-        options=(
-            CardOption("Review it", "Open it and use the usual merge route if you approve.", recommended=True),
-            CardOption("Keep holding", "The merge remains held."),
-            CardOption("Close it", "Close the pull request separately if you reject it."),
-        ),
-        subject=subject,
-    )
-
-
-def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestion | None:
-    subject = canonical_wait_subject(pr_url)
-    head = head_sha.strip()
-    if not subject or not head:
-        logger.error("held PR card lacks a subject or reviewed head")
-        return None
-    question = "What do you want to do with this pull request after reviewing it?"
-    card = _held_card(subject, title)
-    prefix = f"{HELD_PR_MARKER_PREFIX}{_subject_key(subject)}:"
-    head_prefix = f"{prefix}{head[:16]}"
-    latest = DeferredQuestion.objects.filter(dedupe_marker__startswith=head_prefix).order_by("-pk").first()
-    marker = f"{prefix}{head[:20]}" if latest is None else latest.dedupe_marker
-    if latest is not None and latest.dismissed_at is not None:
-        marker = f"{head_prefix}:{latest.pk:x}"
-    try:
-        row = DeferredQuestion.record(question, dedupe_marker=marker, card=card)
-    except DeferredQuestionError:
-        logger.exception("held PR card refused for %s", subject)
-        return None
-    for previous in DeferredQuestion.unmirrored_pending().filter(dedupe_marker__startswith=prefix).exclude(pk=row.pk):
-        previous.mark_stale(f"the reviewed head changed for {subject}", resolver_id="held_pr_new_head")
-    return row
-
-
-def owner_kept_wait(question: DeferredQuestion, card: QuestionCard | None) -> bool:
-    return owner_kept_decision(card.decision if card else None, question.dedupe_marker)
 
 
 def _post_card(subject: str) -> QuestionCard:

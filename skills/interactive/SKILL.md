@@ -19,7 +19,7 @@ This applies only to this attended session, below Rules 0-5. A headless factory 
 
 Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply the recorded decision from answered cards when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
 
-When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. For a checkout card, the owner's standing instruction of 2026-10-22 authorizes this attended session to attest a clean parked checkout after a read-only re-check without asking again. Re-read the Worktree row's expected branch, the checkout's HEAD on that branch, and the ticket-owned open pull request's live forge head. The checkout HEAD is the expected head: it must equal or be an ancestor of the forge head, so a checkout behind the forge is acceptable but one ahead or diverged is not. Confirm the checkout has a clean tree, has no merge in progress, and has no process inside it. A process holds the checkout through a working directory, an open file, a mapped file, or a bound socket within it. When the host process table is unusable, this session's own process check is the only one: the attest command skips its process refusal. Only then run `t3 <overlay> worktree attest <path>` through a pseudo-terminal with a clean environment free of agent and session markers, because the guard accepts only a terminal caller. The audit trail reads as a direct owner command, so plainly report that it ran the command. If any proof fails, leave it on the owner's card and report why.
+When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. Checkout safety refusals are factory decisions: the writing fence retries them internally and records a standing health signal if they persist. Do not create, answer, or dismiss an owner card for a checkout refusal.
 
 The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. Leave those on the owner's card and report them; do not decide, dismiss or act for him.
 
@@ -48,10 +48,12 @@ ticket is a request the factory will work on twice. The first call writes nothin
 ```text
 mcp__teatree__github_issue_create(
   title="<what the operator asked for>", body="<detail>", labels=["t3-auto"])
-  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...],
+     "open_count": N, "compared": M}
 ```
 
-Judge every candidate, then call again with that same snapshot:
+Judge every returned candidate, then call again with that same snapshot, title, and body; `open_count - compared`
+is the number of open tickets outside the closest set:
 
 ```text
 mcp__teatree__github_issue_create(
@@ -147,7 +149,7 @@ Every state either advances or leaves a durable record that something else drain
 
 A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger. `workspace emit` now names it (#4579: it unions the ledger with the unregistered checkouts holding work), so it is visible — but visibility is not delivery, and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
 
-**Hand work owns its checkout state (#5238).** A manual hand-recorded plan, review or held decision mints no writing factory task and does not attest checkout changes. Claim occupancy while editing, release it after the work stops, then explicitly attest the reviewed checkout state before allowing a factory writer to resume. A `/loop` claim-next → spawn → record-attempt chain holds its checkout as `task:<pk>` in every phase, attests it at record-attempt, then schedules its next phase; any other record counts as hand work. Cancelling a factory task does not release a checkout with live processes; an agent-issued cancel leaves any stop decision to the owner.
+**Hand work owns its checkout state (#5238).** A manual hand-recorded plan, review or held decision mints no writing factory task and does not attest checkout changes. Claim occupancy while editing, release it after the work stops, then explicitly attest the reviewed checkout state before allowing a factory writer to resume. Factory retries may re-attest interrupted writer files when ended same-ticket custody, the current claimant, a clear process table, branch and digest rereads prove the handoff; this does not attest hand edits. A `/loop` claim-next → spawn → record-attempt chain holds its checkout as `task:<pk>` in every phase, attests it at record-attempt, then schedules its next phase; any other record counts as hand work. Cancelling a factory task does not release a checkout with live processes; an agent-issued cancel leaves any stop decision to the owner.
 
 ### The mechanisms
 
@@ -159,7 +161,7 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 **Session-end check.** Every session end sweeps all five states and names each item with the exact command that advances it. Nothing a session-end hook prints reaches anyone, so the report is kept for the next session that starts in the same checkout and delivered to it once, as context, at its start (a report older than two days is dropped). It runs unconditionally — which skills a session loaded says nothing about whether it stranded work — and it fails open, so a probe that cannot answer contributes nothing rather than breaking the session, and leaves the earlier report in place rather than clearing it. It lives in `hooks/scripts/session_end_work_check.py`; the delivery is `hooks/scripts/stranded_work_start.py`.
 
-**Aged-skip surfacing.** The merge sweep declines to merge on about ten reasons, all of them sound per tick and all of them silent. A reason that repeats for the same PR across consecutive passes is announced once, naming the PR, the reason and how long it has been held, then re-announced only after a 24h backoff — the backoff is per PR, not per reason, so a stuck PR whose reason wobbles between `ci_red` and `ci_pending` gets a daily reminder rather than a DM per flap; `t3 doctor check` reports every aged hold standing.
+**Aged-skip surfacing.** A repeated merge-sweep skip is announced once per PR and reason group while that group continues (the CI verdicts `ci_pending` and `ci_red` are one group, so their flapping is one announcement). A different group, including a flip back to an earlier group after another skip, starts a new episode and is announced again once it has persisted for the threshold; `t3 doctor check` reports every aged hold standing.
 
 ### Using it
 

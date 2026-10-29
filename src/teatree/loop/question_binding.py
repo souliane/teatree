@@ -54,6 +54,7 @@ from teatree.core.owner_question_message import (
     replace_root,
 )
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
+from teatree.loop.owner_identity import configured_owner_id, is_the_owner
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -96,14 +97,6 @@ class UnmatchedCardThread:
     options: tuple[str, ...] = ()
 
 
-def configured_owner_id(backend: object) -> str:
-    return str(getattr(backend, "user_id", "") or "")
-
-
-def _is_the_owner(user_id: str, owner_user_id: str) -> bool:
-    return bool(owner_user_id) and user_id == owner_user_id
-
-
 def is_question_addressee(question: DeferredQuestion, user_id: str, backend: "MessagingBackend") -> bool:
     target = question_addressee(question, owner_id=configured_owner_id(backend)).user_id
     return bool(target) and user_id == target
@@ -117,7 +110,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    owner_reply = _is_the_owner(reply.user_id, configured_owner_id(backend))
+    owner_reply = is_the_owner(reply.user_id, configured_owner_id(backend))
     body = text or reply.text
     addressed = _addressed(body)
     if addressed is not None:

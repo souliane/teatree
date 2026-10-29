@@ -1,6 +1,6 @@
 # TeaTree — Agent Instructions
 
-Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the six always-on rules every agent follows, ranked by importance.
+Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the seven always-on rules every agent follows, ranked by importance.
 
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
@@ -265,7 +265,7 @@ An overlay is a lightweight Python package that customizes teatree. It:
 
 1. Subclasses `OverlayBase` (from `teatree.core.overlay`)
 2. Implements mandatory hooks: `get_repos()`, `get_provision_steps(worktree)`
-3. Optionally implements `get_workspace_repos()` on the base, and the rest on the composed **facets**: `overlay.provisioning` (`env_extra`, `db_import_strategy`, `post_db_steps`, `symlinks`, `services_config`), `overlay.runtime` (`run_commands`, `test_command`), `overlay.e2e` (`env_extras`, `preflight`, `scenarios`), `overlay.review` (`can_auto_merge`, `visual_qa_targets`). Project metadata hooks (`validate_pr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`) live on `OverlayMetadata` (`overlay.metadata`); credentials/URLs on `OverlayConfig` (`overlay.config`). A flat `get_*` on the base is the pre-facet shape — it no longer resolves, so an override written against it is dead code nothing calls
+3. Optionally implements `get_workspace_repos()` on the base, and the rest on the composed **facets**: `overlay.provisioning` (`env_extra`, `db_import_strategy`, `post_db_steps`, `symlinks`, `services_config`), `overlay.runtime` (`run_commands`, `test_command`), `overlay.e2e` (`env_extras`, `preflight`, `scenarios`), `overlay.review` (`can_auto_merge`, `visual_qa_targets`). Project metadata hooks (`validate_pr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_issue_repos(issue_url)`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`) live on `OverlayMetadata` (`overlay.metadata`); credentials/URLs on `OverlayConfig` (`overlay.config`). A flat `get_*` on the base is the pre-facet shape — it no longer resolves, so an override written against it is dead code nothing calls
 4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
 5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
 6. Must be **import-safe before `django.setup()`**: entry points load at CLI-assembly time, so no module-level ORM (`teatree.core.models`) imports anywhere in the overlay module's import chain — annotate hooks with `teatree.overlay_sdk.WorktreeLike`/`TicketLike` (or an `if TYPE_CHECKING:` import) and defer runtime ORM access into function bodies (guarded by `tests/teatree_core/test_overlay_ep_import_pre_django.py`)
@@ -368,7 +368,7 @@ bash dev/test-fast.sh               # Declared exception: whole host suite, Pyth
 bash dev/test-matrix.sh             # Declared exception: Docker matrix, Python 3.13 + 3.14
 ```
 
-**The local default is diff-scoped; the whole suite is a declared exception ([#3994](https://github.com/souliane/teatree/issues/3994)).** A local whole-tree sweep pays a second time for the run CI's required sharded lane is about to make, and it is on the critical path — measured as most of a 3.5h ticket cycle against a 30m target. `dev/test-affected.sh` is fail-safe TO FULL (a migration, a conftest / `factories.py` / test-settings edit, an unclassifiable path, a missing merge-base, or a change to the selection machinery itself each run everything on their own), so scoping never under-runs. Reach for `--full` / `dev/test-fast.sh` / `dev/ci-parity.sh` when a change is genuinely cross-cutting and declare it; CI's sharded `test (3.13)` lane and the 93% whole-tree floor remain the merge authority either way. `teatree.quality.local_verification` pins that every per-phase mandate surface names the scoped lane.
+**The local default is diff-scoped; the whole suite is a declared exception ([#3994](https://github.com/souliane/teatree/issues/3994)).** A local whole-tree sweep pays a second time for the run CI's required sharded lane is about to make, and it is on the critical path — measured as most of a 3.5h ticket cycle against a 30m target. `dev/test-affected.sh` is fail-safe TO FULL (a migration, a conftest / `factories.py` / test-settings edit, an unclassifiable path, a missing merge-base, or a change to the selection machinery itself each run everything on their own), so scoping never under-runs. Inspect `t3 tool affected-tests` before the local lane; on FULL, run changed test files or pinned node ids locally and let CI run the whole tree. Reach for `--full` / `dev/test-fast.sh` / `dev/ci-parity.sh` only as a declared exception outside a single fix or mutation round; CI's sharded `test (3.13)` lane and the 93% whole-tree floor remain the merge authority either way. `teatree.quality.local_verification` pins that every per-phase mandate surface names the scoped lane.
 
 **The push path does NOT run the test suite — push -> CI is the gate.** The full suite is CI's job, never the local push path: a host under load times out unrelated wall-clock and concurrency tests and blocks an otherwise-good push (#112/#21/#38). The pre-push hooks are fast, scoped gates only (public-repo leak refusal, doc-update, comment-density, ensure-pr). Guarded by `tests/test_no_full_suite_on_pre_push.py` so a full-suite hook can't silently regress back onto pre-push.
 
@@ -421,7 +421,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
-After modifying skills: `t3 tool verify-gates` (commit, push-stage and manual CI-job hooks — a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs) then `bash dev/test-affected.sh` then commit. Report the SHA it says it measured alongside its exit code — the command takes no target, so the exit code alone does not say which tree earned it.
+After modifying skills: inspect `t3 tool affected-tests`; run `bash dev/test-affected.sh` only on SCOPED, otherwise run changed test files or pinned node ids locally and let CI prove the whole tree. Commit, then run `t3 tool verify-gates --expect-sha <head>` and report the measured SHA with its exit code.
 
 ## Abstraction Boundaries
 

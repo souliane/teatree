@@ -13,8 +13,10 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models.checkout_custody import ABANDONED_EXIT, RELEASED_EXIT, Custody, Tenure
+from teatree.core.worktree import checkout_safety
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof, released_hand_off
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
@@ -72,23 +74,15 @@ class _RecoveryCase(TestCase):
 
 
 class CheckoutRecoveryTests(_RecoveryCase):
-    def test_namespace_less_previous_writer_still_parks_for_host_gap(self) -> None:
+    def test_namespace_less_previous_writer_uses_venue_proof_for_host_gap(self) -> None:
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
-            assert claim_task_checkout_or_park(self.next_task) is not None
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table),
+            patch("teatree.core.worktree.checkout_safety.read_process_table", return_value=self.clear),
+        ):
+            assert claim_task_checkout_or_park(self.next_task) is None
         self.worktree.refresh_from_db()
-        assert self.worktree.get_extra()["attested_state"] == self.anchor
-
-    def test_mixed_previous_tenures_still_park_for_host_gap(self) -> None:
-        extra = self.worktree.get_extra()
-        prior = extra["checkout_custody"]["tenures"][0]
-        extra["checkout_custody"]["tenures"] = [prior, {**prior, "namespace": "pid:[42]"}]
-        self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
-        table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
-            assert claim_task_checkout_or_park(self.next_task) is not None
-        self.worktree.refresh_from_db()
-        assert self.worktree.get_extra()["attested_state"] == self.anchor
+        assert self.worktree.get_extra()["auto_attestation"]["process_evidence"] == "venue"
 
     def test_nested_previous_writer_sets_aside_only_host_namespace_gap(self) -> None:
         extra = self.worktree.get_extra()
@@ -98,7 +92,10 @@ class CheckoutRecoveryTests(_RecoveryCase):
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
         assert table.eviction_refuse_reason() == gap
 
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table),
+            patch.object(checkout_safety, "read_process_table", return_value=self.clear),
+        ):
             assert claim_task_checkout_or_park(self.next_task) is None
 
         self.worktree.refresh_from_db()
@@ -107,15 +104,13 @@ class CheckoutRecoveryTests(_RecoveryCase):
         assert audit["process_table"]["set_aside"] == [gap]
         assert audit["tenures"][0]["namespace"] == "pid:[42]"
 
-    def test_nested_previous_writer_still_refuses_nested_unreadable_pid(self) -> None:
+    def test_nested_previous_writer_cannot_use_old_process_proof_for_nested_gap(self) -> None:
         extra = self.worktree.get_extra()
         extra["checkout_custody"]["tenures"][0]["namespace"] = "pid:[42]"
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\t7\n")
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
-            assert claim_task_checkout_or_park(self.next_task) is not None
-        self.worktree.refresh_from_db()
-        assert self.worktree.get_extra()["attested_state"] == self.anchor
+        acquire(self.worktree, holder=task_holder_id(self.next_task))
+        assert not reattest_on_proof(self.next_task, self.worktree, checkout_state(self.path), table)
 
     def test_recovery_refuses_visible_checkout_process_after_nested_writer(self) -> None:
         extra = self.worktree.get_extra()
@@ -133,12 +128,6 @@ class CheckoutRecoveryTests(_RecoveryCase):
         release(self.worktree, holder="operator", holder_session="terminal")
         self.assert_parked()
 
-    def test_unusable_process_table_refuses(self) -> None:
-        self.assert_parked(ProcessTable(frozenset(), "", ("unreadable",)))
-
-    def test_unreadable_same_user_process_refuses(self) -> None:
-        self.assert_parked(ProcessTable(frozenset(), "/proc", (), ("pid 7 (python) is unreadable by this uid",)))
-
     def test_live_process_refuses_then_a_retry_recovers(self) -> None:
         self.assert_parked(ProcessTable(frozenset({self.path}), "/proc"))
         release(self.worktree, holder=task_holder_id(self.next_task))
@@ -155,13 +144,15 @@ class CheckoutRecoveryTests(_RecoveryCase):
         _init_repo_with_branch(sibling, branch="feature", commits_ahead=0)
         WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(sibling)})
         run_strict(repo=str(sibling), args=["checkout", "-b", "other"])
-        self.assert_parked()
+        with pytest.raises(CheckoutFenceError):
+            self.dispatch()
 
     def test_unreadable_sibling_refuses(self) -> None:
         WorktreeFactory(
             ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.path.parent / "missing")}
         )
-        self.assert_parked()
+        with pytest.raises(CheckoutFenceError):
+            self.dispatch()
 
     def test_empty_expected_branch_refuses(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="")
@@ -191,12 +182,8 @@ class CheckoutRecoveryTests(_RecoveryCase):
         self.assert_parked()
 
     def test_audit_is_exposed_without_a_page(self) -> None:
-        with (
-            patch("teatree.core.worktree.checkout_fence.notify_user") as page,
-            patch.object(forge_pr_probe, "find_open_pr_for_branch") as probe,
-        ):
+        with patch.object(forge_pr_probe, "find_open_pr_for_branch") as probe:
             self.dispatch()
-        page.assert_not_called()
         probe.assert_not_called()
         self.worktree.refresh_from_db()
         audit = self.worktree.get_extra()["auto_attestation"]
@@ -222,17 +209,14 @@ class ReRootedCheckoutRecoveryTests(_RecoveryCase):
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
 
     def claim(self) -> TaskAttempt | None:
-        with (
-            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
-            patch("teatree.core.worktree.checkout_fence.notify_user"),
-        ):
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear):
             return claim_task_checkout_or_park(self.next_task)
 
     def assert_claim_parked(self) -> None:
         attempt = self.claim()
         assert attempt is not None
         assert "checkout_parked:" in attempt.result["summary"]
-        assert "differs from its attested state" in attempt.result["summary"]
+        assert "owned pull request" in attempt.result["summary"]
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] == self.anchor
 
@@ -248,19 +232,16 @@ class ReRootedCheckoutRecoveryTests(_RecoveryCase):
         assert audit["pull_requests"] == {str(self.path): self.pr.url}
         assert audit["tenures"][0]["ended"] == "abandoned"
 
-    def test_a_sibling_on_its_pull_requests_head_branch_is_claimed(self) -> None:
+    def test_a_sibling_without_its_own_attestation_stays_parked(self) -> None:
         sibling = self.path.parent / "sibling"
         _init_repo_with_branch(sibling, branch="feature", commits_ahead=0)
         WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(sibling)})
         run_strict(repo=str(sibling), args=["checkout", "-b", "rerooted"])
         with patch.object(forge_pr_probe, "find_open_pr_for_branch", return_value=PrProbe.found(self.pr.url)) as probe:
-            assert self.claim() is None
+            attempt = self.claim()
+        assert attempt is not None
+        assert "checkout_parked:" in attempt.result["summary"]
         probe.assert_any_call(str(self.path), "rerooted")
-        probe.assert_any_call(str(sibling), "rerooted")
-        assert probe.call_count == 2
-        self.worktree.refresh_from_db()
-        audit = self.worktree.get_extra()["auto_attestation"]
-        assert audit["pull_requests"] == {str(self.path): self.pr.url, str(sibling): self.pr.url}
 
     def test_a_branch_the_ticket_does_not_own_stays_parked(self) -> None:
         foreign = PullRequestFactory(ticket=TicketFactory())
@@ -347,10 +328,14 @@ class DeferredExitRecoveryTests(_RecoveryCase):
             frozenset(), "/host-proc", (), ("pid 7 (systemd) is unreadable by this uid",)
         )
 
+    def assert_deferred_exit_rejected(self) -> None:
+        acquire(self.worktree, holder=task_holder_id(self.next_task))
+        assert not attest_deferred_exit(
+            self.next_task, self.worktree, checkout_state(self.path, ticket=self.ticket), self.container_table
+        )
+
     def test_next_writer_attests_the_recorded_deferred_exit(self) -> None:
-        with patch("teatree.core.worktree.checkout_fence.notify_user") as page:
-            self.dispatch(self.container_table)
-        page.assert_not_called()
+        self.dispatch(self.container_table)
         self.worktree.refresh_from_db()
         audit = self.worktree.get_extra()["auto_attestation"]
         assert self.worktree.get_extra()["attested_state"] == self.record["digest"]
@@ -388,24 +373,21 @@ class DeferredExitRecoveryTests(_RecoveryCase):
     def test_other_holder_cannot_use_the_record(self) -> None:
         self.record["holder"] = "task:999"
         self.worktree.merge_extra(set_keys={"deferred_exit": self.record})
-        self.assert_parked(self.container_table)
+        self.assert_deferred_exit_rejected()
 
     def test_other_session_cannot_use_the_record(self) -> None:
         self.record["session"] = "other"
         self.worktree.merge_extra(set_keys={"deferred_exit": self.record})
-        self.assert_parked(self.container_table)
+        self.assert_deferred_exit_rejected()
 
     def test_intervening_tenure_cannot_use_the_record(self) -> None:
         acquire(self.worktree, holder="operator", holder_session="terminal")
         release(self.worktree, holder="operator", holder_session="terminal")
-        self.assert_parked(self.container_table)
+        self.assert_deferred_exit_rejected()
 
     def test_state_change_after_deferral_refuses(self) -> None:
         (self.path / "later.txt").write_text("later")
         self.assert_parked(self.container_table)
-
-    def test_unusable_table_refuses(self) -> None:
-        self.assert_parked(ProcessTable(frozenset(), "", ("unavailable",)))
 
     def test_process_still_in_checkout_refuses(self) -> None:
         self.assert_parked(ProcessTable(frozenset({self.path}), "/host-proc"))
@@ -428,3 +410,96 @@ class DeferredExitRecoveryTests(_RecoveryCase):
     def test_unpersisted_attestation_refuses(self) -> None:
         with patch.object(Worktree, "merge_extra", return_value=None):
             self.assert_parked(self.container_table)
+
+
+class ReleasedHandOffTests(TestCase):
+    """Every condition of a same-ticket hand-off is pinned: dropping any one lets foreign work through."""
+
+    def setUp(self) -> None:
+        self.ticket = TicketFactory()
+        self.prior = TaskFactory(ticket=self.ticket, phase="coding")
+        self.claimant = TaskFactory(ticket=self.ticket, phase="testing")
+        Task.objects.filter(pk=self.claimant.pk).update(claimed_by_session="claimant-session")
+        self.claimant.refresh_from_db()
+
+    def _released(self, task: Task) -> Tenure:
+        return Tenure(
+            task_holder_id(task), "prior", "2026-10-27T12:00:00+00:00", RELEASED_EXIT, "2026-10-27T12:30:00+00:00"
+        )
+
+    def _open(self, task: Task) -> Tenure:
+        return Tenure(task_holder_id(task), task.claimed_by_session, "2026-10-27T13:00:00+00:00")
+
+    def _hand_off(self, *tenures: Tenure) -> bool:
+        return released_hand_off(self.claimant, Custody("anchor", tenures))
+
+    def test_a_released_same_ticket_writer_handing_to_the_open_claimant_is_a_hand_off(self) -> None:
+        assert self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_no_tenure_at_all_is_not_a_hand_off(self) -> None:
+        assert not self._hand_off()
+
+    def test_the_claimant_alone_is_not_a_hand_off(self) -> None:
+        assert not self._hand_off(self._open(self.claimant))
+
+    def test_the_claimants_tenure_must_still_be_open(self) -> None:
+        closed = Tenure(
+            task_holder_id(self.claimant),
+            self.claimant.claimed_by_session,
+            "2026-10-27T13:00:00+00:00",
+            RELEASED_EXIT,
+            "2026-10-27T13:30:00+00:00",
+        )
+
+        assert not self._hand_off(self._released(self.prior), closed)
+
+    def test_the_open_tenure_must_be_the_claimants(self) -> None:
+        stranger = TaskFactory(ticket=self.ticket, phase="testing")
+
+        assert not self._hand_off(self._released(self.prior), self._open(stranger))
+
+    def test_the_latest_earlier_tenure_must_be_released_not_abandoned(self) -> None:
+        abandoned = Tenure(
+            task_holder_id(self.prior),
+            "prior",
+            "2026-10-27T12:00:00+00:00",
+            ABANDONED_EXIT,
+            "2026-10-27T12:30:00+00:00",
+        )
+
+        assert not self._hand_off(abandoned, self._open(self.claimant))
+
+    def test_every_earlier_tenure_must_have_ended(self) -> None:
+        still_open = TaskFactory(ticket=self.ticket, phase="coding")
+
+        assert not self._hand_off(self._open(still_open), self._released(self.prior), self._open(self.claimant))
+
+    def test_a_ticket_that_already_has_a_pull_request_is_not_a_hand_off(self) -> None:
+        PullRequestFactory(ticket=self.ticket)
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_a_holder_of_another_ticket_is_not_a_hand_off(self) -> None:
+        foreign = TaskFactory(ticket=TicketFactory(), phase="coding")
+
+        assert not self._hand_off(self._released(foreign), self._released(self.prior), self._open(self.claimant))
+
+    def test_a_holder_that_is_not_a_task_is_not_a_hand_off(self) -> None:
+        hand = Tenure("hand:someone", "prior", "2026-10-27T12:00:00+00:00", RELEASED_EXIT, "2026-10-27T12:30:00+00:00")
+
+        assert not self._hand_off(hand, self._released(self.prior), self._open(self.claimant))
+
+    def test_a_cancelled_prior_holder_is_not_a_hand_off(self) -> None:
+        Task.objects.filter(pk=self.prior.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_earlier_holders_that_never_wrote_the_checkout_are_not_a_hand_off(self) -> None:
+        Task.objects.filter(pk=self.prior.pk).update(phase="reviewing")
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_one_writer_among_read_only_holders_is_enough(self) -> None:
+        reviewer = TaskFactory(ticket=self.ticket, phase="reviewing")
+
+        assert self._hand_off(self._released(self.prior), self._released(reviewer), self._open(self.claimant))

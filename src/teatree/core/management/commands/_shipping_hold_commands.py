@@ -54,4 +54,6 @@ class ShippingHoldCommands(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=f"{len(rows)} held ticket(s) checked; {remaining} held remaining",
         )
+        if failure:
+            raise SystemExit(1)
         return rows

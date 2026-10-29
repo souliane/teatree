@@ -27,6 +27,7 @@ import pytest
 from teatree.core.models import DmContext, PendingChatInjection, Task
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -36,9 +37,9 @@ pytestmark = pytest.mark.django_db
 class RecordingBackend:
     """In-memory MessagingBackend recording react / post_reply calls."""
 
+    user_id: str = OWNER_SLACK_ID
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
-    user_id: str = "UUSER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -71,7 +72,7 @@ class RecordingBackend:
 
 def _row(text: str, ts: str = "1.0", overlay: str = "") -> PendingChatInjection:
     row = PendingChatInjection.record(
-        channel="C1", slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id="UUSER")
+        channel="C1", slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=OWNER_SLACK_ID)
     )
     assert row is not None
     return row

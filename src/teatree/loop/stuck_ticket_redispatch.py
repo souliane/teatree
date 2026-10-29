@@ -26,8 +26,8 @@ the "something changed" that puts the ticket back in play.
 The re-dispatch is HARD-BOUNDED by the #2009 work budget and the lease-reap bound, on ONE path for
 both classes: a ticket-phase at its iteration cap, stalled on two consecutive
 identical failures, or stalled on two consecutive failures of the same NAMED
-DETERMINISTIC :class:`FailureKind`, is NOT re-dispatched and is escalated LOUDLY via
-a durable :class:`DeferredQuestion` (§17.1 invariant 9). The named-cause stall is
+DETERMINISTIC :class:`FailureKind`, is NOT re-dispatched and is reported through
+the factory health surface. The named-cause stall is
 what stops a repair storm: re-dispatching into a deterministic defect reproduces it,
 while an environmental fault is the environment's and stays retryable up to the cap.
 A ticket with an open task is already being worked and is left alone.
@@ -44,10 +44,11 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.conf import settings
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt, ticket_halt_is_current
+from teatree.core.intake.fix_first import AUTHOR_STATE_PHASE, stuck_idle_hours, ticket_last_activity
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import (
@@ -57,7 +58,6 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     stall_kinds,
 )
 from teatree.core.models import PlanArtifact, PullRequest, Task, TaskAttempt, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
@@ -74,34 +74,12 @@ from teatree.core.models.ticket_external_review import (
     schedule_external_review,
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.owner_dm.question_ticket import STUCK_HALT_PK_RE
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_STUCK_IDLE_HOURS = 6
-
-#: The indexed dedupe key one halted ticket escalates under, matching the ``repair-*``
-#: siblings. Answering the question must never resurrect a fresh one, so the guard reads
-#: EVERY row carrying the marker rather than only the pending ones ``record`` looks at.
-#: Public because the question drain names the halt's subject ticket from it
-#: (:mod:`teatree.loop.question_subjects`).
-STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
-
-#: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
-#: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
-#: terminal states have nothing left to do. A reviewer ticket has no equivalent map
-#: — see :func:`_implied_phase`.
-_STATE_PHASE: dict[str, str] = {
-    Ticket.State.WORK_STARTED: "planning",
-    Ticket.State.PLAN_RECORDED: "coding",
-    Ticket.State.CODED: "testing",
-    Ticket.State.TESTED: "reviewing",
-    Ticket.State.SELF_REVIEWED: "shipping",
-}
 
 #: Attempt outcomes that mean the phase's last run did not succeed (#16's explicit
 #: discriminator, so an envelope refusal recorded with ``exit_code=0`` still counts).
@@ -123,13 +101,12 @@ def redispatch_stuck_tickets() -> int:
     """
     _warn_unknown_states()
     now = timezone.now()
-    threshold = _idle_threshold_hours()
-    already_escalated = _already_escalated_ticket_pks()
+    threshold = stuck_idle_hours()
     scheduled = 0
     for candidate in _stuck_candidates(now=now, threshold_hours=threshold):
         # An already-escalated ticket is parked — skip it BEFORE its budget query, so
         # the dead-letter set never grows the per-tick work (bounded sweep, #8).
-        if candidate.ticket.pk in already_escalated:
+        if ticket_halt_is_current(candidate.ticket):
             continue
         # Per-item fault isolation (#3441): one poison ticket (a budget query that blows
         # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
@@ -156,26 +133,13 @@ def _redispatch_one(candidate: _Candidate) -> int:
     if halt is not None:
         if _settled_instead_of_stuck(candidate.ticket):
             return 0
-        _escalate_once(candidate.ticket, reason=halt)
+        record_ticket_halt(candidate.ticket, reason=halt)
         return 0
     return _redispatch(candidate)
 
 
 def _settled_instead_of_stuck(ticket: Ticket) -> bool:
     return ticket.role == Ticket.Role.REVIEWER and reviewer_dispatch_decline(ticket) is ReviewDeclined.RETIRED
-
-
-def _already_escalated_ticket_pks() -> set[int]:
-    """Ticket pks that already carry a stuck-redispatch escalation (any answered state).
-
-    One query, parsed to a set — an escalated stuck ticket is parked durably, so it is
-    never re-escalated when its question is answered/dismissed and never re-budget-
-    queried every tick.
-    """
-    markers = DeferredQuestion.objects.filter(dedupe_marker__startswith="stuck-redispatch-halt:").values_list(
-        "dedupe_marker", flat=True
-    )
-    return {int(m.group(1)) for marker in markers if (m := STUCK_HALT_PK_RE.match(marker))}
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
@@ -222,7 +186,7 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     Both roles admit an explicit list of KNOWN states, so a state value the code does not
     know is never read as live. The reviewer list is every state a finished review advances.
     """
-    author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
+    author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(AUTHOR_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
     open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
@@ -268,7 +232,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
     failure to repair, so the sweep leaves it alone rather than inventing work.
     """
     if ticket.role != Ticket.Role.REVIEWER:
-        return _STATE_PHASE.get(ticket.state)
+        return AUTHOR_STATE_PHASE.get(ticket.state)
     tasks = ticket.tasks.order_by("-pk")  # Django reverse FK
     return tasks.values_list("phase", flat=True).first() or None
 
@@ -342,17 +306,10 @@ def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
     transition always writes a transition row, so a genuinely stuck ticket always
     has one).
     """
-    last = _last_activity(ticket)
+    last = ticket_last_activity(ticket)
     if last is None:
         return False
     return (now - last).total_seconds() >= threshold_hours * 3600
-
-
-def _last_activity(ticket: Ticket) -> datetime | None:
-    last_attempt = ticket.tasks.aggregate(ts=Max("attempts__started_at"))["ts"]  # Django reverse FK
-    if last_attempt is not None:
-        return last_attempt
-    return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]
 
 
 def _redispatch(candidate: _Candidate) -> int:
@@ -365,7 +322,7 @@ def _redispatch(candidate: _Candidate) -> int:
     try:
         task = _schedule_for_candidate(candidate)
     except InvalidTransitionError as exc:
-        _escalate_once(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
+        record_ticket_halt(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
         return 0
     return 0 if task is None else 1
 
@@ -455,38 +412,3 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
     dropped on one repair path and compared on another.
     """
     return stall_kinds(a.failure_kind for a in attempts[-2:])
-
-
-def _escalate_once(ticket: Ticket, *, reason: str) -> None:
-    """Record a durable escalation for a budget-halted stuck ticket, once per ticket.
-
-    Idempotent: a per-ticket marker deduped across ALL questions (answered or not) so a
-    halted stuck ticket escalates exactly once and answering/dismissing the question
-    never resurrects a fresh one. INTERNAL, like its ``repair-stall`` / ``repair-cap``
-    siblings — a halted re-dispatch budget is the box reporting its own health, and it
-    stays visible on the statusline and ``t3 teatree questions list`` without paging.
-    """
-    marker = STUCK_HALT_MARKER.format(pk=ticket.pk)
-    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
-        return
-    where = ticket.issue_url or f"ticket {ticket.pk}"
-    question = (
-        f"Stuck ticket {where} (state {ticket.state!r}) has no work in flight but "
-        f"re-dispatch is halted: {reason} Auto-scheduling is stopped so it does not re-run a "
-        "doomed phase forever. How should it proceed — investigate, rework, or ignore?"
-    )
-    DeferredQuestion.record(
-        question,
-        session_id="",
-        dedupe_marker=marker,
-    )
-
-
-def _idle_threshold_hours() -> int:
-    """Configured stuck-idle threshold (``STUCK_TICKET_IDLE_HOURS``, floor 1)."""
-    raw = getattr(settings, "STUCK_TICKET_IDLE_HOURS", DEFAULT_STUCK_IDLE_HOURS)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_STUCK_IDLE_HOURS
-    return max(1, value)

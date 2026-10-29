@@ -1,14 +1,13 @@
-"""The text-to-speech ``speak()`` seam + the shared ``deliver_user_dm`` chokepoint (#2060).
+"""The shared ``deliver_user_dm`` text-to-speech chokepoint (#2060).
 
 Covers the binary-presence gate (``say`` absent → inert config), the
-markdown/code/URL stripping, the local-speakers Stop-hook path, and — the
+markdown/code/URL stripping, local DM playback, and — the
 load-bearing #2060 behaviour — :func:`deliver_user_dm` posting ONE DM that
 carries the text + an inline audio attachment (degrading to a text-only
 post when synthesis fails). The v3 axes are independent: local play (``local``
-dm/all) is never suppressed by the ``slack`` attach. Every unstoppable external
+dm) is never suppressed by the ``slack`` attach. Every unstoppable external
 is mocked at the network boundary: the ``say`` / ``afconvert`` subprocesses and
-the messaging backend. ``block=True`` runs delivery synchronously so assertions
-don't race the daemon thread.
+the messaging backend.
 """
 
 import logging
@@ -40,7 +39,7 @@ class TestBinaryGate:
             patch.object(
                 speak_mod,
                 "get_effective_settings",
-                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.DM, slack=True)),
             ),
         ):
             assert speak_mod.resolve_speak() == SpeakConfig()
@@ -58,13 +57,13 @@ class TestResolveSpeak:
     """``resolve_speak()`` returns the user's config unchanged — presence is not consulted."""
 
     def test_present_returns_configured(self) -> None:
-        configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
+        configured = SpeakConfig(local=LocalPlayback.DM, slack=True)
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
         ):
             resolved = speak_mod.resolve_speak()
-        assert resolved.local is LocalPlayback.ALL
+        assert resolved.local is LocalPlayback.DM
         assert resolved.slack is True
 
 
@@ -76,7 +75,7 @@ class TestSlackArmIsIndependentOfLocalPlayback:
         audio.write_bytes(b"x")
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
             patch.object(speak_mod.threading, "Thread") as thread_cls,
         ):
@@ -90,7 +89,7 @@ class TestMeetingGateAtPlayback:
 
     Anti-vacuous: revert the ``_in_meeting()`` check in ``_speak_local`` and
     ``test_in_meeting_skips_say_call`` goes RED (``run_allowed_to_fail`` IS
-    called while in a meeting, though ``speak.local = all``).
+    called while in a meeting, though ``speak.local = dm``).
     """
 
     def test_in_meeting_skips_say_call(self, tmp_path: Path) -> None:
@@ -128,7 +127,7 @@ class TestMeetingGateAtPlayback:
         audio.write_bytes(b"x")
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
             patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
             patch.object(speak_mod.threading, "Thread") as thread_cls,
@@ -164,7 +163,7 @@ class TestFiltersStatusLogNoise:
     """Status/log noise is filtered out of spoken text; real prose passes (#277).
 
     The TTS chokepoint :func:`clean_for_speech` is the ONE place every spoken
-    string flows through (the Stop-hook in-client read and the DM local leg).
+    string flows through the DM local leg.
     A bot->user INFO DM is prefixed with a ``:information_source: *info*`` kind
     marker line (:func:`teatree.core.notify.format_notification`), and assistant turns /
     DM bodies routinely carry log-status lines (``INFO:`` / ``DEBUG`` levels,
@@ -238,61 +237,6 @@ class TestFiltersStatusLogNoise:
             "Critical bug found in prod.",
         ):
             assert speak_mod.clean_for_speech(prose) == prose, prose
-
-
-class TestSpeakLocalDispatch:
-    """The in-client Stop-hook read: ``speak()`` fires only when ``local == all``."""
-
-    def test_noop_when_local_off(self) -> None:
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.OFF, slack=True)),
-            patch.object(speak_mod, "_speak_local") as local,
-        ):
-            speak_mod.speak("anything", block=True)
-        local.assert_not_called()
-
-    def test_noop_when_local_dm(self) -> None:
-        # local=dm speaks DM texts only, not the in-client turn.
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM)),
-            patch.object(speak_mod, "_speak_local") as local,
-        ):
-            speak_mod.speak("tests are green", block=True)
-        local.assert_not_called()
-
-    def test_fires_when_local_all_regardless_of_slack(self) -> None:
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
-            patch.object(speak_mod, "_speak_local") as local,
-        ):
-            speak_mod.speak("tests are green", block=True)
-        local.assert_called_once_with("tests are green")
-
-    def test_blank_cleaned_text_is_noop(self) -> None:
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
-            patch.object(speak_mod, "_speak_local") as local,
-        ):
-            speak_mod.speak("```only code```", block=True)
-        local.assert_not_called()
-
-    def test_block_true_runs_local_synchronously(self) -> None:
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
-            patch.object(speak_mod, "_speak_local") as local,
-        ):
-            speak_mod.speak("tests are green", block=True)
-        local.assert_called_once_with("tests are green")
-
-    def test_block_false_spawns_daemon_thread(self) -> None:
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
-            patch.object(speak_mod.threading, "Thread") as thread_cls,
-        ):
-            speak_mod.speak("hi", block=False)
-        thread_cls.assert_called_once()
-        assert thread_cls.call_args.kwargs["daemon"] is True
-        thread_cls.return_value.start.assert_called_once()
 
 
 def _backend(*, audio_ok: bool = True, audio_error: str = "") -> MagicMock:
@@ -641,7 +585,7 @@ class TestSurfaceUploadFailure:
 class TestLocalPlaybackThreadConnectionHygiene(TestCase):
     """The TTS daemon thread must not strand its DB handle.
 
-    ``speak(block=False)`` and ``_maybe_speak_local`` dispatch playback onto a
+    ``_maybe_speak_local`` dispatches playback onto a
     daemon thread, and the away gate resolves the active mode from the
     ``ConfigSetting`` store — an ORM read on that thread, which therefore gets
     its OWN Django connection. ``close()`` is a documented no-op on the
@@ -667,17 +611,3 @@ class TestLocalPlaybackThreadConnectionHygiene(TestCase):
         assert raws, "the playback thread never opened a connection"
         with pytest.raises(sqlite3.ProgrammingError):
             raws[0].execute("SELECT 1")
-
-    def test_speak_dispatches_the_closing_wrapper_not_the_bare_target(self) -> None:
-        """Pins the wiring: the daemon thread's target is the closing wrapper."""
-        with (
-            patch.object(
-                speak_mod,
-                "resolve_speak",
-                return_value=SpeakConfig(local=LocalPlayback.ALL, slack=False),
-            ),
-            patch.object(speak_mod.threading, "Thread") as thread_cls,
-        ):
-            speak_mod.speak("hello")
-
-        assert thread_cls.call_args.kwargs["target"] is speak_mod._speak_local_closing_connections

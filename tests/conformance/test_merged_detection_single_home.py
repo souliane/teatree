@@ -28,6 +28,9 @@ _MIN_PROBE_CALL_SITES = 7
 
 #: Where a merged-detection primitive may legitimately be invoked, and why.
 _ALLOWED: dict[str, str] = {
+    "core/gates/merge_quality_gate.py": (
+        "checks that a recorded task start head precedes the checkout head before scanning its brief diff"
+    ),
     "core/worktree/branch_classification.py": "the canonical three-layer detector itself",
     "core/worktree/checkout_released.py": (
         "proves the released writer's recorded anchor precedes the current PR head — checkout custody, not landed-ness"

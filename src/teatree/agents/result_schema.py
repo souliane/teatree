@@ -11,24 +11,26 @@ from teatree.agents.result_payloads import (
     verdict_carries_payload,
 )
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
+from teatree.agents.result_schema_draft import (
+    REVIEW_REQUEST_SCHEMA_PROPERTY,
+    SHIP_READINESS_SCHEMA_PROPERTY,
+    ReviewRequestDraft,
+    ShipReadiness,
+)
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_review import (
     REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
     REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY,
     REVIEW_VERDICT_SCHEMA_PROPERTY,
+    ReviewFinding,
     ReviewHeadMismatch,
     ReviewVenueLimit,
+    ReviewVerdictEnvelope,
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import (
-    FIX_RECORD_FIELDS,
-    FixRecord,
-    PlanAdequacy,
-    RubricGrade,
-    fix_record_required_fields,
-)
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, fix_record_required_fields
 
 
 class FileChange(TypedDict, total=False):
@@ -50,20 +52,19 @@ class SkillApplication(TypedDict):
     evidence: str
 
 
-class ReviewFinding(TypedDict, total=False):
-    severity: str
-    summary: str
-    file: str
-    line: int
-    kind: str
-
-
 class ArticleSuggestion(TypedDict, total=False):
     """One news-scan candidate a shell-denied scanning_news agent hands back (#9)."""
 
     title: str
     url: str
     rationale: str
+    action: str
+    decision_reason: str
+    backlog_checked: bool
+    base_red: bool
+    duplicate_of: str
+    ticket_title: str
+    ticket_body: str
 
 
 class TriageRecommendation(TypedDict, total=False):
@@ -96,19 +97,6 @@ class WorkItemEnvelope(TypedDict, total=False):
     body: str
     existing_issue_url: str
     no_work_reason: str
-
-
-class ReviewVerdictEnvelope(TypedDict, total=False):
-    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
-
-    verdict: str
-    reviewed_sha: str
-    reviewer_identity: str
-    gh_verify_result: str
-    blast_class: str
-    findings: list[ReviewFinding]
-    merge_result_retake: bool
-    rubric_grades: list[RubricGrade]
 
 
 class ReviewContextEnvelope(TypedDict, total=False):
@@ -180,6 +168,8 @@ class AgentResult(OwnerStop, total=False):
     work_item: WorkItemEnvelope
     fix_record: FixRecord
     ticket_sweep: TicketSweepEvidence
+    review_request: ReviewRequestDraft
+    ship_readiness: ShipReadiness
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -345,13 +335,20 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         },
         "article_suggestions": {
             "type": "array",
-            "description": "Candidate news articles a shell-denied scanning_news agent hands back for queuing.",
+            "description": "Article decisions a shell-denied scanning_news agent hands back for settlement.",
             "items": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "url": {"type": "string"},
                     "rationale": {"type": "string"},
+                    "action": {"type": "string", "enum": ["file", "drop"]},
+                    "decision_reason": {"type": "string"},
+                    "backlog_checked": {"type": "boolean"},
+                    "base_red": {"type": "boolean"},
+                    "duplicate_of": {"type": "string"},
+                    "ticket_title": {"type": "string"},
+                    "ticket_body": {"type": "string"},
                 },
                 "required": ["url"],
             },
@@ -407,6 +404,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "required": list(fix_record_required_fields(red_required=False)),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
+        "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
+        "ship_readiness": SHIP_READINESS_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",
@@ -445,7 +444,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   result is indistinguishable from a healthy review, so the absence was
 #:   invisible. The verdict is the only artifact the merge gate consumes, so it
 #:   is the only accepted evidence.
-#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
+#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...). A read-only executor run
+#:   returns ``ship_readiness`` instead, checked by ``result_schema_draft.executor_draft_evidence_error``.
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
 #:   summary-only run is a silently-dropped scan (#9), refused here.

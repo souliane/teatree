@@ -127,13 +127,17 @@ def _record_operator_pause(task: Task, *, usage: "AttemptUsage | None") -> TaskA
     return _record_interrupted_attempt(task, summary="operator pause — the claim had moved on", usage=usage)
 
 
-def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None") -> TaskAttempt:
+def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None", summary: str = "") -> TaskAttempt:
     """Park the run to resume it — unless a rival now holds its claim, when the row is no longer its to park."""
     with transaction.atomic():
         live = Task.objects.filter(pk=task.pk, status=Task.Status.CLAIMED).first()
         if live is not None and claim_generation(live) == claim_generation(task):
             return record_park(
-                task, reason=f"{LIMIT_PARKED_PREFIX}{checkpoint}", not_before=timezone.now(), usage=usage
+                task,
+                reason=f"{LIMIT_PARKED_PREFIX}{checkpoint}",
+                not_before=timezone.now(),
+                usage=usage,
+                summary=summary,
             )
     logger.warning("Task %s checkpointed after its claim moved on; leaving the row alone", task.pk)
     return _record_interrupted_attempt(
@@ -143,9 +147,16 @@ def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | No
 
 def _produced_result(outcome: "HarnessOutcome") -> AgentResultBlob:
     """The envelope the interrupted run had already emitted, or ``{}`` if it emitted none (#4464)."""
-    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.runner_result import (  # noqa: PLC0415 — deferred: call-time import
+        ResultEnvelopeError,
+        parse_result,
+    )
 
-    return parse_result(outcome.agent_text)
+    try:
+        return parse_result(outcome.agent_text)
+    except ResultEnvelopeError as exc:
+        logger.warning("Interrupted run produced a malformed result envelope: %s", exc)
+        return exc.last_complete
 
 
 def _record_noop_over_completed_row(

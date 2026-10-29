@@ -75,11 +75,14 @@ there is no defect-specific text underneath it for a check to discriminate.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 
 from django.db import models
 
 from teatree.failure_signatures import HARNESS_CRASH_MARKERS, outage_signature_in_text
+
+STALE_ERROR_AFTER = timedelta(days=2)
 
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.
 LEASE_EXPIRED_PREFIX = "lease_expired: "
@@ -115,6 +118,8 @@ RESUME_REFUSED_PHRASE = "the resumed conversation ended without taking a turn"
 HEAD_SUPERSEDED_PREFIX = "head_superseded: "
 WRONG_HEAD_RETRY_PREFIX = "review_wrong_head: "
 VENUE_LIMIT_PREFIX = "review_venue_limit: "
+COMMENT_CHECK_PREFIX = "comment check — "
+NIT_HEAD_MOVED = "NIT review head moved before publication"
 
 #: Prefix a run carries when the CLI fell back because its build cannot serve the requested model.
 CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
@@ -123,6 +128,12 @@ CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
 PLAN_STALE_PREFIX = "plan_stale: "
 #: A missing push-gate credential is a route failure, not an owner action.
 PUSH_OWNERSHIP_VENUE_FAULT = "result_error: push ownership gate could not authenticate"
+
+#: The producer and the recovery classifier share these prefixes so their wording cannot drift.
+OWNER_STOP_REFUSAL_PREFIX = "owner stop card refused: "
+MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
+MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
+MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
 
 
 class FailureKind(models.TextChoices):
@@ -166,6 +177,9 @@ class RecoveryStrategy(StrEnum):
     RETRY = "retry"
     CORRECTIVE_RETRY = "corrective_retry"
     HALT = "halt_and_escalate"
+
+
+HALT_STAMP = "[repair-halt-parked]"
 
 
 @dataclass(frozen=True)
@@ -296,6 +310,8 @@ _UNNAMED: frozenset[str] = frozenset(
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # First: the recorder stamps it ahead of a NoCurrentPlanError message that may quote any other phrase.
     (FailureKind.PLAN_STALE, (PLAN_STALE_PREFIX,)),
+    (FailureKind.HEAD_SUPERSEDED, (NIT_HEAD_MOVED,)),
+    (FailureKind.RECORDING_REFUSED, (COMMENT_CHECK_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
@@ -340,7 +356,14 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
     (
         FailureKind.RESULT_SCHEMA_INVALID,
-        ("unexpected keys", "result is not valid json", "result must be a json object"),
+        (
+            "unexpected keys",
+            "result is not valid json",
+            "result must be a json object",
+            MALFORMED_FIX_RECORD_PREFIX,
+            MALFORMED_RUBRIC_GRADES_PREFIX,
+            MALFORMED_TICKET_SWEEP_PREFIX,
+        ),
     ),
     (FailureKind.RECORDING_REFUSED, ("recording refused",)),
     (FailureKind.HARNESS_CRASH, HARNESS_CRASH_MARKERS),
@@ -361,6 +384,8 @@ def classify_failure(error: str) -> str:
     haystack = error.casefold().strip()
     if not haystack:
         return FailureKind.UNRECORDED
+    if haystack.startswith(OWNER_STOP_REFUSAL_PREFIX.casefold()):
+        return FailureKind.RESULT_SCHEMA_INVALID
     for kind, needles in _MATCHERS:
         if (
             kind == FailureKind.RESULT_ERROR
@@ -469,12 +494,14 @@ __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
     "CLI_TOO_OLD_PREFIX",
+    "HALT_STAMP",
     "LEASE_EXPIRED_PREFIX",
     "NON_REPAIR_KINDS",
     "PLAN_STALE_PREFIX",
     "RECOVERY",
     "RESUME_REFUSED_PHRASE",
     "REVIEW_UNRECORDABLE_PREFIX",
+    "STALE_ERROR_AFTER",
     "SUPERSEDED_PREFIX",
     "FailureKind",
     "Recovery",

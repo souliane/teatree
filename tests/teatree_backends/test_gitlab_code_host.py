@@ -29,7 +29,7 @@ def _project() -> ProjectInfo:
 
 
 def _two_page_http_side_effect(page1: list[dict], page2: list[dict]):
-    """httpx.get side-effect: page 1 advertises x-next-page=2, page 2 ends it.
+    """httpx.Client.get side-effect: page 1 advertises x-next-page=2, page 2 ends it.
 
     ``get_json_paginated`` appends ``&page=N``; this routes the request by that
     marker so a real ``GitLabAPI`` walks both pages.
@@ -1248,7 +1248,7 @@ def test_list_issue_comments_returns_notes_from_page_two() -> None:
     api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
     host = GitLabCodeHost(client=api)
     with (
-        patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)),
+        patch("httpx.Client.get", side_effect=_two_page_http_side_effect(page1, page2)),
         patch.object(api, "resolve_project", return_value=_project()),
     ):
         result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
@@ -1268,7 +1268,7 @@ def test_search_open_issues_returns_issues_from_page_two() -> None:
     api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
     host = GitLabCodeHost(client=api)
     with (
-        patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)),
+        patch("httpx.Client.get", side_effect=_two_page_http_side_effect(page1, page2)),
         patch.object(api, "resolve_project", return_value=_project()),
     ):
         result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
@@ -1645,7 +1645,7 @@ def test_resolve_project_returns_none_on_404() -> None:
     # F8.2: get_json now raises on 404 (raise_for_status); the documented
     # None-degrade for an unknown/private slug must survive that.
     api = _api()
-    with patch("httpx.get", return_value=_response(404)):
+    with patch("httpx.Client.get", return_value=_response(404)):
         assert api.resolve_project("org/repo") is None
 
 
@@ -1653,9 +1653,9 @@ def test_resolve_project_does_not_cache_none_from_404() -> None:
     # F4.5: a 404 seen once (possibly during an outage) must not pin the slug
     # unresolvable for the process life — the next call re-resolves.
     api = _api()
-    with patch("httpx.get", return_value=_response(404)):
+    with patch("httpx.Client.get", return_value=_response(404)):
         assert api.resolve_project("org/repo") is None
-    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as second:
+    with patch("httpx.Client.get", return_value=_response(200, json_body=_PROJECT_JSON)) as second:
         assert api.resolve_project("org/repo") is not None
         second.assert_called()  # the None was NOT cached — a real request went out
 
@@ -1663,15 +1663,15 @@ def test_resolve_project_does_not_cache_none_from_404() -> None:
 def test_resolve_project_reraises_non_404_status() -> None:
     # An auth/5xx failure is an outage, never "unknown project" — it must surface.
     api = _api()
-    with patch("httpx.get", return_value=_response(403)), pytest.raises(httpx.HTTPStatusError):
+    with patch("httpx.Client.get", return_value=_response(403)), pytest.raises(httpx.HTTPStatusError):
         api.resolve_project("org/repo")
 
 
 def test_resolve_project_caches_successful_resolution() -> None:
     api = _api()
-    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as first:
+    with patch("httpx.Client.get", return_value=_response(200, json_body=_PROJECT_JSON)) as first:
         assert api.resolve_project("org/repo") is not None
-    with patch("httpx.get", return_value=_response(500)) as second:
+    with patch("httpx.Client.get", return_value=_response(500)) as second:
         # Second call is served from the project cache — no request issued.
         assert api.resolve_project("org/repo") is not None
         second.assert_not_called()
@@ -1683,7 +1683,7 @@ def test_resolve_project_re_reads_a_project_setting_once_its_cache_entry_ages_ou
     with (
         patch("teatree.backends.gitlab.http_client.time.monotonic", return_value=1000.0),
         patch(
-            "httpx.get",
+            "httpx.Client.get",
             return_value=_response(200, json_body={**_PROJECT_JSON, "allow_merge_on_skipped_pipeline": False}),
         ),
     ):
@@ -1691,7 +1691,7 @@ def test_resolve_project_re_reads_a_project_setting_once_its_cache_entry_ages_ou
     with (
         patch("teatree.backends.gitlab.http_client.time.monotonic", return_value=1000.0 + 24 * 3600),
         patch(
-            "httpx.get",
+            "httpx.Client.get",
             return_value=_response(200, json_body={**_PROJECT_JSON, "allow_merge_on_skipped_pipeline": True}),
         ),
     ):
@@ -1726,7 +1726,7 @@ def test_get_mr_approvals_fails_closed_when_project_unresolved() -> None:
 def test_resolve_user_id_url_encodes_username() -> None:
     api = _api()
     resp = _response(200, json_body=[{"id": 7}])
-    with patch("httpx.get", return_value=resp) as mock_get:
+    with patch("httpx.Client.get", return_value=resp) as mock_get:
         assert api.resolve_user_id_by_username("a b+c") == 7
     called_url = mock_get.call_args.args[0]
     assert "a+b%2Bc" in called_url or "a%20b%2Bc" in called_url
@@ -1750,7 +1750,10 @@ def test_cancel_pipelines_walks_every_page() -> None:
             return httpx.Response(200, json=page2, headers={"x-next-page": ""}, request=request)
         return httpx.Response(200, json=page1, headers={"x-next-page": "2"}, request=request)
 
-    with patch("httpx.get", side_effect=_get), patch("httpx.post", return_value=_response(201, json_body={})):
+    with (
+        patch("httpx.Client.get", side_effect=_get),
+        patch("httpx.Client.post", return_value=_response(201, json_body={})),
+    ):
         cancelled = api.cancel_pipelines(42, "main", statuses=("running",))
     assert len(cancelled) == 101
     assert 101 in cancelled
@@ -1763,7 +1766,7 @@ def test_get_draft_notes_count_paginates() -> None:
     api = _api()
     page1 = [{"id": i} for i in range(100)]
     page2 = [{"id": 100}, {"id": 101}]
-    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+    with patch("httpx.Client.get", side_effect=_two_page_http_side_effect(page1, page2)):
         assert api.get_draft_notes_count(42, 7) == 102
 
 
@@ -1780,7 +1783,7 @@ def test_list_recently_merged_without_cutoff_reads_one_page() -> None:
         # Advertise a next page; the single-page read must ignore it.
         return httpx.Response(200, json=[{"iid": 1}], headers={"x-next-page": "2"}, request=request)
 
-    with patch("httpx.get", side_effect=_get) as mock_get:
+    with patch("httpx.Client.get", side_effect=_get) as mock_get:
         result = api.list_recently_merged_mrs("alice")
     assert result == [{"iid": 1}]
     assert mock_get.call_count == 1
@@ -1790,7 +1793,7 @@ def test_list_recently_merged_with_cutoff_paginates() -> None:
     api = _api()
     page1 = [{"iid": i} for i in range(100)]
     page2 = [{"iid": 100}]
-    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+    with patch("httpx.Client.get", side_effect=_two_page_http_side_effect(page1, page2)):
         result = api.list_recently_merged_mrs("alice", updated_after="2026-01-01T00:00:00Z")
     assert len(result) == 101
 

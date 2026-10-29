@@ -13,25 +13,31 @@ unmergeable forever. ATOMICITY: the verdict, the claim retirement, the lock rele
 the grades land in ONE transaction, so a refused grade rolls the verdict back with it.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_recorder_refusal
+from teatree.agents.phase_blocks import phase_specific_lines
 from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
 from teatree.core.gates.integration_review_gate import check_integration_review
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
-from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind, classify_failure
 from teatree.core.models import (
     AutoReviewDispatch,
+    ClearRequest,
     ConfigSetting,
+    Finding,
     HonestyEscalation,
+    MergeClear,
     MRReviewLock,
     PullRequest,
+    ReviewEvidence,
+    ReviewHoldDisposition,
     ReviewVerdict,
     RoundMetric,
     Rubric,
@@ -165,6 +171,177 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_null_findings_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = None
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "findings" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_malformed_hold_disposition_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [{"points": []}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "hold_id" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_malformed_counter_reproduction_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        point = {"index": 0, "classification": "disproved_premise", "citation": "run", "counter_reproduction": "ran it"}
+        verdict["hold_dispositions"] = [{"hold_id": 1, "points": [point]}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "counter_reproduction" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unhashable_evidence_gap_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=None, verdict="unverified")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["evidence_gaps"] = [["ci_unreadable"]]
+        result.pop("anti_vacuity")
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "evidence_gaps" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unreadable_ci_records_unverified_without_grading_the_rubric(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=None, verdict="unverified")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["evidence_gaps"] = ["ci_unreadable"]
+        result.pop("anti_vacuity")
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == "", attempt.error
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.UNVERIFIED
+        assert all(criterion.status == RubricCriterion.Status.PENDING for criterion in _criteria(ticket))
+
+    def test_venue_only_hold_becomes_a_recorded_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot run verify-gates",
+                "file": "",
+                "line": 0,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_documentation_claim_without_executed_reproduction_is_a_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "documentation",
+                "summary": "Documentation suggests zero-argument super fails in slots dataclasses",
+                "citation": "https://docs.python.org/3/library/dataclasses.html",
+                "file": "a.py",
+                "line": 5,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_pending_checks_retry_and_preserve_the_venue_note_in_the_attempt(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot run verify-gates",
+                "file": "",
+                "line": 0,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_executed_code_finding_still_blocks_with_venue_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot read CI",
+                "file": "",
+                "line": 0,
+            },
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "executed",
+                "reproduction": "uv run pytest tests/test_a.py::test_bug: failed with AssertionError",
+                "summary": "The changed function returns the wrong value",
+                "file": "a.py",
+                "line": 5,
+            },
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        assert [finding.kind for finding in recorded.structured_findings] == ["note", "blocking"]
+
     def test_venue_limit_refuses_without_recording_a_hold_and_marks_route(self) -> None:
         task = _reviewing_task_via_dispatch()
         RoundMetric.objects.open(kind="review", ticket=task.ticket, subject=_HEAD, size=0, detail={"case": "full"})
@@ -321,6 +498,9 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         ]
 
         with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(
@@ -339,6 +519,90 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         ticket.refresh_from_db()
         assert has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("a.py", 2, "rename helper"),))
 
+    def test_public_nit_home_path_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review verdict recording refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert classify_failure(attempt.error) == FailureKind.RECORDING_REFUSED
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_public_nit_file_home_path_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Rename helper",
+                "file": "/home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "line": 0,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review verdict recording refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert classify_failure(attempt.error) == FailureKind.RECORDING_REFUSED
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_private_nit_home_path_records_and_publishes(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _HEAD),
+            ) as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        track.assert_called_once()
+
     def test_review_nit_publish_failure_keeps_a_recovery_marker(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")
@@ -347,14 +611,57 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         verdict["findings"] = [
             {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
         ]
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+        with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch(
+                "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+            ),
         ):
             attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
         assert "forge unavailable" in attempt.error
         assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+
+    def test_post_time_privacy_refusal_keeps_the_verdict_recoverable(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        host = Mock()
+        host.fetch_live_head_sha.return_value = _HEAD
+        host.get_pr_file_diffs.return_value = {"a.py": "@@ -1 +1,3 @@\n+one\n+two\n+three"}
+        host.list_review_threads.return_value = []
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", side_effect=[False, True]),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+            patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+        ):
+            provider.return_value.get_code_host_for_url.return_value = host
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review NIT publication refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+        host.submit_pr_review.assert_not_called()
 
     def test_nit_only_hold_without_merge_safe_evidence_records_nothing(self) -> None:
         ticket = _author_ticket()
@@ -382,6 +689,149 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
 
         assert "comment check" in attempt.error
         assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_rejected_nit_refuses_envelope_even_with_blocking_finding(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "summary": "Runtime failure",
+                "file": "a.py",
+                "line": 1,
+                "basis": "executed",
+                "reproduction": "pytest test_a.py: failed",
+            },
+            {"severity": "nit", "kind": "nit", "summary": "this is missing a blank line", "file": "a.py", "line": 2},
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "comment check" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_later_review_envelope_records_held_point_answers(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(
+                    severity="major",
+                    kind="blocking",
+                    summary="Runtime failure",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="pytest test_a.py: failed",
+                )
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {
+                "hold_id": hold.pk,
+                "points": [
+                    {
+                        "index": 0,
+                        "classification": "disproved_premise",
+                        "citation": "pytest test_a.py: passed at reviewed head",
+                        "counter_reproduction": {
+                            "command": "pytest test_a.py::test_runtime",
+                            "observed_result": "1 passed in 0.2s at the reviewed head",
+                        },
+                    }
+                ],
+            }
+        ]
+
+        task = _reviewing_task_via_dispatch()
+        brief = "\n".join(phase_specific_lines(task, []))
+        assert f"HOLD {hold.pk}" in brief
+        assert "0: [major]" in brief
+        assert "[needs counter_reproduction]" in brief
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert attempt.error == ""
+        disposition = ReviewHoldDisposition.objects.get(hold=hold, clearing_verdict__reviewer_identity=_REVIEWER)
+        clear = MergeClear.issue(
+            ClearRequest(pr_id=_PR_ID, slug=_SLUG, reviewed_sha=_HEAD, reviewer_identity=_REVIEWER)
+        )
+        assert clear.hold_disposition_ids == [disposition.pk]
+
+    def test_a_one_character_citation_cannot_answer_an_executed_reproduction(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(
+                    severity="major",
+                    kind="blocking",
+                    summary="Runtime failure",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="pytest test_a.py: failed",
+                )
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {"hold_id": hold.pk, "points": [{"index": 0, "classification": "disproved_premise", "citation": "x"}]}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "counter_reproduction" in attempt.error
+        assert not ReviewVerdict.objects.filter(pr_id=_PR_ID, reviewer_identity=_REVIEWER).exists()
+        assert not ReviewHoldDisposition.objects.filter(hold=hold).exists()
+        assert ReviewVerdict.objects.unreconciled_holds_at(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) == [hold]
+
+    def test_incomplete_hold_answers_roll_back_the_later_verdict(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(severity="major", summary="first", reproduction="pytest test_first.py: failed"),
+                Finding(severity="major", summary="second", reproduction="pytest test_second.py: failed"),
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {
+                "hold_id": hold.pk,
+                "points": [{"index": 0, "classification": "disproved_premise", "citation": "first now passes"}],
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "unanswered" in attempt.error
+        assert not ReviewVerdict.objects.filter(pr_id=_PR_ID, reviewer_identity=_REVIEWER).exists()
+        assert not ReviewHoldDisposition.objects.filter(hold=hold).exists()
 
     def test_a_nit_ticket_treats_a_nit_finding_as_blocking(self) -> None:
         ticket = _author_ticket()
@@ -412,6 +862,30 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
 
         assert attempt.error == ""
         check_integration_review(ticket)
+
+    def test_multi_repo_review_envelope_accepts_qualified_declared_repo(self) -> None:
+        ticket = _author_ticket()
+        ticket.repos = ["teatree", "example-org/adapter"]
+        ticket.save(update_fields=["repos"])
+        result = _envelope(grades=_full_pass())
+        result["integration_review"] = {"repos": ["souliane/teatree", "example-org/adapter"]}
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        assert ReviewEvidence.objects.has_integration_review_covering(ticket, list(ticket.repos))
+
+    def test_multi_repo_review_envelope_rejects_other_namespace_with_same_basename(self) -> None:
+        ticket = _author_ticket()
+        ticket.repos = ["teatree", "example-org/adapter"]
+        ticket.save(update_fields=["repos"])
+        result = _envelope(grades=_full_pass())
+        result["integration_review"] = {"repos": ["other/teatree", "example-org/adapter"]}
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "integration review recording refused" in attempt.error
+        assert not ReviewEvidence.objects.for_ticket(ticket, ReviewEvidence.Kind.INTEGRATION_REVIEW).exists()
 
     def test_review_envelope_produces_all_merge_review_evidence_without_manual_recording(self) -> None:
         ticket = _author_ticket()
@@ -671,17 +1145,26 @@ class TestDuplicateReviewTasksPreserveHolds(TestCase):
         first_result = _envelope(verdict="hold", reviewer="")
         first_verdict = first_result["review_verdict"]
         assert isinstance(first_verdict, dict)
-        first_verdict["findings"] = [{"severity": "major", "summary": "fix the branch", "file": "a.py", "line": 1}]
+        first_verdict["findings"] = [
+            {
+                "severity": "major",
+                "summary": "fix the branch",
+                "file": "a.py",
+                "line": 1,
+                "reproduction": "pytest test_branch.py: failed",
+            }
+        ]
         assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
 
         first_task.ticket.extra = {**first_task.ticket.extra, "reviewed_sha": _HEAD}
         first_task.ticket.save(update_fields=["extra"])
         second_task = Task.objects.create(ticket=first_task.ticket, session=first_task.session, phase="reviewing")
         second_task.claim(claimed_by="headless-reviewer")
-        assert record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing").error == ""
+        second_attempt = record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing")
+        assert "standing HOLD verdicts unanswered" in second_attempt.error
 
         rows = list(ReviewVerdict.objects.for_pr(_SLUG, _PR_ID))
-        assert len(rows) == 2
+        assert len(rows) == 1
         assert {row.reviewer_identity for row in rows} == {assigned_reviewer_identity(_PR_ID)}
         held = ReviewVerdict.objects.latest_for_pr(_SLUG, _PR_ID)
         assert held is not None

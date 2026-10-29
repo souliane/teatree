@@ -133,6 +133,9 @@ def check_command() -> None:
     is already the message channel, and a sentinel would need filtering by
     every future consumer.
 
+    A direct message from anyone but the overlay's configured owner is dropped silently:
+    never printed, never acknowledged.
+
     A singleton guard serialises the drain: the 30s cron can double-fire and
     two concurrent drains would ack the same mentions twice, so a second drain
     stands down (exit 0) while the first holds the lock.
@@ -155,6 +158,15 @@ def check_command() -> None:
         raise typer.Exit(code=DRAIN_FAILED_EXIT_CODE) from None
 
 
+def _is_foreign_dm(event: dict, overlay: str) -> bool:
+    if event.get("channel_type") != "im":
+        return False
+    ensure_django()
+    from teatree.loop.owner_identity import configured_owner_id, sent_by_operator  # noqa: PLC0415 — DM-only policy
+
+    return not sent_by_operator(event, configured_owner_id(messaging_from_overlay(overlay or None)))
+
+
 def _drain_and_emit() -> None:
     """Drain the queue once, ack each user message, and emit them as JSON lines."""
     import json  # noqa: PLC0415 — deferred: loaded only when this command runs
@@ -173,6 +185,8 @@ def _drain_and_emit() -> None:
         user = event.get("user", "")
         overlay = entry.get("overlay", "")
         if text and user:
+            if _is_foreign_dm(event, overlay):
+                continue
             channel = event.get("channel", "")
             ts = event.get("ts", "")
             messages.append({"overlay": overlay, "user": user, "text": text, "ts": ts, "channel": channel})

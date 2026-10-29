@@ -11,6 +11,17 @@ so a fresh box boots deterministically and offline; see
 This is **teatree-only** — no customer or product overlays. The only registered
 overlay is the built-in `t3-teatree`.
 
+## Disk headroom before a build
+
+`deploy/deploy.sh` asks the running worker to reclaim disk before staging a new
+image. It rechecks immediately before each Compose build, and refuses below
+17 GiB available to ordinary users. The diagnostic prints the least available
+space across `/`, the temporary directory and Docker's data root, plus root-reserved
+space and the build need. If the worker command is unavailable during an upgrade,
+the deploy prunes only Docker build cache and dangling images before the check.
+Under 1 GiB available, the deploy streams its log to `/dev/shm` so an ENOSPC error
+remains visible.
+
 ## Rolling to an image generation
 
 Alongside the source-mounted stack below, a stack can run an **immutable image
@@ -231,7 +242,7 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 | `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
-| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
+| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs the read-only phases (planning, review, critic, scoping, triage assessment, directive interpretation, answering, review-request, shipping readiness); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
@@ -712,10 +723,10 @@ sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35
 blind in a container reading its own `/proc` (233 paths resolved). The probe
 blinds whenever ANY same-uid pid presents a listable-but-unresolvable gated
 source, which is a property of the live process table at that instant, in EITHER
-venue. Arming is therefore not predictable from the venue — which is why the
-sweep ships OFF (`scratch_retention_days` defaults to `0`) rather than on with a
-venue-conditional guard, and why `probe_gap` in the plan report is the
-operator-visible reason it reclaimed nothing.
+venue. Arming is therefore not predictable from the venue. The configurable
+manual sweep stays OFF by default (`scratch_retention_days` is `0`); the worker's
+scheduled four-hour sweep runs and refuses on an unsighted probe, recording
+`probe_gap` and surfacing that refusal to the owner when space remains low.
 
 The bound-socket source is read per pid, as `<pid>/net/unix`, never the bare
 `/proc/net/unix`: the latter is a magic symlink to `self/net` resolved against

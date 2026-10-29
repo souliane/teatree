@@ -13,8 +13,8 @@ THE BINDING RULE. When a rule that ALREADY has a durable memory is violated AGAI
 memory. :func:`escalate_recurrences` queues ONE deduped gap per recurring rule that
 PRESCRIBES the structural fix (a PreToolUse/Stop gate, a deterministic config
 self-check, or an anti-vacuous ``under_load`` eval), which the backlog sweep folds into
-an existing host — it never proposes writing more prose. That is
-the operationalisation of ``feedback_instruction_compliance_is_the_root_kpi``.
+an existing host — it never proposes writing more prose. Instruction
+compliance is the root KPI.
 
 The detector reuses :func:`teatree.loops.dream.transcript_extract.looks_like_user_correction`
 rather than re-implementing correction detection: a user-correction turn is the

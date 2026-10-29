@@ -298,6 +298,19 @@ class TestFixRecordDirective(TestCase):
         assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
         assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
 
+    def test_the_review_brief_asks_for_revert_to_red_and_mutation_probes_while_the_gate_is_on(self) -> None:
+        brief = self._review_brief_for_pr_owned_by(Ticket.Kind.FIX)
+        assert "Run revert-to-RED and mutation probes by pinned node id with -n0." in brief
+
+    def test_a_switched_off_review_brief_asks_for_mutation_probes_only(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        for brief in (
+            self._review_brief_for_pr_owned_by(Ticket.Kind.FIX),
+            self._brief("reviewing", Ticket.Kind.FEATURE),
+        ):
+            assert "Run mutation probes by pinned node id with -n0." in brief
+            assert "revert-to-RED" not in brief
+
     def test_an_issue_anchored_review_is_told_the_live_head_it_is_checked_against(self) -> None:
         live = "d" * 40
         owner = Ticket.objects.create(
@@ -315,6 +328,31 @@ class TestFixRecordDirective(TestCase):
 
     def test_the_review_of_a_feature_pr_carries_no_fix_record(self) -> None:
         assert "fix_record" not in self._review_brief_for_pr_owned_by(Ticket.Kind.FEATURE)
+
+
+class TestPhaseTestSelection(TestCase):
+    def test_testing_uses_the_diff_scoped_lane(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+        assert "TEST SELECTION" in brief
+        assert "t3 tool affected-tests" in brief
+        assert "bash dev/test-affected.sh" in brief
+        assert "For overlay repos, use their playbook's wired runner" in brief
+        assert "PHASE: testing — test selection" in brief
+
+    def test_reviewing_scopes_mutation_and_reads_ci_at_the_head(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+        assert "t3 tool affected-tests" in brief
+        assert "bash dev/test-affected.sh" in brief
+        assert "For overlay repos, use their playbook's wired runner" in brief
+        assert "node ids" in brief
+        assert "check-runs" in brief
+
+    def test_read_only_review_uses_supplied_evidence_without_commands(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), [], read_only_venue=True))
+        assert "Use the supplied check-runs" in brief
+        assert "t3 tool affected-tests" not in brief
+        assert "bash dev/test-affected.sh" not in brief
+        assert "run only the pinned test" not in brief
 
 
 class TestTestingPhaseBranchCurrency(TestCase):
@@ -361,6 +399,23 @@ class TestIntakeSurveyJson(TestCase):
         LandscapeArtifact.record(ticket=task.ticket, survey={"prs": []}, recorded_by="t3:intake")
 
         assert intake_survey_json(task) in phase_specific_lines(task, [])
+
+    def test_planning_brief_names_fix_first_action_and_evidence(self) -> None:
+        task = _task("planning")
+        survey = {
+            "fix_first": {
+                "defects": [{"issue": "https://github.com/owner/repo/issues/1", "title": "fix: fault"}],
+                "stuck": [{"ticket": 8, "state": "tested"}],
+            }
+        }
+        LandscapeArtifact.record(ticket=task.ticket, survey=survey, recorded_by="t3:intake")
+
+        lines = phase_specific_lines(task, [])
+
+        assert "https://github.com/owner/repo/issues/1" in intake_survey_json(task)
+        assert '"ticket": 8' in intake_survey_json(task)
+        assert any("Rule 6" in line and "defer or split" in line for line in lines)
+        assert any("list red or flaky gates" in line for line in lines)
 
 
 class TestEmbeddedIntakeSurveyJson(TestCase):

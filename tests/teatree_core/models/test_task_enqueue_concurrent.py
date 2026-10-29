@@ -46,10 +46,11 @@ from teatree.core.models.task_enqueue import (
     enqueue_phase_task_once,
 )
 from teatree.core.models.ticket import Ticket
+from teatree.db.journal_mode import sqlite_file_journal_mode
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from tests.db_alias import (
     RouteAllToAlias,
-    register_sqlite_alias,
+    register_control_db_alias,
     run_racing_threads,
     teardown_sqlite_alias,
     wal_control_db,
@@ -98,7 +99,7 @@ def _migrated_file_backed_db(tmp_path: Path) -> tuple[str, Path]:
     """
     alias = f"enq_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    register_sqlite_alias(alias, db_file)
+    register_control_db_alias(alias, db_file)
     with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     return alias, db_file
@@ -166,6 +167,7 @@ class TestEnqueuePhaseTaskOnceUnderConcurrentCallers:
     def _race(self, tmp_path: Path, enqueue: Enqueue) -> tuple[list[str], int]:
         alias, db_file = _migrated_file_backed_db(tmp_path)
         try:
+            assert sqlite_file_journal_mode(db_file) == "wal"
             ticket = Ticket.objects.using(alias).create(overlay="test")
             connections[alias].close()
             with _default_pointed_at(db_file):

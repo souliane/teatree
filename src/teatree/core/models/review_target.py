@@ -128,6 +128,48 @@ def _recorded_pr_target(ticket: "Ticket") -> ReviewTarget | None:
     )
 
 
+_RETURNED_VERDICTS = frozenset({"merge_safe", "hold", "unverified"})
+
+
+def _returned_verdict_heads(task: "Task") -> list[str]:
+    """The ``reviewed_sha`` of every verdict a successful attempt returned; ``""`` when it named none."""
+    heads: list[str] = []
+    for result in task.attempts.filter(error="").values_list("result", flat=True):
+        verdict = result.get("review_verdict") if isinstance(result, dict) else None
+        if isinstance(verdict, dict) and str(verdict.get("verdict", "")).strip().lower() in _RETURNED_VERDICTS:
+            heads.append(str(verdict.get("reviewed_sha") or "").strip().lower())
+    return heads
+
+
+def review_completion_refusal(task: "Task") -> str:
+    """Why a verdict-producing review *task* cannot complete yet, or ``""`` when it may.
+
+    The recorded outcome is read twice and both reads stay bound to a head: the verdict at the
+    target's own head, and — only when the target binds the live head and an attempt returned a
+    verdict — this ticket's verdict at a head that attempt returned. "Any verdict by this ticket
+    for the PR at any head" is looser than both and never answers.
+    """
+    if not task.attempts.exists():
+        return "review task cannot complete without a recorded attempt"
+    target = review_target_for_task(task)
+    returned_heads = _returned_verdict_heads(task)
+    recorded = verdict_at(target) is not None if target is not None else False
+    if not recorded and target is not None and target.bind_live_head:
+        recorded = ReviewVerdict.objects.filter(
+            ticket=task.ticket,
+            slug__iexact=target.slug,
+            pr_id=target.pr_id,
+            reviewed_sha__in=[head for head in returned_heads if head],
+        ).exists()
+    self_review = target is None and task.ticket.role == task.ticket.Role.AUTHOR and bool(returned_heads)
+    escalated = (
+        task.attempts.filter(error="", result__needs_user_input=True).exclude(result__user_input_reason="").exists()
+    )
+    if recorded or self_review or escalated or task.review_skipped():
+        return ""
+    return "review task cannot complete without a recorded review outcome"
+
+
 def unattachable_verdict_refusal(task: "Task") -> str:
     """Why *task*'s returned verdict reaches no pull request, or ``""`` for a pre-PR self-review.
 
@@ -176,6 +218,7 @@ def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
 
 __all__ = [
     "ReviewTarget",
+    "review_completion_refusal",
     "review_target_for_task",
     "review_target_for_ticket",
     "unattachable_verdict_refusal",

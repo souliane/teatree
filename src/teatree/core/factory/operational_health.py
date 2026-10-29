@@ -38,8 +38,9 @@ from typing import TYPE_CHECKING, cast
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
+from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb, reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
+from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.factory.secret_key_health import secret_key_signals
@@ -49,7 +50,7 @@ from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
-from teatree.core.factory.stalled_checkout_pr import stalled_checkout_pr_signals
+from teatree.core.factory.stalled_checkout import stalled_checkout_signals
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
 from teatree.core.models.known_issue import KnownIssue
@@ -401,7 +402,7 @@ def _reclaim_stall_signals() -> SignalCollection:
         marker = ResourcePressureMarker.load()
         free_gb = marker.last_disk_free_gb
         streak = marker.zero_yield_passes
-        crit_gb = get_effective_settings(None).disk_crit_free_gb
+        crit_gb = effective_disk_floor_gb(get_effective_settings(None).disk_crit_free_gb)
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-reclaim-stall", "reclaim-stall health read failed — skipped", exc_info=True)
         return SignalCollection(unread=("_reclaim_stall_signals",))
@@ -460,7 +461,9 @@ _COLLECTORS = (
     _failed_task_signals,
     _consecutive_harness_crash_signals,
     _stalled_backlog_signals,
-    stalled_checkout_pr_signals,
+    stalled_checkout_signals,
+    halted_retry_signals,
+    stuck_ticket_halt_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,

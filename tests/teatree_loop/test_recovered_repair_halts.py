@@ -8,10 +8,12 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
 from teatree.loop.question_drain import Verdict, drain_pending_questions, question_reachability
 from teatree.loop.transient_requeue import requeue_transient_failed
+from tests.teatree_loop.legacy_halt_question import halts_record_legacy_questions
 
 
 class TestRecoveredRepairHalts(TestCase):
     def setUp(self) -> None:
+        self.enterContext(halts_record_legacy_questions())
         self.recovered = self._halted_ticket()
         self.other = self._halted_ticket()
         self.question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")

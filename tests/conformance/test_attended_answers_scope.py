@@ -23,33 +23,8 @@ def test_attended_answer_scope_excludes_headless_runs() -> None:
     ) in _answer_policy()
 
 
-def test_checkout_proof_requires_no_process_inside() -> None:
-    assert "and has no process inside it" in _answer_policy()
-
-
 def test_attended_answer_uses_interactive_resolver() -> None:
     assert "questions dismiss <id> --resolver agent:interactive" in _answer_policy()
-
-
-@pytest.mark.parametrize(
-    "fact",
-    [
-        "standing instruction of 2026-10-22",
-        "read-only re-check",
-        "expected head",
-        "clean tree",
-        "no merge in progress",
-        "working directory, an open file, a mapped file, or a bound socket",
-        "host process table is unusable",
-        "pseudo-terminal",
-        "clean environment",
-        "audit trail reads as a direct owner command",
-        "plainly report that it ran the command",
-        "leave it on the owner's card",
-    ],
-)
-def test_checkout_card_attestation_route_names_each_condition(fact: str) -> None:
-    assert fact in _answer_policy()
 
 
 def _assert_prose_peg(anchor: str, path: str, *, expected_paths: set[str] | None = None) -> list[str]:
@@ -71,29 +46,21 @@ def test_blueprint_owner_rule_clauses_are_pegged(anchor: str) -> None:
     _assert_prose_peg(anchor, "BLUEPRINT.md")
 
 
-def test_checkout_card_paragraph_is_pegged() -> None:
-    windows = _assert_prose_peg("For a checkout card,", "skills/interactive/SKILL.md")
-    paragraph = (
-        "When the facts settle a card"
-        + SKILL.read_text(encoding="utf-8").split("\n\nWhen the facts settle a card", 1)[1].split("\n\n", 1)[0]
-    )
-    assert any(paragraph in window for window in windows)
+def test_checkout_policy_names_factory_retry_without_an_owner_card() -> None:
+    workspace = (ROOT / "skills/workspace/SKILL.md").read_text(encoding="utf-8")
+    interactive = SKILL.read_text(encoding="utf-8")
+    assert "Unsafe checkout state stays parked for an internal retry" in workspace
+    assert "For a checkout card," not in interactive
+    assert "A refusal that cannot be attested asks the owner in Slack" not in workspace
 
 
-@pytest.mark.parametrize(
-    ("anchor", "path"),
-    [
-        ("An attended session may attest under", "skills/workspace/SKILL.md"),
-        ("An attended session may attest under", "docs/blueprint/worktree-occupancy.md"),
-    ],
-    ids=["workspace", "worktree-occupancy"],
-)
-def test_checkout_route_reconciliation_is_pegged(anchor: str, path: str) -> None:
-    _assert_prose_peg(
-        anchor,
-        path,
-        expected_paths={"skills/workspace/SKILL.md", "docs/blueprint/worktree-occupancy.md"},
-    )
+def test_factory_checkout_route_is_pegged() -> None:
+    _assert_prose_peg("Unsafe checkout state stays parked for an internal retry", "skills/workspace/SKILL.md")
+
+
+def test_attended_checkout_teaches_custody_proven_factory_recovery() -> None:
+    windows = _assert_prose_peg("Factory retries may re-attest interrupted writer files", "skills/interactive/SKILL.md")
+    assert any("this does not attest hand edits" in window for window in windows)
 
 
 @pytest.mark.parametrize(
@@ -112,7 +79,7 @@ def test_attended_answer_policy_keeps_owner_limits(limit: str) -> None:
     assert limit in text
 
 
-@pytest.mark.parametrize("command", ["questions list", "questions dismiss", "worktree attest"])
+@pytest.mark.parametrize("command", ["questions list", "questions dismiss"])
 def test_attended_answer_commands_exist(command: str) -> None:
     text = SKILL.read_text(encoding="utf-8")
     reference = (ROOT / "docs/generated/cli-reference.md").read_text(encoding="utf-8")

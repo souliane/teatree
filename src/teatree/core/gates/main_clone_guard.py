@@ -19,7 +19,8 @@ main clone, the resolved default branch — and the deny emission.
 
 The blocked set is precise (so the allowed hygiene ops are never locked out):
 ``git checkout``/``git switch`` to a NON-default branch, ``git reset --hard``,
-``git restore``, and ``git stash pop``/``apply``. EVERYTHING else allows —
+``git restore``, ``git stash pop``/``apply``, ``gh pr checkout``, and
+``glab mr checkout``. EVERYTHING else allows —
 ``git fetch``, ``git pull --ff-only``, ``git checkout <default>``,
 ``git worktree add/remove/prune/list``, and all read-only git — so ``t3
 update`` and worktree creation keep working.
@@ -100,6 +101,8 @@ def find_main_clone_git_mutation(
     if default_branch:
         safe_branches.add(default_branch)
     for segment in _segments(command):
+        if forge_checkout := _forge_checkout_call(segment):
+            return MainCloneFinding(surface="git", target=forge_checkout)
         call = _git_call(segment)
         if call is None:
             continue
@@ -166,6 +169,19 @@ def _git_call(segment: str) -> tuple[str, list[str]] | None:
             return token, tokens[cursor + 1 :]
         base = token.split("=", 1)[0]
         cursor += 2 if base in _GLOBAL_OPTS_WITH_VALUE and "=" not in token else 1
+    return None
+
+
+def _forge_checkout_call(segment: str) -> str | None:
+    tokens = _safe_split(segment)
+    for executable, resource in (("gh", "pr"), ("glab", "mr")):
+        if executable not in tokens:
+            continue
+        start = tokens.index(executable) + 1
+        if resource in tokens[start:]:
+            index = tokens.index(resource, start)
+            if tokens[index + 1 : index + 2] == ["checkout"]:
+                return f"{executable} {resource} checkout"
     return None
 
 

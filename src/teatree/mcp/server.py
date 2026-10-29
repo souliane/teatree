@@ -40,11 +40,14 @@ than core can.
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, override
+from contextlib import suppress
+from importlib import import_module
+from typing import Any, cast, override
 
 from asgiref.sync import sync_to_async
-from mcp.server.mcpserver import MCPServer
-from mcp.types import Icon, ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
+from mcp.types import CallToolResult, Icon, InputRequiredResult, ToolAnnotations
 
 from teatree.agents.live_mailbox_client import MailboxClient as NeutralMailboxClient
 from teatree.backends.types import Service
@@ -52,21 +55,15 @@ from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.mcp import (
-    agent_mailbox,
-    introspection,
-    search,
-    services_forge,
-    services_notion,
-    services_sentry,
-    services_sharepoint,
-    services_slack,
-    write_tools,
-)
+from teatree.mcp import agent_mailbox, introspection, search, write_tools
+from teatree.utils.run import redact_secrets
 
 logger = logging.getLogger(__name__)
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
+_CRASH_DETAIL_CAP = 500
+# A header line longer than this drops the text after it before redaction.
+_CRASH_DETAIL_SCAN_CAP = 20 * _CRASH_DETAIL_CAP
 
 
 class ToolNameCollisionError(RuntimeError):
@@ -85,6 +82,9 @@ class _NoShadowServer(MCPServer):
     Every tool reaches the surface through :meth:`add_tool`, so it is also where a
     *read_only* server withholds each tool that is neither annotated
     ``read_only_hint`` nor named in *allowed_writes*.
+
+    Unexpected tool crashes keep their SDK error type and log, with a redacted
+    and bounded cause added to the caller's error text.
     """
 
     def __init__(self, name: str, *, instructions: str, read_only: bool, allowed_writes: frozenset[str]) -> None:
@@ -130,16 +130,32 @@ class _NoShadowServer(MCPServer):
             structured_output=structured_output,
         )
 
+    @override
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None
+    ) -> CallToolResult | InputRequiredResult:
+        try:
+            return await super().call_tool(name, arguments, context)
+        except UnexpectedToolError as unexpected:
+            crash = unexpected.__cause__ or unexpected
+            detail = ""
+            with suppress(Exception):
+                detail = redact_secrets(str(crash)[:_CRASH_DETAIL_SCAN_CAP])[:_CRASH_DETAIL_CAP]
+            message = f"Error executing tool {name}: {type(crash).__name__}"
+            if detail:
+                message += f": {detail}"
+            raise UnexpectedToolError(message) from crash
+
 
 # Per-service tool groups, registered iff the service is in the union of
 # ``required_third_party_services`` across all registered overlays.
-_SERVICE_GROUPS: dict[Service, Callable[[MCPServer], None]] = {
-    Service.GITHUB: services_forge.register_github,
-    Service.GITLAB: services_forge.register_gitlab,
-    Service.SLACK: services_slack.register,
-    Service.NOTION: services_notion.register,
-    Service.SENTRY: services_sentry.register,
-    Service.SHAREPOINT: services_sharepoint.register,
+_SERVICE_GROUPS: dict[Service, tuple[str, str]] = {
+    Service.GITHUB: ("teatree.mcp.services_forge", "register_github"),
+    Service.GITLAB: ("teatree.mcp.services_forge", "register_gitlab"),
+    Service.SLACK: ("teatree.mcp.services_slack", "register"),
+    Service.NOTION: ("teatree.mcp.services_notion", "register"),
+    Service.SENTRY: ("teatree.mcp.services_sentry", "register"),
+    Service.SHAREPOINT: ("teatree.mcp.services_sharepoint", "register"),
 }
 
 
@@ -527,8 +543,9 @@ def build_server(
     server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only, allowed_writes=allowed_writes)
     for name, handler in _READ_TOOLS.items():
         server.add_tool(handler, name=name, annotations=_READ_ONLY)
-    for service, register_group in sorted(_SERVICE_GROUPS.items()):
+    for service, (module_path, registrar_name) in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
+            register_group = cast("Callable[[MCPServer], None]", getattr(import_module(module_path), registrar_name))
             register_group(server)
     write_tools.register(server)
     agent_mailbox.register(server, client=mailbox_client)

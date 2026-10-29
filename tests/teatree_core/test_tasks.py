@@ -222,13 +222,7 @@ class TestDrainHeadlessQueue(TestCase):
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
 
-    def test_cap_held_unknown_overlay_fails_and_drain_still_admits(self) -> None:
-        for index in range(3):
-            ticket = Ticket.objects.create(overlay="test")
-            PullRequest.objects.record_opened(
-                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 200}"
-            )
-
+    def test_unknown_overlay_poison_fails_with_claim_attribution_and_drain_still_admits(self) -> None:
         poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
         poison = Task.objects.create(
             ticket=poison_ticket,
@@ -555,21 +549,6 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         assert result == {"skipped": "not claimable: Task already claimed"}
         task.refresh_from_db()
         assert task.claimed_by == "rival-worker"
-
-    def test_cap_held_worker_refusal_names_the_cap(self) -> None:
-        for index in range(3):
-            ticket = Ticket.objects.create()
-            PullRequest.objects.record_opened(
-                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 900}"
-            )
-        ticket = Ticket.objects.create()
-        held = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
-
-        with self.assertLogs("teatree.core.tasks", level="INFO") as logs:
-            result = execute_task.func(held.pk, held.phase)
-
-        assert "pull requests are open" in result["skipped"]
-        assert any("pull requests are open" in message for message in logs.output)
 
     def _run_frozen(self) -> tuple[Task, object, MagicMock]:
         task = self._make_task(status=Task.Status.PENDING)
@@ -2045,10 +2024,11 @@ class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
             execute_task.func(task.pk, task.phase)
         drive.assert_called_once()
         assert not TaskAttempt.objects.filter(task=task, error__startswith="checkout_parked:").exists()
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
         self.worktree.refresh_from_db()
-        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
-        interrupted = self.worktree.get_extra()["auto_attestation"]["tenures"][0]
-        assert (interrupted["holder"], interrupted["ended"]) == (f"task:{self.coding.pk}", "abandoned")
+        state = checkout_state(self.checkout)
+        assert self.worktree.get_extra()["attested_state"] == state.digest
+        assert self.worktree.get_extra()["checkout_custody"]["anchor"] == state.digest
 
     def test_same_task_retry_after_worker_restart(self) -> None:
         self.interrupt_run()

@@ -550,6 +550,38 @@ class TestMergeNitPublication(TestCase):
         assert "comment check" in record_returned_critic_verdict(dispatch.task, result)
         assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
 
+    def test_public_critic_nit_home_path_refuses_before_recording(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url="https://github.com/souliane/teatree/pull/4040",
+            repo="souliane/teatree",
+            iid="4040",
+        )
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        result = _merge_critic_envelope()
+        result["critic_verdict"]["items"][1]["points"] = [
+            {
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "x.py",
+                "line": 1,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+        ):
+            error = record_returned_critic_verdict(dispatch.task, result)
+
+        assert error.startswith("critic verdict recording refused")
+        assert "generic:home_path" in error
+        assert CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=_FORTY_HEX) is None
+
     def test_nit_follow_up_regrades_natural_nit_as_blocking_before_comment_checks(self) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, extra={"nit_follow_up": True}
@@ -588,6 +620,9 @@ class TestMergeNitPublication(TestCase):
             }
         }
         with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(
@@ -622,6 +657,9 @@ class TestMergeNitPublication(TestCase):
             }
         }
         with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch("teatree.core.review.nit_publish.track_nits", side_effect=NitLaneError("forge readback failed")),
@@ -634,6 +672,9 @@ class TestMergeNitPublication(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "failed"
         with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(

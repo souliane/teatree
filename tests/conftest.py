@@ -25,6 +25,7 @@ from teatree.agents.codex_shared_app_server import reset_shared_codex_app_server
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
+from teatree.backends.forge_pool import close_forge_clients
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
@@ -46,15 +47,16 @@ from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
+from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
     SlotLease,
     WorkerSlotPool,
     bounded_auto_workers,
-    whole_tree_refusal,
     worker_pool_root,
 )
+from teatree.quality.pytest_selection import SelectionContext, ci_environment_enabled, oversized_selection_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
@@ -161,6 +163,10 @@ def readable_ship_tree() -> Iterator[None]:
         patch("teatree.utils.git.branch_diff", return_value=""),
         patch("teatree.visual_qa.changed_files", return_value=[]),
         patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
+        patch(
+            "teatree.core.management.commands._ship.gates.require_current_branch",
+            return_value={"auto_merged": False, "post_merge_sha": None, "error": None, "hint": None},
+        ),
     ):
         yield
 
@@ -176,7 +182,7 @@ _WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--teatree-selected-full", action="store_true", help="Run the affected-test selector's full verdict"
+        "--teatree-selected-full", action="store_true", help="Run a declared whole-suite or curated large selection"
     )
 
 
@@ -199,13 +205,20 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(
-        config.args,
-        root=config.rootpath,
-        sharded=sharded,
-        tach_active=tach_active,
-        full_selected=bool(config.getoption("teatree_selected_full")),
-    )
+    try:
+        refusal = oversized_selection_refusal(
+            config.args,
+            context=SelectionContext(
+                root=config.rootpath,
+                sharded=sharded,
+                tach_active=tach_active,
+                full_selected=bool(config.getoption("teatree_selected_full")),
+                invocation_dir=config.invocation_params.dir,
+                in_ci=ci_environment_enabled(os.environ.get("CI")),
+            ),
+        )
+    except DurationsUnreadableError as exc:
+        raise pytest.UsageError(str(exc)) from exc
     if refusal:
         raise pytest.UsageError(refusal)
     distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
@@ -275,6 +288,7 @@ def pinned_clock() -> Iterator[dt.datetime]:
 
 @pytest.fixture(autouse=True)
 def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    close_forge_clients()
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
@@ -282,6 +296,7 @@ def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
     with use_store(MemoryStore()):
         yield
+    close_forge_clients()
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()

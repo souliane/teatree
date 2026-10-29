@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 import teatree.backends.github.api as github_api
+import teatree.backends.gitlab.http_client as gitlab_http
 import teatree.loop.scanners.self_update_ci as ci_mod
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.main_check_runs import PAGE_SIZE
@@ -218,6 +219,7 @@ class TestGhMainCiStatusVerdict:
 
 def _fake_gitlab_http(monkeypatch: pytest.MonkeyPatch, *, stdout: str, status: int = 200) -> list[str]:
     issued: list[str] = []
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: httpx)
 
     def get(url: str, **_kw: object) -> httpx.Response:
         issued.append(url)

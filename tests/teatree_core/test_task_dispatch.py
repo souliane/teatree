@@ -15,6 +15,8 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
+from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
+from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.models import ConfigSetting, ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.task_dispatch import admit_waiting_tasks
@@ -238,7 +240,7 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         assert not self._admitted(pr_less)
 
 
-class TestTheOpenPullRequestStartCap(_AdmissionCase):
+class TestManyLivePullRequestsDoNotHoldAStart(_AdmissionCase):
     def setUp(self) -> None:
         super().setUp()
         post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
@@ -252,44 +254,14 @@ class TestTheOpenPullRequestStartCap(_AdmissionCase):
             )
         return tickets
 
-    def test_three_open_prs_hold_new_shipping_and_first_push_but_serve_started_work(self) -> None:
-        started_ticket = self._open_prs(3)[0]
-        shipping = self._task("shipping")
-        first_push = self._task("coding", ticket=Ticket.objects.create())
-        started = self._task("coding", ticket=started_ticket)
+    def test_four_author_starts_without_a_pull_request_are_claimed_with_twenty_live_pull_requests(self) -> None:
+        self._open_prs(20)
+        starters = [self._task("coding", ticket=Ticket.objects.create()) for _ in range(4)]
 
-        assert drain_queue_body()["enqueued"] == [started.pk]
-        assert not self._admitted(shipping)
-        assert not self._admitted(first_push)
-
-    def test_two_open_prs_allow_a_new_shipping_task(self) -> None:
-        self._open_prs(2)
-        shipping = self._task("shipping")
-
-        assert drain_queue_body()["enqueued"] == [shipping.pk]
-
-    def test_three_open_prs_allow_review_and_critic(self) -> None:
-        self._open_prs(3)
-        review = self._task("reviewing")
-        critic = self._task("critic_reviewing", ticket=Ticket.objects.create(role=Ticket.Role.REVIEWER))
-
-        assert drain_queue_body()["enqueued"] == [review.pk, critic.pk]
-
-    def test_three_open_prs_allow_expedited_shipping(self) -> None:
-        self._open_prs(3)
-        expedited = self._task("shipping", ticket=Ticket.objects.create(expedited=True))
-
-        assert drain_queue_body()["enqueued"] == [expedited.pk]
-
-    def test_held_starter_denial_names_the_pull_request_cap(self) -> None:
-        self._open_prs(3)
-        held = self._task("shipping")
-
-        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
-            assert drain_queue_body()["enqueued"] == []
-
-        assert any("3 or more pull requests are open" in message for message in logs.output)
-        assert not self._admitted(held)
+        assert drain_queue_body()["enqueued"] == [task.pk for task in starters]
+        assert all(self._admitted(task) for task in starters)
+        assert [Task.objects.claim_next_pending(claimed_by="worker") for _ in starters] == starters
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED for task in starters)
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
@@ -309,3 +281,65 @@ class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
         waiting = self._task("reviewing")
 
         assert admit_waiting_tasks(at="test") == [waiting.pk]
+
+
+class TestAnOwnerQuestionHasItsOwnBoundedLane(_AdmissionCase):
+    """The owner's Slack question is seated beside coding, never behind it and never in the review seats (#5655)."""
+
+    def _fill_the_coding_lane(self) -> None:
+        for _ in range(_CODING_CEILING):
+            self._task("coding", status=Task.Status.CLAIMED)
+
+    def test_an_answering_task_is_seated_and_enqueued_while_the_coding_lane_is_full(self) -> None:
+        self._fill_the_coding_lane()
+        assert not self._admitted(self._task("coding")), "control: the coding lane is really full"
+
+        question = self._task("answering")
+
+        assert self._admitted(question)
+        task_dispatch_mod.execute_task.using.assert_called_once_with(queue_name="cheap")
+
+    def test_a_loaded_machine_refuses_coding_but_still_seats_an_owner_question(self) -> None:
+        overloaded = MachineSignal(cores=8, load1=8 * 5.0 + 1, ram_available_gb=20.0)
+        with patch.object(gate_mod, "read_machine_signal", return_value=overloaded):
+            coding = self._task("coding")
+            question = self._task("answering")
+
+        assert not self._admitted(coding)
+        assert self._admitted(question)
+
+    def test_a_spent_token_budget_still_refuses_an_owner_question(self) -> None:
+        spent = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=True,
+            weekly_utilization=1.0,
+            short_utilization=1.0,
+            seconds_to_weekly_reset=100.0,
+        )
+        with patch.object(gate_mod, "read_quota_signal", return_value=spent):
+            question = self._task("answering")
+
+        assert not self._admitted(question)
+
+    def test_a_flood_of_answering_tasks_seats_only_the_answering_width(self) -> None:
+        flood = [self._task("answering") for _ in range(ANSWERING_LANE_WIDTH + 3)]
+
+        seated = [self._admitted(task) for task in flood]
+
+        assert seated == [True] * ANSWERING_LANE_WIDTH + [False] * 3
+
+    def test_a_flood_of_answering_tasks_leaves_coding_review_and_retiring_their_seats(self) -> None:
+        for _ in range(ANSWERING_LANE_WIDTH + 3):
+            self._task("answering")
+
+        coding = [self._task("coding") for _ in range(_CODING_CEILING)]
+        reviews = [self._task("reviewing") for _ in range(_REVIEW_WIDTH)]
+        shipping = self._task("shipping")
+
+        assert all(self._admitted(task) for task in (*coding, *reviews, shipping))
+
+    def test_full_review_and_retiring_seats_do_not_refuse_an_owner_question(self) -> None:
+        self._fill_the_review_lane()
+        self._task("shipping", status=Task.Status.CLAIMED)
+
+        assert self._admitted(self._task("answering"))

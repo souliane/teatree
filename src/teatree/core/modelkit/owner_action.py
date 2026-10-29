@@ -8,9 +8,9 @@ from teatree.core.modelkit.escape_scope import ESCAPE_SCOPE_FIELDS
 
 
 class OwnerActionKind(StrEnum):
-    ATTEST = "attest"
     ESCAPE = "escape"
     VOID = "void"
+    MERGE_ITEM_WAIVER = "merge_item_waiver"
 
 
 class ActionRequest(TypedDict):
@@ -18,19 +18,15 @@ class ActionRequest(TypedDict):
     target: str
     binding: str
     note: NotRequired[str]
-    host_evidence: NotRequired[bool]
     task_id: NotRequired[int]
     scope: NotRequired[dict[str, str]]
 
 
 MARKER_PREFIX = "owner-action:"
-ATTEST_MARKER_PREFIX = f"{MARKER_PREFIX}{OwnerActionKind.ATTEST}:"
 
 
 def action_marker(action: ActionRequest) -> str:
     parts = [action["kind"], action["target"], action["binding"]]
-    if "host_evidence" in action and action["kind"] != OwnerActionKind.ATTEST:
-        parts.append(f"host_evidence:{action['host_evidence']}")
     if "task_id" in action:
         parts.append(f"task:{action['task_id']}")
     identity = "\0".join(parts)
@@ -49,9 +45,7 @@ def read_action(evidence: object) -> ActionRequest | None:
         return None
     if not all(isinstance(action.get(key), str) and action[key] for key in ("target", "binding")):
         return None
-    if ("note" in action and not isinstance(action["note"], str)) or (
-        "host_evidence" in action and not isinstance(action["host_evidence"], bool)
-    ):
+    if ("note" in action and not isinstance(action["note"], str)) or "host_evidence" in action:
         return None
     scope = action.get("scope")
     scope_valid = "scope" not in action

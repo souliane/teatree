@@ -14,7 +14,7 @@ from django.utils import timezone
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets
 from teatree.core.cycle_time.timeline import engagements_for_tickets, ticket_attempts
 from teatree.core.cycle_time.work_intervals import Engagement, merged_intervals, subtract_intervals
-from teatree.core.modelkit.owner_action import ATTEST_MARKER_PREFIX
+from teatree.core.modelkit.owner_action import MARKER_PREFIX
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
@@ -150,7 +150,7 @@ def build_merge_wait_breakdowns(limit: int = 10) -> tuple[MergeWaitBreakdown, ..
         "dismissed_at",
         "dedupe_marker",
     ):
-        attestation = marker.startswith(ATTEST_MARKER_PREFIX) and parked_ticket_id
+        attestation = marker.startswith(f"{MARKER_PREFIX}attest:") and parked_ticket_id
         cause = WaitCause.CHECKOUT_FENCE if attestation else WaitCause.HUMAN
         questions[parked_ticket_id or session_ticket_id].append((created, answered or dismissed, cause))
     spans = spans_for_tickets(ticket_ids)

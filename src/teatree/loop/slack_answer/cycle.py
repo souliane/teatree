@@ -58,6 +58,7 @@ from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
+from teatree.loop.owner_identity import operator_rows
 from teatree.loop.question_binding import (
     AmbiguousCards,
     BoundAnswer,
@@ -531,7 +532,7 @@ def run_slack_answer_cycle(
     resolved_reader = reader or read_inbound
     report = SlackAnswerReport()
 
-    rows = list(PendingChatInjection.loop_unreplied()[:_BATCH])
+    rows = list(operator_rows(PendingChatInjection.loop_unreplied(), resolver)[:_BATCH])
     units = _coalesce(rows)
     for unit in units:
         report.processed += len(unit.rows)

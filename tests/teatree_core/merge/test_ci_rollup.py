@@ -55,6 +55,23 @@ _PR_ID = 2580
 
 
 class TestCodeHostQueryCredentialRouting:
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [(ForgeTokenState.TOKEN, "OWNER"), (ForgeTokenState.UNSET, ""), (ForgeTokenState.UNREADABLE, "")],
+    )
+    def test_gitlab_query_uses_owner_token_or_existing_fallback(self, state: ForgeTokenState, expected: str) -> None:
+        provider = MagicMock()
+        resolution = ForgeTokenResolution(
+            "gitlab_token", "owner", state, token="OWNER" if state is ForgeTokenState.TOKEN else ""
+        )
+        with (
+            patch("teatree.core.merge.ci_rollup.get_backend_provider", return_value=provider),
+            patch("teatree.core.merge.ci_rollup.resolve_slug_token", return_value=resolution) as resolve,
+        ):
+            CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID, host_kind="gitlab"))
+        resolve.assert_called_once_with(_SLUG, forge="gitlab", credential="gitlab_token")
+        provider.build_gitlab_host.assert_called_once_with(token=expected, base_url="")
+
     def test_github_query_builds_host_with_slug_owners_routed_token(self) -> None:
         provider = MagicMock()
         backend = MagicMock()
@@ -596,7 +613,10 @@ class TestKeystoneMergeOnRefusedRollupRead(TestCase):
         ci = _actions_fallback_gh_stub(
             rollup=_ROLLUP_FORBIDDEN, head=(0, _KEYSTONE_HEAD, ""), actions_runs=list(actions_runs)
         )
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_keystone_gh_stub(ci)):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_keystone_gh_stub(ci)),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             merged = cast(
                 "dict[str, object]", call_command("ticket", "merge", str(clear_id), loop_identity="merge-loop")
             )

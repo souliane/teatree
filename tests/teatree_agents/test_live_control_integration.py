@@ -74,7 +74,8 @@ class _FakeCliRun:
     def events(self) -> list[dict[str, Any]]:
         if not self.log.exists():
             return []
-        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines() if line]
+        complete = self.log.read_text(encoding="utf-8").rpartition("\n")[0]
+        return [json.loads(line) for line in complete.splitlines() if line]
 
     def saw(self, event: str) -> bool:
         return any(row["event"] == event for row in self.events())
@@ -95,6 +96,17 @@ class _FakeCliRun:
 
     def user_turns(self) -> int:
         return sum(1 for row in self.events() if row["event"] == "stdin" and row["message"].get("type") == "user")
+
+
+def test_fake_cli_events_ignore_an_incomplete_last_line(tmp_path: Path) -> None:
+    run = _FakeCliRun(tmp_path)
+    run.log.write_text('{"event": "first"}\n{"event":', encoding="utf-8")
+
+    assert run.events() == [{"event": "first"}]
+
+    with run.log.open("a", encoding="utf-8") as stream:
+        stream.write(' "second"}\n')
+    assert run.events() == [{"event": "first"}, {"event": "second"}]
 
 
 @contextlib.contextmanager
@@ -269,6 +281,10 @@ class LiveControlIntegrationTests(TestCase):
 
         def operator() -> tuple[WorkerSessionFacts, list[WorkerSessionFacts], int, int]:
             _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            _until(
+                lambda: self.live.inspect(self.task.pk)["open_tool"] == "Bash",
+                "the worker to register the open tool",
+            )
             before = run.stdin_count()
             facts = self.live.inspect(self.task.pk)
             rows = self.live.sessions()

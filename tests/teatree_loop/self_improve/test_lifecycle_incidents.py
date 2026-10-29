@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
@@ -12,25 +13,40 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
 from teatree.core.modelkit.reask_cadence import owner_quiet_at
-from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import STALE_ERROR_AFTER
+from teatree.core.models import (
+    DeferredQuestion,
+    DmContext,
+    PendingChatInjection,
+    SelfImproveFiring,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
-from teatree.core.worktree.checkout_state import CheckoutState
+from teatree.dash.selectors import STALE_ERROR_AFTER as BOARD_STALE_ERROR_AFTER
 from teatree.loop.preset_resolution import owner_zone
+from teatree.loop.scanners import owner_dm_rows
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, LifecycleIncidentDetector
+from teatree.loop.self_improve.detectors.lifecycle_incident import STALE_ERROR_AFTER as DETECTOR_STALE_ERROR_AFTER
+from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
-from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory, WorktreeFactory
+from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
+
+
+def _owner_dm(**fields: str) -> PendingChatInjection | None:
+    return PendingChatInjection.record(context=DmContext(user_id=OWNER_SLACK_ID), **fields)
 
 
 class LifecycleIncidentTests(TestCase):
     def setUp(self) -> None:
+        owner_backend = SimpleNamespace(user_id=OWNER_SLACK_ID)
+        self.enterContext(patch.object(owner_dm_rows, "messaging_from_overlay", return_value=owner_backend))
         quiet = patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=False)
         quiet.start()
         self.addCleanup(quiet.stop)
@@ -70,6 +86,62 @@ class LifecycleIncidentTests(TestCase):
 
         assert any(report.payload["kind"] == "task_failed" for report in self._reports())
 
+    def test_failed_task_reports_only_recent_attempts_or_tasks_without_attempts(self) -> None:
+        old = TaskFactory()
+        recent = TaskFactory()
+        without_attempt = TaskFactory()
+        retried = TaskFactory()
+        for task in (old, recent, without_attempt, retried):
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+        old_attempt = TaskAttemptFactory(task=old)
+        recent_attempt = TaskAttemptFactory(task=recent)
+        retried_old_attempt = TaskAttemptFactory(task=retried)
+        retried_new_attempt = TaskAttemptFactory(task=retried)
+        TaskAttempt.objects.filter(pk=old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=recent_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+        TaskAttempt.objects.filter(pk=retried_old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=retried_new_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == sorted([recent.pk, without_attempt.pk, retried.pk])
+
+    def test_board_and_detector_share_failure_age_window(self) -> None:
+        assert BOARD_STALE_ERROR_AFTER is STALE_ERROR_AFTER
+        assert DETECTOR_STALE_ERROR_AFTER is STALE_ERROR_AFTER
+
+    def test_failed_repair_task_reports_use_the_same_attempt_window(self) -> None:
+        old = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        recent = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        without_attempt = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        for task in (old, recent, without_attempt):
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+        old_attempt = TaskAttemptFactory(task=old)
+        recent_attempt = TaskAttemptFactory(task=recent)
+        TaskAttempt.objects.filter(pk=old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=recent_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "repair_task_failed"]
+
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == sorted([recent.pk, without_attempt.pk])
+
+    def test_failed_task_firing_resolves_when_its_attempt_ages_out(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+        attempt = TaskAttemptFactory(task=task)
+        detector = LifecycleIncidentDetector()
+        first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+        firing = SelfImproveFiring.objects.get(dedup_key=first.reports[0].dedup_key)
+        assert firing.resolved_at is None
+
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        second = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert not [report for report in second.reports if report.payload["kind"] == "task_failed"]
+        assert SelfImproveFiring.objects.get(pk=firing.pk).resolved_at is not None
+
     def test_failed_task_on_settled_ticket_does_not_resurface(self) -> None:
         task = TaskFactory()
         task.fail(reason="ProcessError: worker exited", by_holder=True)
@@ -98,6 +170,15 @@ class LifecycleIncidentTests(TestCase):
         reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
         assert len(reports) == 1
         assert reports[0].payload["count"] == 3
+
+    def test_a_colleagues_old_unanswered_message_is_not_an_incident(self) -> None:
+        row = PendingChatInjection.record(
+            channel="D1", slack_ts="100.7", text="Why did my task fail?", context=DmContext(user_id="U_COLLEAGUE")
+        )
+        assert row is not None
+        PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
+
+        assert not [report for report in self._reports() if report.payload["kind"] == "inbound_unanswered"]
 
     def test_later_completed_canonical_phase_recovers_failure(self) -> None:
         for failed_phase, completed_phase in (("testing", "test"), ("test", "testing")):
@@ -187,7 +268,7 @@ class LifecycleIncidentTests(TestCase):
         assert not [report for report in self._reports() if report.payload["kind"] == "repair_task_failed"]
 
     def test_old_inbound_question_without_answer_is_an_incident(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why did my task fail?")
+        row = _owner_dm(channel="D1", slack_ts="100.1", text="Why did my task fail?")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
 
@@ -200,7 +281,7 @@ class LifecycleIncidentTests(TestCase):
         assert "Why did my task fail?" not in str(reports)
 
     def test_old_inbound_instruction_without_response_is_an_incident(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.5", text="Please fix task 42")
+        row = _owner_dm(channel="D1", slack_ts="100.5", text="Please fix task 42")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
 
@@ -210,7 +291,11 @@ class LifecycleIncidentTests(TestCase):
         received_at = timezone.now() - timedelta(hours=2)
         PendingChatInjection.objects.bulk_create(
             PendingChatInjection(
-                channel="D1", slack_ts=f"bulk-{index}", text=f"Why did task {index} fail?", received_at=received_at
+                channel="D1",
+                slack_ts=f"bulk-{index}",
+                text=f"Why did task {index} fail?",
+                user_id=OWNER_SLACK_ID,
+                received_at=received_at,
             )
             for index in range(150)
         )
@@ -225,7 +310,7 @@ class LifecycleIncidentTests(TestCase):
         )
 
     def test_ack_is_not_an_answer_but_substantive_reply_is(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.2", text="What happened?")
+        row = _owner_dm(channel="D1", slack_ts="100.2", text="What happened?")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         row.mark_loop_replied(PendingChatInjection.AnswerKind.ACK)
@@ -236,7 +321,7 @@ class LifecycleIncidentTests(TestCase):
         assert not [report for report in self._reports() if report.payload["kind"] == "inbound_unanswered"]
 
     def test_claimed_simple_reply_without_delivery_is_still_unanswered(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.3", text="What happened?")
+        row = _owner_dm(channel="D1", slack_ts="100.3", text="What happened?")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         row.mark_loop_replied(PendingChatInjection.AnswerKind.SIMPLE)
@@ -244,7 +329,7 @@ class LifecycleIncidentTests(TestCase):
         assert any(report.payload["kind"] == "inbound_unanswered" for report in self._reports())
 
     def test_verified_simple_reply_has_durable_receipt_and_is_not_unanswered(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.4", text="What happened?")
+        row = _owner_dm(channel="D1", slack_ts="100.4", text="What happened?")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         row.mark_loop_replied(PendingChatInjection.AnswerKind.SIMPLE)
@@ -311,27 +396,6 @@ class LifecycleIncidentTests(TestCase):
                     }
                     assert ("outbound_unposted" in kinds) is expected
 
-    def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
-        assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
-
-    def test_unposted_attest_incident_waits_until_after_ten_minutes(self) -> None:
-        task = TaskFactory()
-        worktree = WorktreeFactory(ticket=task.ticket)
-        card = ask_owner_to_attest(
-            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-        )
-        assert card is not None
-        now = timezone.now()
-        detector = LifecycleIncidentDetector(now=lambda: now)
-
-        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=9))
-        early = {report.payload["kind"] for report in detector.detect()}
-        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=11))
-        late = {report.payload["kind"] for report in detector.detect()}
-
-        assert "outbound_unposted" not in early
-        assert "outbound_unposted" in late
-
     def test_quiet_hours_keep_a_posted_unanswered_question_visible(self) -> None:
         check_at = timezone.now().astimezone(owner_zone()).replace(hour=3, minute=0, second=0, microsecond=0)
         row = DeferredQuestion.record("Which option?", slack_ts="200.1", slack_channel="D1", **OWNER_DECISION)
@@ -390,7 +454,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_critical_resource_budget_cannot_hide_an_unanswered_message(self) -> None:
         for index in range(3):
-            row = PendingChatInjection.record(channel="D1", slack_ts=f"100.{index + 6}", text="What is happening?")
+            row = _owner_dm(channel="D1", slack_ts=f"100.{index + 6}", text="What is happening?")
             assert row is not None
             PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         detector = next(
@@ -460,7 +524,7 @@ class LifecycleIncidentTests(TestCase):
         assert reports[0].requested_rung == ActionRung.TICKET
 
     def _attempt_burst_reports(
-        self, errors: list[str], cause: str
+        self, errors: list[str], cause: str, *, distinct_fingerprints: bool = False
     ) -> tuple[list[DetectorReport], list[int], list[int]]:
         now = timezone.now()
         TaskAttemptFactory.create_batch(len(errors) + 1, task=TaskFactory())
@@ -477,7 +541,7 @@ class LifecycleIncidentTests(TestCase):
                 "ticket_id": task.ticket_id,
                 "task_id": task.pk,
                 "cause": cause,
-                "error_fingerprint": "a" * 64,
+                "error_fingerprint": f"{index:064x}" if distinct_fingerprints else "a" * 64,
                 "trace_id": f"{index:032x}",
                 "span_id": f"{index:016x}",
             }
@@ -506,6 +570,40 @@ class LifecycleIncidentTests(TestCase):
         assert bursts[0].payload["count"] == 3
         assert bursts[0].payload["ids"] == task_ids
 
+    def test_distinct_attempt_burst_names_each_failure(self) -> None:
+        errors = [
+            "malformed rubric_grades: verdict merge_safe with FAIL",
+            "unexpected keys: review_verdict fields returned flat",
+            "owner stop card refused: checked fact carries shorthand",
+        ]
+        reports, task_ids, attempt_ids = self._attempt_burst_reports(
+            errors, "result_schema_invalid", distinct_fingerprints=True
+        )
+
+        burst = next(report for report in reports if report.payload["kind"] == "attempt_failure_burst")
+        action = burst.payload["suggested_action"]
+        for task_id, attempt_id, error in zip(task_ids, attempt_ids, errors, strict=True):
+            assert f"attempt {attempt_id}" in action
+            assert f"task {task_id}" in action
+            assert error in action
+        assert "Fingerprint " not in action
+        assert burst.payload["recovery_semantics"] == "manual_ticket_review"
+        assert burst.requested_rung == ActionRung.TICKET
+
+    def test_distinct_attempt_burst_bounds_error_digest(self) -> None:
+        errors = ["x" * 5000 + "\nsecond line"] + [f"error {index}" for index in range(2, 7)]
+        reports, _, attempt_ids = self._attempt_burst_reports(
+            errors, "result_schema_invalid", distinct_fingerprints=True
+        )
+
+        burst = next(report for report in reports if report.payload["kind"] == "attempt_failure_burst")
+        action = burst.payload["suggested_action"]
+        assert "x" * 100 in action
+        assert "x" * 101 not in action
+        assert "second line" not in action
+        assert all(f"attempt {attempt_id}" in action for attempt_id in attempt_ids[:5])
+        assert f"attempt {attempt_ids[5]}" not in action
+
     def test_provider_budget_and_quoted_window_marker_still_create_failure_bursts(self) -> None:
         cases = (
             ("provider_budget: wallet depleted", "credential_exhausted"),
@@ -529,6 +627,8 @@ class LifecycleIncidentTests(TestCase):
         assert bursts[0].payload["count"] == 3
         assert bursts[0].payload["ids"] == task_ids[2:]
         evidence = bursts[0].payload["suggested_action"]
+        assert f"Fingerprint {'a' * 64}. Evidence: otel:" in evidence
+        assert "Distinct failures:" not in evidence
         assert all(f'"entity_id":{attempt_id}' not in evidence for attempt_id in attempt_ids[:2])
         assert all(f'"entity_id":{attempt_id}' in evidence for attempt_id in attempt_ids[3:])
 
@@ -583,6 +683,7 @@ class LifecycleIncidentTests(TestCase):
 
         assert "a" * 64 not in context
         assert "otel:" not in context
+        assert "Distinct failures:" not in context
 
     def test_single_failed_task_repairs_first_and_keeps_one_ticket(self) -> None:
         task = TaskFactory()
@@ -614,8 +715,8 @@ class LifecycleIncidentTests(TestCase):
         assert Ticket.objects.filter(extra__source="self_improve").count() == 1
         assert not run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery).actions
 
-    def test_single_unanswered_message_keeps_one_repair_ticket(self) -> None:
-        row = PendingChatInjection.record(channel="D1", slack_ts="111.1", text="Please respond", overlay="t3-teatree")
+    def test_single_unanswered_message_reaches_repair_after_failed_alert(self) -> None:
+        row = _owner_dm(channel="D1", slack_ts="111.1", text="Please respond", overlay="t3-teatree")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
         detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
@@ -669,12 +770,8 @@ class LifecycleIncidentTests(TestCase):
         foreign_task = TaskFactory(ticket=TicketFactory(overlay="foreign"))
         own_task.fail(reason="ProcessError: worker exited", by_holder=True)
         foreign_task.fail(reason="ProcessError: worker exited", by_holder=True)
-        own_message = PendingChatInjection.record(
-            channel="D1", slack_ts="222.1", text="Own question?", overlay="t3-teatree"
-        )
-        foreign_message = PendingChatInjection.record(
-            channel="D2", slack_ts="222.2", text="Foreign question?", overlay="foreign"
-        )
+        own_message = _owner_dm(channel="D1", slack_ts="222.1", text="Own question?", overlay="t3-teatree")
+        foreign_message = _owner_dm(channel="D2", slack_ts="222.2", text="Foreign question?", overlay="foreign")
         assert own_message is not None
         assert foreign_message is not None
         PendingChatInjection.objects.filter(pk__in=[own_message.pk, foreign_message.pk]).update(

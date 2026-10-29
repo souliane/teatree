@@ -10,15 +10,22 @@ would pass every positive assertion.
 
 from django.test import SimpleTestCase
 
+import teatree.agents.envelope_refusal as refusal
+from teatree.agents.attempt_recorder import validate_result_keys
+from teatree.agents.envelope_contract import corrective_instruction, required_keys_phrase
 from teatree.agents.envelope_refusal import (
     MALFORMED_FIX_RECORD_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
     NO_ENVELOPE_ERROR,
     NO_ENVELOPE_PREFIX,
-    corrective_instruction,
     is_no_envelope_refusal,
+    is_owner_stop_refusal,
     is_recorder_refusal,
-    required_keys_phrase,
+    is_review_shape_refusal,
+    is_rubric_grades_refusal,
 )
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from tests._owner_channel import owner_stop
 
 #: A real recorder-side refusal, as ``result_schema.check_evidence`` phrases it.
 _EVIDENCE_REFUSAL = (
@@ -63,6 +70,20 @@ class TestRecorderRefusal(SimpleTestCase):
         assert is_recorder_refusal(f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are blank: evidence")
         assert not is_no_envelope_refusal(MALFORMED_FIX_RECORD_PREFIX)
 
+    def test_a_refused_owner_card_is_a_recorder_refusal(self) -> None:
+        error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?"))
+        assert is_recorder_refusal(error)
+        assert is_owner_stop_refusal(error)
+        assert not is_recorder_refusal("the question carries internal shorthand")
+
+    def test_a_quoted_owner_stop_prefix_does_not_turn_another_refusal_into_a_card_refusal(self) -> None:
+        assert not is_owner_stop_refusal("unexpected keys: owner stop card refused: quoted")
+
+    def test_a_refused_rubric_grade_is_corrected_by_its_own_note_not_the_key_error_one(self) -> None:
+        error = f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria 1 of ticket 2 are ungraded"
+        assert is_rubric_grades_refusal(error)
+        assert not is_review_shape_refusal(error)
+
     def test_the_runner_refusal_is_not_a_recorder_refusal(self) -> None:
         assert not is_recorder_refusal(NO_ENVELOPE_ERROR)
 
@@ -106,3 +127,12 @@ class TestCorrectiveInstruction(SimpleTestCase):
     def test_it_never_names_a_key_the_phase_does_not_require(self) -> None:
         assert "files_modified" not in corrective_instruction("debugging")
         assert "files_modified" in corrective_instruction("coding")
+
+
+class TestUnparseableEnvelopeRefusal(SimpleTestCase):
+    def test_shared_prefix_is_classified_and_correctable(self) -> None:
+        error = refusal.UNPARSEABLE_ENVELOPE_PREFIX + "extra data"
+        assert refusal.is_unparseable_envelope_refusal(error)
+        assert is_recorder_refusal(error)
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+        assert not refusal.is_unparseable_envelope_refusal(_REAL_DEFECT)

@@ -33,7 +33,19 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
-from teatree.core.models import LandscapeArtifact, RoundMetric, Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.forge_readability import LiveChecksRead, LiveHeadRead
+from teatree.core.models import (
+    AutoReviewDispatch,
+    LandscapeArtifact,
+    PullRequest,
+    ReproEvidence,
+    RoundMetric,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
+from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
@@ -46,6 +58,13 @@ from tests.teatree_agents._read_only_review_world import (
 )
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
+_LISTED_URLS = tuple(f"https://github.com/example-org/example-repo/issues/{number}" for number in (21, 22))
+_TRIAGE_REASON = (
+    "Periodic needs-triage assessment (cadence) | ASK-GATE: do NOT act on any issue.\nISSUES:\n"
+    + "\n".join(f"- {url} | Title {index} | needs-triage" for index, url in enumerate(_LISTED_URLS))
+)
+_UMBRELLA_DIRECTIVE_URL = "https://github.com/souliane/teatree/issues/3009#directive=3"
+_DIRECTIVE_REASON = "You are the teatree directive INTERPRETER (read-only).\nDirective (verbatim):\nnever retry a hold"
 _BODY = "## Problem\nThe planner needs the body.\n"
 
 
@@ -109,11 +128,82 @@ class _Host:
         return self.diffs
 
 
+class _IssuesHost(_Host):
+    def __init__(self, bodies: dict[str, str], *, unreadable: bool = False) -> None:
+        super().__init__()
+        self.bodies = bodies
+        self.unreadable = unreadable
+        self.comments_by_url: dict[str, list[dict[str, object]]] = {
+            url: [{"user": {"login": "example-dev"}, "body": f"note on {url}"}] for url in bodies
+        }
+
+    def get_issue(self, issue_url: str) -> dict[str, object]:
+        if self.unreadable:
+            return {"error": "Not found"}
+        return {"body": self.bodies.get(issue_url, "A body.")}
+
+    def list_issue_comments(self, *, issue_url: str) -> list[dict[str, object]]:
+        return self.comments_by_url.get(issue_url, [])
+
+
 def _provider(host: _Host) -> SimpleNamespace:
     return SimpleNamespace(get_code_host_for_url=lambda overlay, url: host)
 
 
 class TestTheReadOnlyVenueBrief(TestCase):
+    def test_review_brief_includes_control_plane_plan_and_red_facts(self) -> None:
+        author = self.ticket
+        PullRequest.objects.create(
+            ticket=author,
+            overlay="t3-teatree",
+            url="https://github.com/example-org/example-repo/pull/5",
+            repo="example-org/example-repo",
+            iid="5",
+        )
+        PlanArtifact.objects.create(
+            ticket=author,
+            plan_text="Live measurement: test failed on the old head.\nShip after review.",
+            base_sha="b" * 40,
+        )
+        ReproEvidence.objects.create(
+            ticket=author,
+            command="uv run pytest tests/test_bug.py",
+            command_fingerprint="a" * 64,
+            red_head_sha="b" * 40,
+            red_exit_code=1,
+            red_output_digest="c" * 64,
+            provenance_ok=True,
+        )
+        dispatch = AutoReviewDispatch.enqueue(
+            slug="example-org/example-repo",
+            pr_id=5,
+            head_sha="a" * 40,
+            pr_url="https://github.com/example-org/example-repo/pull/5",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        assert dispatch.task is not None
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(_Host())),
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=LiveHeadRead(sha="a" * 40, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=LiveChecksRead("green", "CI passed"),
+            ),
+        ):
+            facts = ReadOnlyFacts.gather(dispatch.task, None)
+        prompt = build_read_only_task_prompt(dispatch.task, facts)
+
+        assert "WORKER CI at dispatched head" in prompt
+        assert "CI passed" in prompt
+        assert "Live measurement: test failed on the old head." in prompt
+        assert "uv run pytest tests/test_bug.py" in prompt
+        assert "RED exit 1" in prompt
+
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(issue_url=_ISSUE_URL, context="decision: keep the bar\nnote: two lines")
@@ -358,6 +448,25 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert str(handoff.parent) not in prepared.options.add_dirs
         assert str(handoff) not in self._system_context(prepared)
 
+    def test_planning_brief_inlines_fix_first_in_read_only_venue(self) -> None:
+        task = self._task()
+        LandscapeArtifact.record(
+            ticket=task.ticket,
+            survey={
+                "fix_first": {
+                    "defects": [{"issue": "https://github.com/example-org/example-repo/issues/8"}],
+                    "stuck": [{"ticket": 9}],
+                }
+            },
+            recorded_by="t3:intake",
+        )
+
+        prompt = self._prepare(task).prompt
+
+        assert "https://github.com/example-org/example-repo/issues/8" in prompt
+        assert '"ticket": 9' in prompt
+        assert "Rule 6" in prompt
+
     def test_issue_comments_are_inlined_oldest_first_without_system_notes(self) -> None:
         prompt = self._prepare(self._task(), host=_Host(comments=_COMMENTS)).prompt
 
@@ -379,7 +488,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
             patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(host)),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", return_value=pr_response) as pr_call,
-            patch("teatree.backends.github.api.run_checked", return_value=comments_response) as api_call,
+            patch("teatree.backends.github.api._run_pooled_api", return_value=comments_response) as api_call,
         ):
             body, comments = _issue(ticket)
 
@@ -509,6 +618,76 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "critic_reviewing" in self._system_context(prepared)
         assert "--- SKILL: review ---" in self._system_context(prepared)
         assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
+
+    def _phase_task(self, phase: str, *, issue_url: str, reason: str = "") -> Task:
+        ticket = Ticket.objects.create(issue_url=issue_url)
+        return Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase, execution_reason=reason
+        )
+
+    def test_real_scoping_triage_and_directive_briefs_are_admitted_without_a_teatree_command(self) -> None:
+        cases = {
+            "scoping": (f"{_ISSUE_URL}30", ""),
+            "triage_assessing": ("triage-assessor://example-overlay", _TRIAGE_REASON),
+            "directive_interpreting": (_UMBRELLA_DIRECTIVE_URL, _DIRECTIVE_REASON),
+        }
+        for phase, (issue_url, reason) in cases.items():
+            with self.subTest(phase=phase):
+                self.skills = self._phase_bundle(phase)
+
+                prepared = self._prepare(
+                    self._phase_task(phase, issue_url=issue_url, reason=reason),
+                    host=_IssuesHost(dict.fromkeys(_LISTED_URLS, "b")),
+                )
+                context = self._system_context(prepared)
+
+                assert context.startswith("\n".join(READ_ONLY_DIRECTIVE))
+                assert len(context.encode()) <= MAX_APPEND_BYTES
+                assert not _T3_INVOCATION.search(context), _T3_INVOCATION.findall(context)
+                assert not _T3_INVOCATION.search(prepared.prompt), _T3_INVOCATION.findall(prepared.prompt)
+
+    def test_triage_brief_inlines_every_listed_issue_with_its_comments(self) -> None:
+        host = _IssuesHost({_LISTED_URLS[0]: "Body of the first issue.", _LISTED_URLS[1]: "Body of the second issue."})
+        self.skills = self._phase_bundle("triage_assessing")
+
+        prepared = self._prepare(
+            self._phase_task("triage_assessing", issue_url="triage-assessor://example-overlay", reason=_TRIAGE_REASON),
+            host=host,
+        )
+
+        for url in _LISTED_URLS:
+            assert f"--- issue {url} ---\n{host.bodies[url]}" in prepared.prompt
+            assert f"--- comments on {url} ---" in prepared.prompt
+            assert f"note on {url}" in prepared.prompt
+        assert "fetch nothing" in prepared.prompt
+
+    def test_a_triage_brief_that_lists_no_readable_issue_refuses_the_executor_run(self) -> None:
+        self.skills = self._phase_bundle("triage_assessing")
+        host = _IssuesHost(dict.fromkeys(_LISTED_URLS, "b"))
+        no_issue = self._phase_task("triage_assessing", issue_url="triage-assessor://one", reason="ISSUES:\n")
+        not_forge = self._phase_task(
+            "triage_assessing", issue_url="triage-assessor://two", reason="ISSUES:\n- https://example.test/x | t | l"
+        )
+
+        assert "lists no issue to read" in str(self._refusal(no_issue, host))
+        assert "is not a forge issue" in str(self._refusal(not_forge, host))
+
+    def test_a_triage_listed_issue_that_cannot_be_read_refuses_the_executor_run(self) -> None:
+        self.skills = self._phase_bundle("triage_assessing")
+        host = _IssuesHost(dict.fromkeys(_LISTED_URLS, "b"), unreadable=True)
+        task = self._phase_task("triage_assessing", issue_url="triage-assessor://three", reason=_TRIAGE_REASON)
+
+        assert "the issue body could not be read" in str(self._refusal(task, host))
+
+    def test_directive_brief_carries_the_interpreter_contract_verbatim(self) -> None:
+        self.skills = self._phase_bundle("directive_interpreting")
+
+        prepared = self._prepare(
+            self._phase_task("directive_interpreting", issue_url=_UMBRELLA_DIRECTIVE_URL, reason=_DIRECTIVE_REASON)
+        )
+
+        assert _DIRECTIVE_REASON in prepared.prompt
+        assert _BODY not in prepared.prompt
 
     def test_real_review_bundles_deliver_required_skills_without_file_loads(self) -> None:
         for phase in ("reviewing", "critic_reviewing"):
@@ -843,7 +1022,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 class TestWorkerBriefsAreTheBaseBytes(TestCase):
     """Captured worker briefs; a deliberate prompt change re-captures the fixture."""
 
-    def test_planning_coding_and_reviewing_worker_briefs_match_the_base_byte_for_byte(self) -> None:
+    def test_worker_briefs_preserve_base_with_fix_first_addition(self) -> None:
         golden = json.loads(_WORKER_BRIEFS_AT_BASE.read_text(encoding="utf-8"))
         ticket = Ticket.objects.create(issue_url=_ISSUE_URL, context="decision: keep the bar")
         LandscapeArtifact.record(ticket=ticket, survey={"open_prs": [], "worktrees": []}, recorded_by="t3:intake")
@@ -873,5 +1052,16 @@ class TestWorkerBriefsAreTheBaseBytes(TestCase):
             with self.subTest(phase=phase):
                 system_prompt = prepared.options.system_prompt
                 assert isinstance(system_prompt, dict)
-                assert normalized(str(system_prompt.get("append"))) == golden[phase]["context"]
+                if phase == "coding":
+                    assert "NOTE: a venue cannot read or run a check" in str(system_prompt.get("append"))
+                context = normalized(str(system_prompt.get("append")))
+                if phase == "planning":
+                    fix_first_line = (
+                        "fix_first lists open defects and stuck tickets; list red or flaky gates in the touched "
+                        "area from live checks (or name unreadable checks). A FEATURE waits behind them (Rule 6): "
+                        "defer or split it, or record the owner's lift in the plan.\n"
+                    )
+                    assert context.count(fix_first_line) == 1
+                    context = context.replace(fix_first_line, "")
+                assert context == golden[phase]["context"]
                 assert normalized(prepared.prompt) == golden[phase]["prompt"]

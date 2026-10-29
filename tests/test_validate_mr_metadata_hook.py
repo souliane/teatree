@@ -22,13 +22,28 @@ from hooks.scripts import gate_result, hook_budget, mr_validator, t3_invocation
 from hooks.scripts.forge_api_detect import _is_existing_pr_metadata_only_edit
 from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
-from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields
+from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields, strip_heredoc
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
 from tests._gate_escape_audit import audited_escape
 
 _ALLOWANCE_KEY = "hook_validator_timeout_seconds"
+
+
+@pytest.mark.parametrize(
+    ("opener", "invalid_end", "valid_end"),
+    [
+        ("<<EOF", " EOF", "EOF"),
+        ("<<EOF", "EOF ", "EOF"),
+        ("<<-EOF", " EOF", "\tEOF"),
+    ],
+)
+def test_strip_heredoc_keeps_data_until_an_exact_terminator(opener: str, invalid_end: str, valid_end: str) -> None:
+    command = f"cat {opener}\nbody\n{invalid_end}\nmake all\n{valid_end}\necho done"
+    stripped = strip_heredoc(command)
+    assert "make all" not in stripped
+    assert "echo done" in stripped
 
 
 def _verdict(command: str) -> list[str] | None:
@@ -80,7 +95,7 @@ class TestDefaultOverlayValidation:
 
     def test_blocks_when_overlay_validator_rejects(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
 
         completed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="Title is empty.\nMR description is empty.\n"
@@ -100,7 +115,7 @@ class TestDefaultOverlayValidation:
 
     def test_allows_when_overlay_validator_passes(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
@@ -131,13 +146,13 @@ class TestDefaultOverlayValidation:
         # back to fail-open so a genuinely broken env is not a hard deadlock.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        monkeypatch.setattr("shutil.which", lambda _: None)
         assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
 
     def test_fails_closed_when_validator_binary_missing(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         with patch.object(subprocess, "run", side_effect=FileNotFoundError):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is True
@@ -148,7 +163,7 @@ class TestDefaultOverlayValidation:
         """Exit 69 is ``deploy/t3`` refusing the venue: the title was never read, so it is no verdict on it."""
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         with (
             patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
             patch.object(
@@ -169,7 +184,7 @@ class TestDefaultOverlayValidation:
     def test_the_broken_env_opt_in_also_lets_a_venue_fault_through_and_says_so(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         with (
             patch.object(subprocess, "run", return_value=_LAUNCHER_REFUSAL),
             patch.object(t3_invocation, "unreachable_reason", return_value=None),
@@ -183,7 +198,7 @@ class TestDefaultOverlayValidation:
         # An MR create with no --title is exactly the bad metadata the gate
         # must reject — it must be validated, not silently skipped (#119).
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": "glab mr create --description 'x'"}}
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
         with patch.object(subprocess, "run", return_value=rejected) as run:
@@ -209,7 +224,7 @@ class TestUnvalidatedOutcomeIsAnnounced:
 
     def _stderr_for(self, monkeypatch, capsys, command: str) -> str:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": command}}
         assert handle_validate_mr_metadata(data) is False
         return capsys.readouterr().err
@@ -239,7 +254,7 @@ class TestUnvalidatedOutcomeIsAnnounced:
         # Taking the fail-closed escape hatch must not be a quiet bypass.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        monkeypatch.setattr("shutil.which", lambda _: None)
         assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
         err = capsys.readouterr().err
         assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
@@ -248,7 +263,7 @@ class TestUnvalidatedOutcomeIsAnnounced:
     def test_audited_escape_records_the_request_before_it_allows(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        monkeypatch.setattr("shutil.which", lambda _: None)
         data = _glab_create("bad", "bad")
         data["tool_input"]["command"] += " # [gate-escape:mr_metadata: validator unavailable]"
         with audited_escape(data) as requests:
@@ -261,7 +276,7 @@ class TestUnvalidatedOutcomeIsAnnounced:
     def test_a_clean_pass_stays_silent(self, monkeypatch, capsys):
         # The gate must not become chatty: a validated, valid MR says nothing.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok):
             assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
@@ -286,7 +301,7 @@ class TestValidatorCrashIsNotADeny:
     def test_traceback_output_allows_with_a_loud_warn(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         crashed = subprocess.CompletedProcess(
             args=[],
             returncode=1,
@@ -306,7 +321,7 @@ class TestValidatorCrashIsNotADeny:
         # The content-deny path is untouched: a concise validation message
         # (no traceback) is a genuine deny, not a crash.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
         with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(_glab_create("", ""))
@@ -328,7 +343,7 @@ class TestValidatorTimeoutIsNotADeny:
     def _timeout_run(self, monkeypatch, allowance: float = 60):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         return patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=allowance))
 
     def test_timeout_allows_with_a_loud_warn_naming_the_timeout(self, monkeypatch, capsys):
@@ -356,7 +371,7 @@ class TestValidatorTimeoutIsNotADeny:
         # Anti-vacuity: only the CANNOT_EVALUATE path moved. A validator that RAN
         # and REJECTED keeps its teeth.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
         with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(_glab_create("", ""))
@@ -367,7 +382,7 @@ class TestValidatorTimeoutIsNotADeny:
 
     def test_pass_still_allows(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
@@ -385,7 +400,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
 
     def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         monkeypatch.setattr(gate_result, "validator_timeout_seconds", lambda: 12)
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok) as run:
@@ -394,7 +409,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
 
     def test_the_allowance_is_capped_by_what_the_hook_has_left(self, monkeypatch, hook_clock):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         hook_clock.now = 25.0
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok) as run:
@@ -403,7 +418,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
 
     def test_the_allowance_is_read_after_the_t3_environment_is_resolved(self, monkeypatch, hook_clock):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         hook_clock.now = 20.0
         real_env = t3_invocation.t3_invocation_env
 
@@ -421,7 +436,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
-        monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
         monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
         with patch.object(subprocess, "run") as run:
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
@@ -523,7 +538,7 @@ class TestOutOfBandApiEditIsGated:
 
     def test_bad_description_via_api_put_is_validated(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         cmd = "glab api --method PUT projects/x%2Fy/merge_requests/123 --field 'description=bad prose'"
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Invalid first line.")
         with patch.object(subprocess, "run", return_value=rejected) as run:
@@ -570,7 +585,7 @@ class TestOutOfBandApiEditIsGated:
 
     def test_gh_api_pr_create_is_gated(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         cmd = "gh api repos/o/r/pulls --method POST -f 'title=bad title' -f 'body=bad body'"
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad")
         with patch.object(subprocess, "run", return_value=rejected):
@@ -592,7 +607,7 @@ class TestMrTargetRepoIsThreadedToValidator:
 
     def _argv_for(self, monkeypatch, command: str) -> list[str]:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
@@ -652,7 +667,7 @@ class TestTitleOnlyUpdateSkipsRequiredSections:
 
     def _argv_for(self, monkeypatch, command: str) -> list[str]:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
@@ -711,7 +726,7 @@ class TestIssueCommandsAreNeverMrMutations:
 
     def test_glab_mr_create_bad_title_still_blocks(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is invalid.")
         with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(
@@ -1504,7 +1519,7 @@ class TestAnExecThatNeverStartsIsAnnouncedNotSwallowed:
 
     def test_the_gate_announces_the_failed_exec_and_allows(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
 
         with patch.object(subprocess, "run", side_effect=self._EXEC_FAILED):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "body"))

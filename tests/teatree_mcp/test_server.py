@@ -8,11 +8,16 @@ transactional ``django_db`` fixture, no committed-transaction dance needed.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from unittest.mock import patch
 
+import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
-from mcp.types import Tool, ToolAnnotations
+from mcp import Client
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.shared.exceptions import MCPError
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
@@ -26,6 +31,7 @@ from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Task
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
 from teatree.mcp.server import _required_services, build_server, declared_write_tool_seams
+from teatree.utils.run import redact_secrets
 from tests.factories import TaskFactory, TicketFactory
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
@@ -73,6 +79,127 @@ _MAILBOX_TOOLS = {
     "agent_mailbox_inbox",
     "agent_mailbox_wait",
 }
+
+
+def _raising(error: Exception) -> Callable[[], str]:
+    def refuse() -> str:
+        raise error
+
+    return refuse
+
+
+class TestCrashingToolAnswers(TestCase):
+    async def _call(self, fn: Callable[[], str | Awaitable[str]]) -> CallToolResult:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            server = build_server()
+        server.add_tool(fn, name="probe")
+        async with Client(server) as client:
+            return await client.call_tool("probe")
+
+    def _text(self, result: CallToolResult) -> str:
+        assert result.is_error is True
+        assert isinstance(result.content[0], TextContent)
+        return result.content[0].text
+
+    def test_sync_crash_names_class_and_redacts_message(self) -> None:
+        message = "boom token=abc123"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
+        assert "abc123" not in text
+
+    def test_async_crash_names_class_and_redacts_message(self) -> None:
+        message = "boom token=abc123"
+
+        async def crash() -> str:
+            await asyncio.sleep(0)
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
+
+    def test_long_crash_message_is_capped(self) -> None:
+        message = "x" * 5000
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == f"Error executing tool probe: RuntimeError: {'x' * 500}"
+
+    def test_redaction_scans_only_the_leading_ten_thousand_characters(self) -> None:
+        message = "a" * 11_000 + " token=notarealvalue"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        with patch("teatree.mcp.server.redact_secrets", wraps=redact_secrets) as redactor:
+            text = self._text(asyncio.run(self._call(crash)))
+
+        assert [len(call.args[0]) for call in redactor.call_args_list] == [10_000]
+        assert "notarealvalue" not in text
+
+    def test_empty_crash_message_still_names_the_class(self) -> None:
+        def crash() -> str:
+            raise RuntimeError
+
+        assert self._text(asyncio.run(self._call(crash))) == "Error executing tool probe: RuntimeError"
+
+    def test_crash_with_unprintable_message_still_names_the_class(self) -> None:
+        class UnprintableError(RuntimeError):
+            def __str__(self) -> str:
+                message = "str exploded token=notarealvalue"
+                raise RuntimeError(message)
+
+        def crash() -> str:
+            raise UnprintableError
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: UnprintableError"
+        assert "notarealvalue" not in text
+
+    def test_redaction_precedes_the_crash_detail_cap(self) -> None:
+        message = f"{'x' * 480} refresh_token=notarealvalue"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == f"Error executing tool probe: RuntimeError: {'x' * 480} refresh_token=<reda"
+        assert "notarealvalue" not in text
+
+    def test_a_deliberate_refusal_keeps_its_text(self) -> None:
+        for refusal in (ToolError, ResourceError):
+            with self.subTest(refusal=refusal.__name__):
+                text = self._text(asyncio.run(self._call(_raising(refusal("bad input")))))
+
+                assert text == "Error executing tool probe: bad input"
+
+    def test_protocol_error_remains_a_protocol_error(self) -> None:
+        message = "protocol says no"
+
+        def refuse() -> str:
+            raise MCPError(-32001, message)
+
+        with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            server = build_server()
+        server.add_tool(refuse, name="probe")
+        with pytest.raises(MCPError):
+            asyncio.run(server.call_tool("probe", {}))
+
+    def test_unexpected_crash_keeps_the_original_traceback_in_the_error_log(self) -> None:
+        message = "boom token=abc123"
+        crash = RuntimeError(message)
+
+        def fail() -> str:
+            raise crash
+
+        with self.assertLogs("mcp.server.mcpserver.server", level="ERROR") as logs:
+            self._text(asyncio.run(self._call(fail)))
+        assert any(record.exc_info and record.exc_info[1].__cause__ is crash for record in logs.records)
 
 
 class TestToolRegistration(TestCase):
@@ -400,6 +527,11 @@ class TestReadOnlySurface(TestCase):
     def test_tool_descriptions_keep_per_tool_contracts(self) -> None:
         tools, _, _ = _surface(read_only=False, mailbox=False)
 
+        for name in ("github_issue_search", "gitlab_issue_search"):
+            assert all(
+                term in tools[name].description
+                for term in ("10", "number", "title", "url", "state", "updated_at", "truncated")
+            )
         assert "force_general" in tools["review_post_comments"].description
         assert "allow_bloat" in tools["review_post_comments"].description
         for name in ("notion_create", "notion_comment", "notion_archive", "notion_property_set"):

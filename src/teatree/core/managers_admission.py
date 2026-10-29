@@ -14,7 +14,7 @@ from django.db.models.functions import Cast, Coalesce, Concat
 from django.db.models.lookups import LessThan
 
 from teatree.core.managers_task_claim import _claimable_now_q
-from teatree.core.modelkit.phases import CheapClass, PhaseCost, cheap_phase_spellings
+from teatree.core.modelkit.phases import ANSWERING_PHASES, CheapClass, PhaseCost, cheap_phase_spellings
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -34,6 +34,11 @@ def _cheap_phase_q(cheap_class: CheapClass | None = None) -> Q:
     return Q(phase__in=cheap_class.spellings() if cheap_class is not None else cheap_phase_spellings())
 
 
+def _answering_phase_q() -> Q:
+    """Every row of the owner-answering class (its phases carry no short-verb aliases)."""
+    return Q(phase__in=ANSWERING_PHASES)
+
+
 def _unseated_q(now: datetime) -> Q:
     """A row holding no live seat: never admitted, or its seat lapsed with the window."""
     return Q(admitted_at__isnull=True) | Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
@@ -45,9 +50,10 @@ def _lane_occupancy_q(now: datetime, *, lane: PhaseCost | CheapClass) -> Q:
     One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. The cheap classes partition work from the expensive class, which is
+    bound at all. The cheap classes and the answering class partition work from the expensive class, which is
     their exact complement; an unregistered phase therefore lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
+    The answering class sits outside the cheap lane's total, so it never takes a review or retiring seat.
     ``PhaseCost.CHEAP`` is the one definition of the whole cheap lane (both classes) that the
     total-occupancy read and the conditional write's total bound share.
     """
@@ -55,8 +61,10 @@ def _lane_occupancy_q(now: datetime, *, lane: PhaseCost | CheapClass) -> Q:
 
     if lane is PhaseCost.CHEAP:
         membership = _cheap_phase_q()
+    elif lane is PhaseCost.ANSWERING:
+        membership = _answering_phase_q()
     elif lane is PhaseCost.EXPENSIVE:
-        membership = ~_cheap_phase_q()
+        membership = ~(_cheap_phase_q() | _answering_phase_q())
     else:
         membership = _cheap_phase_q(lane)
     return membership & (

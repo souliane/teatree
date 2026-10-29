@@ -16,7 +16,7 @@ from teatree.answer_handback import collect
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_drain import drain_pending_questions
-from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
+from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
 
 
 def _failed_task(*, phase: str = "coding") -> Task:
@@ -31,18 +31,20 @@ def _add_failed_attempt(task: Task, *, error: str) -> None:
 
 
 def _escalated_halt_task() -> Task:
-    """Drive a real ``repair-halt`` escalation: two identical failures halt + queue a question."""
     task = _failed_task()
     _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
     _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
     assert requeue_transient_failed() == 0
     task.refresh_from_db()
     assert HALT_STAMP in task.execution_reason
+    assert not DeferredQuestion.objects.exists()
     return task
 
 
-def _halt_question() -> DeferredQuestion:
-    return DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
+def _halt_question(task: Task) -> DeferredQuestion:
+    return DeferredQuestion.record(
+        "Legacy repair halt.", task_session=task.session, dedupe_marker=escalation_marker(task)
+    )
 
 
 def _session_keyed_question(*, marker: str, ticket_state: str) -> DeferredQuestion:
@@ -62,7 +64,7 @@ class TestRepairMarkerOwnsItsSubject(TestCase):
         # the SAME ticket — so once the parked task is reaped the marker goes
         # undeterminable while the session still answers "terminal". #3692 keeps this row.
         task = _escalated_halt_task()
-        question = _halt_question()
+        question = _halt_question(task)
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
         Task.objects.filter(pk=task.pk).delete()
 
@@ -74,7 +76,7 @@ class TestRepairMarkerOwnsItsSubject(TestCase):
         # The #3692 semantics the fix must not narrow: a determinable, all-terminal
         # repair-halt subject is still moot and still drains.
         task = _escalated_halt_task()
-        question = _halt_question()
+        question = _halt_question(task)
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
 
         assert drain_pending_questions().drained == 1
@@ -83,14 +85,15 @@ class TestRepairMarkerOwnsItsSubject(TestCase):
 
     def test_halt_row_with_one_live_parked_subject_is_kept(self) -> None:
         live = _escalated_halt_task()
+        question = _halt_question(live)
         merged = _failed_task()
         _add_failed_attempt(merged, error="result_error: no terminal ResultMessage")
         _add_failed_attempt(merged, error="result_error: no terminal ResultMessage")
-        assert requeue_transient_failed() == 0  # same fingerprint ⇒ one shared question
+        assert requeue_transient_failed() == 0
         Ticket.objects.filter(pk=merged.ticket_id).update(state=Ticket.State.MERGED)
 
         assert drain_pending_questions().drained == 0
-        assert _halt_question().status == DeferredQuestion.STATUS_PENDING
+        assert question.status == DeferredQuestion.STATUS_PENDING
         assert live.ticket.state == Ticket.State.WORK_STARTED
 
     def test_ticket_keyed_marker_naming_no_ticket_is_kept(self) -> None:
@@ -161,7 +164,7 @@ class TestNonRepairSubjectsAreUnchanged(TestCase):
 class TestATaskHaltNamesNoAskingSession(TestCase):
     def test_its_answer_is_never_posted_and_its_subject_still_resolves(self) -> None:
         task = _escalated_halt_task()
-        question = _halt_question()
+        question = _halt_question(task)
 
         with self.captureOnCommitCallbacks(execute=True):
             DeferredQuestion.consume(question.pk, answer="ignore")

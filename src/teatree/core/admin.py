@@ -201,7 +201,14 @@ class LoopAdmin(ShippedDeleteRouting):
     )
     list_editable = ("enabled", "colleague_facing")
     search_fields = ("name",)
-    readonly_fields = ("last_run_at", "created_at", "updated_at")
+    readonly_fields = (
+        "last_run_at",
+        "consecutive_deadline_kills",
+        "idle_cpu_seconds",
+        "busy_cpu_seconds",
+        "created_at",
+        "updated_at",
+    )
 
     @admin.display(description="action")
     @staticmethod

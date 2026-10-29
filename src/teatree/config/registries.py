@@ -188,6 +188,20 @@ COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent
 TERM_REGISTRY: str = "banned_term_registry"
 
 COLD_SETTINGS: dict[str, ColdHookSetting] = {
+    "gitlab_write_guard": ColdHookSetting(
+        _parse_registry_dict,
+        default={},
+        help="optional GitLab write policy",
+        stored=dict[str, Any],
+        category=Category.SECRET,
+    ),
+    "gitlab_read_token_pass_paths": ColdHookSetting(
+        _parse_registry_dict,
+        default={},
+        help="per-project pass entries for GitLab GET requests",
+        stored=dict[str, Any],
+        category=Category.SECRET,
+    ),
     # The single classed term registry is private to the operator and withheld
     # from shared exports. Gates read its classes through terms_for_gate.
     TERM_REGISTRY: ColdHookSetting(

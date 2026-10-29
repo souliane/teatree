@@ -37,6 +37,47 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
+    text = (
+        'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'
+        "> No migration.\n"
+        "Another pull request states No new public name.\n"
+    )
+    assert extract_constraints(text) == ()
+
+
+def test_own_instruction_after_a_quote_still_applies() -> None:
+    assert {item.kind for item in extract_constraints('Issue #42 says "No new setting." Do not add a migration.')} == {
+        "no_migration"
+    }
+
+
+def test_own_issue_and_pr_constraints_are_not_discarded_as_attribution() -> None:
+    assert {item.kind for item in extract_constraints("The issue requires no migration.")} == {"no_migration"}
+    assert {item.kind for item in extract_constraints("Issue #5452 requires: no new setting.")} == {"no_setting"}
+    assert {
+        (item.kind, item.target) for item in extract_constraints("This PR requires that foo.py stays unchanged.")
+    } == {("unchanged_file", "foo.py")}
+
+
+def test_quoted_targets_and_own_issue_instruction_remain_constraints() -> None:
+    assert {(item.kind, item.target) for item in extract_constraints('Do not touch "src/foo.py".')} == {
+        ("unchanged_file", "src/foo.py")
+    }
+    assert {(item.kind, item.target) for item in extract_constraints('Keep "settings.py" unchanged.')} == {
+        ("unchanged_file", "settings.py")
+    }
+    assert {item.kind for item in extract_constraints('Do not add a "new" setting.')} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("Issue #5452 asks that you do not add a migration.")} == {
+        "no_migration"
+    }
+    assert {
+        item.kind
+        for item in extract_constraints("Issue #5452 asks that you do not add a migration.", own_issue_number="5452")
+    } == {"no_migration"}
+    assert extract_constraints("Issue #42 asks that you do not add a migration.", own_issue_number="5452") == ()
+
+
 def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
     brief = 'Use the advisor key without spawning: `--settings {"advisorModel": "<id>"}`.'
 
@@ -112,3 +153,18 @@ def test_no_setting_covers_registry_keys_and_no_public_name_covers_constants() -
         extract_constraints("No new setting or public name."), changes, before=before, after=after
     )
     assert {item.kind for item in violations} == {"no_setting", "no_public_name"}
+
+
+def test_named_setting_exception_preserves_the_other_setting_blocks() -> None:
+    path = "src/teatree/config/settings.py"
+    changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
+    before = {path: "class AppSettings:\n    old: int = 1\n"}
+    brief = "No new setting.\nAllowed setting additions: AppSettings.approved"
+    approved = {path: "class AppSettings:\n    old: int = 1\n    approved: int = 2\n"}
+    extra = {path: approved[path] + "    unapproved: int = 3\n"}
+
+    assert check_constraints(extract_constraints(brief), changes, before=before, after=approved) == ()
+    violations = check_constraints(extract_constraints(brief), changes, before=before, after=extra)
+    assert len(violations) == 1
+    assert violations[0].kind == "no_setting"
+    assert "AppSettings.unapproved" in violations[0].detail

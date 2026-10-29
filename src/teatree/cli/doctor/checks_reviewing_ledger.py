@@ -13,12 +13,52 @@ the output.
 """
 
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import typer
 from django.utils import timezone
 
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
+from teatree.utils.run import redact_secrets
 from teatree.utils.url_slug import pr_ref_from_url
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
+
+
+def _review_saturation_reason(task: "Task | None") -> str:
+    if task is None:
+        return "no linked review task for this head"
+    attempt = task.attempts.exclude(error="").order_by("-pk").first()
+    error = (attempt.error if attempt is not None else task.failure_reason).strip()
+    if not error:
+        latest = task.attempts.order_by("-pk").first()
+        if latest is None:
+            reason = "no recorded attempt"
+        else:
+            result = latest.result if isinstance(latest.result, dict) else {}
+            review = result.get("review_verdict")
+            if isinstance(review, dict) and str(review.get("verdict", "")).strip().lower() == "unverified":
+                gaps = review.get("evidence_gaps")
+                reason = (
+                    "unverified verdict: " + ", ".join(str(gap) for gap in gaps)
+                    if isinstance(gaps, list)
+                    else "unverified verdict"
+                )
+            else:
+                reason = "attempt recorded without verdict or failure reason"
+        return reason
+    lowered = error.casefold()
+    if "turn ceiling" in lowered or "maximum turns" in lowered:
+        return "turn ceiling"
+    if "brief refused" in lowered or "brief could not" in lowered:
+        return "refused brief"
+    if "credential" in lowered or "api_credit:" in lowered:
+        return "credential"
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    cause = lines[-1] if lines[0].startswith("Traceback (most recent call last):") else lines[0]
+    return redact_secrets(cause)[:160]
+
 
 #: How far back a zero-attempt review is still worth acting on.
 _WINDOW_DAYS = 14

@@ -138,7 +138,6 @@
 # 5: #4476's publish path resolves the forge backend, its models and the outbound
 # privacy scan at call time so the command module stays import-light.
 "src/teatree/core/review/verdict_findings_publish.py" = 5
-"src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
 # 1: both agent_runner refusals became a declared top-level edge; the one left
 # is `review.completion_evidence`, which pulls the review graph at command load.
@@ -163,8 +162,9 @@
 "src/teatree/core/merge/execution.py" = 3
 # souliane/teatree#3840: the keystone post hook moved to its own module and took its
 # call-time ORM imports with it. Only the retry helper is left deferred — `MergeClear`
-# is now a module-level import, the same edge `ci_rollup` already declares.
-"src/teatree/core/merge/post_hook.py" = 1
+# is now a module-level import, the same edge `ci_rollup` already declares. The partial-merge
+# reader is deferred too: a top-level import put three modules on the `t3 mcp serve` import graph.
+"src/teatree/core/merge/post_hook.py" = 2
 # substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
 # so resolving a repo's owning overlay stays a call-time read of the live overlay
 # registry — the edge moved here verbatim from merge/authorization.py (#3648).
@@ -244,7 +244,7 @@
 # #61 availability+preset merge: the unified operating-mode resolver defers its
 # intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry) and the
 # deferred-question drain — cycle-safe and app-registry-safe (mode_resolution is
-# imported by early hooks via speak.py before Django apps are ready).
+# imported before Django apps are ready).
 # 8 -> 5 (#3826): the fast-hook mirror is deleted (three of its deferrals with it) and
 # the presence heartbeat left this module — it needs no deferral at all.
 "src/teatree/core/mode_resolution.py" = 5

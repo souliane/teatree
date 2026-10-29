@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+from tests._deploy_space import install_build_space_stub
 from tests._planted_git_config import plant_exec_config
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
@@ -65,7 +66,14 @@ def _fork(tmp_path: Path, *, nested_core: bool = True, record_refresh_seconds: i
     root = tmp_path / ("fork" if nested_core else "teatree")
     deploy = root / "vendor" / "teatree" / "deploy" if nested_core else root / "deploy"
     deploy.mkdir(parents=True)
-    for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh", "git-pins.sh"):
+    for name in (
+        "roll.sh",
+        "build-generation.sh",
+        "disk-preflight.sh",
+        "generation-topology.sh",
+        "deploy-lock.sh",
+        "git-pins.sh",
+    ):
         shutil.copy2(DEPLOY / name, deploy / name)
         (deploy / name).chmod((deploy / name).stat().st_mode | stat.S_IXUSR)
     roll = deploy / "roll.sh"
@@ -91,6 +99,7 @@ def _roll(tmp_path: Path, fork: _Fork, *args: str, **env_extra: str) -> subproce
     stubs.mkdir(exist_ok=True)
     (stubs / "docker").write_text(_DOCKER, encoding="utf-8")
     (stubs / "docker").chmod(0o755)
+    install_build_space_stub(stubs)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TEATREE_", "GIT_", "GITLAB_", "NOTION_"))}
     env |= {
         "PATH": f"{stubs}{os.pathsep}{env['PATH']}",
@@ -301,6 +310,15 @@ def test_a_deploy_already_in_flight_refuses_with_tempfail(tmp_path: Path) -> Non
 
 
 def test_the_record_outlasts_the_drain_grace_the_roller_is_given(tmp_path: Path) -> None:
+    date = tmp_path / "bin" / "date"
+    date.parent.mkdir()
+    date.write_text(
+        "#!/bin/bash\n"
+        'if [ -e "$FAKE_DIR/date.once" ]; then echo 1001; exit; fi\n'
+        'touch "$FAKE_DIR/date.once"\necho 1000\n',
+        encoding="utf-8",
+    )
+    date.chmod(0o755)
     _roll(tmp_path, _fork(tmp_path), "origin/main", "--drain-timeout", "7200")
 
     record = next(line for line in (tmp_path / "roll.env").read_text().splitlines() if line.startswith("record="))

@@ -1,15 +1,11 @@
 import logging
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
-from teatree.core.models.checkout_proof import (
-    AutoAttestation,
-    CheckoutCustody,
-    DeferredCheckoutExit,
-    DeferredExitAttestation,
-    ReleasedPrHeadAttestation,
-)
+from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
+from teatree.core.models.extra_key_warning import warn_stripped_extra_keys
+from teatree.core.models.repo_expansion import TicketRepoExtra
+from teatree.types import VisualQASummary
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -40,31 +36,6 @@ class SlackAnswerContext(TypedDict, total=False):
     implies_work: bool
     work_summary: str
     work_issue_url: str
-
-
-class VisualQAPageError(TypedDict):
-    kind: str
-    message: str
-
-
-class VisualQAPageDetail(TypedDict):
-    url: str
-    errors: list[VisualQAPageError]
-
-
-class VisualQASummary(TypedDict, total=False):
-    repo_path: str
-    head_sha: str
-    targets: list[str]
-    skipped_reason: str
-    not_run_reason: str
-    base_url: str
-    pages_checked: int
-    errors: int
-    details: list[VisualQAPageDetail]
-    unchecked_reasons: dict[str, str]
-    report_markdown: str
-    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
@@ -132,8 +103,9 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
-class TicketExtra(TypedDict, total=False):
+class TicketExtra(TicketRepoExtra, total=False):
     tests_passed: bool
+    brief_start_heads: dict[str, str]
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]
     nit_publication: dict[str, JSONObject]
@@ -174,11 +146,6 @@ class TicketExtra(TypedDict, total=False):
     issue_close_reason: str
     visual_qa: VisualQASummary
     branch: str
-    # #33 per-repo branch override map (repo → branch). A ticket whose repos
-    # live on DIFFERENT branches maps each one here; ``branch`` stays the
-    # single ticket-dir name so every repo provisions as a SIBLING in one dir.
-    # Repos absent from the map fall back to ``branch``.
-    branches: dict[str, str]
     # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
     # registered via ``workspace ticket --adopt``; the provisioner records the
     # path verbatim instead of ``git worktree add``.
@@ -198,6 +165,8 @@ class TicketExtra(TypedDict, total=False):
     mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_window_after_attempt: int
+    stuck_halt: dict[str, str | int]
     review_retry_head_by_task: dict[str, str]
     review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a
@@ -248,6 +217,8 @@ class TicketExtra(TypedDict, total=False):
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
     rubric_waivers: list[dict[str, str | int]]
+    # Owner waivers of one LLM merge-critic item, keyed by item slug; read by ``unmet_items``.
+    merge_item_waivers: dict[str, dict[str, str]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -724,24 +695,10 @@ def reset_stripped_key_warnings() -> None:
     _WARNED_STRIPPED_KEYS.clear()
 
 
-def _warn_stripped(model: str, dropped: Iterable[str]) -> None:
-    """Announce each undeclared key once, naming the TypedDict that would have kept it."""
-    for key in sorted(dropped):
-        if (model, key) in _WARNED_STRIPPED_KEYS:
-            continue
-        _WARNED_STRIPPED_KEYS.add((model, key))
-        logger.warning(
-            "%s.extra: dropping undeclared key %r — declare it on %sExtra or the next transition strips it.",
-            model,
-            key,
-            model,
-        )
-
-
 def validated_ticket_extra(raw: dict | None) -> TicketExtra:
     if not raw:
         return TicketExtra()
-    _warn_stripped("Ticket", raw.keys() - _TICKET_EXTRA_KEYS)
+    warn_stripped_extra_keys("Ticket", raw.keys() - _TICKET_EXTRA_KEYS, _WARNED_STRIPPED_KEYS, logger)
     return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
@@ -756,14 +713,8 @@ class WorktreeSiblingFields(TypedDict, total=False):
     branch: str
 
 
-class WorktreeExtra(TypedDict, total=False):
+class WorktreeExtra(WorktreeCheckoutExtra, total=False):
     worktree_path: str
-    attested_state: str
-    direct_attested_state: str
-    direct_attested_at: str
-    checkout_custody: CheckoutCustody
-    auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
-    deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]
     urls: dict[str, str]
@@ -772,15 +723,8 @@ class WorktreeExtra(TypedDict, total=False):
     db_refreshed_at: str
     db_import_failures: int
     setup_hook: str
-    # Written by the start runner alongside ``services`` in one locked update, and
-    # by the provision runner at the end of a provision. Both were absent from this
-    # TypedDict, so ``_WORKTREE_EXTRA_KEYS`` filtered them straight back out of
-    # every ``get_extra()`` read — declared here so the accessor keeps them.
     ports: Ports
     provision_report: "ProvisionReportDict"
-    # #2227 Explicit operator pin: when true the idle-stack reaper never reaps
-    # this worktree, regardless of idleness — the manual escape hatch alongside
-    # the active-delivery-lease and recent-E2E-run KEEP guards.
     reaper_pinned: bool
 
 
@@ -796,5 +740,5 @@ def validated_worktree_extra(raw: dict | None) -> WorktreeExtra:
     """
     if not raw:
         return WorktreeExtra()
-    _warn_stripped("Worktree", raw.keys() - _WORKTREE_EXTRA_KEYS)
+    warn_stripped_extra_keys("Worktree", raw.keys() - _WORKTREE_EXTRA_KEYS, _WARNED_STRIPPED_KEYS, logger)
     return WorktreeExtra(**{k: v for k, v in raw.items() if k in _WORKTREE_EXTRA_KEYS})

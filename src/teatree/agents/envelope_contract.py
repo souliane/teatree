@@ -25,12 +25,43 @@ from teatree.agents.result_schema import (
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
+from teatree.agents.result_schema_draft import EXECUTOR_DRAFT_FIELDS
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 CONTRACT_HEADING = "# Result Envelope — REQUIRED OUTPUT CONTRACT"
+
+_FIX_RECORD_FIELD_LINES: tuple[str, ...] = (
+    "",
+    "THIS IS A FIX TICKET — RETURN ITS FixRecord IN THE ENVELOPE (the Definition-of-Done gate",
+    "refuses DELIVERED without one, and nothing but this envelope writes it):",
+    '  "fix_record": {"root_cause": "<the DEEPEST cause, not the symptom you patched>",',
+    '                 "evidence": "<why that is the cause — what you read/ran that shows it>",',
+    '                 "regression_test": "<path::node of the RED-first test that pins it>",',
+    '                 "observed_red": "<attestation you saw that test FAIL against the pre-fix code>",',
+    '                 "recurrence_fingerprint": "<stable signature, e.g. module:condition>"}',
+    "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
+    "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
+    "A merged manifestation patch with no stated root cause is not done.",
+)
+FIX_RECORD_NO_RED_FIELD_LINES: tuple[str, ...] = tuple(
+    line.replace("RED-first ", "") for line in _FIX_RECORD_FIELD_LINES if '"observed_red"' not in line
+)
+FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
+    (
+        "Before editing, run `repro record-red` on the pre-fix HEAD; coding completion requires it "
+        "and testing records GREEN automatically."
+    ),
+)
+FIX_RECORD_REVIEW_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
+    "Return it only with merge_safe; observed_red is your own revert-to-RED proof.",
+)
+FIX_RECORD_REVIEW_NO_RED_LINES: tuple[str, ...] = (*FIX_RECORD_NO_RED_FIELD_LINES, "Return it only with merge_safe.")
 
 #: One minimal, schema-valid envelope fragment per evidence field, so the example
 #: the brief shows is the exact shape the recorder accepts rather than a paraphrase
@@ -89,6 +120,14 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         ]
     },
     "answer": {"answer": {"text": "<the drafted reply, in the user's voice>", "thread_ref": "<thread ts, or ''>"}},
+    "review_request": {
+        "review_request": {
+            "ready": True,
+            "pr_url": "<a PR URL from the task message>",
+            "title": "<type(scope): subject>",
+        }
+    },
+    "ship_readiness": {"ship_readiness": {"ready": True, "reasons": []}},
     # The id `ticket sweep-begin` printed — the count is read from the run's own
     # recorded URLs, so the example deliberately shows no changed_count to restate.
     "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},
@@ -101,6 +140,40 @@ def allowed_keys() -> tuple[str, ...]:
     return tuple(str(key) for key in properties) if isinstance(properties, Mapping) else ()
 
 
+def required_keys_phrase(phase: str) -> str:
+    """The phase's required envelope keys, rendered for an instruction line."""
+    required = required_evidence_for_phase(phase)
+    if not required:
+        return "`summary`"
+    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        phrase += f" (plus {also} when the request implies work)"
+    return phrase
+
+
+def corrective_instruction(phase: str) -> str:
+    return (
+        f"your last run omitted the required trailing JSON result envelope "
+        f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
+        "plain JSON, nothing after it."
+    )
+
+
+def refused_envelope_instruction(refusal: str) -> str:
+    return (
+        f"your last run's result envelope was refused ({refusal}) — re-emit the complete envelope "
+        "with exactly those keys corrected, as the last thing you write, plain JSON, nothing after it."
+    )
+
+
+def _taught_keys(*, read_only_venue: bool) -> tuple[str, ...]:
+    """The keys a brief lists: a worker brief omits the draft keys only the read-only executor returns."""
+    draft_keys = set(EXECUTOR_DRAFT_FIELDS.values())
+    return tuple(key for key in allowed_keys() if read_only_venue or key not in draft_keys)
+
+
 def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult:
     """*evidence* carrying the dispatch's assigned identity — a COPY, never the constant."""
     verdict = evidence.get("review_verdict")
@@ -109,7 +182,13 @@ def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult
     return {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}}
 
 
-def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
+def _evidence_fields(phase: str, *, read_only_venue: bool) -> tuple[str, ...]:
+    """The evidence a run must return; on the read-only executor a draft phase returns its draft, not a command log."""
+    field = EXECUTOR_DRAFT_FIELDS.get(normalize_phase(phase)) if read_only_venue else None
+    return (field,) if field else required_evidence_for_phase(phase)
+
+
+def envelope_example(phase: str, *, reviewer_identity: str = "", read_only_venue: bool = False) -> AgentResult:
     """A minimal envelope for *phase* that satisfies the phase evidence gate.
 
     *reviewer_identity* replaces the self-naming template with the dispatch's assigned
@@ -117,7 +196,7 @@ def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
     the identity has to be concrete (#2663).
     """
     example: AgentResult = {"summary": "<one line: what you did and how you proved it>"}
-    for field in required_evidence_for_phase(phase):
+    for field in _evidence_fields(phase, read_only_venue=read_only_venue):
         evidence = _EVIDENCE_EXAMPLES.get(field)
         if evidence is not None:
             example.update(_with_reviewer_identity(evidence, reviewer_identity))
@@ -126,9 +205,9 @@ def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
     return example
 
 
-def _evidence_lines(phase: str) -> tuple[str, ...]:
+def _evidence_lines(phase: str, *, read_only_venue: bool) -> tuple[str, ...]:
     """The phase-scoped "this key is also mandatory" clause, or the summary-only note."""
-    required = required_evidence_for_phase(phase)
+    required = _evidence_fields(phase, read_only_venue=read_only_venue)
     if not required:
         return (f"- Phase `{normalize_phase(phase) or phase}` requires no extra evidence key beyond `summary`.",)
     fields = " or ".join(f"`{field}`" for field in required)
@@ -156,14 +235,14 @@ def _verdict_consistency_lines(phase: str) -> tuple[str, ...]:
     return ("", f"- {VERDICT_CHECKS_RULE}")
 
 
-def final_output_reminder_line(phase: str) -> str:
+def final_output_reminder_line(phase: str, *, read_only_venue: bool = False) -> str:
     """The one-line restatement of the contract, placed last in the work prompt.
 
     The full contract sits in the system context; recency is what a non-Claude
     model actually acts on, so the work prompt closes by naming the phase's own
     required key again rather than trusting the system prompt to carry it alone.
     """
-    required = required_evidence_for_phase(phase)
+    required = _evidence_fields(phase, read_only_venue=read_only_venue)
     keys = "`summary`" + ("" if not required else " and " + " or ".join(f"`{field}`" for field in required))
     return (
         f"6. FINAL OUTPUT: end with the JSON result envelope ({keys}) as the last thing you write — "
@@ -171,7 +250,9 @@ def final_output_reminder_line(phase: str) -> str:
     )
 
 
-def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple[str, ...]:
+def envelope_contract_lines(
+    phase: str, *, reviewer_identity: str = "", read_only_venue: bool = False
+) -> tuple[str, ...]:
     """The full envelope contract taught to a headless brief for *phase*.
 
     Every phase gets it, verbatim: assuming the model already knows the format is
@@ -181,24 +262,30 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "",
         CONTRACT_HEADING,
         "",
-        "Only the final JSON result envelope records this task. Prose alone is refused",
-        "(`no_result_envelope`) and discarded; no partial credit or synthesized envelope.",
+        "Only the final JSON envelope counts; prose or a synthesized envelope is refused",
+        "(`no_result_envelope`) and discarded; no partial credit.",
         "",
         "- End with exactly one plain JSON object; no code fence or trailing text.",
         "- `summary` (string) is required on every phase.",
-        "- `needs_user_input` is a boolean; when true, set `user_input_reason` (ONE question ending in `?`) and stop.",
-        "  Stop for the owner only with `user_input_kind`, `user_input_checked` (facts you checked), `user_input_card`",
-        '  {"why", "blocker", "options": [{"label", "description", "recommended"}]}; 120 words max, plain English:',
+        "- Owner stop (`needs_user_input`: true): `user_input_reason` (one question ending ?), `user_input_kind`,",
+        (
+            '  `user_input_checked`, `user_input_card` {"why", "blocker", '
+            '"options": [{"label", "description", "recommended"}]}; stop.'
+        ),
         f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        *(f"  {line}" for line in owner_stop_limits_lines()),
         "  Decide everything else yourself.",
-        "- If skills were required for this dispatch, include `skill_application`: one",
-        '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',
-        "  Only describe skill use that actually happened; omission is recorded as unverified.",
-        *_evidence_lines(phase),
+        (
+            "- For each required skill used, add `skill_application`: "
+            '`{"skill": "name", "evidence": "short concrete reference"}`; omissions are unverified.'
+        ),
+        *_evidence_lines(phase, read_only_venue=read_only_venue),
         *_verdict_consistency_lines(phase),
-        "- Use ONLY these keys — any other key is rejected outright:",
-        f"  {', '.join(allowed_keys())}",
+        "- Only these keys are allowed:",
+        f"  {', '.join(_taught_keys(read_only_venue=read_only_venue))}",
         "",
         "Minimal valid envelope for this phase — copy this shape exactly:",
-        json.dumps(envelope_example(phase, reviewer_identity=reviewer_identity), indent=2),
+        json.dumps(
+            envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=1
+        ),
     )

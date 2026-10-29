@@ -18,6 +18,8 @@ critic, so the gate is satisfiable.
 """
 
 import contextlib
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -43,6 +45,8 @@ from teatree.core.models import (
     MergeClear,
     PlanArtifact,
     PullRequest,
+    Session,
+    Task,
     Ticket,
 )
 from teatree.core.models.mechanism_sketch import MechanismSketch
@@ -52,6 +56,7 @@ from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.review.nit_lane import NitPoint, nit_point_marker
 from teatree.quality.brief_constraints import ConstraintViolation
 from tests._forge_stub import merge_path_stdout
+from tests._git_repo import make_git_repo, run_git
 from tests.factories import waive_rubric
 
 _FORTY_HEX = "a" * 40
@@ -129,6 +134,111 @@ class TestDirectiveDetection(TestCase):
 
 class TestVerdictGate(TestCase):
     """The fail-closed row-check — no verdict / any unmet item refuses; a clean verdict passes."""
+
+    def _constraint_ticket(self, *, task_text: str, start_sha: str) -> Ticket:
+        ticket = _ordinary_ticket()
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="coding",
+            status=Task.Status.COMPLETED,
+            execution_reason=task_text,
+        )
+        ticket.merge_extra(merge_into_dicts={"brief_start_heads": {str(task.pk): start_sha}})
+        return ticket
+
+    def test_quoted_other_issue_constraint_does_not_block_a_planned_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(
+                task_text='Issue #42 says "No new setting"; add it here.',
+                start_sha=base,
+            )
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a new setting."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_own_task_constraint_still_blocks_a_new_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(task_text="No new setting.", start_sha=base)
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a new setting."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+                pytest.raises(MergeQualityVerdictError, match="brief constraint failed"),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_other_repo_brief_start_uses_target_branch_as_conservative_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(task_text="No new setting.", start_sha="f" * 40)
+            with (
+                patch("teatree.core.gates.merge_quality_gate.latest_plan_artifact", return_value=None),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+                pytest.raises(MergeQualityVerdictError, match="brief constraint failed"),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_prior_planned_migration_does_not_violate_later_round_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            base = run_git(repo, "rev-parse", "HEAD")
+            migration = repo / "src/teatree/core/migrations/0002_prior.py"
+            migration.parent.mkdir(parents=True)
+            migration.write_text("# prior migration\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "prior migration")
+            round_start = run_git(repo, "rev-parse", "HEAD")
+            (repo / "README.md").write_text("later round\n")
+            ticket = self._constraint_ticket(task_text="No migration this round.", start_sha=round_start)
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a migration."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+                later = repo / "src/teatree/core/migrations/0003_later.py"
+                later.write_text("# later migration\n")
+                run_git(repo, "add", "src/teatree/core/migrations/0003_later.py")
+                with pytest.raises(MergeQualityVerdictError, match=r"migration changed: .*0003_later\.py"):
+                    check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_merge_rechecks_brief_constraints_after_the_push_gate(self) -> None:
         ticket = _ordinary_ticket()
@@ -332,7 +442,67 @@ class TestRatifiedTestStrategyAnchor(TestCase):
         assert "budget-count branch" in anchor
 
 
+class TestTheContractIsExhaustiveAndRemembersEveryRound(TestCase):
+    def test_supplied_changed_tests_are_named_as_current_head_context(self) -> None:
+        changed = ["tests/alpha.py::test_edge", "tests/beta.py::TestFlow::test_retry"]
+
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX, changed_tests=changed)
+
+        assert "Tests changed since the last passing head" in contract
+        assert "- tests/alpha.py::test_edge" in contract
+        assert "- tests/beta.py::TestFlow::test_retry" in contract
+
+    def test_it_requires_every_redundant_or_vacuous_test_in_one_citation(self) -> None:
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)
+
+        assert "EVERY redundant or vacuous test in ONE `test_value` citation, one per line" in contract
+        assert "`REDUNDANT <test node> — pinned by <test node>`" in contract
+        assert "`VACUOUS <test node> — <why>`" in contract
+
+    def test_it_lists_every_earlier_verdict_and_asks_for_consistency(self) -> None:
+        ticket = _ordinary_ticket()
+        oldest, newer = "c" * 40, _OTHER_HEX
+        CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha=oldest,
+            grader_identity="critic-agent-7",
+            items=[_fail("test_value", "tests/old.py::t_first is vacuous")],
+        )
+        CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha=newer,
+            grader_identity="critic-agent-7",
+            items=[_pass("test_value"), _fail("cleanliness", "src/x.py:4 duplicate")],
+        )
+
+        contract = build_merge_quality_contract(ticket, _FORTY_HEX)
+
+        assert f"{oldest} test_value: fail; tests/old.py::t_first is vacuous" in contract
+        assert f"{newer} cleanliness: fail; src/x.py:4 duplicate" in contract
+        assert f"{newer} test_value: pass;" in contract
+        assert "stay consistent with these earlier verdicts" in contract
+        assert "must say what changed" in contract
+
+    def test_a_first_pass_contract_has_no_history(self) -> None:
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)
+
+        assert "EARLIER MERGE VERDICTS" not in contract
+        assert "stay consistent" not in contract
+
+
 class TestArming(TestCase):
+    def test_supplied_changed_tests_reach_the_armed_critic_task(self) -> None:
+        ticket = _ordinary_ticket()
+
+        with pytest.raises(MergeQualityVerdictError):
+            check_merge_quality_verdict(ticket, _FORTY_HEX, changed_tests=["tests/alpha.py::test_edge"])
+
+        dispatch = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert dispatch.task is not None
+        assert "- tests/alpha.py::test_edge" in dispatch.task.execution_reason
+
     def test_no_verdict_arms_the_async_critic_at_the_head(self) -> None:
         ticket = _directive_ticket()
         with contextlib.suppress(MergeQualityVerdictError):
@@ -619,6 +789,42 @@ class TestResolveGatedTicketFailsClosed(TestCase):
         self._clear_only(ticket)
         _record_merge_verdict(ticket, items=_clean_verdict_items())
         assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # no raise
+
+    def test_critic_verdict_on_clear_ticket_covers_the_pr_ledger_ticket(self) -> None:
+        ledger_ticket = _ordinary_ticket()
+        clear_ticket = _ordinary_ticket()
+        PullRequest.objects.create(
+            ticket=ledger_ticket,
+            overlay="t3-teatree",
+            repo=_SLUG,
+            iid=str(_PR),
+            url=f"https://github.com/{_SLUG}/pull/{_PR}",
+        )
+        self._clear_only(clear_ticket)
+        _record_merge_verdict(clear_ticket, items=_clean_verdict_items())
+
+        assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)
+
+    def test_changed_tests_reach_critic_when_related_ticket_has_no_verdict(self) -> None:
+        ledger_ticket = _ordinary_ticket()
+        clear_ticket = _ordinary_ticket()
+        PullRequest.objects.create(
+            ticket=ledger_ticket,
+            overlay="t3-teatree",
+            repo=_SLUG,
+            iid=str(_PR),
+            url=f"https://github.com/{_SLUG}/pull/{_PR}",
+        )
+        self._clear_only(clear_ticket)
+
+        with pytest.raises(MergeQualityVerdictError):
+            assert_merge_quality_verdict(
+                slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX, changed_tests=["tests/alpha.py::test_edge"]
+            )
+
+        dispatch = CriticDispatch.objects.get(ticket=ledger_ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert dispatch.task is not None
+        assert "- tests/alpha.py::test_edge" in dispatch.task.execution_reason
 
     def test_no_pr_and_no_clear_is_a_noop(self) -> None:
         assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # nothing to gate

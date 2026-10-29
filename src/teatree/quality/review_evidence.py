@@ -34,7 +34,7 @@ class ReviewEvidence:
         return f"Duplicate-definition scan:\n{duplicates}\nMutation kill matrix:\n{self.matrix.render()}"
 
 
-def _receipt_path(repo: Path) -> Path:
+def receipt_path(repo: Path) -> Path:
     raw = git.run_strict(repo=str(repo), args=["rev-parse", "--git-path", "t3/review-evidence.json"]).strip()
     if not raw:
         message = "review evidence git path is empty"
@@ -65,7 +65,7 @@ def write_review_evidence(repo: Path, evidence: ReviewEvidence) -> None:
     if git.run_strict(repo=str(repo), args=["status", "--porcelain", "--untracked-files=no"]).strip():
         message = "review evidence requires no uncommitted tracked changes"
         raise ReviewEvidenceError(message)
-    path = _receipt_path(repo)
+    path = receipt_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -84,7 +84,7 @@ def write_review_evidence(repo: Path, evidence: ReviewEvidence) -> None:
 
 def read_review_evidence(repo: Path, head_sha: str) -> ReviewEvidence | None:
     try:
-        payload = json.loads(_receipt_path(repo).read_text(encoding="utf-8"))
+        payload = json.loads(receipt_path(repo).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:

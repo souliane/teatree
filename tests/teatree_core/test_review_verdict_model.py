@@ -12,9 +12,13 @@ from django.test import TestCase
 
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models import (
+    AutoReviewDispatch,
+    ClearRequest,
+    CodexReviewMarker,
     Finding,
     MergeClear,
     MRReviewLock,
+    ReviewHoldDisposition,
     ReviewVerdict,
     ReviewVerdictError,
     Ticket,
@@ -31,6 +35,216 @@ _OTHER_SHA = "b" * 40
 
 
 class TestRecordContract(TestCase):
+    def test_unverified_evidence_gap_is_recorded_without_merge_authority(self) -> None:
+        dispatch = AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+        marker = CodexReviewMarker.objects.create(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+        verdict = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="unverified",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="pending",
+            evidence_gaps=["ci_unreadable"],
+        )
+
+        assert verdict.evidence_gaps == ["ci_unreadable"]
+        assert not verdict.stands_as_hold()
+        dispatch.refresh_from_db()
+        marker.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.UNVERIFIED
+        assert marker.state == CodexReviewMarker.State.UNVERIFIED
+        assert AutoReviewDispatch.enqueue(slug="souliane/teatree", pr_id=42, head_sha=_SHA) is not None
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.NO_MERGE_SAFE
+        )
+
+    def test_unverified_cannot_conceal_a_failed_check_or_a_blocking_finding(self) -> None:
+        blocking = Finding(
+            severity="major",
+            kind="blocking",
+            basis="executed",
+            summary="fails when run",
+            file="a.py",
+            line=1,
+            reproduction="pytest a.py: 1 failed",
+        )
+        concealing: list[dict[str, object]] = [
+            {"gh_verify_result": "failed", "findings": []},
+            {"gh_verify_result": "pending", "findings": [blocking]},
+        ]
+
+        for case in concealing:
+            with self.subTest(case=case), pytest.raises(ReviewVerdictError, match="conceal"):
+                ReviewVerdict.record(
+                    pr_id=42,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    verdict="unverified",
+                    reviewer_identity="cold-reviewer",
+                    evidence_gaps=["ci_unreadable"],
+                    **case,
+                )
+
+        assert not ReviewVerdict.objects.exists()
+
+    def test_unverified_does_not_hide_a_recorded_same_head_pass(self) -> None:
+        passed = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="first-reviewer",
+        )
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="unverified",
+            reviewer_identity="second-reviewer",
+            evidence_gaps=["tests_unavailable"],
+        )
+
+        assert ReviewVerdict.objects.speaking_verdict_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA) == passed
+
+    def test_independent_cited_pass_can_disposition_a_same_head_hold(self) -> None:
+        hold = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[
+                Finding(
+                    severity="blocker",
+                    summary="CI result is stale",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="checked the run at this head: stale",
+                )
+            ],
+        )
+        clearing = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="independent-reviewer",
+        )
+
+        disposition = ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[
+                {
+                    "index": 0,
+                    "classification": "disproved_premise",
+                    "citation": "CI run at this head is green",
+                    "counter_reproduction": {
+                        "command": "gh run view --json conclusion",
+                        "observed_result": "conclusion: success at the reviewed head",
+                    },
+                }
+            ],
+        )
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.MERGE_SAFE
+        )
+        assert ReviewVerdict.objects.unreconciled_holds_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA) == []
+        clear = MergeClear.issue(
+            ClearRequest(pr_id=42, slug="souliane/teatree", reviewed_sha=_SHA, reviewer_identity="independent-reviewer")
+        )
+        assert clear.hold_disposition_ids == [disposition.pk]
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[
+                Finding(
+                    severity="major",
+                    summary="a second issue",
+                    file="b.py",
+                    line=2,
+                    reproduction="pytest test_second.py: failed",
+                )
+            ],
+        )
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
+
+    def test_direct_recorder_retries_a_venue_only_hold(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="retry"):
+            ReviewVerdict.record(
+                pr_id=42,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                findings=[
+                    Finding(
+                        severity="blocker",
+                        kind="blocking",
+                        basis="venue_limit",
+                        summary="CI rollup could not be read in this venue",
+                    )
+                ],
+            )
+
+        assert not ReviewVerdict.objects.exists()
+
+    def test_venue_only_pending_check_retries_without_recording_a_hold(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="retry"):
+            ReviewVerdict.record(
+                pr_id=42,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="pending",
+                findings=[
+                    Finding(
+                        severity="blocker",
+                        kind="blocking",
+                        basis="venue_limit",
+                        summary="verify-gates could not run in this venue",
+                    )
+                ],
+            )
+
+        assert not ReviewVerdict.objects.exists()
+
+    def test_failed_required_check_still_holds_with_a_venue_note(self) -> None:
+        verdict = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="failed",
+            findings=[
+                Finding(
+                    severity="blocker",
+                    kind="blocking",
+                    basis="venue_limit",
+                    summary="CI rollup could not be read in this venue",
+                )
+            ],
+        )
+
+        assert verdict.verdict == ReviewVerdict.Verdict.HOLD
+        assert verdict.structured_findings[0].kind == "note"
+
     def test_records_a_merge_safe_verdict_with_structured_findings(self) -> None:
         verdict = ReviewVerdict.record(
             pr_id=42,
@@ -47,7 +261,12 @@ class TestRecordContract(TestCase):
         assert only.kind == "nit"
 
     def test_an_explicit_blocking_kind_survives_the_finding_round_trip(self) -> None:
-        finding = Finding(severity="minor", summary="false statement", kind="blocking")
+        finding = Finding(
+            severity="minor",
+            summary="false statement",
+            kind="blocking",
+            reproduction="pytest test_statement.py: failed",
+        )
 
         assert Finding.from_dict(finding.as_dict()).kind == "blocking"
 
@@ -478,7 +697,9 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="cold-reviewer-a",
-            findings=[Finding(severity="major", summary="first blocker")],
+            findings=[
+                Finding(severity="major", summary="first blocker", reproduction="pytest test_blocker.py: failed")
+            ],
             ticket=first_ticket,
         )
         original_time = first.recorded_at
@@ -488,7 +709,7 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="COLD-REVIEWER-A",
-            findings=[Finding(severity="minor", summary="later detail")],
+            findings=[Finding(severity="minor", summary="later detail", reproduction="pytest test_detail.py: failed")],
             ticket=second_ticket,
         )
 
@@ -504,7 +725,7 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="cold-reviewer-a",
-            findings=[Finding(severity="minor", summary="later detail")],
+            findings=[Finding(severity="minor", summary="later detail", reproduction="pytest test_detail.py: failed")],
         )
         assert [finding.summary for finding in again.structured_findings] == ["first blocker", "later detail"]
 
@@ -607,6 +828,39 @@ class TestStalenessAndSafety(TestCase):
 
 
 class TestFindingRoundTrip(TestCase):
+    def test_code_anchored_claim_without_reproduction_stays_blocking(self) -> None:
+        finding = Finding(
+            severity="critical", kind="blocking", summary="Untested shipped behavior", file="a.py", line=4
+        )
+        assert finding.kind == "blocking"
+        assert finding.severity == "critical"
+
+    def test_explicit_documentation_basis_without_reproduction_is_advisory(self) -> None:
+        finding = Finding(severity="critical", kind="blocking", basis="documentation", summary="Spec suggests a bug")
+        assert finding.kind == "note"
+
+    def test_null_reproduction_does_not_become_the_word_none(self) -> None:
+        finding = Finding.from_dict(
+            {"severity": "major", "kind": "blocking", "basis": "documentation", "reproduction": None}
+        )
+        assert finding.reproduction == ""
+        assert finding.kind == "note"
+
+    def test_explicit_note_kind_wins_over_minor_severity(self) -> None:
+        finding = Finding(severity="minor", kind="note", basis="executed", summary="Review venue could not inspect CI")
+        assert finding.kind == "note"
+
+    def test_executed_reproduction_still_blocks(self) -> None:
+        finding = Finding(
+            severity="critical",
+            kind="blocking",
+            summary="runtime failure",
+            file="a.py",
+            line=4,
+            reproduction="pytest test_a.py: failed",
+        )
+        assert finding.kind == "blocking"
+
     def test_line_coerced_from_string_digits(self) -> None:
         assert Finding.from_dict({"severity": "nit", "summary": "s", "file": "a.py", "line": "7"}).line == 7
 

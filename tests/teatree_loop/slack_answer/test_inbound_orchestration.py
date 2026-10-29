@@ -23,6 +23,8 @@ The four claims below are the contract:
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -31,6 +33,7 @@ from django.utils import timezone
 
 from teatree.core.models import DmContext, OperatorIdentity, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.scanners import owner_dm_rows
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import CoverageKind, WorkOrigin, dispatch_work, find_coverage
@@ -48,9 +51,9 @@ _CHANNEL = "D-owner"
 class RecordingBackend:
     """In-memory ``MessagingBackend`` that records every react and thread post."""
 
+    user_id: str = "U-owner"
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
-    user_id: str = "U-owner"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -245,7 +248,10 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
         assert row.loop_replied_at is None
         assert row.loop_response_confirmed_at is None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
-        assert any(report.payload["kind"] == "inbound_unanswered" for report in LifecycleIncidentDetector().detect())
+        owner_backend = SimpleNamespace(user_id="U-owner")
+        with patch.object(owner_dm_rows, "messaging_from_overlay", return_value=owner_backend):
+            reports = LifecycleIncidentDetector().detect()
+        assert any(report.payload["kind"] == "inbound_unanswered" for report in reports)
 
     def test_retried_in_flight_already_reacted_confirms_response(self) -> None:
         class AlreadyReactedBackend(RecordingBackend):

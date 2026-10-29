@@ -86,6 +86,8 @@ layers = [
 expose = [
   "_FORGE_READ_TIMEOUT_SECONDS",
   "_gh_api_patch",
+  "_gh_api_delete",
+  "_gh_api_empty",
   "_gh_api_post",
   "_run_gh",
   "gh_api_get",
@@ -327,7 +329,6 @@ depends_on = [
   "teatree.core.admission",
   "teatree.core.admission_pressure",
   "teatree.core.modelkit",
-  "teatree.core.admission.pr_start_cap",
   "teatree.core.owner_question_message",
   "teatree.core.owner_dm.question_ticket",
   "teatree.core.notify_targets",
@@ -388,11 +389,6 @@ depends_on = ["teatree.core.models"]
 path = "teatree.core.modelkit"
 layer = "domain"
 depends_on = []
-
-[[modules]]
-path = "teatree.core.admission.pr_start_cap"
-layer = "domain"
-depends_on = ["teatree.core.modelkit"]
 
 [[modules]]
 # The owner-question card as Slack text and blocks. Its own node so the loop-layer binder
@@ -528,7 +524,6 @@ depends_on = [
   "teatree.core.claim_liveness",
   "teatree.utils",
   "teatree.core.modelkit",
-  "teatree.core.admission.pr_start_cap",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
   "teatree.core.managers_admission",
@@ -551,7 +546,6 @@ depends_on = [
   "teatree.core.claim_liveness",
   "teatree.core.forge_url",
   "teatree.core.modelkit",
-  "teatree.core.admission.pr_start_cap",
   "teatree.core.managers",
   # a worker_quiescing write advances the claim fence from the one ConfigSetting write seam.
   "teatree.core.managers_task_claim",
@@ -642,6 +636,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.backends.forge_pool"
+layer = "domain"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.backends.types"
 layer = "domain"
 depends_on = []
@@ -681,6 +680,7 @@ depends_on = [
   "teatree.backends.errors",
   "teatree.backends.types",
   "teatree.backends.http_retry",
+  "teatree.backends.forge_pool",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.slack"
 ]
@@ -688,7 +688,7 @@ depends_on = [
 [[modules]]
 path = "teatree.backends.github.api"
 layer = "domain"
-depends_on = []
+depends_on = ["teatree.backends.forge_pool"]
 
 [[modules]]
 path = "teatree.backends.github.reads"
@@ -739,6 +739,7 @@ depends_on = [
   "teatree.overlay_init",
   "teatree.instance_id",
   "teatree.loop",
+  "teatree.loop.owner_identity",
   "teatree.utils",
   "teatree.self_update",
   "teatree.repo_mode",
@@ -908,7 +909,22 @@ depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
 # mirroring teatree.loop.inbound_reading above.
 path = "teatree.loop.question_binding"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.core.notify_targets", "teatree.core.owner_question_message", "teatree.loop.inbound_reading"]
+depends_on = [
+  "teatree.core.models",
+  "teatree.core.notify_targets",
+  "teatree.core.owner_question_message",
+  "teatree.loop.inbound_reading",
+  "teatree.loop.owner_identity"
+]
+
+[[modules]]
+# Who the configured Slack owner is, and which senders and stored DM rows are theirs. Read by
+# the recorder and every consumer of stored rows (teatree.loop.scanners, teatree.loop.slack_answer,
+# teatree.loop.question_binding — all domain) and by the CLI drain, so it is declared at domain
+# rather than inheriting orchestration from its package, mirroring teatree.loop.question_binding.
+path = "teatree.loop.owner_identity"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.core.notify_targets", "teatree.types"]
 
 [[modules]]
 path = "teatree.core.notify_targets"
@@ -1036,9 +1052,9 @@ depends_on = ["teatree.core.models", "teatree.core.modelkit"]
 path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
-  "teatree.core.admission.pr_start_cap",
   "teatree.loop.inbound_reading",
   "teatree.loop.question_binding",
+  "teatree.loop.owner_identity",
   "teatree.loop.main_check_runs",
   "teatree.types",
   "teatree.paths",
@@ -1110,7 +1126,6 @@ layer = "domain"
 depends_on = [
   "teatree.core",
   "teatree.core.admission",
-  "teatree.core.admission.pr_start_cap",
   "teatree.core.factory.queue_stall",
   "teatree.core.models",
   "teatree.utils",
@@ -1185,6 +1200,7 @@ depends_on = [
   "teatree.loop.inbound_reading",
   "teatree.loop.inbound_classifier",
   "teatree.loop.question_binding",
+  "teatree.loop.owner_identity",
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",

@@ -23,6 +23,7 @@ _TIMESTAMP_PATHS = {
     "workflow_run": ("workflow_run", "updated_at"),
     "push": ("head_commit", "timestamp"),
 }
+HOOK_EVENTS = tuple(_TIMESTAMP_PATHS)
 _EARLIEST_EVENT = datetime(1970, 1, 1, tzinfo=UTC)
 _LATEST_EVENT = datetime(2100, 1, 1, tzinfo=UTC)
 _MAX_REPOSITORY_ID = 2**63 - 1

@@ -118,6 +118,7 @@ class TestF3SlackMentionsRecordsDrainedDmsBeforeCommit(TestCase):
 
     def test_drained_dm_row_exists_when_the_drain_commits(self) -> None:
         backend = MagicMock()
+        backend.user_id = "U_HUMAN"
         backend.fetch_mentions.return_value = []
         backend.auth_test.return_value = {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
         backend.get_permalink.return_value = ""
@@ -232,6 +233,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value="green"),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
             patch.object(author_trust, "repo_is_internal", return_value=True),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
         ):
             result = client.merge_pr_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 

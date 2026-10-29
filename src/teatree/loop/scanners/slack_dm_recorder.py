@@ -6,7 +6,10 @@ the question it answers. The reactive Slack-answer cycle is the rows' consumer. 
 writer goes through :meth:`SlackDmRecorder.record_events`: the receiver's live hot
 path, the listener-downtime catch-up, and the inbox drain of the JSONL queue.
 
-Two write-side filters apply, so the consumer inherits them without re-implementing:
+Three write-side filters apply, so the consumer inherits them without re-implementing:
+
+* :func:`teatree.loop.owner_identity.sent_by_operator` keeps only the configured owner's and
+    registered operators' own messages — a colleague's DM is never operator work.
 
 * :func:`teatree.loop.scanners.slack_self_filter.filter_self_messages` drops the bot's
     OWN outbound DMs, keyed on the bot's resolved identity (#1346).
@@ -24,6 +27,7 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
+from teatree.loop.owner_identity import configured_owner_id, sent_by_operator
 from teatree.loop.question_binding import cards_in_thread, is_question_addressee
 from teatree.loop.scanners.slack_self_filter import (
     OwnSlackIdentity,
@@ -77,6 +81,8 @@ class SlackDmRecorder:
             return 0
         recorded = 0
         for event in dms:
+            if not self.is_from_operator(event):
+                continue
             app_posted = is_on_behalf_posted(event)
             if (
                 app_posted
@@ -95,6 +101,9 @@ class SlackDmRecorder:
                 continue
             recorded += self._record_one(event)
         return recorded
+
+    def is_from_operator(self, event: RawAPIDict) -> bool:
+        return sent_by_operator(event, configured_owner_id(self.backend))
 
     def _addressee_card_reply(self, event: RawAPIDict) -> bool:
         thread_ts = _event_thread_ts(event)
