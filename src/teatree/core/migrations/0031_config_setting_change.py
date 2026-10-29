@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0029_loop_tick_cost"),
+        ("core", "0030_disk_reclaim_cursor"),
     ]
 
     operations = [

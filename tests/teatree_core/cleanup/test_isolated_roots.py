@@ -19,13 +19,176 @@ from django.utils import timezone
 
 from teatree import paths
 from teatree.core.cleanup import isolated_roots as reaper
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.utils.run import CommandFailedError
-from tests._git_repo import make_git_repo, run_git
+from tests._git_repo import make_git_repo, plant_review_evidence_receipt, run_git
 
 _REAP = "teatree.core.cleanup.isolated_roots"
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
+
+
+class TestIdleDatabaseCopies(TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.codex_home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        self.enterContext(patch.dict(os.environ, {"T3_CODEX_HOME": str(self.codex_home)}))
+        self.enterContext(patch(f"{_REAP}.read_process_table", return_value=ProcessTable(frozenset(), "test")))
+
+    def _copy(self, name: str, *, codex: bool = False, registered: bool = True) -> tuple[Path, Ticket]:
+        checkout = make_git_repo(self.workspace / name)
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{name}")
+        if registered:
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="org/repo",
+                branch=name,
+                extra={"worktree_path": str(checkout)},
+            )
+        root = self.codex_home / ".local/share/teatree-worktrees" if codex else self.root
+        root.mkdir(parents=True, exist_ok=True)
+        env_dir = _make_env_dir(root, paths.isolated_slug(checkout))
+        paths.IsolatedEnvDir(env_dir).stamp_owner(checkout)
+        self._age(env_dir)
+        return env_dir, ticket
+
+    def _age(self, root: Path) -> None:
+        old = time.time() - 4 * 60 * 60
+        for entry in sorted(root.rglob("*"), reverse=True):
+            os.utime(entry, (old, old), follow_symlinks=False)
+        os.utime(root, (old, old))
+
+    def test_idle_copies_in_host_and_codex_roots_lose_only_their_database(self) -> None:
+        host, _ = self._copy("host")
+        codex, _ = self._copy("codex", codex=True)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert all(not (root / "db.sqlite3").exists() for root in (host, codex))
+        assert all((root / "logs").is_dir() for root in (host, codex))
+        assert sum("RECLAIMED" in line for line in result) == 2
+
+    def test_recent_nested_write_and_open_database_are_kept(self) -> None:
+        recent, _ = self._copy("recent")
+        (recent / "logs" / "current.log").write_text("active", encoding="utf-8")
+        held, _ = self._copy("held")
+        table = ProcessTable(frozenset({held / "db.sqlite3"}), "test")
+
+        with patch(f"{_REAP}.read_process_table", return_value=table):
+            result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (recent / "db.sqlite3").exists()
+        assert (held / "db.sqlite3").exists()
+        assert any("written" in line for line in result)
+        assert any("open" in line for line in result)
+
+    def test_claimed_task_and_git_evidence_keep_database(self) -> None:
+        busy, ticket = self._copy("busy")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.ended_at = timezone.now()
+        session.save(update_fields=["ended_at"])
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.CLAIMED)
+        evidence, _ = self._copy("evidence")
+        git_dir, _ = self._copy("git-state")
+        (git_dir / ".git").mkdir()
+        self._age(git_dir)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (busy / "db.sqlite3").exists()
+        assert (evidence / "db.sqlite3").exists()
+        assert (git_dir / "db.sqlite3").exists()
+        assert any("active/claimed task" in line for line in result)
+        assert any("protected evidence" in line for line in result)
+        assert any("git" in line for line in result)
+
+    def test_a_review_receipt_keeps_the_database_of_a_registered_checkout_on_an_ordinary_branch(self) -> None:
+        env_dir, _ = self._copy("ordinary")
+        plant_review_evidence_receipt(self.workspace / "ordinary")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("review-evidence receipt" in line for line in result)
+
+    def test_a_review_receipt_keeps_the_database_of_a_checkout_with_no_ticket_row(self) -> None:
+        env_dir, _ = self._copy("unregistered", registered=False)
+        plant_review_evidence_receipt(self.workspace / "unregistered")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert not any("RECLAIMED" in line for line in result)
+
+    def test_an_evidence_branch_the_row_does_not_name_keeps_the_database(self) -> None:
+        env_dir, _ = self._copy("stale-row")
+        run_git(self.workspace / "stale-row", "checkout", "-q", "-b", "backup/before-rewrite")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("backup/before-rewrite" in line for line in result)
+
+    def test_an_idle_copy_with_no_receipt_and_an_ordinary_branch_is_still_reclaimed(self) -> None:
+        env_dir, _ = self._copy("plain")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert not (env_dir / "db.sqlite3").exists()
+        assert sum("RECLAIMED" in line for line in result) == 1
+
+    def test_a_symlinked_env_dir_is_never_reclaimed_through_the_link(self) -> None:
+        env_dir, _ = self._copy("linked-dir")
+        elsewhere = self.workspace / "real-env-dir"
+        env_dir.rename(elsewhere)
+        env_dir.symlink_to(elsewhere)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (elsewhere / "db.sqlite3").exists()
+        assert any("symlink" in line for line in result)
+
+    def test_a_symlinked_database_file_is_never_unlinked_as_a_copy(self) -> None:
+        env_dir, _ = self._copy("linked-file")
+        target = self.workspace / "shared.sqlite3"
+        target.write_bytes(b"shared")
+        (env_dir / "db.sqlite3").unlink()
+        (env_dir / "db.sqlite3").symlink_to(target)
+        self._age(env_dir)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert target.read_bytes() == b"shared"
+        assert (env_dir / "db.sqlite3").is_symlink()
+        assert any("symlink" in line for line in result)
+
+    def test_reaper_pinned_checkout_keeps_its_idle_database(self) -> None:
+        env_dir, _ = self._copy("pinned")
+        row = Worktree.objects.get(branch="pinned")
+        row.extra = {**row.extra, "reaper_pinned": True}
+        row.save(update_fields=["extra"])
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("reaper_pinned" in line for line in result)
+
+    def test_unsighted_process_table_refuses_with_reason(self) -> None:
+        idle, _ = self._copy("idle")
+        table = ProcessTable(frozenset(), "", gaps=("host process table unavailable",))
+
+        with patch(f"{_REAP}.read_process_table", return_value=table):
+            result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (idle / "db.sqlite3").exists()
+        assert any(
+            "REFUSED" in line and "host process table unavailable" in line and "1 item(s) kept" in line
+            for line in result
+        )
 
 
 def _make_env_dir(root: Path, slug: str) -> Path:
