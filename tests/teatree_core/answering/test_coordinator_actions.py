@@ -73,6 +73,75 @@ class TestTheCoordinatorsActionsRunFromTheClosedTable(TestCase):
         assert [row["executed"] for row in self._audit().values()] == [True]
         assert "Bound this thread" not in self.backend.replies[1][2]
 
+    def test_queue_task_plans_the_conversation_with_a_code_owned_reason(self) -> None:
+        conversation = self.task.ticket
+
+        self._record(_bind(kind="queue_task", ticket=conversation.issue_url))
+
+        queued = Task.objects.get(ticket=conversation, phase="planning")
+        assert queued.status == Task.Status.PENDING
+        assert queued.execution_reason == "Plan this ticket from its recorded context."
+        assert "please move" not in queued.execution_reason
+        assert f"TODO-{queued.pk}" in self.backend.replies[0][2]
+        assert [(row["kind"], row["executed"]) for row in self._audit().values()] == [("queue_task", True)]
+
+    def test_queue_task_accepts_only_a_recorded_or_owner_named_work_ticket(self) -> None:
+        other = Ticket.objects.create(
+            overlay="t3-teatree", issue_url="https://github.com/souliane/teatree/issues/9", short_description="Other"
+        )
+        self._record(_bind(kind="queue_task", ticket=other.issue_url))
+        assert not Task.objects.filter(ticket=other, phase="planning").exists()
+
+        self.task.ticket.merge_extra(merge_into_dicts={"slack_answer": {"work_issue_url": _WORK_URL}})
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        queued = Task.objects.get(ticket=self.work, phase="planning")
+        assert queued.execution_reason == "Plan this ticket from its recorded context."
+        assert [row["executed"] for row in self._audit().values()] == [False, True]
+
+    def test_queue_task_reuses_an_active_planning_task(self) -> None:
+        session = Session.objects.create(ticket=self.work, overlay="t3-teatree", agent_id="planning")
+        active = Task.objects.create(ticket=self.work, session=session, phase="planning", status=Task.Status.CLAIMED)
+
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        assert list(Task.objects.filter(ticket=self.work, phase="planning")) == [active]
+        assert f"TODO-{active.pk}" in self.backend.replies[0][2]
+
+    def test_queue_task_admits_a_mailbox_conversation_without_slack_context(self) -> None:
+        mailbox = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+            short_description="Plan this peer request",
+        )
+        session = Session.objects.create(ticket=mailbox, overlay="t3-teatree", agent_id="answering")
+        self.task = Task.objects.create(ticket=mailbox, session=session, phase="answering")
+
+        self._record(_bind(kind="queue_task", ticket=mailbox.issue_url))
+
+        assert Task.objects.filter(ticket=mailbox, phase="planning").count() == 1
+        assert [row["executed"] for row in self._audit().values()] == [True]
+
+    def test_queue_task_refuses_missing_ticket_and_closed_work(self) -> None:
+        self._record({"answer": {"text": "Done."}, "actions": [{"kind": "queue_task"}]})
+        Ticket.objects.filter(pk=self.work.pk).update(state=Ticket.State.DELIVERED)
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        assert not Task.objects.filter(ticket=self.work, phase="planning").exists()
+        assert [row["detail"] for row in self._audit().values()] == [
+            "queue_task needs a ticket URL",
+            "no open tracked ticket matches it",
+        ]
+
+    def test_queue_task_refuses_a_task_outside_a_conversation(self) -> None:
+        session = Session.objects.create(ticket=self.work, overlay="t3-teatree", agent_id="answering")
+        self.task = Task.objects.create(ticket=self.work, session=session, phase="answering")
+
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        assert not Task.objects.filter(ticket=self.work, phase="planning").exists()
+        assert [row["detail"] for row in self._audit().values()] == ["the task's ticket is not a conversation"]
+
     def test_a_ticket_the_owner_did_not_name_runs_nothing_and_the_receipt_claims_nothing(self) -> None:
         other = Ticket.objects.create(
             overlay="t3-teatree", issue_url="https://github.com/souliane/teatree/issues/9", short_description="Other"

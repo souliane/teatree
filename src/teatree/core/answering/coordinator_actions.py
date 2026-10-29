@@ -18,6 +18,7 @@ from django.db import transaction
 from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.modelkit.coordinator_action import CoordinatorActionKind, action_refusal
 from teatree.core.models import Task, ThreadBinding, Ticket
+from teatree.core.models.task_enqueue import enqueue_phase_task
 from teatree.url_classify import find_forge_refs
 from teatree.utils.url_slug import is_slack_conversation_anchor
 
@@ -64,8 +65,45 @@ def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
     return f"Bound this thread to <{target.issue_url}|#{target.ticket_number}>."
 
 
+def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
+    conversation = task.ticket
+    if not conversation.is_conversation():
+        message = "the task's ticket is not a conversation"
+        raise ActionRefusedError(message)
+    named = arguments.get("ticket")
+    if not isinstance(named, str) or not named:
+        message = "queue_task needs a ticket URL"
+        raise ActionRefusedError(message)
+    if named == conversation.issue_url:
+        target = conversation
+    else:
+        extra = conversation.extra if isinstance(conversation.extra, dict) else {}
+        origin = extra.get("slack_answer")
+        recorded = str(origin.get("work_issue_url") or "") if isinstance(origin, dict) else ""
+        if named != recorded and named not in find_forge_refs(_owner_message(conversation)):
+            message = "the conversation does not identify that work ticket"
+            raise ActionRefusedError(message)
+        target = Ticket.objects.in_flight(conversation.overlay).filter(reference_issue_q(named)).order_by("-pk").first()
+        if target is None or not target.is_admissible():
+            message = "no open tracked ticket matches it"
+            raise ActionRefusedError(message)
+    with transaction.atomic():
+        queued = (
+            Task.objects.in_flight_for_phase(target.overlay, "planning").filter(ticket=target).order_by("pk").first()
+        )
+        if queued is None:
+            queued = enqueue_phase_task(
+                ticket=target,
+                phase="planning",
+                reason="Plan this ticket from its recorded context.",
+                agent_id="coordinator",
+            )
+    return f"Planning is queued as TODO-{queued.pk}."
+
+
 _PROCESSORS: Mapping[CoordinatorActionKind, Callable[[Task, Mapping[str, object]], str]] = {
     CoordinatorActionKind.BIND_THREAD: _bind_thread,
+    CoordinatorActionKind.QUEUE_TASK: _queue_task,
 }
 
 

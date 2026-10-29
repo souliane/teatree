@@ -14,6 +14,7 @@ from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDeci
 
 class CoordinatorActionKind(StrEnum):
     BIND_THREAD = "bind_thread"
+    QUEUE_TASK = "queue_task"
 
 
 class ActionDestination(StrEnum):
@@ -35,6 +36,11 @@ class ActionSpec:
 
 ACTION_SPECS: Mapping[CoordinatorActionKind, ActionSpec] = {
     CoordinatorActionKind.BIND_THREAD: ActionSpec(
+        destination=ActionDestination.BOUND_TICKET,
+        crosses=frozenset(),
+        arguments=frozenset({"ticket"}),
+    ),
+    CoordinatorActionKind.QUEUE_TASK: ActionSpec(
         destination=ActionDestination.BOUND_TICKET,
         crosses=frozenset(),
         arguments=frozenset({"ticket"}),
