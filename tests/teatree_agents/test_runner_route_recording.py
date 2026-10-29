@@ -1,9 +1,11 @@
 """A routed candidate refused for credit has spent its key, not the route: rotate, else wait for the plans."""
 
+import asyncio
 import contextlib
 import datetime as dt
+import json
 import os
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from typing import Any
 from unittest.mock import patch
 
@@ -15,6 +17,7 @@ import teatree.agents.harness as harness_mod
 from teatree.agents.runner import run_agent
 from teatree.agents.runner_route_recording import RouteFailureRecord
 from teatree.agents.runner_stream import HarnessOutcome
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import (
     LIMIT_PARKED_PREFIX,
     AgentRouteAvailability,
@@ -25,13 +28,20 @@ from teatree.core.models import (
     Task,
     TaskAttempt,
 )
-from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._metered_keys import KEY_1, KEY_2, cap_the_plans, route_metered_keys
-from tests.teatree_agents._route_fakes import CLAUDE_LIKE, CLAUDE_SDK, register_stub_harnesses, route_config, routed_by
+from tests.teatree_agents._route_fakes import (
+    CLAUDE_LIKE,
+    CLAUDE_SDK,
+    register_stub_harnesses,
+    route_config,
+    routed_by,
+    two_healthy_oauth_accounts,
+)
 from tests.teatree_agents._sdk_fake import (
     FakeHarnessSession,
+    assistant_text,
     assistant_tool_use,
     fake_sdk,
     result_message,
@@ -196,25 +206,7 @@ class TestRoutedMeteredCreditRefusal(TestCase):
 
 class TestRoutedSubscriptionLimit(TestCase):
     def test_session_limit_rotates_account_without_holding_the_route(self) -> None:
-        first = "anthropic/first/oauth"
-        second = "anthropic/second/oauth"
-        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
-        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", [first, second])
-        AnthropicActivePick.objects.set_pick("oauth", "", first)
-        for path in (first, second):
-            AnthropicTokenUsage.objects.record(
-                path,
-                TokenHealthReading(
-                    organization_id="org",
-                    utilization_5h=0.1,
-                    utilization_7d=0.1,
-                    status_5h="allowed",
-                    status_7d="allowed",
-                    reset_5h=None,
-                    reset_7d=None,
-                ),
-                now=timezone.now(),
-            )
+        first, second = two_healthy_oauth_accounts()
         ticket = planned_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
 
@@ -236,3 +228,52 @@ class TestRoutedSubscriptionLimit(TestCase):
         assert AnthropicTokenUsage.objects.get(pass_path=first).is_exhausted
         assert not AgentRouteAvailability.objects.exists()
         assert attempt.account == first
+
+
+class _HangsAfterItsMessages(FakeHarnessSession):
+    def __init__(self, messages: list[Any]) -> None:
+        super().__init__(messages)
+        self._interrupt_landed = asyncio.Event()
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        async for message in super().receive_response():
+            yield message
+        await self._interrupt_landed.wait()
+
+    async def interrupt(self) -> None:
+        await super().interrupt()
+        self._interrupt_landed.set()
+
+
+class TestARoutedRunThatHitsItsRuntimeCeiling(TestCase):
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 1, scope="")
+        ticket = planned_ticket()
+        self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+    def _run(self, *messages: Any) -> TaskAttempt:
+        with (
+            routed_by(route_config(_SKILL, CLAUDE_SDK)),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=[_SKILL]),
+            patch.object(Task, "renew_lease", lambda self, **_kw: None),
+            fake_sdk(list(messages)),
+            patch.object(harness_mod, "ClaudeSDKClient", lambda **_: _HangsAfterItsMessages(list(messages))),
+        ):
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata=SkillMetadata())
+        self.task.refresh_from_db()
+        return attempt
+
+    def test_an_envelope_written_before_the_ceiling_is_kept(self) -> None:
+        envelope = {"summary": "implemented", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+
+        attempt = self._run(assistant_tool_use(), assistant_text(json.dumps(envelope)))
+
+        assert self.task.status == Task.Status.COMPLETED
+        assert attempt.result["summary"] == "implemented"
+
+    def test_a_run_with_no_envelope_fails_as_a_runtime_ceiling(self) -> None:
+        attempt = self._run(assistant_tool_use(), assistant_text("still reading the fixtures"))
+
+        assert self.task.status == Task.Status.FAILED
+        assert attempt.error.startswith("stuck_loop: ")
+        assert attempt.failure_kind == FailureKind.RUNTIME_CEILING
