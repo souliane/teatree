@@ -52,12 +52,12 @@ from teatree.core.config_interchange.secret_guard import (
     RedactedRow,
     ScanTermsUnavailableError,
 )
-from teatree.core.config_setting_history import clear_with_history, latest_change, previous_value_after_set
 from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
+from teatree.core.settings.config_setting_history import clear_with_history, latest_change, previous_value_after_set
 
 # Every key ``config_setting`` knows — the SINGLE known-key set shared by
 # get/list/set/clear AND the MCP ``config_setting_get`` read tool

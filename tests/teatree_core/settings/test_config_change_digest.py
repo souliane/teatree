@@ -2,8 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
-from teatree.core.config_change_digest import render_change_rows
 from teatree.core.models import ConfigSettingChange
+from teatree.core.settings.config_change_digest import render_change_rows
 
 
 def test_digest_rows_show_previous_value_writer_and_age_without_internal_state() -> None:

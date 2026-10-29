@@ -418,24 +418,21 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         ``None`` again for that scope.
         """
         with transaction.atomic(using=self.db):
-            return self._clear_locked(key, scope, authorized_by=authorized_by)
-
-    def _clear_locked(self, key: str, scope: str, *, authorized_by: str) -> bool:
-        reject_review_config_write(self.db)
-        reject_unattended_governed_write(key, authorized_by=authorized_by)
-        previous = self.select_for_update().filter(scope=scope, key=key).first()
-        if previous is None:
-            return False
-        deleted, _ = self.filter(scope=scope, key=key).delete()
-        if deleted:
-            ConfigSettingChange.record(
-                key=key,
-                scope=scope,
-                action="clear",
-                values=(previous.value, None),
-                written_by=decider(authorized_by),
-            )
-        return deleted > 0
+            reject_review_config_write(self.db)
+            reject_unattended_governed_write(key, authorized_by=authorized_by)
+            previous = self.select_for_update().filter(scope=scope, key=key).first()
+            if previous is None:
+                return False
+            deleted, _ = self.filter(scope=scope, key=key).delete()
+            if deleted:
+                ConfigSettingChange.record(
+                    key=key,
+                    scope=scope,
+                    action="clear",
+                    values=(previous.value, None),
+                    written_by=decider(authorized_by),
+                )
+            return deleted > 0
 
     def overrides_for_scope(self, scope: str) -> dict[str, ConfigValue]:
         """Return ``{key: value}`` for every row in *scope* (one query).

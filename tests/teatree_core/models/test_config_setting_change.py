@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ValidationError
-from django.db import connections
+from django.db import IntegrityError, connections
 from django.test import TestCase, override_settings
 
 from teatree.config.db_router import CONFIG_DB_ALIAS, PINNED_MODEL_LABELS
@@ -162,6 +162,22 @@ class TestConfigSettingChange(TestCase):
             )
         assert ConfigSetting.objects.filter(key__in=["agent_harness", "agent_harness_provider"]).exists() is False
         assert ConfigSettingChange.objects.filter(key__in=["agent_harness", "agent_harness_provider"]).exists() is False
+
+    def test_a_failed_audit_insert_rolls_back_the_setting(self) -> None:
+        connection = connections[ConfigSettingChange.objects.db]
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "CREATE TEMP TRIGGER reject_config_change BEFORE INSERT ON teatree_config_setting_change "
+                "BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END"
+            )
+        try:
+            with pytest.raises(IntegrityError, match="forced audit failure"):
+                ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+            assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
+            assert ConfigSettingChange.objects.filter(key="agent_max_turns").exists() is False
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("DROP TRIGGER reject_config_change")
 
     def test_sensitive_values_are_masked_in_history(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["private"]}, authorized_by="operator")

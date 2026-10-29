@@ -52,7 +52,6 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.config_change_digest import render_change_rows
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
@@ -60,6 +59,7 @@ from teatree.core.models import BotPing, ConfigSettingChange
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.settings.config_change_digest import render_change_rows
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 

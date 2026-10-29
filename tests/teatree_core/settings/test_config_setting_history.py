@@ -2,8 +2,8 @@
 
 from django.test import TestCase
 
-from teatree.core.config_setting_history import clear_with_history, latest_change, previous_value_after_set
 from teatree.core.models import ConfigSetting
+from teatree.core.settings.config_setting_history import clear_with_history, latest_change, previous_value_after_set
 
 
 class TestConfigSettingHistory(TestCase):
