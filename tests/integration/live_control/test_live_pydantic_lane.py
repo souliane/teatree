@@ -9,7 +9,8 @@ import tempfile
 import threading
 import time
 from typing import Any
-from unittest.mock import patch
+from unittest import SkipTest
+from unittest.mock import Mock, patch
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
@@ -48,6 +49,55 @@ def _evidence(name: str, outcome: HarnessOutcome, **facts: object) -> None:
         )
         + "\n"
     )
+
+
+def _contains_user_prompt(thread: list[ModelRequest | ModelResponse], text: str) -> bool:
+    return any(
+        text in part.content
+        for message in thread
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+    )
+
+
+def test_compaction_steer_is_found_in_prompt_content() -> None:
+    steer = frame_operator_input("Preserve the public API after compaction", "pydantic-compaction")
+    thread = [ModelRequest(parts=[UserPromptPart(content=steer)])]
+    assert steer not in repr(thread)
+    assert _contains_user_prompt(thread, steer)
+
+
+def test_pydantic_live_flag_stops_before_route_resolution() -> None:
+    case = LivePydanticLaneTests(methodName="test_sender_calls_mailbox_tool_and_recipient_reads_the_nonce")
+    route = Mock(side_effect=AssertionError("route resolved without the live flag"))
+    with (
+        patch.dict(os.environ, {"T3_LIVE_PYDANTIC_MAILBOX": "0"}),
+        patch.dict(LivePydanticLaneTests.setUp.__globals__, {"resolve_live_route": route}),
+    ):
+        try:
+            with pytest.raises(SkipTest, match="T3_LIVE_PYDANTIC_MAILBOX=1"):
+                case.setUp()
+        finally:
+            case.doCleanups()
+
+
+def test_pydantic_live_setup_removes_generic_provider_key() -> None:
+    def reject_generic_key() -> None:
+        assert "OPENAI_COMPATIBLE_API_KEY" not in os.environ
+        message = "route unavailable"
+        raise CredentialError(message)
+
+    case = LivePydanticLaneTests(methodName="test_sender_calls_mailbox_tool_and_recipient_reads_the_nonce")
+    with (
+        patch.dict(os.environ, {"T3_LIVE_PYDANTIC_MAILBOX": "1", "OPENAI_COMPATIBLE_API_KEY": "sentinel"}),
+        patch.dict(LivePydanticLaneTests.setUp.__globals__, {"resolve_live_route": reject_generic_key}),
+    ):
+        try:
+            with pytest.raises(SkipTest, match="route unavailable"):
+                case.setUp()
+        finally:
+            case.doCleanups()
 
 
 @pytest.mark.integration
@@ -251,4 +301,4 @@ class LivePydanticLaneTests(TestCase):
         _evidence("compaction", small, summary_present="Earlier conversation summary:" in small_history)
         assert "Earlier conversation summary:" in small_history
         assert "Earlier conversation summary:" not in large_history
-        assert steer in small_history
+        assert _contains_user_prompt(small.thread, steer)

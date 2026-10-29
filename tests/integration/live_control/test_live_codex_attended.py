@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest import SkipTest
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -46,6 +48,16 @@ def _run_codex(
         timeout=180,
         check=False,
     )
+
+
+def test_codex_live_flag_stops_before_executable_or_login_probe() -> None:
+    case = LiveAttendedCodexTests(methodName="test_real_codex_exchanges_nonces_with_a_worker_peer")
+    with (
+        patch.dict(os.environ, {"T3_LIVE_INTERACTIVE": "0"}),
+        patch.object(shutil, "which", side_effect=AssertionError("Codex probed without the live flag")),
+        pytest.raises(SkipTest, match="T3_LIVE_INTERACTIVE=1"),
+    ):
+        case.test_real_codex_exchanges_nonces_with_a_worker_peer()
 
 
 @pytest.mark.integration
