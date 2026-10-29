@@ -441,7 +441,7 @@ _LIFTS_THE_WRITE_GUARD: dict[str, tuple[dict[str, object], str]] = {
     "write guard switched off": ({"mcp_slack_write_gate_enabled": False}, "status"),
     "per-action tokens an agent can add": (
         {},
-        "status [gate-escape:mcp_slack_write: vetted one-off] [gate-escape:self_dm: vetted one-off]",
+        "status [gate-escape:mcp_foreign_write: vetted one-off] [gate-escape:self_dm: vetted one-off]",
     ),
 }
 

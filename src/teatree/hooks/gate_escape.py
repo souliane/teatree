@@ -7,6 +7,7 @@ from enum import StrEnum
 
 _TOKEN_RE = re.compile(r"\[gate-escape:([a-z0-9_.-]+):\s*(\S[^\]]*?)\s*\]")
 _STRIP_RE = re.compile(r"[ \t]*(?:#[ \t]*)?\[gate-escape:[a-z0-9_.-]+:[^\]]*\]")
+_MAX_NESTING = 3
 _SCAN_WINDOW = 512
 _EXCERPT_LIMIT = 200
 
@@ -48,10 +49,9 @@ _AUDITED = frozenset(
         "glab_stale_base_remote",
         "headless_authoring",
         "main_clone",
-        "mcp_slack_write",
+        "mcp_foreign_write",
         "mr_metadata",
         "no_self_reviewer_assign",
-        "notion_boundary",
         "orchestrator_bash",
         "orchestrator_delegation_gate",
         "orchestrator_foreground_dispatch",
@@ -84,18 +84,16 @@ def policy_for(gate_id: str) -> EscapePolicy:
     return EscapePolicy.NEVER
 
 
-def _text_values(value: object) -> list[str]:
-    found: list[str] = []
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, str):
-            found.extend([item] if len(item) <= 2 * _SCAN_WINDOW else [item[:_SCAN_WINDOW], item[-_SCAN_WINDOW:]])
-        elif isinstance(item, dict):
-            pending.extend(child for key, child in reversed(list(item.items())) if key != "description")
-        elif isinstance(item, list):
-            pending.extend(reversed(item))
-    return found
+def _text_values(value: object, depth: int = 0) -> list[str]:
+    if depth > _MAX_NESTING:
+        return []
+    if isinstance(value, str):
+        return [value] if len(value) <= 2 * _SCAN_WINDOW else [value[:_SCAN_WINDOW], value[-_SCAN_WINDOW:]]
+    if isinstance(value, dict):
+        return [text for key, child in value.items() if key != "description" for text in _text_values(child, depth + 1)]
+    if isinstance(value, list):
+        return [text for child in value for text in _text_values(child, depth + 1)]
+    return []
 
 
 def find_escape(value: object, gate_id: str) -> str | None:

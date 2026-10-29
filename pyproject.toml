@@ -394,7 +394,7 @@ lint.preview = true
 
 [tool.codespell]
 dictionary = ".codespell-dictionary.txt,-"
-ignore-words-list = "caf,fpr,iterm,otion,retuned,ture"
+ignore-words-list = "caf,fpr,iterm,retuned,ture"
 skip = "src/teatree/core/static/teatree/js/*,src/teatree/dash/static/dash/js/*"
 
 # --- Pytest ---

@@ -19,7 +19,7 @@ from types import ModuleType
 from typing import Any
 
 from hooks.scripts.managed_repo import teatree_src_on_path
-from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_write
+from hooks.scripts.mcp_foreign_write_guard import is_slack_mcp_write
 
 # Alias both identities so a bare ``from self_dm_destinations import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.self_dm_destinations``
@@ -159,7 +159,7 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
     chokepoints never see an MCP call, so this deny is the only place to stop it.
 
     What counts as a write is the Slack write guard's default-deny classifier
-    (:func:`~hooks.scripts.mcp_slack_write_guard.is_slack_mcp_write`), so the two agree.
+    (:func:`~hooks.scripts.mcp_foreign_write_guard.is_slack_mcp_write`), so the two agree.
     Unlike that guard, nothing on the call lifts this deny — no ``[gate-escape:<gate>: …]``
     token (``self_dm`` is never escapable, and an agent can add the token itself),
     no ``danger_gate_fail_open``, and not the guard's own kill-switch, the setting

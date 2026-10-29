@@ -59,18 +59,19 @@ def test_existing_pretooluse_matchers_preserved() -> None:
     any tool from the chain must fail. Pinning the literal string conflated the two, so a
     pure widening read as a regression.
     """
-    covered = {tool for entry in _pretooluse_entries() for tool in entry.get("matcher", "").split("|")}
+    matchers = [matcher for entry in _pretooluse_entries() for matcher in entry.get("matcher", "").split("|")]
     for expected in (
         "Bash",
         "Edit",
         "Write",
         "NotebookEdit",
         "AskUserQuestion",
-        "mcp__.*[Ss]lack.*",
-        "mcp__.*[Nn]otion.*",
-        "mcp__glab__glab_mr_.*",
+        "mcp__slack__slack_send_message",
+        "mcp__glab__glab_mr_create",
     ):
-        assert expected in covered, f"existing PreToolUse coverage of {expected!r} must be preserved"
+        assert any(re.fullmatch(matcher, expected) for matcher in matchers), (
+            f"existing PreToolUse coverage of {expected!r} must be preserved"
+        )
 
 
 def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
@@ -85,19 +86,6 @@ def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
         assert any("Task" in tools and "TaskCreate" not in tools for tools in routed)
 
 
-NOTION_WRITES = (
-    "mcp__connector_Notion__notion-update-page",
-    "mcp__notion__notion-create-pages",
-    "mcp__plugin_notion-workspace_notion__notion-create-comment",
-    "mcp__Notion__API-patch-block-children",
-)
-NOTION_READS = (
-    "mcp__connector_Notion__notion-fetch",
-    "mcp__notion__notion-search",
-    "mcp__Notion__API-retrieve-a-page",
-)
-
-
 def _routes(event: str, tool_name: str) -> bool:
     config = json.loads(_HOOKS_JSON.read_text(encoding="utf-8"))
     return any(
@@ -108,23 +96,18 @@ def _routes(event: str, tool_name: str) -> bool:
     )
 
 
-@pytest.mark.parametrize("tool_name", NOTION_WRITES)
-def test_notion_connector_write_reaches_the_pretooluse_router(tool_name: str) -> None:
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__other__create_ticket",
+        "mcp__glab__glab_mr_create",
+        "mcp__connector_Notion__notion-update-page",
+    ],
+)
+def test_foreign_mcp_write_reaches_pretool_router(tool_name: str) -> None:
     assert _routes("PreToolUse", tool_name)
 
 
-@pytest.mark.parametrize("tool_name", NOTION_READS)
-def test_notion_connector_fetch_reaches_the_posttooluse_router(tool_name: str) -> None:
-    assert _routes("PostToolUse", tool_name)
-
-
-@pytest.mark.parametrize("tool_name", NOTION_WRITES)
-def test_notion_connector_write_reaches_the_posttooluse_router_so_a_cached_verdict_can_be_dropped(
-    tool_name: str,
-) -> None:
-    assert _routes("PostToolUse", tool_name)
-
-
-@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
-def test_the_notion_matcher_does_not_widen_to_unrelated_servers(event: str) -> None:
-    assert not _routes(event, "mcp__other__lookup_page")
+def test_foreign_mcp_matcher_covers_arbitrary_servers() -> None:
+    matchers = [entry["matcher"] for entry in _pretooluse_entries()]
+    assert any(re.fullmatch(matcher, "mcp__unknown__publish") for matcher in matchers)

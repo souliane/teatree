@@ -56,7 +56,7 @@ radius = 400
 # reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
   "02a640bb2cd892c2",
-  "b686ebb5f6ebd36e",
+  "ad097129b0bd77a6",
   "8c60bb3059c07312",
   "4cb202f4e2805c65"
 ]
@@ -77,7 +77,7 @@ radius = 400
   "1bdbc78ddd329070",
   "01b0c49089e0831e",
   "df0584b2e1507beb",
-  "68dc919fd08e188f",
+  "3b12a624d2d272f3",
   "353229f0412f0120",
   "659bada2c7a94093"
 ]

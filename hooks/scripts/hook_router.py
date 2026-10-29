@@ -116,12 +116,11 @@ from hooks.scripts.managed_repo import load_protected_branches as _load_protecte
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
+from hooks.scripts.mcp_foreign_write_guard import handle_block_foreign_mcp_write
 from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detection_probe
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
-from hooks.scripts.notion_mcp_boundary import handle_block_notion_write_boundary, handle_track_notion_pages
 from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import RUNNER_PREFIX as _RUNNER_PREFIX
@@ -1011,8 +1010,8 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
     and siblings), the per-overlay t3 publish family (``review
     post-comment``, ``notify send``,
-    ``ticket create-issue``, ``t3 slack react``), and Slack and Notion MCP
-    publish tools.
+    ``ticket create-issue``, ``t3 slack react``), and the Slack MCP
+    ``send_message`` tools.
 
     HIGH match ⇒ refuse via ``permissionDecision: deny`` + a reason that
     names the matched patterns and directs a false match to the owner, who may
@@ -1080,7 +1079,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
 
     result = quote_scanner.scan_text(payload)
     if result.has_high:
-        command = tool_input.get("command", "") if tool_name == "Bash" else ""
+        command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
         block_message = _quote_high_block_message(quote_scanner, quote_gate_messages, tool_name, result, verdict)
         return emit_pretooluse_deny(block_message, gate_id="quote_scanner") if block_message is not None else False
@@ -3148,7 +3147,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_second_branch,
         handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,
-        handle_block_mcp_slack_write,
+        handle_block_foreign_mcp_write,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_dispatch_admission,
@@ -3171,7 +3170,6 @@ _HANDLERS: dict[str, list] = {
         handle_validate_mr_metadata,
         handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,
-        handle_block_notion_write_boundary,
         handle_block_ai_signature,
         # AFTER handle_block_ai_signature: a raw create carrying a banned trailer
         # must surface the leak-class refusal first (fail-closed-always per
@@ -3195,7 +3193,6 @@ _HANDLERS: dict[str, list] = {
         handle_track_skill_usage,
         handle_track_cron_jobs,
         handle_read_dedup,
-        handle_track_notion_pages,
         handle_track_agents,
     ],
     # Nothing registered here can block — see ``_NEVER_BLOCKING_EVENTS``. The

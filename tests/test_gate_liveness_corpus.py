@@ -742,48 +742,20 @@ def _self_dm_allow(ctx: GateContext) -> dict:
     }
 
 
-# block-mcp-slack-write (#1196): a Slack MCP WRITE (any destination) denies —
-# every Slack write must route through the t3 CLI; a Slack MCP READ allows.
-def _mcp_slack_write_deny(ctx: GateContext) -> dict:
+# block-mcp-foreign-write (#5023): a foreign MCP write denies; a recognized read allows.
+def _mcp_foreign_write_deny(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__slack__slack_send_message",
-        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+        "tool_name": "mcp__notion__notion-create-comment",
+        "tool_input": {"body": "review note"},
     }
 
 
-def _mcp_slack_write_allow(ctx: GateContext) -> dict:
+def _mcp_foreign_write_allow(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__slack__slack_get_channel_history",
-        "tool_input": {"channel": "C0COLLEAGUE9"},
-    }
-
-
-# notion-write-boundary (#5023): a Notion connector write to a page this session never read denies;
-# the connector's own read of that page allows. The liveness probe is pinned to "no token" so the row
-# never reaches Notion — the read-this-session check is what denies.
-def _arrange_notion_boundary_gate(ctx: GateContext) -> None:
-    def _no_token(*_args: object, **_kwargs: object) -> object:
-        msg = "no Notion token in the corpus"
-        raise RuntimeError(msg)
-
-    ctx.monkeypatch.setattr("teatree.backends.notion.credentials.build_notion_client", _no_token)
-
-
-def _notion_boundary_deny(ctx: GateContext) -> dict:
-    return {
-        "session_id": "sess-liveness",
-        "tool_name": "mcp__connector_Notion__notion-update-page",
-        "tool_input": {"page_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "command": "update_content"},
-    }
-
-
-def _notion_boundary_allow(ctx: GateContext) -> dict:
-    return {
-        "session_id": "sess-liveness",
-        "tool_name": "mcp__connector_Notion__notion-fetch",
-        "tool_input": {"id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"},
+        "tool_name": "mcp__notion__API-retrieve-a-page",
+        "tool_input": {"page": "example"},
     }
 
 
@@ -1276,7 +1248,7 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 # `enforce-orchestrator-boundary-agent`) are now REACHABLE: #1646 wired the
 # `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
 # are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
-# `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
+# the foreign-MCP matcher, `Agent`). The orchestrator-boundary Agent deny is
 # additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
 # PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
 # body (verified against the Claude Code binary, docs/claude-code-internals.md
@@ -1469,21 +1441,12 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_self_dm_gate,
     ),
     GateRow(
-        gate_id="block-mcp-slack-write",
-        handler=router.handle_block_mcp_slack_write,
+        gate_id="block-mcp-foreign-write",
+        handler=router.handle_block_foreign_mcp_write,
         event="PreToolUse",
-        matched="mcp__slack__slack_send_message",
-        deny_input=_mcp_slack_write_deny,
-        allow_input=_mcp_slack_write_allow,
-    ),
-    GateRow(
-        gate_id="notion-write-boundary",
-        handler=router.handle_block_notion_write_boundary,
-        event="PreToolUse",
-        matched="mcp__connector_Notion__notion-update-page",
-        deny_input=_notion_boundary_deny,
-        allow_input=_notion_boundary_allow,
-        arrange=_arrange_notion_boundary_gate,
+        matched="mcp__notion__notion-create-comment",
+        deny_input=_mcp_foreign_write_deny,
+        allow_input=_mcp_foreign_write_allow,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",
@@ -1688,7 +1651,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 
 
 # No reachability phantoms remain (#1646 / #1733). PR B (#171) repaired the
-# ``validate-mr-metadata-mcp`` phantom via the ``mcp__glab__glab_mr_.*`` matcher;
+# ``validate-mr-metadata-mcp`` phantom via the foreign-MCP matcher;
 # #1646 then wired the ``Agent`` PreToolUse matcher, making the two PreToolUse
 # ``Agent`` arms — ``dispatch-prompt-quote-scanner`` and
 # ``enforce-orchestrator-boundary-agent`` — genuinely live. The

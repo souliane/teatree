@@ -1,6 +1,6 @@
 """The egress guard classifies every Slack MCP write tool the repo already knows about.
 
-``mcp_publish`` carries the explicit connector roster; ``mcp_slack_write_guard``
+``quote_scanner`` carries the explicit connector roster; ``mcp_foreign_write_guard``
 is cold-import-safe (stdlib-only module top) so it cannot read that roster at
 runtime. This binding is what keeps its verb classifier from drifting behind the
 roster again — a new registry entry whose verb the guard does not recognise turns
@@ -8,8 +8,8 @@ this red. The direction is one-way on purpose: the guard must block a SUPERSET o
 the roster (``chat_delete`` is a write no roster entry names).
 """
 
-from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_write
-from teatree.hooks.mcp_publish import _SLACK_MCP_WRITE_TOOLS
+from hooks.scripts.mcp_foreign_write_guard import is_slack_mcp_write
+from teatree.hooks.quote_scanner import _SLACK_MCP_WRITE_TOOLS
 
 
 class TestGuardCoversTheWriteToolRegistry:
