@@ -67,15 +67,36 @@ def test_workflow_authored_issue_in_owner_repo_is_self_in_sweep_index() -> None:
         ],
         current_user=lambda: "owner",
     )
-    provider = SimpleNamespace(get_code_host_for_repo=lambda _overlay, _repo: host)
+    provider = SimpleNamespace(get_code_host_for_url=lambda _overlay, _url: host)
+    overlay = SimpleNamespace(
+        provisioning=SimpleNamespace(repo_clone_url=lambda _repo: f"https://github.com/{repo}.git")
+    )
 
-    with patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider):
-        rows = _list_sweep_issues("overlay", (repo,))
+    with (
+        patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
+        patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=None),
+    ):
+        rows = _list_sweep_issues(overlay, (repo,))
 
     assert rows == [(url, "Workflow work", "", True)]
 
 
 class TestReadOnlySweepFailures(TestCase):
+    def test_sweep_brief_does_not_fetch_without_a_target_checkout(self) -> None:
+        ticket = Ticket.objects.create(issue_url="backlog-sweep://t3-teatree", overlay="t3-teatree")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        with (
+            patch("teatree.agents.read_only_venue_brief._sweep_issue_facts", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target") as fetch,
+        ):
+            ReadOnlyFacts.gather(task, None)
+        fetch.assert_not_called()
+
     def test_sweep_overlay_lookup_failure_becomes_a_brief_refusal(self) -> None:
         ticket = Ticket.objects.create(issue_url="backlog-sweep://t3-teatree", overlay="t3-teatree")
         task = Task.objects.create(

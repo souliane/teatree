@@ -1,12 +1,13 @@
 """The worker inlines a bounded open-issue index for a read-only sweep."""
 
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError, _sweep_issue_facts
+from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError, _list_sweep_issues, _sweep_issue_facts
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -34,13 +35,64 @@ class TestSweepFacts(TestCase):
         )
 
     def _facts(self) -> tuple[str, str]:
-        provider = SimpleNamespace(get_code_host_for_repo=lambda _overlay, _repo: self.host)
+        provider = SimpleNamespace(
+            get_code_host_for_repo=lambda _overlay, _repo: self.host,
+            get_code_host_for_url=lambda _overlay, _url: self.host,
+        )
+        overlay = SimpleNamespace(
+            provisioning=SimpleNamespace(repo_clone_url=lambda _repo: "https://github.com/example-org/example-repo.git")
+        )
         with (
             patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
-            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="overlay"),
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value=overlay),
             patch("teatree.agents.read_only_venue_brief.owned_repo_slugs", return_value=("example-org/example-repo",)),
+            patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=None),
         ):
             return _sweep_issue_facts(self.task)
+
+    def test_issue_listing_routes_by_the_repos_canonical_remote(self) -> None:
+        url = "https://gitlab.example.com/group/example-repo/-/issues/1"
+        self.issues = [{"web_url": url, "title": "Issue", "author": {"username": "owner"}}]
+        self.host.current_user = lambda: "owner"
+        lookup = Mock(return_value=self.host)
+        provider = SimpleNamespace(
+            get_code_host_for_url=lookup,
+            get_code_host_for_repo=lambda _overlay, _repo: self.host,
+        )
+        overlay = SimpleNamespace(
+            provisioning=SimpleNamespace(
+                repo_clone_url=lambda _repo: "https://gitlab.example.com/group/example-repo.git"
+            )
+        )
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
+            patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=None, create=True),
+        ):
+            rows = _list_sweep_issues(overlay, ("group/example-repo",))
+
+        assert rows[0][0] == url
+        lookup.assert_called_once_with(overlay, "https://gitlab.example.com/group/example-repo.git")
+
+    def test_issue_listing_uses_a_matching_local_clones_remote(self) -> None:
+        checkout = Path("/tmp/example-repo")
+        lookup = Mock(return_value=self.host)
+        provider = SimpleNamespace(get_code_host_for_repo=lookup)
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
+            patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=checkout),
+        ):
+            rows = _list_sweep_issues("overlay", ("example-org/example-repo",))
+
+        assert rows
+        lookup.assert_called_once_with("overlay", str(checkout))
+
+    def test_issue_listing_refuses_an_unroutable_repo(self) -> None:
+        overlay = SimpleNamespace(provisioning=SimpleNamespace(repo_clone_url=lambda _repo: ""))
+        with (
+            patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=None),
+            pytest.raises(ValueError, match="no canonical remote"),
+        ):
+            _list_sweep_issues(overlay, ("example-org/example-repo",))
 
     def test_index_flags_external_authors_and_bounds_a_twenty_issue_window(self) -> None:
         index, first = self._facts()

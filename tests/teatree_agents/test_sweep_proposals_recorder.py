@@ -2,14 +2,15 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
-from teatree.agents.sweep_proposals_recorder import record_returned_sweep_proposals
+from teatree.agents.sweep_proposals_recorder import _owner_citation, record_returned_sweep_proposals
 from teatree.core.modelkit.question_card import internal_shorthand
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket, TicketSweepRun
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.core.models.task_handoff import resume_on_answer
 from teatree.core.owner_question_message import render_blocks
 
@@ -60,6 +61,11 @@ class TestSweepProposalRecording(TestCase):
                 usage=AttemptUsage(selected_harness=harness),
             )
 
+    def _pending_gaps(self, *entries: dict[str, object]) -> Ticket:
+        return Ticket.objects.create(
+            overlay="example", issue_url=dream_umbrella_url(), extra={"dream_gap_pending": list(entries)}
+        )
+
     def test_empty_executor_proposals_finish_a_measured_zero_run(self) -> None:
         attempt = self._record({"examined": [], "folds": [], "gaps": []})
 
@@ -69,6 +75,20 @@ class TestSweepProposalRecording(TestCase):
         assert run.finished_at is not None
         assert run.examined_count == 0
         assert run.changed_count == 0
+
+    def test_owned_repo_hook_failure_is_a_recorded_refusal(self) -> None:
+        with (
+            patch("teatree.agents.sweep_proposals_recorder.get_overlay_for_ticket", return_value="overlay"),
+            patch("teatree.agents.sweep_proposals_recorder.owned_repo_slugs", side_effect=RuntimeError("offline")),
+        ):
+            refusal = record_returned_sweep_proposals(
+                self.task,
+                {"sweep_proposals": {"examined": [], "folds": [], "gaps": []}},
+                phase="backlog_sweep",
+            )
+
+        assert refusal == "sweep_proposals_refused: the overlay could not be read (RuntimeError)"
+        assert TicketSweepRun.objects.count() == 0
 
     def test_later_sweep_preserves_earlier_proposal_record(self) -> None:
         proposals = {"examined": [], "folds": [], "gaps": []}
@@ -148,6 +168,36 @@ class TestSweepProposalRecording(TestCase):
         assert all(
             "<!channel>" not in json.dumps(render_blocks(question)) for question in DeferredQuestion.objects.all()
         )
+
+    def test_owner_citation_does_not_cut_an_html_entity(self) -> None:
+        citation = _owner_citation("&" * 100)
+
+        assert citation.endswith("...")
+        assert citation.count("&") == citation.count("&amp;")
+
+    def test_repeated_targets_are_verified_once_per_recording(self) -> None:
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/3"
+        )
+        self._pending_gaps({"gap_key": "gap-a"})
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        members = [f"https://github.com/example-org/example-repo/issues/{n}" for n in (1, 2)]
+        proposals = {
+            "examined": members,
+            "folds": [
+                {"member_url": member, "host_url": host.issue_url, "citation": "same work"} for member in members
+            ],
+            "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}],
+        }
+        verify = Mock(return_value={"state": "open"})
+        with (
+            patch("teatree.agents.sweep_proposals_recorder.require_self_authored_issue", verify),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed"),
+        ):
+            attempt = self._record(proposals, index_urls=[*members, host.issue_url])
+
+        assert attempt.error == ""
+        assert verify.call_count == 3
 
     def test_recording_does_not_reread_a_changed_issue_listing(self) -> None:
         self.ticket.merge_extra(
@@ -239,6 +289,7 @@ class TestSweepProposalRecording(TestCase):
 
     def test_fold_question_failure_precedes_gap_forge_write(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"
+        self._pending_gaps({"gap_key": "gap-a"})
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
@@ -266,6 +317,7 @@ class TestSweepProposalRecording(TestCase):
 
     def test_attach_gap_refusal_includes_command_reason(self) -> None:
         self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
@@ -289,6 +341,7 @@ class TestSweepProposalRecording(TestCase):
 
     def test_later_task_finishes_a_partially_attached_run_without_losing_its_count(self) -> None:
         self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
@@ -329,6 +382,109 @@ class TestSweepProposalRecording(TestCase):
         attach.assert_not_called()
         assert TicketSweepRun.objects.incomplete().count() == 0
         assert [run.changed_count for run in TicketSweepRun.objects.recent()] == [0, 1]
+
+    def test_a_persistent_old_attach_refusal_does_not_block_later_sweeps(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+
+        def refuse(*_args: object, stream: object, **_kwargs: object) -> None:
+            stream.write("attach-gaps refused: host changed")
+            raise SystemExit(1)
+
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed", side_effect=refuse),
+        ):
+            first = self._record(proposals, index_urls=[host.issue_url])
+            self.task = Task.objects.create(
+                ticket=self.ticket,
+                session=Session.objects.create(ticket=self.ticket),
+                phase="backlog_sweep",
+                execution_reason="ASK-GATE: return proposals",
+            )
+            self.task.claim(claimed_by="loop-slot")
+            second = self._record({"examined": [], "folds": [], "gaps": []})
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        self.task.claim(claimed_by="loop-slot")
+        third = self._record({"examined": [], "folds": [], "gaps": []})
+
+        assert "host changed" in first.error
+        assert second.error == ""
+        assert third.error == ""
+        assert TicketSweepRun.objects.incomplete().count() == 1
+        assert TicketSweepRun.objects.recent().count() == 2
+        self.ticket.refresh_from_db()
+        assert "sweep_pending_run" not in self.ticket.extra
+
+    def test_gap_policy_refuses_before_a_run_or_question(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        umbrella = self._pending_gaps({"gap_key": "gap-a"})
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+        cases = (
+            (Ticket.State.MERGED, {}, [{"gap_key": "gap-a"}], "settled"),
+            (
+                Ticket.State.NOT_STARTED,
+                {"dream_gap_batch": [{"gap_key": f"old-{n}"} for n in range(3)]},
+                [{"gap_key": "gap-a"}],
+                "undispositioned",
+            ),
+            (Ticket.State.NOT_STARTED, {}, [{"gap_key": "gap-a", "declined_hosts": [host.pk]}], "declined"),
+            (Ticket.State.NOT_STARTED, {}, [], "pending"),
+        )
+        for state, extra, pending, refusal in cases:
+            with self.subTest(refusal=refusal):
+                host.state = state
+                host.extra = extra
+                host.save(update_fields=["state", "extra"])
+                umbrella.merge_extra(set_keys={"dream_gap_pending": pending})
+                with (
+                    patch(
+                        "teatree.agents.sweep_proposals_recorder.require_self_authored_issue",
+                        return_value={"state": "open"},
+                    ),
+                    patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
+                ):
+                    attempt = self._record(proposals, index_urls=[host.issue_url])
+                assert refusal in attempt.error
+                attach.assert_not_called()
+                assert TicketSweepRun.objects.count() == 0
+                assert DeferredQuestion.objects.count() == 0
+
+    def test_duplicate_gap_assignments_refuse_before_a_run(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {
+            "examined": [],
+            "folds": [],
+            "gaps": [
+                {"host_url": host.issue_url, "gap_keys": ["gap-a"]},
+                {"host_url": host.issue_url, "gap_keys": ["gap-a"]},
+            ],
+        }
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+        ):
+            attempt = self._record(proposals, index_urls=[host.issue_url])
+
+        assert "more than once" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
 
     def test_fold_host_may_come_from_the_index_outside_the_body_window(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"
@@ -409,6 +565,7 @@ class TestSweepProposalRecording(TestCase):
 
     def test_gap_attachment_uses_the_workers_command_and_measured_run(self) -> None:
         self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
@@ -467,11 +624,26 @@ class TestSweepProposalRecording(TestCase):
         attach.assert_not_called()
         assert TicketSweepRun.objects.count() == 0
 
+    def test_offered_gap_without_an_umbrella_refuses_before_a_run(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+        ):
+            attempt = self._record(proposals, index_urls=[host.issue_url])
+
+        assert "no umbrella ticket" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+
     def test_retry_skips_a_gap_already_recorded_on_its_host(self) -> None:
         self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
         host = Ticket.objects.create(
             overlay="example",
             issue_url="https://github.com/example-org/example-repo/issues/2",
+            state=Ticket.State.MERGED,
             extra={"dream_gap_batch": [{"gap_key": "gap-a"}]},
         )
         proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}

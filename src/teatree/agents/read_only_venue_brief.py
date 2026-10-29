@@ -25,6 +25,7 @@ from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.core.review.review_plan import plan_for_task
 from teatree.core.self_forge_identities import issue_is_self_authored, self_identity_set
+from teatree.core.worktree.clone_paths import matching_clone
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
 from teatree.utils.url_slug import pr_ref_from_url, repo_namespaced_key_from_path, slug_from_issue_or_pr_url
@@ -114,7 +115,7 @@ class ReadOnlyFacts:
             if (size := len(text.encode())) > cap:
                 reason = f"read-only brief over budget: {name} {size} bytes > {cap}"
                 raise _refused(reason)
-        if normalize_phase(task.phase) not in DRAFT_PHASES or normalize_phase(task.phase) == "backlog_sweep":
+        if normalize_phase(task.phase) not in DRAFT_PHASES:
             _fetch_target(task)
         return facts
 
@@ -316,7 +317,15 @@ def _sweep_rows_and_window(
 def _list_sweep_issues(overlay: "OverlayBase", repos: tuple[str, ...]) -> list[tuple[str, str, str, bool]]:
     rows: list[tuple[str, str, str, bool]] = []
     for repo in repos:
-        host = get_backend_provider().get_code_host_for_repo(overlay, repo)
+        provider = get_backend_provider()
+        if clone := matching_clone(repo):
+            host = provider.get_code_host_for_repo(overlay, str(clone))
+        else:
+            remote = overlay.provisioning.repo_clone_url(repo)
+            if not remote:
+                message = f"no canonical remote or matching clone for issue repository {repo}"
+                raise ValueError(message)
+            host = provider.get_code_host_for_url(overlay, remote)
         if host is None or not isinstance(metadata := host.get_repo(repo=repo), dict) or metadata.get("error"):
             message = "unreadable issue repository"
             raise ValueError(message)
@@ -344,21 +353,24 @@ def _sweep_issue_row(issue: object, repo: str) -> tuple[str, str, str]:
     if not isinstance(url, str) or not isinstance(title, str) or not isinstance(body, str):
         message = "invalid issue identity or content"
         raise TypeError(message)
-    parsed = urlparse(url)
-    valid_url = all(
-        (
-            parsed.scheme == "https",
-            bool(parsed.hostname),
-            not parsed.query,
-            not parsed.fragment,
-            slug_from_issue_or_pr_url(parsed.path).casefold() == repo.casefold(),
-            bool(repo_namespaced_key_from_path(parsed.path)),
-        )
-    )
-    if not valid_url:
+    if not owned_issue_url(url, {repo.casefold()}):
         message = "invalid issue identity or content"
         raise ValueError(message)
     return url, _sweep_excerpt(" ".join(title.split()), 80), _sweep_excerpt(body, 1500)
+
+
+def owned_issue_url(raw: object, repos: set[str]) -> bool:
+    if not isinstance(raw, str):
+        return False
+    parsed = urlparse(raw)
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.hostname)
+        and not parsed.query
+        and not parsed.fragment
+        and slug_from_issue_or_pr_url(parsed.path).casefold() in repos
+        and bool(repo_namespaced_key_from_path(parsed.path))
+    )
 
 
 def _sweep_excerpt(value: str, limit: int) -> str:

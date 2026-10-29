@@ -406,8 +406,7 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   opens and finishes the measured run, resolves each gap `host_url` to a same-overlay Ticket before
   `ticket attach-gaps`, and shows each ticket-fold suggestion with its issue links and citation in a separate
   owner question. Answering that question does not requeue a sweep. The executor edits and closes no issue. An unreadable or oversized
-  index refuses this venue and leaves the Claude sweep path available. The sweep fetches its target ref;
-  the other three draft phases do not.
+  index refuses this venue and leaves the Claude sweep path available. Draft phases have no target-ref fetch.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an

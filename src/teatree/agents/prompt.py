@@ -29,7 +29,7 @@ from teatree.agents.skill_injection import (
 )
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
 from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
@@ -113,7 +113,7 @@ def _task_header_lines(task: Task, extra: dict, *, read_only_venue: bool = False
     if reason := dispatch_reason(task):
         if read_only_venue and normalize_phase(task.phase) == "backlog_sweep":
             _, separator, tail = reason.partition("\n")
-            reason = f"ASK-GATE: return sweep proposals for worker validation{separator}{tail}"
+            reason = f"{SWEEP_ASK_GATE_MARKER} return sweep proposals for worker validation{separator}{tail}"
         lines.append(f"Reason: {reason}")
     return lines
 
