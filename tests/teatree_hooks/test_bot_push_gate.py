@@ -56,7 +56,7 @@ def test_pre_push_identity_gate(
         "read_setting_confirmed",
         lambda key: SettingRead({"github.com": ["build-bot"]}, readable=True),
     )
-    monkeypatch.setattr(bot_push_gate, "_credential_login", lambda forge, host, url, token: login)
+    monkeypatch.setattr(bot_push_gate, "_credential_login", lambda forge, host, url, token, **kwargs: login)
     monkeypatch.setattr(
         bot_push_gate,
         "remote_holdings",
@@ -78,6 +78,13 @@ def test_pre_push_hook_is_installed() -> None:
     assert "id: refuse-bot-push" in config.read_text()
 
 
+def test_proposed_commit_requires_bot_author_and_committer(tmp_path: Path) -> None:
+    _push_repo(tmp_path, author="build-bot")
+    assert bot_push_gate._proposed_bot_commit(tmp_path, "build-bot")
+    _git(tmp_path, "config", "user.name", "person")
+    assert not bot_push_gate._proposed_bot_commit(tmp_path, "build-bot")
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -96,8 +103,9 @@ def test_routed_bot_token_lists_private_remote_before_scanning_commits(
         lambda key: SettingRead({host: ["build-bot"]}, readable=True),
     )
 
-    def credential_login(actual_forge: str, actual_host: str, url: str, token: str) -> str:
+    def credential_login(actual_forge: str, actual_host: str, url: str, token: str, *, repo: Path) -> str:
         assert (actual_forge, actual_host, url, token) == (forge, host, remote, "bot-key")
+        assert repo == tmp_path
         return "build-bot"
 
     monkeypatch.setattr(bot_push_gate, "_credential_login", credential_login)

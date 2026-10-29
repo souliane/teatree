@@ -47,14 +47,14 @@ def _git(repo: Path, *args: str, stdin: str = "") -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def _credential_login(forge: str, host: str, remote_url: str, token: str = "") -> str:
+def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *, repo: Path | None = None) -> str:
     parsed = urlsplit(remote_url)
     if parsed.scheme != "https" or parsed.hostname != host or parsed.password is not None:
         return ""
     if not token:
         username = f"username={parsed.username}\n" if parsed.username else ""
         credential_input = f"protocol=https\nhost={host}\n{username}path={parsed.path.lstrip('/')}\n\n"
-        credentials = _git(Path.cwd(), "credential", "fill", stdin=credential_input)
+        credentials = _git(repo or Path.cwd(), "credential", "fill", stdin=credential_input)
         if credentials is None:
             return ""
         fields = dict(line.split("=", 1) for line in credentials.splitlines() if "=" in line)
@@ -113,6 +113,17 @@ def _bot_commit(repo: Path, sha: str, login: str) -> bool:
         and _bot_email(author_email, login)
         and _bot_email(committer_email, login)
     )
+
+
+def _proposed_bot_commit(repo: Path, login: str) -> bool:
+    for role in ("AUTHOR", "COMMITTER"):
+        raw = _git(repo, "var", f"GIT_{role}_IDENT")
+        if raw is None:
+            return False
+        name, separator, rest = raw.strip().rpartition(" <")
+        if not separator or name.casefold() != login or not _bot_email(rest.partition(">")[0], login):
+            return False
+    return True
 
 
 def _push_refs() -> tuple[list[tuple[str, str]], bool]:
@@ -177,7 +188,12 @@ def _new_commit_error(
 
 
 def bot_push_error(
-    *, repo: Path, remote_name: str, remote_url: str, refs: tuple[list[tuple[str, str]], bool], token: str = ""
+    *,
+    repo: Path,
+    remote_name: str,
+    remote_url: str,
+    refs: tuple[list[tuple[str, str]], bool],
+    token: str = "",
 ) -> str:
     updates, _ = refs
     if not updates:
@@ -189,10 +205,20 @@ def bot_push_error(
     if target is None:
         return ""
 
-    login = _credential_login(target.forge, target.host, remote_url, token).casefold()
+    login = _credential_login(target.forge, target.host, remote_url, token, repo=repo).casefold()
     if login != target.login:
         return f"a push to bot-owned {target.slug} requires a verified bot credential"
     return _new_commit_error(repo, (remote_name, remote_url), refs, target, token)
+
+
+def bot_proposed_commit_error(repo: Path, remote_url: str) -> str:
+    try:
+        target = bot_repo_for(remote_url)
+    except BotIdentityUnreadableError as exc:
+        return str(exc)
+    if target is not None and not _proposed_bot_commit(repo, target.login):
+        return f"a commit for bot-owned {target.slug} requires a bot author and committer"
+    return ""
 
 
 def ambient_bot_credential_error() -> str:

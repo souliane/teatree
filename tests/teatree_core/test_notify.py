@@ -34,7 +34,7 @@ from teatree.core.models import (
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
 from teatree.core.owner_dm import ticket_dm_delivery
-from teatree.core.send_proxy import SendVerdict
+from teatree.core.send_proxy import SendRequest, SendVerdict
 from teatree.types import RawAPIDict
 
 _DB_LOCKED = OperationalError("database is locked")
@@ -195,6 +195,65 @@ class TestNotifyUser(TestCase):
                 "question",
                 kind=NotifyKind.QUESTION,
                 idempotency_key="operator-policy-unreadable",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_operator_dm_scans_block_content_before_delivery(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+        scanned: list[str] = []
+
+        def route(request: SendRequest) -> SendVerdict:
+            payload = request.payload
+            scanned.append(payload)
+            return SendVerdict(allowed="private-marker" not in payload, payload=payload, allowlist_ok=True)
+
+        with patch("teatree.core.notify.route_send", side_effect=route):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-block-content",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(
+                    backend=backend,
+                    user_id="U_ME",
+                    ticket_id=ticket.pk,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "private-marker"}}],
+                ),
+            )
+        assert scanned
+        assert "private-marker" in scanned[0]
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_operator_dm_scans_formatted_text_before_delivery(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+
+        def route(request: SendRequest) -> SendVerdict:
+            return SendVerdict(
+                allowed="private-marker" not in request.payload,
+                payload=request.payload,
+                allowlist_ok=True,
+            )
+
+        with (
+            patch("teatree.core.notify.format_notification", return_value="private-marker"),
+            patch("teatree.core.notify.route_send", side_effect=route),
+        ):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-formatted-content",
                 audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
             )

@@ -61,7 +61,7 @@ from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
-from teatree.hooks.bot_push_gate import bot_push_error
+from teatree.hooks.bot_push_gate import bot_proposed_commit_error, bot_push_error
 from teatree.hooks.commit_objects import READ_FLAGS
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.repo_visibility_cli import visibility_for_remote
@@ -478,20 +478,23 @@ class FastPusher:
         if findings:
             return FastPushOutcome(ok=False, branch=branch, executed_gates=LEAK_GATES, findings=findings)
         outcome = FastPushOutcome(ok=True, branch=branch, executed_gates=LEAK_GATES, message=message)
-        if staged:
-            self._commit(message)
-            outcome.committed = True
+        remote_url = git.remote_url(repo=str(self._repo))
         bot_error = bot_push_error(
             repo=self._repo,
             remote_name="origin",
-            remote_url=git.remote_url(repo=str(self._repo)),
+            remote_url=remote_url,
             refs=([(run_checked(["git", "rev-parse", "HEAD"], cwd=self._repo).stdout.strip(), "")], True),
         )
+        if staged and not bot_error:
+            bot_error = bot_proposed_commit_error(self._repo, remote_url)
         outcome.executed_gates = (*LEAK_GATES, "bot-identity")
         if bot_error:
             outcome.ok = False
             outcome.findings.append(LeakFinding(gate="bot-identity", path="<commit-identity>", detail=bot_error))
             return outcome
+        if staged:
+            self._commit(message)
+            outcome.committed = True
         run_checked(
             # An explicit same-name refspec overrides any `remote.origin.push` remap, and
             # `--no-follow-tags` any `push.followTags`: both would publish a ref the

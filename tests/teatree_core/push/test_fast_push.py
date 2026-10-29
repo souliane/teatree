@@ -100,10 +100,27 @@ def test_fast_push_runs_bot_gate_before_its_hookless_push(repo: Path, leak_env: 
         outcome = run_fast_push(repo, FakeForge())
 
     assert not outcome.ok
-    assert outcome.committed
+    assert not outcome.committed
     assert not outcome.pushed
     assert any(finding.gate == "bot-identity" for finding in outcome.findings)
     assert guard.call_count == 1
+
+
+def test_fast_push_refuses_a_non_bot_proposed_commit_before_committing(repo: Path, leak_env: None) -> None:
+    (repo / "clean.txt").write_text("new work\n")
+    with (
+        patch.object(fast_push_module, "bot_push_error", return_value=""),
+        patch.object(
+            fast_push_module, "bot_proposed_commit_error", return_value="bot author and committer required"
+        ) as proposed,
+    ):
+        outcome = run_fast_push(repo, FakeForge())
+
+    assert not outcome.ok
+    assert not outcome.committed
+    assert not outcome.pushed
+    assert any(finding.gate == "bot-identity" for finding in outcome.findings)
+    proposed.assert_called_once()
 
 
 class TestLeakGatesRefuse:

@@ -1,5 +1,6 @@
 """Bot-to-operator Slack notification egress with explicit delivery outcomes."""
 
+import json
 import logging
 import os
 from collections.abc import Callable
@@ -149,14 +150,14 @@ def notify_user_outcome(
     if gate is not None:
         return gate
 
-    if proxy_gate := _operator_proxy_gate(text, idempotency_key, addressee):
-        return proxy_gate
-
     outgoing_text = format_notification(maybe_linkify(text) if options.linkify else text, kind_value)
     outgoing_blocks = options.blocks
     outgoing_text, outgoing_blocks = label_fallback(outgoing_text, outgoing_blocks, addressee.fallback_requester)
     if audience is NotifyAudience.OWNER_QUESTION:
         outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, addressee.user_id)
+
+    if proxy_gate := _operator_proxy_gate(outgoing_text, outgoing_blocks, idempotency_key, addressee):
+        return proxy_gate
 
     from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
         TicketDmRequest,
@@ -419,8 +420,11 @@ def _deliver_speech_sidecar(backend: MessagingBackend, *, channel: str, text: st
         logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
 
 
-def _operator_proxy_gate(text: str, idempotency_key: str, addressee: Addressee) -> NotifyOutcome | None:
-    verdict = _route_through_send_proxy(text, destination=addressee.user_id, is_self_dm=addressee.is_owner)
+def _operator_proxy_gate(
+    text: str, blocks: list[RawAPIDict] | None, idempotency_key: str, addressee: Addressee
+) -> NotifyOutcome | None:
+    payload = text if blocks is None else f"{text}\n{json.dumps(blocks, sort_keys=True, default=str)}"
+    verdict = _route_through_send_proxy(payload, destination=addressee.user_id, is_self_dm=addressee.is_owner)
     if addressee.is_owner or (
         verdict is not None and verdict.allowed and not verdict.payload_redacted and not verdict.redaction_failed
     ):
