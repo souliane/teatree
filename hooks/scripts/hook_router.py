@@ -89,6 +89,7 @@ from hooks.scripts.engagement import engage
 from hooks.scripts.engagement import skill_load_activates_teatree as _skill_load_activates_teatree
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.foreign_branch_push_gate import handle_block_foreign_branch_push
+from hooks.scripts.foreign_mcp_guard import handle_block_foreign_mcp_tool
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _MERGE_ENDPOINT_RE,  # noqa: F401 re-export for test access
@@ -166,6 +167,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.read_dedup import handle_read_dedup
 from hooks.scripts.remote_factory_target import remote_factory_target_active
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.router_args import parse_args as _parse_args
@@ -1897,51 +1899,6 @@ def handle_track_skill_usage(data: dict) -> None:
     _maybe_engage_t3(session_id, loaded)
 
 
-# ── PostToolUse: read-dedup ────────────────────────────────────────
-
-
-def handle_read_dedup(data: dict) -> None:
-    """Warn when a file is re-read without having changed since last read."""
-    if data.get("tool_name") != "Read":
-        return
-
-    session_id = data.get("session_id", "")
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not session_id or not file_path:
-        return
-
-    _ensure_state_dir()
-    reads_file = _state_file(session_id, "reads")
-
-    # Load existing reads: each line is "mtime\tpath"
-    reads: dict[str, str] = {}
-    for line in _read_lines(reads_file):
-        parts = line.split("\t", 1)
-        if len(parts) == 2:  # noqa: PLR2004 — self-documenting literal in this context
-            reads[parts[1]] = parts[0]
-
-    # Get current mtime
-    try:
-        current_mtime = str(Path(file_path).stat().st_mtime)
-    except OSError:
-        return
-
-    prev_mtime = reads.get(file_path)
-    if prev_mtime == current_mtime:
-        print(  # noqa: T201 — hook writes its protocol output to stdout
-            f"TOKEN SAVINGS HINT: {file_path} was already read this session "
-            "and hasn't changed. Use your cached knowledge of its contents "
-            "instead of re-reading."
-        )
-
-    # Update the reads file (overwrite to keep latest mtime per path)
-    reads[file_path] = current_mtime
-    reads_file.write_text(
-        "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
-        encoding="utf-8",
-    )
-
-
 # ``handle_track_agents`` (+ its ``_agent_id_from_response`` /
 # ``_newest_task_agent_id`` helpers) lives in the ``dispatch_ledger`` sibling — the
 # #778 sub-agent-dispatch capture — and is imported into the PostToolUse chain.
@@ -3192,6 +3149,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,
         handle_block_mcp_slack_write,
+        handle_block_foreign_mcp_tool,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_dispatch_admission,

@@ -10,6 +10,7 @@ the (default-ON, #1733) orchestrator-boundary deny genuinely live.
 """
 
 import json
+import re
 from pathlib import Path
 
 _HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
@@ -56,17 +57,20 @@ def test_existing_pretooluse_matchers_preserved() -> None:
     any tool from the chain must fail. Pinning the literal string conflated the two, so a
     pure widening read as a regression.
     """
-    covered = {tool for entry in _pretooluse_entries() for tool in entry.get("matcher", "").split("|")}
+    covered = [entry.get("matcher", "") for entry in _pretooluse_entries()]
     for expected in (
         "Bash",
         "Edit",
         "Write",
         "NotebookEdit",
         "AskUserQuestion",
-        "mcp__.*[Ss]lack.*",
-        "mcp__glab__glab_mr_.*",
+        "mcp__glab__glab_mr_create",
+        "mcp__glab__glab_mr_update",
+        "mcp__slack__slack_send_message",
     ):
-        assert expected in covered, f"existing PreToolUse coverage of {expected!r} must be preserved"
+        assert any(re.fullmatch(matcher, expected) for matcher in covered), (
+            f"existing PreToolUse coverage of {expected!r} must be preserved"
+        )
 
 
 def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
