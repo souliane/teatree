@@ -25,7 +25,7 @@ class ConstraintViolation:
     detail: str
 
 
-_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
+_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;:\n]{0,120})", re.IGNORECASE)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)
 _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
 _KEEP = re.compile(rf"\b(?:keep|leave)\s+{_PATH}\s+unchanged\b", re.IGNORECASE)
