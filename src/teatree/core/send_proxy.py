@@ -316,7 +316,7 @@ def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...], bool]:
             if request.strict_redaction
             else redact_payload(request.payload, overlay=request.overlay)
         )
-    except Exception as exc:  # noqa: BLE001 — the strict caller receives a denied verdict on a policy failure.
+    except Exception as exc:  # noqa: BLE001 — redaction is best-effort; a failure leaves the payload unchanged.
         logger.debug("send_proxy: redaction failed (%s) — leaving payload unredacted", exc)
         return request.payload, (), True
     else:

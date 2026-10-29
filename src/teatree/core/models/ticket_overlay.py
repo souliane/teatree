@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from typing import override
 
 from django.db import models
 
@@ -16,10 +17,11 @@ class TicketOverlayModel(TicketFacet):
     class Meta:
         abstract = True
 
+    @override
     def save(
         self,
-        force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's save accepts these positionally.
-        force_update: bool = False,  # noqa: FBT001, FBT002 — Django's save accepts these positionally.
+        force_insert: bool = False,
+        force_update: bool = False,
         using: str | None = None,
         update_fields: Iterable[str] | None = None,
     ) -> None:

@@ -1,10 +1,13 @@
 import pytest
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.test import TestCase
 
 from teatree.core.models import OperatorIdentity, Ticket
 from teatree.core.models.operator_identity import canonical_operator_key, identity_key
+
+_FORCE_INSERT_POSITIONALLY = (True,)
+_FORCE_UPDATE_POSITIONALLY = (False, True)
 
 
 class OperatorIdentityTestCase(TestCase):
@@ -54,3 +57,49 @@ class TicketRequesterTestCase(TestCase):
         stale.save()
         ticket.refresh_from_db()
         assert ticket.requested_by == "github:alice"
+
+
+class OperatorIdentitySaveFlagsTestCase(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.user = get_user_model().objects.create_user("alice")
+        cls.identity = OperatorIdentity.objects.create(user=cls.user, platform="github", handle="alice")
+
+    def test_force_insert_reaches_the_database_by_keyword_and_positionally(self) -> None:
+        for label, save in (
+            ("keyword", lambda: self.identity.save(force_insert=True)),
+            ("positional", lambda: self.identity.save(*_FORCE_INSERT_POSITIONALLY)),
+        ):
+            with self.subTest(label), pytest.raises(IntegrityError), transaction.atomic():
+                save()
+
+    def test_force_update_reaches_the_database_by_keyword_and_positionally(self) -> None:
+        ghost = OperatorIdentity(pk=self.identity.pk + 1000, user=self.user, platform="gitlab", handle="ghost")
+        for label, save in (
+            ("keyword", lambda: ghost.save(force_update=True)),
+            ("positional", lambda: ghost.save(*_FORCE_UPDATE_POSITIONALLY)),
+        ):
+            with self.subTest(label), pytest.raises(DatabaseError, match="Forced update"), transaction.atomic():
+                save()
+        assert not OperatorIdentity.objects.filter(pk=ghost.pk).exists()
+
+
+class TicketSaveFlagsTestCase(TestCase):
+    def test_force_insert_reaches_the_database_by_keyword_and_positionally(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree")
+        for label, save in (
+            ("keyword", lambda: ticket.save(force_insert=True)),
+            ("positional", lambda: ticket.save(*_FORCE_INSERT_POSITIONALLY)),
+        ):
+            with self.subTest(label), pytest.raises(IntegrityError), transaction.atomic():
+                save()
+
+    def test_force_update_reaches_the_database_by_keyword_and_positionally(self) -> None:
+        ghost = Ticket(pk=Ticket.objects.create(overlay="teatree").pk + 1000, overlay="teatree")
+        for label, save in (
+            ("keyword", lambda: ghost.save(force_update=True)),
+            ("positional", lambda: ghost.save(*_FORCE_UPDATE_POSITIONALLY)),
+        ):
+            with self.subTest(label), pytest.raises(DatabaseError, match="Forced update"), transaction.atomic():
+                save()
+        assert not Ticket.objects.filter(pk=ghost.pk).exists()
