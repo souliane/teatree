@@ -59,29 +59,16 @@ class EvalLocalScanner:
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE)
-        if cadence.in_flight_exists():
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="eval_local.held", not_due_kind="eval_local.not_due"
+        )
         if trigger is None:
-            return []
+            return signals
         reserve = self.reserve_met()
         if reserve.stale and not reserve.met:
-            return [
-                ScanSignal(
-                    kind="eval_local.parked",
-                    summary=f"local eval parked for {self.overlay_name}: {reserve.reason}",
-                    payload={"overlay": self.overlay_name, "reason": reserve.reason},
-                )
-            ]
+            return cadence.hold(reserve.reason or "reserve reading stale", kind="eval_local.parked", retry=True)
         if not reserve.met:
-            return [
-                ScanSignal(
-                    kind="eval_local.held",
-                    summary=f"local eval held for {self.overlay_name}: {reserve.reason or 'reserve unmet'}",
-                    payload={"overlay": self.overlay_name, "reason": reserve.reason or "reserve unmet"},
-                )
-            ]
+            return cadence.hold(reserve.reason or "reserve unmet", kind="eval_local.held", retry=True)
 
         task = cadence.queue_task(
             placeholder_issue_url=f"eval-local://{self.overlay_name}",
@@ -89,9 +76,8 @@ class EvalLocalScanner:
             execution_reason=self._execution_reason(trigger),
             log_label="EvalLocalScanner",
         )
-        if task is None:
-            return []
-        return [
+        return cadence.handover(
+            task,
             ScanSignal(
                 kind="eval_local.queued",
                 summary=f"local eval queued for {self.overlay_name} (trigger: {trigger})",
@@ -99,11 +85,12 @@ class EvalLocalScanner:
                     "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": EVAL_LOCAL_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "trigger": trigger,
                 },
             ),
-        ]
+            held_kind="eval_local.held",
+        )
 
     def _execution_reason(self, trigger: str) -> str:
         """Direct the SCOPED local run via the $0-extra transcript runner.

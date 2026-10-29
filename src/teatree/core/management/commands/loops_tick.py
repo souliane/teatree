@@ -53,6 +53,7 @@ from teatree.loop.pr_stall import StallRepair, repair_stalled_prs
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 from teatree.loops.tick_cost import record_tick_cost
+from teatree.loops.tick_outcome import periodic_tick_is_silent
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -69,11 +70,6 @@ type ReportDict = dict[str, Any]
 #: CAS-as-throttle shape (claim-if-stale, never released).
 _REINSTALL_DRAIN_SLOT = "loop-reinstall"
 _REINSTALL_DRAIN_THROTTLE_SECONDS = 60
-
-_RETRYABLE_CADENCE_KINDS: dict[str, frozenset[str]] = {
-    "arch_review": frozenset({"architectural_review.held"}),
-    "eval_local": frozenset({"eval_local.held", "eval_local.parked"}),
-}
 
 
 def _scanner_context(request: "TickRequest") -> "BuildJobsContext":
@@ -129,6 +125,8 @@ class _ScopedJobsBuilder:
     blocked_reason: str = ""
     claimed_at: dt.datetime | None = None
     previous_last_run_at: dt.datetime | None = None
+    periodic_phase: str = ""
+    jobs_built: bool = False
 
     def __call__(self, request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
         from teatree.loops.loop_table import dispatch_loop_table  # noqa: PLC0415 — deferred: lazy command import
@@ -141,11 +139,17 @@ class _ScopedJobsBuilder:
         self.blocked_reason = outcome.blocked_reason
         self.claimed_at = outcome.claimed_at
         self.previous_last_run_at = outcome.previous_last_run_at
+        self.periodic_phase = outcome.periodic_phase
+        self.jobs_built = bool(outcome.jobs)
         return list(outcome.jobs)
 
     def release_held_cadence(self, report: "TickReport") -> None:
-        retryable = _RETRYABLE_CADENCE_KINDS.get(self.loop, frozenset())
-        if self.claimed_at is None or not any(signal.kind in retryable for signal in report.signals):
+        if self.claimed_at is None:
+            return
+        retry = any(signal.payload.get("retry") is True for signal in report.signals)
+        if self.periodic_phase:
+            retry |= periodic_tick_is_silent(self.loop, jobs_built=self.jobs_built, report=report)
+        if not retry:
             return
         Loop.objects.release_held_run_if_unchanged(
             self.loop, claimed_at=self.claimed_at, previous_last_run_at=self.previous_last_run_at

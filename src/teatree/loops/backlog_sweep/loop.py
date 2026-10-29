@@ -42,6 +42,7 @@ MINI_LOOP = MiniLoop(
     name="backlog_sweep",
     default_cadence_seconds=86400,  # the sweep cadence itself — daily, with no inner gate
     build_jobs=_build_jobs,
+    periodic_phase="backlog_sweep",
     declared_reach=frozenset({LoopReach.EGRESS}),
     determinism=LoopDeterminism.AI,
 )

@@ -133,6 +133,7 @@ class MiniLoop:
     name: str
     default_cadence_seconds: int
     build_jobs: Callable[..., list["_ScannerJob"]]
+    periodic_phase: str = ""
     off_live_tick: bool = False
     cadence_is_floor: bool = False
     off_tick_command: tuple[str, ...] = ()

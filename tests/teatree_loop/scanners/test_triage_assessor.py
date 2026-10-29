@@ -17,7 +17,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import NEEDS_TRIAGE_LABEL, PendingTriageRecommendation
+from teatree.core.models import NEEDS_TRIAGE_LABEL, PendingTriageRecommendation, Ticket
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.loop.scanners.base import PartialScanError
@@ -78,6 +78,11 @@ def _backdate(task: Task, *, hours: int) -> None:
 
 
 class TriageAssessorScanTests(TestCase):
+    def setUp(self) -> None:
+        dispatchable = patch.object(Ticket, "has_dispatchable_overlay", return_value=True)
+        dispatchable.start()
+        self.addCleanup(dispatchable.stop)
+
     def test_unassigned_read_failure_without_partial_result_channel_raises(self) -> None:
         host = _Host(assigned_issues=[])
         with (
@@ -163,7 +168,7 @@ class TriageAssessorScanTests(TestCase):
 
     def test_explicit_empty_owned_repo_scope_queues_nothing(self) -> None:
         host = _Host(issues=[_issue(self.URL)])
-        assert _scanner(host, repo_slugs=()).scan() == []
+        assert [signal.kind for signal in _scanner(host, repo_slugs=()).scan()] == ["triage_assessor.held"]
         assert _last_task() is None
 
     def test_labeled_issue_assigned_to_someone_else_is_not_assessed(self) -> None:
@@ -182,7 +187,9 @@ class TriageAssessorScanTests(TestCase):
         assert [signal.kind for signal in _scanner(_Host(issues=[issue])).scan()] == ["triage_assessor.held"]
 
     def test_no_identity_resolves_to_no_scan(self) -> None:
-        assert _scanner(_Host(user="", issues=[_issue(self.URL)])).scan() == []
+        assert [signal.kind for signal in _scanner(_Host(user="", issues=[_issue(self.URL)])).scan()] == [
+            "triage_assessor.held"
+        ]
 
     def test_issue_with_existing_recommendation_is_dropped(self) -> None:
         PendingTriageRecommendation.record_candidate(issue_url=self.URL, verdict="keep")
@@ -215,7 +222,7 @@ class TriageAssessorScanTests(TestCase):
         assert prior is not None
         # Leave PENDING and backdate so cadence WOULD trigger — the in-flight lock holds.
         _backdate(prior, hours=48)
-        assert _scanner(host).scan() == []
+        assert [signal.kind for signal in _scanner(host).scan()] == ["triage_assessor.not_due"]
         assert _last_task().pk == prior.pk
 
     def test_cadence_elapsed_queues_new_task(self) -> None:

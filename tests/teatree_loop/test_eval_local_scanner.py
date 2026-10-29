@@ -132,7 +132,7 @@ class EvalLocalScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["eval_local.not_due"]
         latest = _last_eval_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -147,7 +147,7 @@ class EvalLocalScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["eval_local.not_due"]
 
     def test_queued_task_directs_scoped_transcript_runner(self) -> None:
         """The execution_reason must direct the SCOPED, $0-extra local runner.

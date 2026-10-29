@@ -28,7 +28,10 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 from django.db import transaction
 
-from teatree.loop.scanners.base import hours_since
+from teatree.core.factory.health_signal import HealthSignal
+from teatree.core.models.known_issue import KnownIssue
+from teatree.core.task_dispatch import pending_admission_reason
+from teatree.loop.scanners.base import ScanSignal, hours_since
 
 if TYPE_CHECKING:
     from teatree.core.models import Session as _Session
@@ -54,6 +57,82 @@ class PhaseCadence:
     #: IS the cadence, so a fire that reaches here is due by construction and the trigger
     #: only names WHY (first run, or the row's own slot).
     cadence_hours: int = 0
+    health_fingerprint: str = ""
+    health_kind: str = "cadence_held"
+
+    @property
+    def hold_fingerprint(self) -> str:
+        return self.health_fingerprint or f"cadence-held:{self.phase}:{self.overlay_name}"
+
+    def resolve_hold(self) -> None:
+        KnownIssue.objects.resolve_fingerprint(self.hold_fingerprint)
+
+    def resolve_not_due(self) -> None:
+        KnownIssue.objects.resolve_fingerprint(f"cadence-not-due:{self.phase}:{self.overlay_name}")
+
+    def hold(self, reason: str, *, kind: str, retry: bool, task_id: int | None = None) -> list[ScanSignal]:
+        self.resolve_not_due()
+        summary = f"{self.phase} held for {self.overlay_name}: {reason}"
+        KnownIssue.objects.record_reactive(
+            HealthSignal(
+                fingerprint=self.hold_fingerprint,
+                severity=KnownIssue.Severity.WARNING,
+                kind=self.health_kind,
+                overlay=self.overlay_name,
+                summary=summary,
+            )
+        )
+        logger.warning("%s", summary)
+        payload: dict[str, str | bool | int] = {"overlay": self.overlay_name, "reason": reason, "retry": retry}
+        if task_id is not None:
+            payload["task_id"] = task_id
+        return [ScanSignal(kind=kind, summary=summary, payload=payload)]
+
+    def not_due(self, reason: str, *, kind: str, details: dict[str, str] | None = None) -> list[ScanSignal]:
+        self.resolve_hold()
+        summary = f"{self.phase} not due for {self.overlay_name}: {reason}"
+        KnownIssue.objects.record_reactive(
+            HealthSignal(
+                fingerprint=f"cadence-not-due:{self.phase}:{self.overlay_name}",
+                severity=KnownIssue.Severity.WARNING,
+                kind="cadence_not_due",
+                overlay=self.overlay_name,
+                summary=summary,
+            )
+        )
+        logger.info("%s", summary)
+        return [
+            ScanSignal(
+                kind=kind,
+                summary=summary,
+                payload={"overlay": self.overlay_name, "reason": reason, **(details or {})},
+            )
+        ]
+
+    def gate(self, *, now: dt.datetime, held_kind: str, not_due_kind: str) -> tuple[str | None, list[ScanSignal]]:
+        task_model = _task_model()
+        if task_model is not None:
+            in_flight = task_model.objects.in_flight_for_phase(self.overlay_name, self.phase).first()
+            if in_flight is not None:
+                if in_flight.admitted_at is None:
+                    reason = pending_admission_reason(self.phase) or "task waiting for admission"
+                    return None, self.hold(reason, kind=held_kind, retry=True, task_id=in_flight.pk)
+                return None, self.not_due("task already in flight", kind=not_due_kind)
+        trigger = self.evaluate_trigger(now=now, last_run_at=self.last_run_at())
+        if trigger is None:
+            return None, self.not_due("cadence has not elapsed", kind=not_due_kind)
+        return trigger, []
+
+    def handover(self, task: "_Task | None", queued: ScanSignal, *, held_kind: str) -> list[ScanSignal]:
+        if task is None:
+            return self.hold("task was not created", kind=held_kind, retry=True)
+        task.refresh_from_db(fields=["admitted_at"])
+        if task.admitted_at is None:
+            reason = pending_admission_reason(self.phase) or "task waiting for admission"
+            return self.hold(reason, kind=held_kind, retry=True, task_id=task.pk)
+        self.resolve_hold()
+        self.resolve_not_due()
+        return [queued]
 
     def in_flight_exists(self) -> bool:
         """True iff a pending/claimed task for this overlay+phase already exists."""

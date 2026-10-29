@@ -194,6 +194,11 @@ def _queued_review_from_scan() -> Task:
 
 
 class ArchitecturalReviewScannerTests(TestCase):
+    def setUp(self) -> None:
+        dispatchable = patch.object(Ticket, "has_dispatchable_overlay", return_value=True)
+        dispatchable.start()
+        self.addCleanup(dispatchable.stop)
+
     def test_scanned_review_completion_notifies_once_with_pr_link(self) -> None:
         task = _queued_review_from_scan()
         task.claim(claimed_by="test")
@@ -284,7 +289,7 @@ class ArchitecturalReviewScannerTests(TestCase):
         assert KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
 
         Task.objects.filter(pk=first[0].payload["task_id"]).update(admitted_at=timezone.now())
-        assert _scanner().scan() == []
+        assert [signal.kind for signal in _scanner().scan()] == ["architectural_review.not_due"]
         assert not KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
 
     def test_lapsed_plans_retry_reports_governor_hold(self) -> None:
@@ -310,7 +315,7 @@ class ArchitecturalReviewScannerTests(TestCase):
             signals = _scanner().scan()
 
         assert [signal.kind for signal in signals] == ["architectural_review.held"]
-        assert signals[0].payload == {"overlay": OVERLAY, "task_id": task.pk, "reason": "load HALT"}
+        assert signals[0].payload == {"overlay": OVERLAY, "task_id": task.pk, "reason": "load HALT", "retry": True}
         assert BotPing.objects.filter(idempotency_key=f"architectural-review:held:{task.pk}:admission").count() == 1
         assert KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
 
@@ -348,7 +353,7 @@ class ArchitecturalReviewScannerTests(TestCase):
         defensive so a misconstructed instance does not poison the DB.
         """
         signals = ArchitecturalReviewScanner(overlay_name="", cadence_hours=1).scan()
-        assert signals == []
+        assert [signal.kind for signal in signals] == ["architectural_review.held"]
         assert _last_review_task() is None
 
     def test_no_prior_review_queues_task(self) -> None:
@@ -422,7 +427,7 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         second = _scanner(cadence_hours=168).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
         latest = _last_review_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -438,7 +443,7 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         second = _scanner(cadence_hours=168).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
 
     def test_merge_count_trigger_fires(self) -> None:
         """3 merges since the last review with after_merge_count=2 → queue."""

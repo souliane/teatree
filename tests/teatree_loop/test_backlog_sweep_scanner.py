@@ -134,7 +134,7 @@ class BacklogSweepScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["backlog_sweep.not_due"]
         latest = _last_sweep_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -150,7 +150,7 @@ class BacklogSweepScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["backlog_sweep.not_due"]
 
     def test_queued_task_carries_skill_name(self) -> None:
         """The skill name lands in the Task's execution_reason for the dispatcher."""

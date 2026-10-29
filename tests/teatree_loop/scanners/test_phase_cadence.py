@@ -15,9 +15,11 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 OVERLAY = "t3-teatree"
@@ -46,6 +48,56 @@ class InFlightExistsTests(TestCase):
     def test_false_when_task_model_missing(self) -> None:
         with patch("teatree.loop.scanners.phase_cadence._task_model", return_value=None):
             assert _cadence().in_flight_exists() is False
+
+
+class OutcomeTests(TestCase):
+    def test_gate_names_an_in_flight_task(self) -> None:
+        ticket = Ticket.objects.create(overlay=OVERLAY)
+        session = Session.objects.create(overlay=OVERLAY, ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase=PHASE, status=Task.Status.CLAIMED)
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now())
+
+        trigger, signals = _cadence().gate(
+            now=timezone.now(), held_kind="eval_local.held", not_due_kind="eval_local.not_due"
+        )
+
+        assert trigger is None
+        assert signals[0].kind == "eval_local.not_due"
+        assert "in flight" in signals[0].payload["reason"]
+
+    def test_handover_reports_an_unadmitted_task_as_retryable(self) -> None:
+        ticket = Ticket.objects.create(overlay=OVERLAY)
+        session = Session.objects.create(overlay=OVERLAY, ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase=PHASE)
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+        queued = ScanSignal(kind="eval_local.queued", summary="queued", payload={"task_id": task.pk})
+
+        with patch("teatree.loop.scanners.phase_cadence.pending_admission_reason", return_value="machine HALT"):
+            signals = _cadence().handover(task, queued, held_kind="eval_local.held")
+
+        assert signals[0].kind == "eval_local.held"
+        assert signals[0].payload["reason"] == "machine HALT"
+        assert signals[0].payload["retry"] is True
+
+    def test_hold_names_reason_and_records_retryable_health(self) -> None:
+        signals = _cadence().hold("reserve unmet", kind="eval_local.held", retry=True)
+
+        assert len(signals) == 1
+        assert signals[0].payload["reason"] == "reserve unmet"
+        assert signals[0].payload["retry"] is True
+        issue = KnownIssue.objects.get(fingerprint=f"cadence-held:{PHASE}:{OVERLAY}")
+        assert issue.summary.endswith("reserve unmet")
+        assert issue.auto_resolve is False
+
+    def test_not_due_resolves_an_earlier_hold(self) -> None:
+        cadence = _cadence()
+        cadence.hold("lane full", kind="eval_local.held", retry=True)
+
+        signals = cadence.not_due("task running", kind="eval_local.not_due")
+
+        assert signals[0].payload["reason"] == "task running"
+        assert KnownIssue.objects.get(fingerprint=f"cadence-held:{PHASE}:{OVERLAY}").resolved_at is not None
+        assert KnownIssue.objects.open().filter(fingerprint=f"cadence-not-due:{PHASE}:{OVERLAY}").exists()
 
 
 class LastRunAtTests(TestCase):

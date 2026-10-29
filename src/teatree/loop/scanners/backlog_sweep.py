@@ -130,12 +130,11 @@ class BacklogSweepScanner:
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
-        if cadence.in_flight_exists():
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="backlog_sweep.held", not_due_kind="backlog_sweep.not_due"
+        )
         if trigger is None:
-            return []
+            return signals
         return self._queue(cadence, trigger, self._pending_dream_gaps())
 
     def scan_dream_gaps(self) -> list[ScanSignal]:
@@ -166,9 +165,8 @@ class BacklogSweepScanner:
                 umbrella = umbrella_ticket(self.dream_umbrella_url)
                 if umbrella is not None:
                     mark_offered(umbrella, selected_keys, at=timezone.now())
-        if task is None:
-            return []
-        return [
+        return cadence.handover(
+            task,
             ScanSignal(
                 kind="backlog_sweep.queued",
                 summary=f"backlog-sweep queued for {self.overlay_name} (trigger: {trigger})",
@@ -176,12 +174,13 @@ class BacklogSweepScanner:
                     "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": BACKLOG_SWEEP_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "trigger": trigger,
                     "require_approval": self.require_approval,
                 },
             ),
-        ]
+            held_kind="backlog_sweep.held",
+        )
 
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive: the group-first posture, plus the ask-gate.

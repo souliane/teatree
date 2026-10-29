@@ -82,7 +82,7 @@ class ProvisionSmokeScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["dogfood_smoke.not_due"]
 
     def test_claimed_task_blocks_dupes(self) -> None:
         """A CLAIMED (in-flight) task suppresses the next scan."""
@@ -92,12 +92,12 @@ class ProvisionSmokeScannerTests(TestCase):
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.CLAIMED)
         _backdate_task(prior, hours=48)
 
-        assert _scanner().scan() == []
+        assert [signal.kind for signal in _scanner().scan()] == ["dogfood_smoke.not_due"]
 
     def test_empty_overlay_name_returns_no_signal(self) -> None:
         """Defensive — an unconfigured overlay name produces no signal, no task."""
         scanner = ProvisionSmokeScanner(overlay_name="", skill="dogfooding")
-        assert scanner.scan() == []
+        assert [signal.kind for signal in scanner.scan()] == ["dogfood_smoke.held"]
         assert _last_smoke_task() is None
 
 
@@ -136,17 +136,17 @@ class DefensiveModelLookupTests(TestCase):
 
     def test_queue_task_returns_none_when_ticket_model_is_missing(self) -> None:
         with patch("teatree.loop.scanners.phase_cadence._ticket_model", return_value=None):
-            assert _scanner().scan() == []
+            assert [signal.kind for signal in _scanner().scan()] == ["dogfood_smoke.held"]
 
     def test_queue_task_returns_none_when_session_model_is_missing(self) -> None:
         with patch("teatree.loop.scanners.phase_cadence._session_model", return_value=None):
-            assert _scanner().scan() == []
+            assert [signal.kind for signal in _scanner().scan()] == ["dogfood_smoke.held"]
 
     def test_short_circuits_cleanly_when_task_model_is_missing(self) -> None:
         scanner = _scanner()
         with patch("teatree.loop.scanners.phase_cadence._task_model", return_value=None):
             # The scanner short-circuits cleanly: no signal, no task queued.
-            assert scanner.scan() == []
+            assert [signal.kind for signal in scanner.scan()] == ["dogfood_smoke.held"]
         assert _last_smoke_task() is None
 
     def test_queue_task_swallows_exceptions_and_returns_none(self) -> None:
@@ -154,7 +154,7 @@ class DefensiveModelLookupTests(TestCase):
         scanner = _scanner()
         with patch.object(Task.objects, "create", side_effect=RuntimeError("db down")):
             signals = scanner.scan()
-        assert signals == []
+        assert [signal.kind for signal in signals] == ["dogfood_smoke.held"]
         # Nothing was committed by the failing transaction.
         assert _last_smoke_task() is None
 
