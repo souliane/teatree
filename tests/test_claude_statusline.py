@@ -138,7 +138,8 @@ class TestStatuslineHook:
         vm_stat = bin_dir / "vm_stat"
         vm_stat.write_text(
             "#!/bin/sh\nprintf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\n"
-            "Pages free: 20000.\\nPages inactive: 10000.\\n'\n",
+            "Pages free: 20000.\\nPages inactive: 10000.\\n"
+            "Pages purgeable: 1000.\\nPages speculative: 1000.\\n'\n",
             encoding="utf-8",
         )
         vm_stat.chmod(0o755)
@@ -150,7 +151,7 @@ class TestStatuslineHook:
         feed = json.loads((state / "xdg" / "teatree" / "host-pressure.json").read_text(encoding="utf-8"))
         assert feed["cores"] == 10
         assert feed["load1"] == pytest.approx(109.45)
-        assert feed["ram_available_mib"] == 117
+        assert feed["ram_available_mib"] == 125
         assert feed["swap_used_mib"] == 500
         assert feed["swap_total_mib"] == 1000
 

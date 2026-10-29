@@ -63,6 +63,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.retention.liveness import held_paths, normalized_spelling
+from teatree.utils.host_os import CONTAINER_MARKERS
+from teatree.utils.host_os import running_in_a_container as _running_in_a_container
 
 #: The host's process table as bind-mounted into a container (deploy/docker-compose.yml).
 _HOST_PROC_ROOT = Path("/host-proc")
@@ -72,7 +74,7 @@ _OWN_PROC_ROOT = Path("/proc")
 
 #: Present iff this process runs inside a container, so ``/proc`` shows a
 #: namespace that is not the host's.
-_CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
+_CONTAINER_MARKERS = CONTAINER_MARKERS
 _NON_DUMPABLE_AGENTS = frozenset({"gpg-agent", "sshd-session", "ssh-agent", "scdaemon", "keyboxd", "dirmngr"})
 
 
@@ -127,7 +129,7 @@ def _query_spellings(directory: Path) -> tuple[Path, ...]:
 
 def running_in_a_container() -> bool:
     """True iff this process's ``/proc`` is a container namespace, not the host's."""
-    return any(marker.exists() for marker in _CONTAINER_MARKERS)
+    return _running_in_a_container(_CONTAINER_MARKERS)
 
 
 def _pid_dirs(root: Path) -> list[Path]:

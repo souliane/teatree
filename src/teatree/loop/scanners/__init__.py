@@ -19,6 +19,7 @@ from teatree.loop.scanners.board_reconcile import BoardReconcileScanner
 from teatree.loop.scanners.ci_eval_heal import CiEvalHealScanner
 from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
 from teatree.loop.scanners.db_backup import DbBackupScanner
+from teatree.loop.scanners.dead_worktree_rows import DeadWorktreeRowScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
@@ -90,6 +91,7 @@ __all__ = [
     "ClaudeSelfPrReviewScanner",
     "CodexReviewScanner",
     "DbBackupScanner",
+    "DeadWorktreeRowScanner",
     "DeferredQuestionPosterScanner",
     "EvalLocalScanner",
     "ForgeMrStateClassifier",

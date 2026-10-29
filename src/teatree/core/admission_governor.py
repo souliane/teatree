@@ -469,11 +469,14 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     host = host_pressure.read_host_pressure()
     if host is not None:
         memory_cap_gb = None
+        memory_source = "" if ram_available_gb is not None else "host feed"
         if ram_available_gb is None:
             available_mib = host.ram_available_mib
             headroom = ram_scope.read_ram_headroom()
             if headroom.cgroup_is_box_scoped:
                 if headroom.available_mib is not None:
+                    if headroom.available_mib < available_mib:
+                        memory_source = "container reading"
                     available_mib = min(available_mib, headroom.available_mib)
                 memory_cap_gb = headroom.box_watermark_cap_gb
             ram_available_gb = available_mib / _MIB_PER_GB
@@ -487,11 +490,14 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
             load_cores=host.cores,
             load_brake_per_core=brake_per_core,
             load_resume_per_core=resume_per_core,
+            source="host feed",
+            memory_source=memory_source,
         )
     load1, cores = machine_load.read_load_and_cores()
     # The cap rides along only on OUR OWN reading: a caller's figure has an unknown scope,
     # and a cap paired with the wrong scope diagnoses the wrong container.
     memory_cap_gb = None
+    memory_source = "" if ram_available_gb is not None else "container reading"
     if ram_available_gb is None:
         headroom = ram_scope.read_ram_headroom()
         available_mib = headroom.box_watermark_mib
@@ -504,6 +510,8 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
         memory_cap_gb=memory_cap_gb,
         load_brake_per_core=brake_per_core,
         load_resume_per_core=resume_per_core,
+        source="container reading",
+        memory_source=memory_source,
     )
 
 

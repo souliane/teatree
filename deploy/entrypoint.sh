@@ -1068,7 +1068,6 @@ init)
     # reflects the real host instead of a baked-in cap. `t3 doctor --repair` clears
     # ONLY a stale ENTRYPOINT-seeded pin, never an operator's deliberate one (#3434).
     seed_setting provision_max_concurrency 0
-    seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
     # Clear any drain-set quiescing flag so the FRESH worker RESUMES admission after a
     # rolling deploy (drain-then-deploy). This is a HARD `set false`, NOT a provenance

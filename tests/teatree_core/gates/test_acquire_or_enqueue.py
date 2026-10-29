@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import (
     LocalStackLimitExceededError,
@@ -28,7 +29,10 @@ def _healthy_host_resources() -> Iterator[None]:
     """The acquisition cases control count and RAM explicitly, independent of host pressure."""
     with (
         patch("teatree.core.gates.provision_admission_gate.read_disk_used_percent", return_value=0.0),
-        patch("teatree.core.gates.provision_admission_gate.read_ram_used_percent", return_value=0.0),
+        patch(
+            "teatree.core.gates.provision_admission_gate.read_machine_signal",
+            return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
+        ),
     ):
         yield
 

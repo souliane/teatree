@@ -65,6 +65,7 @@ from teatree.loops.worker import (
     agent_executor_queues,
     loops_executor_count,
 )
+from teatree.utils.host_pressure import HostSampler, read_host_pressure
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 from teatree.utils.thread_db import close_thread_db_connections
@@ -164,6 +165,7 @@ def _make_worker(*, script, sleep, **seam_overrides):
         reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
+        publish_host_pressure=seam_overrides.get("publish_host_pressure") or (lambda: None),
         start_live_ingress=seam_overrides.get("start_live_ingress") or (lambda: None),
         read_agent_queues=seam_overrides.get("read_agent_queues") or (lambda: _AGENTS),
     )
@@ -171,6 +173,40 @@ def _make_worker(*, script, sleep, **seam_overrides):
         seams = dataclasses.replace(seams, loops_executors=seam_overrides["loops_executors"])
     holder.append(LoopWorker(seams))
     return holder[0], built, handles
+
+
+def test_supervisor_poll_produces_headless_linux_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "meminfo").write_text("MemAvailable: 8388608 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
+    (proc / "vmstat").write_text("pswpin 0\npswpout 0\n")
+    (proc / "loadavg").write_text("1.0 0.5 0.25 1/100 100\n")
+    target = tmp_path / "host-pressure.json"
+    monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    sampler = HostSampler(proc_root=proc, path=target)
+    worker, _, _ = _make_worker(
+        script=[False], sleep=lambda _seconds: None, publish_host_pressure=sampler.publish_if_due
+    )
+
+    worker.run()
+
+    assert read_host_pressure(path=target) is not None
+
+
+def test_supervisor_poll_does_not_overwrite_darwin_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "host-pressure.json"
+    target.write_bytes(b"host feed")
+    monkeypatch.setenv("TEATREE_HOST_OS", "Darwin")
+    worker, _, _ = _make_worker(
+        script=[False],
+        sleep=lambda _seconds: None,
+        publish_host_pressure=HostSampler(proc_root=tmp_path, path=target).publish_if_due,
+    )
+
+    worker.run()
+
+    assert target.read_bytes() == b"host feed"
 
 
 def test_supervisor_reclaims_dead_owner_leases_each_poll() -> None:

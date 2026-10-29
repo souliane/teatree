@@ -68,6 +68,7 @@ class TestDispatchLoopBuildJobs:
             "outbound_audit",
             "owner_actions",
             "pending_pr_drain",
+            "dead_worktree_rows",
             "undelivered_notify",
             "deferred_question_poster",
             "question_backlog_nag",

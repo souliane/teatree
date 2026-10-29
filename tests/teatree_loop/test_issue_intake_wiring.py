@@ -401,6 +401,35 @@ class IssueIntakeMiniLoopTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled()):
             assert MINI_LOOP.build_jobs(backends=None) == []
 
+    def test_governor_deferral_names_its_reading_and_summary_gate(self) -> None:
+        host = _authored_host("https://github.com/souliane/teatree/issues/101")
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend_with_host(host))
+        assert scanner is not None
+        with (
+            self.assertLogs("teatree.loop.scanners.issue_intake", level="INFO") as logs,
+            patch(
+                "teatree.core.agent_admission.agent_admission_denied_reason",
+                return_value="load 30 at/over the 20 watermark on 10 core(s) (container reading)",
+            ),
+        ):
+            assert scanner.scan() == []
+        output = "\n".join(logs.output)
+        assert "governor DENIED admission: load 30 at/over the 20 watermark on 10 core(s) (container reading)" in output
+        assert "held_by=governor" in output
+
+    def test_budget_deferral_names_its_summary_gate(self) -> None:
+        host = _authored_host("https://github.com/souliane/teatree/issues/102")
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend_with_host(host))
+        assert scanner is not None
+        with (
+            self.assertLogs("teatree.loop.scanners.issue_intake", level="INFO") as logs,
+            patch.object(IssueIntakeScanner, "_budget_exhausted", return_value=True),
+        ):
+            assert scanner.scan() == []
+        assert "held_by=budget" in "\n".join(logs.output)
+
     def test_configured_repo_scope_only_claims_listed_repo(self) -> None:
         included = "https://github.com/o/app/issues/10"
         excluded = "https://github.com/o/app-e2e/issues/11"

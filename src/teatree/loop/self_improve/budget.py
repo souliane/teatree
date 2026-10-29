@@ -6,7 +6,7 @@ schedule cycle.  Returns a verdict with an ``ok`` flag and a structured
 note (per BLUEPRINT § 5.7) when it skips a cycle — never a Slack DM.
 
 The verdict is intentionally a value object: tests inject the underlying
-samples (RAM%, recent spawn count, recent denial count) rather than
+samples (machine reading, recent spawn count, recent denial count) rather than
 mocking ``psutil``, so the budget logic is fully deterministic.
 """
 
@@ -16,11 +16,11 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
+from teatree.core.admission.memory_hold import MachineSignal, memory_hold_reason
+from teatree.core.admission_governor import read_machine_signal as _read_machine_signal
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.utils.disk_probe import disk_crit_percent, read_disk_used_percent
-from teatree.utils.ram_probe import read_ram_used_percent as _read_ram_used_percent
 
-DEFAULT_RAM_USED_CEILING_PCT = 85
 DEFAULT_SPAWN_CAP_WINDOW_SECONDS = 60 * 60
 DEFAULT_SPAWN_CAP = 3
 # Env-var NAME (not a credential value); split-assign so the literal does
@@ -47,11 +47,11 @@ class BudgetVerdict:
 
 def precheck_budget(
     *,
-    ram_used_percent: float | None = None,
+    machine: MachineSignal | None = None,
     disk_used_percent: float | None = None,
     recent_self_improve_spawns: int = 0,
     token_budget_remaining: int | None = None,
-    ram_probe: Callable[[], float] | None = None,
+    machine_probe: Callable[[], MachineSignal] | None = None,
 ) -> BudgetVerdict:
     """Return ``skip(reason)`` when any guardrail fails, else ``allow()``.
 
@@ -61,13 +61,9 @@ def precheck_budget(
     disk_sample = disk_used_percent if disk_used_percent is not None else read_disk_used_percent()
     if disk_sample is not None and disk_sample >= disk_crit_percent():
         return BudgetVerdict.skip(f"low_disk (used={disk_sample:.0f}%)")
-    sample = (
-        ram_used_percent
-        if ram_used_percent is not None
-        else (ram_probe() if ram_probe is not None else _read_ram_used_percent())
-    )
-    if sample >= DEFAULT_RAM_USED_CEILING_PCT:
-        return BudgetVerdict.skip(f"low_ram (used={sample:.0f}%)")
+    reading = machine if machine is not None else (machine_probe or _read_machine_signal)()
+    if reason := memory_hold_reason(reading):
+        return BudgetVerdict.skip(reason)
     if recent_self_improve_spawns >= DEFAULT_SPAWN_CAP:
         return BudgetVerdict.skip(f"spawn_cap ({recent_self_improve_spawns} in window)")
     if token_budget_remaining is not None and token_budget_remaining <= 0:

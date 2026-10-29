@@ -148,7 +148,7 @@ def test_stale_host_reading_warns_and_falls_back(monkeypatch: pytest.MonkeyPatch
     with caplog.at_level(logging.WARNING):
         machine = read_machine_signal()
     assert machine.load1 != pytest.approx(109.45)
-    assert "host pressure feed" in caplog.text
+    assert "host pressure feed" not in caplog.text
 
 
 def test_worker_feed_path_override_reads_fresh_host_signal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -178,15 +178,13 @@ def test_worker_feed_path_override_falls_back_when_absent_or_stale(
     assert read_machine_signal().load1 == pytest.approx(0.25)
 
 
-def test_missing_feed_warning_memo_can_be_reset(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_missing_feed_is_a_silent_reader_fallback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     missing = tmp_path / "host-pressure.json"
     with caplog.at_level(logging.WARNING):
         assert host_pressure.read_host_pressure(path=missing) is None
         assert host_pressure.read_host_pressure(path=missing) is None
-        assert caplog.text.count("host pressure feed missing") == 1
-        host_pressure.reset_missing_warning_memo()
         assert host_pressure.read_host_pressure(path=missing) is None
-    assert caplog.text.count("host pressure feed missing") == 2
+    assert "host pressure feed" not in caplog.text
 
 
 def test_host_load_is_judged_against_host_cores_not_the_container_quota(
@@ -221,3 +219,28 @@ def test_fresh_host_memory_keeps_worker_cgroup_floor(monkeypatch: pytest.MonkeyP
     assert machine.memory_cap_gb == pytest.approx(8.0)
     assert not decision.admit
     assert "GB" in decision.reason
+    assert decision.reason.endswith("(container reading)")
+
+
+def test_host_load_refusal_names_the_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+    _write_feed(tmp_path, epoch=int(time.time()), load1=30.0, ram_available_mib=12 * 1024)
+    _stub_uncapped(monkeypatch)
+
+    decision = decide_admission(quota=_quota(), machine=read_machine_signal())
+
+    assert not decision.admit
+    assert decision.cause == "load"
+    assert decision.reason.endswith("(host feed)")
+
+
+def test_fallback_load_refusal_names_the_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+    monkeypatch.setattr(admission_governor.machine_load, "read_load_and_cores", lambda: (30.0, 10))
+    _stub_uncapped(monkeypatch)
+
+    decision = decide_admission(quota=_quota(), machine=read_machine_signal())
+
+    assert not decision.admit
+    assert decision.cause == "load"
+    assert decision.reason.endswith("(container reading)")

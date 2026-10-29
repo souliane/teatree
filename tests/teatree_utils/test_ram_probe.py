@@ -17,45 +17,14 @@ from teatree.utils import ram_probe
 from teatree.utils.ram_probe import (
     DockerWorkerSizing,
     _cgroup_v2_cpu_quota,
-    _linux_ram_used_percent,
-    _macos_ram_used_percent,
     available_cpu_count,
     cgroup_v2_memory_mib,
     default_provision_concurrency,
     host_available_ram_mib,
     host_total_ram_mib,
     linux_mem_available_kb,
-    read_ram_used_percent,
 )
 from teatree.utils.ram_scope import DEFAULT_AGENT_WORKLOAD_FLOOR_GIB, RamHeadroom
-
-
-def test_read_ram_used_percent_dispatches_darwin() -> None:
-    with (
-        patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
-        patch("teatree.utils.ram_probe._macos_ram_used_percent", return_value=42.0) as macos,
-    ):
-        assert read_ram_used_percent() == pytest.approx(42.0)
-    macos.assert_called_once()
-
-
-def test_read_ram_used_percent_dispatches_linux() -> None:
-    with (
-        patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
-        patch("teatree.utils.ram_probe._linux_ram_used_percent", return_value=13.0) as linux,
-    ):
-        assert read_ram_used_percent() == pytest.approx(13.0)
-    linux.assert_called_once()
-
-
-def test_read_ram_used_percent_unknown_platform_returns_zero() -> None:
-    with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
-        assert read_ram_used_percent() == pytest.approx(0.0)
-
-
-def test_macos_probe_no_binaries_returns_zero() -> None:
-    with patch("shutil.which", return_value=None):
-        assert _macos_ram_used_percent() == pytest.approx(0.0)
 
 
 class TestMacosPageSize:
@@ -67,8 +36,7 @@ class TestMacosPageSize:
     """
 
     # A real arm64 capture (24 GiB host): free + inactive = 470274 reclaimable pages.
-    _TOTAL_BYTES = 25769803776
-    _RECLAIMABLE_PAGES = 83371 + 386903
+    _RECLAIMABLE_PAGES = 83371 + 386903 + 9228
     _VM_STAT_16K = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                    83371.
 Pages active:                                  397317.
@@ -77,48 +45,33 @@ Pages speculative:                               9228.
 Pages wired down:                              383587.
 """
 
-    def _probe(self, vm_stat_output: str) -> float:
-        """Run the mac probe against *vm_stat_output* with a fixed ``hw.memsize``."""
+    def _probe(self, vm_stat_output: str) -> int:
 
         def fake_run(cmd, **_kwargs):
-            stdout = str(self._TOTAL_BYTES) if "hw.memsize" in cmd else vm_stat_output
-            return CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+            return CompletedProcess(args=cmd, returncode=0, stdout=vm_stat_output, stderr="")
 
         with (
             patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
             patch("teatree.utils.run.run_checked", side_effect=fake_run),
         ):
-            return _macos_ram_used_percent()
+            return host_available_ram_mib()
 
-    def _expected_percent(self, page_size: int) -> float:
-        used = self._TOTAL_BYTES - self._RECLAIMABLE_PAGES * page_size
-        return used * 100.0 / self._TOTAL_BYTES
+    def _expected_mib(self, page_size: int) -> int:
+        return self._RECLAIMABLE_PAGES * page_size // (1024 * 1024)
 
     def test_uses_the_page_size_from_the_vm_stat_header(self) -> None:
-        assert self._probe(self._VM_STAT_16K) == pytest.approx(self._expected_percent(16384))
+        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
+            assert self._probe(self._VM_STAT_16K) == self._expected_mib(16384)
 
     def test_does_not_fall_back_to_a_hardcoded_four_kib_page(self) -> None:
-        # The 4 KiB reading of this same capture is ~92.5% — a phantom that
-        # trips the 85% provision-admission ceiling on a host with ~7 GB free.
-        assert self._probe(self._VM_STAT_16K) != pytest.approx(self._expected_percent(4096))
+        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
+            assert self._probe(self._VM_STAT_16K) != self._expected_mib(4096)
 
     def test_unparsable_header_falls_back_to_four_kib(self) -> None:
         # "Can't tell" keeps the historical 4 KiB arithmetic rather than raising.
         headerless = self._VM_STAT_16K.replace("(page size of 16384 bytes)", "(page size unknown)")
-        assert self._probe(headerless) == pytest.approx(self._expected_percent(4096))
-
-
-def test_linux_probe_missing_proc_meminfo_returns_zero() -> None:
-    with patch("builtins.open", side_effect=OSError):
-        assert _linux_ram_used_percent() == pytest.approx(0.0)
-
-
-def test_linux_probe_parses_meminfo(tmp_path) -> None:
-    meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemTotal:       16000000 kB\nMemAvailable:    4000000 kB\n")
-    with patch("builtins.open", lambda *_a, **_k: meminfo.open(encoding="utf-8")):
-        used = _linux_ram_used_percent()
-    assert used == pytest.approx(75.0)
+        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
+            assert self._probe(headerless) == self._expected_mib(4096)
 
 
 def test_default_provision_concurrency_halves_cpu_count() -> None:
@@ -418,15 +371,15 @@ class TestHostAvailableRamMib:
 
     def test_macos_sums_the_reclaimable_page_classes(self) -> None:
         stat = (
-            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\nPages inactive: 32768.\n"
+            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\n"
+            "Pages inactive: 32768.\nPages purgeable: 16384.\nPages speculative: 8192.\n"
         )
         with (
             patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
             patch("shutil.which", return_value="/usr/bin/vm_stat"),
             patch("teatree.utils.run.run_checked", return_value=CompletedProcess([], 0, stat, "")),
         ):
-            # (32768 + 32768) pages * 16 KiB = 1024 MiB.
-            assert host_available_ram_mib() == 1024
+            assert host_available_ram_mib() == 1408
 
     def test_macos_without_vm_stat_is_zero(self) -> None:
         with (

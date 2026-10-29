@@ -47,6 +47,7 @@ from teatree.loop.scanner_factory_config import (
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
+    DeadWorktreeRowScanner,
     DeferredQuestionPosterScanner,
     IncomingEventsScanner,
     OutboundAuditScanner,
@@ -100,6 +101,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
+        _ScannerJob(scanner=DeadWorktreeRowScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(
             scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id, settle=sweep_owner_questions),

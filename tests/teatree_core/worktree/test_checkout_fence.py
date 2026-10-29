@@ -15,6 +15,7 @@ from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core import task_dispatch
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.factory.halted_retries import stuck_ticket_halt_signals
 from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
@@ -183,6 +184,22 @@ class CheckoutFenceTests(TestCase):
         park_task_checkout(self.task, reason="held by the owner")
         self.task.refresh_from_db()
         assert self.task.not_before == held.expires_at
+
+    def test_third_identical_park_backs_off_and_a_new_reason_resets_it(self) -> None:
+        for _ in range(3):
+            park_task_checkout(self.task, reason="foreign checkout state")
+        self.task.refresh_from_db()
+        self.ticket.refresh_from_db()
+        assert self.task.not_before >= timezone.now() + timedelta(minutes=59)
+        assert self.ticket.extra["stuck_halt"]["reason"] == "checkout parked: foreign checkout state"
+        assert len(stuck_ticket_halt_signals().signals) == 1
+
+        park_task_checkout(self.task, reason="new checkout state")
+        self.task.refresh_from_db()
+        self.ticket.refresh_from_db()
+        assert self.task.not_before <= timezone.now() + timedelta(minutes=30)
+        assert "stuck_halt" not in self.ticket.extra
+        assert not stuck_ticket_halt_signals().signals
 
     def test_held_checkout_is_skipped_until_its_holder_releases_or_lapses(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)

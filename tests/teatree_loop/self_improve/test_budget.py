@@ -6,6 +6,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.self_improve import budget as budget_module
 from teatree.loop.self_improve.budget import (
@@ -15,6 +16,9 @@ from teatree.loop.self_improve.budget import (
     recent_self_improve_firings,
 )
 
+_HEALTHY_MACHINE = MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0)
+_LOW_MACHINE = MachineSignal(cores=8, load1=1.0, ram_available_gb=2.0)
+
 
 @pytest.fixture(autouse=True)
 def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,43 +26,50 @@ def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_allow_when_all_under_limits() -> None:
-    verdict = precheck_budget(ram_used_percent=50, recent_self_improve_spawns=0)
+    verdict = precheck_budget(machine=_HEALTHY_MACHINE, recent_self_improve_spawns=0)
     assert verdict.ok is True
     assert verdict.reason == ""
 
 
 def test_low_ram_short_circuits() -> None:
-    verdict = precheck_budget(ram_used_percent=95)
+    verdict = precheck_budget(machine=_LOW_MACHINE)
     assert verdict.ok is False
-    assert "low_ram" in verdict.reason
+    assert "memory_pressure" in verdict.reason
+
+
+def test_self_improve_uses_the_governor_memory_floor_and_names_unknown() -> None:
+    floor = MachineSignal(cores=8, load1=1.0, ram_available_gb=4.0, memory_source="container reading")
+    unreadable = MachineSignal(cores=8, load1=1.0, ram_available_gb=None, memory_source="container reading")
+    assert "4 GB floor" in precheck_budget(machine=floor).reason
+    assert "memory_unknown" in precheck_budget(machine=unreadable).reason
 
 
 def test_low_disk_skips_a_self_improve_cycle() -> None:
-    verdict = precheck_budget(ram_used_percent=20, disk_used_percent=96)
+    verdict = precheck_budget(machine=_HEALTHY_MACHINE, disk_used_percent=96)
     assert verdict.ok is False
     assert "low_disk" in verdict.reason
 
 
 def test_unmeasurable_disk_does_not_skip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(budget_module, "read_disk_used_percent", lambda: None)
-    assert precheck_budget(ram_used_percent=20).ok
+    assert precheck_budget(machine=_HEALTHY_MACHINE).ok
 
 
 def test_spawn_cap_blocks_at_the_cap() -> None:
     # A cap of N admits N spawns, so the N-th sample is already spent.
-    verdict = precheck_budget(ram_used_percent=10, recent_self_improve_spawns=DEFAULT_SPAWN_CAP)
+    verdict = precheck_budget(machine=_HEALTHY_MACHINE, recent_self_improve_spawns=DEFAULT_SPAWN_CAP)
     assert verdict.ok is False
     assert "spawn_cap" in verdict.reason
 
 
 def test_one_spawn_below_the_cap_still_allows() -> None:
-    verdict = precheck_budget(ram_used_percent=10, recent_self_improve_spawns=DEFAULT_SPAWN_CAP - 1)
+    verdict = precheck_budget(machine=_HEALTHY_MACHINE, recent_self_improve_spawns=DEFAULT_SPAWN_CAP - 1)
     assert verdict.ok is True
 
 
 def test_token_budget_exhausted_blocks() -> None:
     verdict = precheck_budget(
-        ram_used_percent=10,
+        machine=_HEALTHY_MACHINE,
         token_budget_remaining=0,
     )
     assert verdict.ok is False
@@ -66,15 +77,14 @@ def test_token_budget_exhausted_blocks() -> None:
 
 
 def test_token_budget_none_allows() -> None:
-    verdict = precheck_budget(ram_used_percent=10, token_budget_remaining=None)
+    verdict = precheck_budget(machine=_HEALTHY_MACHINE, token_budget_remaining=None)
     assert verdict.ok is True
 
 
-def test_ram_probe_callable_is_consulted() -> None:
-    """When ``ram_used_percent`` is None, the probe callable is used."""
-    verdict = precheck_budget(ram_probe=lambda: 95.0)
+def test_machine_probe_callable_is_consulted() -> None:
+    verdict = precheck_budget(machine_probe=lambda: _LOW_MACHINE)
     assert verdict.ok is False
-    assert "low_ram" in verdict.reason
+    assert "memory_pressure" in verdict.reason
 
 
 def test_budget_verdict_helpers() -> None:
