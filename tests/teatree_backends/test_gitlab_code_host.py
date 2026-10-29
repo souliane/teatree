@@ -1537,7 +1537,7 @@ def test_list_prs_builds_state_and_author_filters() -> None:
 
     assert result == [{"iid": 5}]
     client.get_json_paginated.assert_called_once_with(
-        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice"
+        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice", require_list=True
     )
 
 
@@ -1547,7 +1547,9 @@ def test_list_prs_passes_native_state_verbatim() -> None:
     client.get_json_paginated.return_value = []
     GitLabCodeHost(client=client).list_prs(repo="org/repo", state="merged")
 
-    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100&state=merged")
+    client.get_json_paginated.assert_called_once_with(
+        "projects/42/merge_requests?per_page=100&state=merged", require_list=True
+    )
 
 
 def test_list_prs_omits_empty_filters() -> None:
@@ -1556,7 +1558,7 @@ def test_list_prs_omits_empty_filters() -> None:
     client.get_json_paginated.return_value = []
     GitLabCodeHost(client=client).list_prs(repo="org/repo")
 
-    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100")
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100", require_list=True)
 
 
 def test_list_prs_unresolvable_project_returns_empty() -> None:

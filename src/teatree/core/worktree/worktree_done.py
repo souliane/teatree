@@ -43,6 +43,7 @@ from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict,
 from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
+from teatree.core.forge_scan_index import branch_scan_scope
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
     RedundancyVerdict,
@@ -508,10 +509,11 @@ def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[Reap
     salvage``. DSLR snapshots are deliberately untouched (CORRECTION 2).
     """
     reset_forge_probe_cache()
-    return [
-        _reap_or_report(worktree, workspace=workspace, dry_run=dry_run)
-        for worktree in Worktree.objects.select_related("ticket")
-    ]
+    with branch_scan_scope():
+        return [
+            _reap_or_report(worktree, workspace=workspace, dry_run=dry_run)
+            for worktree in Worktree.objects.select_related("ticket")
+        ]
 
 
 def _reap_or_report(worktree: Worktree, *, workspace: Path, dry_run: bool) -> ReapOutcome:
