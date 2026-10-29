@@ -980,8 +980,8 @@ dispatch_then_open_browser() {
         echo "deploy/t3: the CLI recorded no browse url — not opening a browser." >&2
         exit 1
     fi
-    probe_url="${url%%/login/local/*}/admin/login/"
-    if command -v curl >/dev/null 2>&1 && ! curl --silent --output /dev/null --max-time 15 "$probe_url"; then
+    probe_url="${url%%/login/*}/admin/login/"
+    if command -v curl >/dev/null 2>&1 && ! curl --fail --silent --output /dev/null --max-time 15 "$probe_url"; then
         refuse_unreachable_admin "$url"
     fi
     open_host_browser "$url"

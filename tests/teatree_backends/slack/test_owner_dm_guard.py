@@ -212,6 +212,21 @@ class TestPostChokepointGuard:
             "conversations.open", token="xoxb-test", json={"users": _OWNER_UID}, idempotent=True
         )
 
+    def test_registered_operator_dm_is_accepted_after_restart_without_open_dm(self) -> None:
+        bot = _dm_only_bot()
+        bot.allow_operator_dms(lambda: frozenset({"U-operator"}))
+        with (
+            patch.object(
+                bot._http,
+                "get",
+                return_value={"ok": True, "channel": {"id": "D-operator", "is_im": True, "user": "U-operator"}},
+            ) as lookup,
+            patch.object(bot._http, "post", return_value={"ok": True}) as post,
+        ):
+            bot.post_reply(channel="D-operator", ts="1.0", text="reply")
+        lookup.assert_called_once()
+        post.assert_called_once()
+
     def test_full_profile_bot_is_unrestricted(self) -> None:
         full = SlackBotBackend(bot_token="xoxb-test", user_id=_OWNER_UID, dm_channel_id=_OWNER_DM)
         with patch.object(full._http, "post", return_value={"ok": True}) as transport:

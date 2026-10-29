@@ -45,7 +45,7 @@ def _require_token(repo: str) -> ReviewService:
     return ReviewService(outcome.value, repo=repo)
 
 
-def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewService, str]:
+def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewService, str] | None:
     ensure_django()
     from teatree.cli.review.operator_target import requester_key_for_mr  # noqa: PLC0415 — ORM after bootstrap
     from teatree.core.models import OnBehalfApproval, OperatorIdentity  # noqa: PLC0415 — ORM after bootstrap
@@ -60,6 +60,8 @@ def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewS
     except ValueError as error:
         typer.echo(str(error))
         raise typer.Exit(code=1) from error
+    if not requester:
+        return None
     if not requester.startswith("gitlab:"):
         typer.echo(f"No GitLab requester recorded for {target}")
         raise typer.Exit(code=1)
@@ -79,9 +81,9 @@ def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewS
         typer.echo(f"Requester {requester} has no active operator login")
         raise typer.Exit(code=1)
     try:
-        token = operator_access_token(identity.user, "gitlab")
-    except OperatorOAuthUnavailableError as error:
-        typer.echo(str(error))
+        token = operator_access_token(identity.user, "gitlab", action=action, target=target, approver_id=requester)
+    except (OperatorOAuthUnavailableError, PermissionError) as error:
+        typer.echo(f"Requester {requester}: {error}")
         raise typer.Exit(code=1) from error
     return ReviewService(token, repo=repo, oauth=True), requester
 
@@ -285,8 +287,12 @@ def approve(
     """
     from teatree.cli.review.operator_approval import publish_operator_approval  # noqa: PLC0415 — ORM after bootstrap
 
-    service, requester = _require_operator_approval(repo, mr, "approve")
-    msg, code = publish_operator_approval(service, repo, mr, "approve", requester)
+    operator = _require_operator_approval(repo, mr, "approve")
+    if operator is None:
+        msg, code = _require_token(repo).approve(repo, mr)
+    else:
+        service, requester = operator
+        msg, code = publish_operator_approval(service, repo, mr, "approve", requester)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
@@ -308,8 +314,12 @@ def unapprove(
     """
     from teatree.cli.review.operator_approval import publish_operator_approval  # noqa: PLC0415 — ORM after bootstrap
 
-    service, requester = _require_operator_approval(repo, mr, "unapprove")
-    msg, code = publish_operator_approval(service, repo, mr, "unapprove", requester)
+    operator = _require_operator_approval(repo, mr, "unapprove")
+    if operator is None:
+        msg, code = _require_token(repo).unapprove(repo, mr)
+    else:
+        service, requester = operator
+        msg, code = publish_operator_approval(service, repo, mr, "unapprove", requester)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

@@ -1,7 +1,5 @@
 """Approval publishing through the ticket requester's OAuth grant."""
 
-# ruff: noqa: SLF001 — approval helpers implement ReviewService operations.
-
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -18,7 +16,7 @@ if TYPE_CHECKING:
 
 def _reviewed(service: "ReviewService", repo: str, mr: int) -> tuple[str, int] | None:
     encoded = repo.replace("/", "%2F")
-    reviewed, error = identity_has_reviewed(service._get_api(), encoded, mr)
+    reviewed, error = identity_has_reviewed(service.api, encoded, mr)
     if error:
         return error, 1
     if not reviewed:
@@ -30,42 +28,65 @@ def _reviewed(service: "ReviewService", repo: str, mr: int) -> tuple[str, int] |
     return None
 
 
+def _approval_preflight(
+    service: "ReviewService", repo: str, mr: int, action: str, approver_key: str
+) -> OnBehalfApproval | tuple[str, int]:
+    target = f"{repo}!{mr}"
+    if not service.oauth:
+        return "OAuth grant required for operator approval", 1
+    approval = (
+        OnBehalfApproval.objects.filter(
+            target=target,
+            action=action,
+            approver_id=approver_key,
+            consumed_at__isnull=True,
+        )
+        .order_by("created_at")
+        .first()
+    )
+    if approval is None:
+        return f"No consent from {approver_key} for {action} on {target}", 1
+    actual = service.api.current_username()
+    if f"gitlab:{actual.casefold()}" != approver_key:
+        return f"OAuth grant identity does not match requester {approver_key}", 1
+    if action == "approve":
+        refusal = _reviewed(service, repo, mr)
+        if refusal:
+            return refusal
+    return approval
+
+
 def publish_operator_approval(
     service: "ReviewService", repo: str, mr: int, action: str, approver_key: str
 ) -> tuple[str, int]:
     target = f"{repo}!{mr}"
     encoded = repo.replace("/", "%2F")
+    preflight = _approval_preflight(service, repo, mr, action, approver_key)
+    if isinstance(preflight, tuple):
+        return preflight
+    approval = preflight
+    claimed_at = timezone.now()
+    with transaction.atomic():
+        claimed = OnBehalfApproval.objects.filter(pk=approval.pk, consumed_at__isnull=True).update(
+            consumed_at=claimed_at
+        )
+    if not claimed:
+        return f"No consent from {approver_key} for {action} on {target}", 1
     try:
-        with transaction.atomic():
-            approval = (
-                OnBehalfApproval.objects.select_for_update()
-                .filter(target=target, action=action, approver_id=approver_key, consumed_at__isnull=True)
-                .order_by("created_at")
-                .first()
-            )
-            if approval is None or not service.oauth:
-                reason = (
-                    "OAuth grant required for operator approval"
-                    if not service.oauth
-                    else f"No consent from {approver_key} for {action} on {target}"
-                )
-                return reason, 1
-            actual = service._get_api().current_username()
-            if f"gitlab:{actual.casefold()}" != approver_key:
-                return f"OAuth grant identity does not match requester {approver_key}", 1
-            if action == "approve":
-                refusal = _reviewed(service, repo, mr)
-                if refusal:
-                    return refusal
-                result = approve_impl(service, repo, mr, encoded=encoded)
-            else:
-                result = unapprove_impl(service, repo, mr, encoded=encoded)
-            if result[1]:
-                transaction.set_rollback(True)
-                return result
-            approval.consumed_at = timezone.now()
-            approval.save(update_fields=["consumed_at"])
-            OnBehalfAudit.objects.create(approval=approval, target=target, action=action, approver_id=approver_key)
-            return result
+        result = (
+            approve_impl(service, repo, mr, encoded=encoded)
+            if action == "approve"
+            else unapprove_impl(service, repo, mr, encoded=encoded)
+        )
     except ReviewArtifactNotVerifiedError as error:
+        OnBehalfApproval.objects.filter(pk=approval.pk, consumed_at=claimed_at).update(consumed_at=None)
         return str(error), 1
+    except Exception:
+        OnBehalfApproval.objects.filter(pk=approval.pk, consumed_at=claimed_at).update(consumed_at=None)
+        raise
+    if result[1]:
+        OnBehalfApproval.objects.filter(pk=approval.pk, consumed_at=claimed_at).update(consumed_at=None)
+        return result
+    with transaction.atomic():
+        OnBehalfAudit.objects.create(approval=approval, target=target, action=action, approver_id=approver_key)
+    return result

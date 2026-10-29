@@ -146,12 +146,13 @@ class CompareView:
 def build_compare_view(
     loaded: Sequence[PeerSnapshot] = (),
     *,
+    timeout: float | None = None,
     kinds: Sequence[RowKind] = (),
     filters: CompareFilters | None = None,
 ) -> CompareView:
     """List configured peers, add loaded records, and compare the snapshots that answered."""
     filters = filters or CompareFilters()
-    instances = (local_snapshot(), *peer_snapshots(), *loaded)
+    instances = (local_snapshot(), *peer_snapshots(timeout), *loaded)
     live = tuple(instance for instance in instances if instance.reachable)
     compat = build_compat_report(instances)
     if len(live) < _MIN_INSTANCES:

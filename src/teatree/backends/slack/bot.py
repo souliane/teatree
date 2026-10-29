@@ -237,6 +237,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         remembering it. *wrap_exempt_reason* is the one sanctioned escape; a post
         carrying ``blocks`` keeps its text as written (the blocks are what is read).
         """
+        if method in {"chat.postMessage", "chat.update", "reactions.add"}:
+            self._remember_operator_dm(str(payload.get("channel") or ""))
         assert_owner_call(method, payload, guard=self._dm_guard)
         auth = token or self._bot_token
         if not auth:
@@ -276,6 +278,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         a transport failure on it would spuriously abort a read the user
         token could serve.
         """
+        self._remember_operator_dm(channel)
         assert_owner_dm(
             channel,
             owner_dm_only=self._owner_dm_only,
@@ -479,6 +482,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
     def _route_token(self, channel: str) -> str:
         """Choose the bot for owner/operator DMs and the user token for other destinations."""
+        self._remember_operator_dm(channel)
         assert_owner_dm(
             channel,
             owner_dm_only=self._owner_dm_only,
@@ -536,6 +540,12 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
             self._owner_im = channel
         self._operator_dms.remember(user_id, channel)
         return channel
+
+    def _remember_operator_dm(self, channel: str) -> None:
+        if self._owner_dm_only:
+            self._operator_dms.remember_verified_channel(
+                channel, owner_channel=self._guard_dm, read_info=self.get, token=self._bot_token
+            )
 
     def join_conversation(self, channel: str) -> RawAPIDict:
         """Join the bot to a public channel via ``conversations.join`` (bot token)."""

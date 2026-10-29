@@ -22,9 +22,13 @@ def _forge(value: str) -> str:
     return value
 
 
-def login(forge: str = typer.Argument(help="GitHub or GitLab OAuth provider.")) -> None:
+def login(
+    forge: str = typer.Argument(help="GitHub or GitLab OAuth provider."),
+    *,
+    approvals: bool = typer.Option(False, "--approvals", help="Request a separate approval grant after sign-in."),
+) -> None:
     provider = _forge(forge)
-    path = f"/login/oauth/{provider}/start/"
+    path = f"/login/oauth/{provider}/{'approvals' if approvals else 'start'}/"
     if running_in_container():
         forward = ensure_admin_forward()
         if not forward.url:
@@ -43,7 +47,7 @@ def login(forge: str = typer.Argument(help="GitHub or GitLab OAuth provider.")) 
             typer.echo("Admin did not start OAuth; check the app configuration.", err=True)
             raise typer.Exit(code=1)
         webbrowser.open(url)
-    typer.echo(f"Operator sign-in: {url}")
+    typer.echo(f"Operator {'approval consent' if approvals else 'sign-in'}: {url}")
 
 
 def logout(

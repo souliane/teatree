@@ -25,11 +25,16 @@ class TicketOverlayModel(TicketFacet):
         using: str | None = None,
         update_fields: Iterable[str] | None = None,
     ) -> None:
-        if self.pk is not None and update_fields is None:
-            recorded = type(self).objects.filter(pk=self.pk).values_list("requested_by", flat=True).first()
-            if recorded:
-                self.requested_by = recorded
+        preserve_requester = not self._state.adding and not force_insert and update_fields is None
+        if preserve_requester:
+            update_fields = frozenset(
+                field.name
+                for field in self._meta.concrete_fields
+                if not field.primary_key and field.name != "requested_by"
+            )
         super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields)
+        if preserve_requester:
+            self.refresh_from_db(using=using, fields=["requested_by"])
 
     def record_requester(self, key: str) -> bool:
         canonical = canonical_operator_key(key)

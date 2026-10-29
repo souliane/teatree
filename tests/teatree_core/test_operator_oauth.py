@@ -8,14 +8,16 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, OperatorGrant, OperatorIdentity, SealedSecret
+from teatree.core.models import ConfigSetting, OnBehalfApproval, OperatorGrant, OperatorIdentity, SealedSecret, Ticket
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.core.operator_auth.operator_oauth import operator_access_token, revoke_operator_grant
 from teatree.utils.master_key import MasterKeySourceError
 from teatree.utils.sealing import MasterKey
+from teatree.utils.secrets import SecretStoreError
 
 
 class OperatorOAuthTestCase(TestCase):
@@ -74,6 +76,17 @@ class OperatorOAuthTestCase(TestCase):
 
         assert response.status_code == 503
         assert b"operator_oauth_apps" in response.content
+
+    @patch("teatree.core.operator_auth.operator_oauth.read_pass", side_effect=SecretStoreError("store unavailable"))
+    def test_secret_store_failure_is_reported_without_server_error(self, secret: Mock) -> None:
+        start = self.client.get("/login/oauth/github/start/")
+        state = parse_qs(urlsplit(start.headers["Location"]).query)["state"][0]
+
+        response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 502
+        assert b"SecretStoreError" in response.content
+        secret.assert_called_once_with("github/oauth-app")
 
     def test_non_ascii_state_is_refused_without_server_error(self) -> None:
         self.client.get("/login/oauth/github/start/")
@@ -159,7 +172,7 @@ class OperatorOAuthTestCase(TestCase):
     @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_auth.operator_oauth.httpx.get")
     @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
-    def test_github_pkce_login_uses_invited_superuser_and_sealed_per_user_grant(
+    def test_github_pkce_login_uses_identity_scope_without_storing_a_grant(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
         source.return_value.load.return_value = self.key
@@ -185,7 +198,7 @@ class OperatorOAuthTestCase(TestCase):
         query = parse_qs(urlsplit(start.headers["Location"]).query)
         assert urlsplit(start.headers["Location"]).netloc == "github.com"
         assert query["code_challenge_method"] == ["S256"]
-        assert query["scope"] == ["repo read:user offline_access"]
+        assert query["scope"] == ["read:user"]
         assert "client_secret" not in start.headers["Location"]
         state = query["state"][0]
 
@@ -197,9 +210,7 @@ class OperatorOAuthTestCase(TestCase):
         assert user.is_staff
         assert not user.has_usable_password()
         assert OperatorIdentity.objects.get(platform="github", external_id="123").user == user
-        grant = OperatorGrant.objects.get(user=user, forge="github")
-        assert b"refresh-secret" not in bytes(grant.ciphertext)
-        assert grant.reveal(self.key).refresh_token == "refresh-secret"
+        assert not OperatorGrant.objects.filter(user=user, forge="github").exists()
         assert not SealedSecret.objects.exists()
         assert not ConfigSetting.objects.filter(value__icontains="refresh-secret").exists()
         assert not any("refresh-secret" in value or "access-secret" in value for value in os.environ.values())
@@ -207,6 +218,7 @@ class OperatorOAuthTestCase(TestCase):
         assert post.call_args.kwargs["data"]["code_verifier"]
         assert post.call_args.kwargs["data"]["client_secret"] == "app-secret"
         secret.assert_called_once_with("github/oauth-app")
+        source.assert_not_called()
         assert self.client.get("/login/oauth/github/callback/", {"code": "replay", "state": state}).status_code == 403
 
     @patch("teatree.core.operator_auth.operator_oauth.httpx.post")
@@ -214,6 +226,55 @@ class OperatorOAuthTestCase(TestCase):
         self._start_github_login()
         assert self.client.get("/login/oauth/github/callback/", {"code": "x", "state": "wrong"}).status_code == 403
         post.assert_not_called()
+
+    def test_approval_consent_is_separate_and_seals_only_the_approved_grant(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        self.client.force_login(user)
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            start = self.client.get("/login/oauth/github/approvals/")
+            query = parse_qs(urlsplit(start.headers["Location"]).query)
+            assert query["scope"] == ["repo read:user offline_access"]
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "approval-code", "state": query["state"][0]}
+            )
+        assert response.status_code == 302
+        grant = OperatorGrant.objects.get(user=user, forge="github")
+        assert grant.reveal(self.key).refresh_token == "refresh-secret"
+        assert b"refresh-secret" not in bytes(grant.ciphertext)
+        assert post.call_args.kwargs["data"]["code"] == "approval-code"
+
+    def test_approval_consent_refuses_a_different_signed_in_operator(self) -> None:
+        alice = self._invited_github_operator("alice", "123")
+        bob = self._invited_github_operator("bob", "456")
+        self.client.force_login(alice)
+        with self._forge_account({"id": 123, "login": "alice"}):
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            self.client.force_login(bob)
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+        assert response.status_code == 403
+        assert not OperatorGrant.objects.exists()
+
+    def test_provisioned_handle_binds_forge_id_on_first_sign_in(self) -> None:
+        user = self._invited_github_operator("alice", "")
+        with self._forge_account({"id": 123, "login": "Alice"}):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 302
+        assert OperatorIdentity.objects.get(user=user, platform="github").external_id == "123"
+        assert not OperatorGrant.objects.exists()
+
+    def test_invited_non_superuser_cannot_sign_in(self) -> None:
+        user = get_user_model().objects.create_user("alice", password=None)
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        with self._forge_account({"id": 123, "login": "alice"}):
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+        assert response.status_code == 403
+        assert "_auth_user_id" not in self.client.session
 
     @contextmanager
     def _forge_account(self, profile: dict[str, object], *, key_error: Exception | None = None) -> Generator[Mock]:
@@ -272,6 +333,8 @@ class OperatorOAuthTestCase(TestCase):
 
     def test_a_renamed_forge_handle_signs_in_the_same_user(self) -> None:
         user = self._invited_github_operator("alice", "123")
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/7", requested_by="github:alice")
+        consent = OnBehalfApproval.record("org/repo!7", "approve", "github:alice")
         with self._forge_account({"id": 123, "login": "Alice-Renamed"}):
             response = self.client.get(
                 "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
@@ -281,6 +344,10 @@ class OperatorOAuthTestCase(TestCase):
         assert (identity.user, identity.handle) == (user, "alice-renamed")
         assert self.client.session["_auth_user_id"] == str(user.pk)
         assert get_user_model().objects.count() == 1
+        ticket.refresh_from_db()
+        consent.refresh_from_db()
+        assert ticket.requested_by == "github:alice-renamed"
+        assert consent.approver_id == "github:alice-renamed"
 
     def test_a_recycled_handle_with_another_forge_id_is_refused(self) -> None:
         self._invited_github_operator("alice", "123")
@@ -307,18 +374,16 @@ class OperatorOAuthTestCase(TestCase):
         assert OperatorIdentity.objects.get(external_id="999").handle == "carol"
         assert not OperatorGrant.objects.exists()
 
-    def test_sign_in_without_a_master_key_is_refused_with_the_remedy(self) -> None:
+    def test_sign_in_without_a_master_key_still_authenticates(self) -> None:
         self._invited_github_operator("alice", "123")
         missing = MasterKeySourceError("file:/etc/teatree/master.key", "is unreadable: FileNotFoundError")
         with self._forge_account({"id": 123, "login": "alice-renamed"}, key_error=missing):
             response = self.client.get(
                 "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
             )
-        assert response.status_code == 503
-        assert b"master key" in response.content
-        assert b"deploy/README.md" in response.content
-        assert "_auth_user_id" not in self.client.session
-        assert OperatorIdentity.objects.get(external_id="123").handle == "alice"
+        assert response.status_code == 302
+        assert self.client.session["_auth_user_id"]
+        assert OperatorIdentity.objects.get(external_id="123").handle == "alice-renamed"
         assert not OperatorGrant.objects.exists()
 
     def test_only_a_same_host_next_path_survives_sign_in(self) -> None:
@@ -356,13 +421,14 @@ class OperatorOAuthTestCase(TestCase):
         start = self.client.get("/login/oauth/gitlab/start/")
         query = parse_qs(urlsplit(start.headers["Location"]).query)
         assert urlsplit(start.headers["Location"]).netloc == "gitlab.example"
-        assert query["scope"] == ["api"]
+        assert query["scope"] == ["read_user"]
         callback = self.client.get("/login/oauth/gitlab/callback/", {"code": "gitlab-code", "state": query["state"][0]})
         assert callback.status_code == 302
         user.refresh_from_db()
-        assert OperatorGrant.objects.get(user=user, forge="gitlab").reveal(self.key).access_token == "gitlab-access"
+        assert not OperatorGrant.objects.filter(user=user, forge="gitlab").exists()
         assert get.call_args.args[0] == "https://gitlab.example/api/v4/user"
         secret.assert_called_once_with("gitlab/oauth-app")
+        source.assert_not_called()
 
     @patch("teatree.core.operator_auth.operator_oauth.master_key_source")
     @patch("teatree.core.operator_auth.operator_oauth.read_pass", return_value="app-secret")
@@ -490,11 +556,18 @@ class OperatorOAuthTestCase(TestCase):
             tokens=self._tokens("other-access", "other-refresh", timezone.now() + timedelta(hours=1)),
             key=self.key,
         )
-        post.return_value = httpx.Response(
+        refreshed = httpx.Response(
             200,
             request=httpx.Request("POST", "https://gitlab.example/oauth/token"),
             json={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600},
         )
+        baseline_savepoints = len(connection.savepoint_ids)
+
+        def refresh_without_a_write_lock(*args: object, **kwargs: object) -> httpx.Response:
+            assert len(connection.savepoint_ids) == baseline_savepoints
+            return refreshed
+
+        post.side_effect = refresh_without_a_write_lock
 
         assert operator_access_token(user, "gitlab") == "new-access"
         assert operator_access_token(other, "gitlab") == "other-access"

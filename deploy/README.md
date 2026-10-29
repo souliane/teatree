@@ -1076,9 +1076,12 @@ credential. An explicitly configured
 `TEATREE_GITLAB_TOKEN_PASS_PATH` remains the bootstrap fallback for a container
 created with no host value (the watchdog cannot reach the host's pass store).
 
-The GitLab token in this bootstrap route must authenticate as a bot login declared
-for its forge host in `self_forge_identities`. Long-running roles refuse to start
-when the token is a person's credential or the identity cannot be verified.
+Before deploying with a GitLab token, declare its bot login for the forge host in
+`self_forge_identities` through `t3 config_setting set`. The GitLab token in
+this bootstrap route must authenticate as that bot. A long-running role with an
+unverified token starts without `GITLAB_TOKEN` and reports the missing declaration;
+GitLab writes remain unavailable until the bot identity is declared and the role
+restarts.
 `deploy/t3` applies the same check to a token forwarded into a container CLI
 command before it runs that command. Operator approvals use their sealed OAuth
 grants, not this bootstrap route.

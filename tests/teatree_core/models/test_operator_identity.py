@@ -1,8 +1,9 @@
 import pytest
 from django.contrib.auth import get_user_model
-from django.db import DatabaseError, IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.forms import modelform_factory
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.models import OperatorIdentity, Ticket
 from teatree.core.models.operator_identity import canonical_operator_key, identity_key
@@ -66,6 +67,15 @@ class TicketRequesterTestCase(TestCase):
         stale.save()
         ticket.refresh_from_db()
         assert ticket.requested_by == "github:alice"
+
+    def test_full_save_never_writes_requester_column(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree")
+        with CaptureQueriesContext(connection) as queries:
+            ticket.short_description = "updated"
+            ticket.save()
+        updates = [query["sql"] for query in queries if query["sql"].startswith("UPDATE")]
+        assert updates
+        assert all('"requested_by"' not in query for query in updates)
 
 
 class OperatorIdentitySaveFlagsTestCase(TestCase):

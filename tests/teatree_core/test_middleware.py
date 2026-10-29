@@ -4,7 +4,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.http import HttpResponse
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 
 from teatree import request_cache
 from teatree.core.middleware import OperatorLoginRequiredMiddleware, RequestScopedReadCacheMiddleware
@@ -42,6 +42,20 @@ class OperatorLoginRequiredTestCase(TestCase):
         for path in ("/login/", "/admin/login/", "/hooks/gitlab/", "/hooks/github/", "/favicon.ico", "/static/x.css"):
             with self.subTest(path=path):
                 assert self._run(path).status_code == 200
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "127.0.0.1"])
+class PortCookieIsolationTestCase(TestCase):
+    def test_sign_in_on_one_forward_does_not_authenticate_another(self) -> None:
+        get_user_model().objects.create_superuser("admin", email="", password="secret")
+        first = self.client.post(
+            "/login/", {"username": "admin", "password": "secret"}, headers={"host": "127.0.0.1:8000"}
+        )
+
+        assert first.status_code == 302
+        assert len([name for name in first.cookies if name.startswith("sessionid_")]) == 1
+        assert self.client.get("/admin/", headers={"host": "127.0.0.1:8000"}).status_code == 200
+        assert self.client.get("/admin/", headers={"host": "127.0.0.1:9401"}).status_code == 302
 
 
 class RequestScopedReadCacheTestCase(TestCase):

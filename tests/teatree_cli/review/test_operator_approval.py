@@ -5,6 +5,7 @@ from unittest.mock import patch
 from click.testing import Result
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AbstractBaseUser
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 from typer.testing import CliRunner
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review.operator_approval import publish_operator_approval
 from teatree.cli.review.service import ReviewService
+from teatree.core.modelkit.gate_verdict import ReadOutcome
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, OperatorGrant, OperatorIdentity, Ticket
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.utils.sealing import MasterKey
@@ -19,18 +21,21 @@ from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 
 class ApprovalAPI:
-    def __init__(self, username: str = "alice") -> None:
+    def __init__(self, username: str = "alice", *, reviewed: bool = True) -> None:
         self.username = username
+        self.reviewed = reviewed
         self.approved = True
+        self.posts = 0
 
     def current_username(self) -> str:
         return self.username
 
     def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
         _ = endpoint
-        return [{"notes": [{"author": {"username": "alice"}}]}]
+        return [{"notes": [{"author": {"username": self.username}}]}] if self.reviewed else []
 
     def post_status(self, endpoint: str) -> int:
+        self.posts += 1
         self.approved = not endpoint.endswith("/unapprove")
         return 200
 
@@ -68,7 +73,10 @@ class TestOperatorApproval(TestCase):
             user=user,
             forge="gitlab",
             tokens=OperatorGrantTokens(
-                access_token=access, refresh_token=f"{access}-refresh", expires_at=timezone.now() + timedelta(hours=1)
+                access_token=access,
+                refresh_token=f"{access}-refresh",
+                expires_at=timezone.now() + timedelta(hours=1),
+                scope="api",
             ),
             key=self.key,
         )
@@ -122,8 +130,23 @@ class TestOperatorApproval(TestCase):
         result, tokens = self._invoke("approve")
 
         assert result.exit_code == 1
+        assert "gitlab:alice" in result.output
         assert "t3 login gitlab" in result.output
         assert tokens == []
+
+    def test_owner_legacy_approval_works_without_a_recorded_requester(self) -> None:
+        Ticket.objects.update(requested_by="")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        api = ApprovalAPI()
+        with (
+            patch.object(
+                ReviewService, "read_gitlab_token", return_value=ReadOutcome(value="owner-token", failed=False)
+            ),
+            patch.object(ReviewService, "_get_api", return_value=api),
+        ):
+            result = CliRunner().invoke(app, ["review", "approve", "org/repo", "7"])
+        assert result.exit_code == 0, result.output
+        assert api.posts == 1
 
     def test_unapproval_uses_requester_grant_and_consumes_consent(self) -> None:
         self._grant(self.alice, "alice-access")
@@ -152,7 +175,7 @@ class TestOperatorApproval(TestCase):
         assert approval.consumed_at is None
         assert not OnBehalfAudit.objects.exists()
 
-    def test_service_approve_cannot_publish_with_a_supplied_personal_token(self) -> None:
+    def test_legacy_service_approve_does_not_consume_operator_consent(self) -> None:
         approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
         api = ApprovalAPI()
         service = ReviewService("personal-token", repo="org/repo")
@@ -163,9 +186,8 @@ class TestOperatorApproval(TestCase):
         ):
             message, code = service.approve("org/repo", 7)
 
-        assert code == 1
-        assert "OAuth grant" in message
-        post.assert_not_called()
+        assert code == 0, message
+        post.assert_called_once()
         approval.refresh_from_db()
         assert approval.consumed_at is None
 
@@ -183,7 +205,42 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is None
 
-    def test_service_unapprove_cannot_publish_with_a_supplied_personal_token(self) -> None:
+    def test_approval_consent_without_same_identity_review_note_cannot_publish(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        api = ApprovalAPI(reviewed=False)
+        service = ReviewService("alice-oauth", repo="org/repo", api=api, oauth=True)
+
+        message, code = publish_operator_approval(service, "org/repo", 7, "approve", "gitlab:alice")
+
+        assert code == 1
+        assert "review before approve" in message
+        assert api.posts == 0
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+
+    def test_forge_approval_runs_without_a_database_write_lock(self) -> None:
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        api = ApprovalAPI()
+        service = ReviewService("alice-oauth", repo="org/repo", api=api, oauth=True)
+        baseline_savepoints = len(connection.savepoint_ids)
+        post_status = api.post_status
+
+        def unlocked_username() -> str:
+            assert len(connection.savepoint_ids) == baseline_savepoints
+            return "alice"
+
+        def unlocked_post(endpoint: str) -> int:
+            assert len(connection.savepoint_ids) == baseline_savepoints
+            return post_status(endpoint)
+
+        with (
+            patch.object(api, "current_username", side_effect=unlocked_username),
+            patch.object(api, "post_status", side_effect=unlocked_post),
+        ):
+            message, code = publish_operator_approval(service, "org/repo", 7, "approve", "gitlab:alice")
+        assert code == 0, message
+
+    def test_legacy_service_unapprove_does_not_consume_operator_consent(self) -> None:
         approval = OnBehalfApproval.record("org/repo!7", "unapprove", "gitlab:alice")
         api = ApprovalAPI()
         service = ReviewService("personal-token", repo="org/repo")
@@ -194,8 +251,7 @@ class TestOperatorApproval(TestCase):
         ):
             message, code = service.unapprove("org/repo", 7)
 
-        assert code == 1
-        assert "OAuth grant" in message
-        post.assert_not_called()
+        assert code == 0, message
+        post.assert_called_once()
         approval.refresh_from_db()
         assert approval.consumed_at is None

@@ -580,7 +580,7 @@ Session-lifecycle operations.
 
 ## `settings_compare`
 
-What differs between this box and imported peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
+What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
 
 ## `shipped_seed`
 

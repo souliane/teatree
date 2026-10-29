@@ -14,16 +14,16 @@ _ENTRYPOINT = Path(__file__).resolve().parents[1] / "deploy" / "entrypoint.sh"
 @pytest.mark.parametrize(
     "case",
     [
-        ("worker", "person-key", 1, 1, True),
-        ("worker", "bot-key", 0, 0, True),
-        ("worker", "", 1, 0, False),
-        ("init", "person-key", 1, 0, False),
+        ("worker", "person-key", 1, "", True),
+        ("worker", "bot-key", 0, "bot-key", True),
+        ("worker", "", 1, "", False),
+        ("init", "person-key", 1, "person-key", False),
     ],
 )
 def test_runtime_checks_ambient_gitlab_identity_before_start(
-    tmp_path: Path, case: tuple[str, str, int, int, bool]
+    tmp_path: Path, case: tuple[str, str, int, str, bool]
 ) -> None:
-    role, token, verify_exit, expected, called = case
+    role, token, verify_exit, expected_token, called = case
     source = _ENTRYPOINT.read_text()
     start = source.index('if [ "$ROLE" != init ] && [ -n "${GITLAB_TOKEN:-}" ]; then')
     end = source.index('\ncase "$ROLE" in', start)
@@ -45,9 +45,16 @@ def test_runtime_checks_ambient_gitlab_identity_before_start(
         "VERIFY_EXIT": str(verify_exit),
     }
 
-    result = subprocess.run([_BASH, "-c", source[start:end]], env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [_BASH, "-c", source[start:end] + '\nprintf "token=%s" "$GITLAB_TOKEN"'],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    assert result.returncode == expected
+    assert result.returncode == 0
+    assert result.stdout == f"token={expected_token}"
     assert call_log.exists() == called
 
 

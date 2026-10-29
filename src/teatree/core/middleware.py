@@ -1,8 +1,11 @@
 """Project middleware for the teatree admin dashboard."""
 
+import hashlib
 from contextlib import AbstractContextManager, ExitStack
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.contrib.auth.views import redirect_to_login
 from django.db import connections
 from django.http import HttpResponse
@@ -15,6 +18,36 @@ if TYPE_CHECKING:
     from django.http import HttpRequest
 
 _PUBLIC_PATHS = frozenset({"/login/", "/admin/login/", "/favicon.ico", "/hooks/gitlab/", "/hooks/github/"})
+
+
+class PortCookieIsolationMiddleware:
+    def __init__(self, get_response: "Callable[[HttpRequest], HttpResponse]") -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: "HttpRequest") -> "HttpResponse":
+        host = request.get_host()
+        if urlsplit(f"//{host}").port is None:
+            return self.get_response(request)
+        suffix = hashlib.sha256(host.casefold().encode()).hexdigest()[:10]
+        names = {
+            settings.SESSION_COOKIE_NAME: f"{settings.SESSION_COOKIE_NAME}_{suffix}",
+            settings.CSRF_COOKIE_NAME: f"{settings.CSRF_COOKIE_NAME}_{suffix}",
+        }
+        for base, isolated in names.items():
+            request.COOKIES.pop(base, None)
+            if isolated in request.COOKIES:
+                request.COOKIES[base] = request.COOKIES[isolated]
+        response = self.get_response(request)
+        for base, isolated in names.items():
+            if base not in response.cookies:
+                continue
+            original = response.cookies[base]
+            response.cookies[isolated] = original.value
+            for attribute, value in original.items():
+                if value:
+                    response.cookies[isolated][attribute] = value
+            del response.cookies[base]
+        return response
 
 
 class OperatorLoginRequiredMiddleware:

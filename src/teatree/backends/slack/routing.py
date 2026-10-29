@@ -12,6 +12,9 @@ colleague DM from the self DM — exactly the distinction #1750 turns on.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Protocol
+
+from teatree.types import RawAPIDict
 
 # ``channels:manage`` (granted so a dm_only bot can leave public channels) also permits these.
 _CHANNEL_REACH_METHODS = frozenset({"conversations.join", "conversations.invite", "conversations.create"})
@@ -27,6 +30,10 @@ class OperatorDms:
 
 
 _NO_OPERATOR_DMS = OperatorDms()
+
+
+class SlackInfoReader(Protocol):
+    def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
 
 
 @dataclass(slots=True)
@@ -47,6 +54,18 @@ class OperatorDmRegistry:
     def remember(self, user_id: str, channel: str) -> None:
         if channel and user_id in self.resolver():
             self.channels[channel] = user_id
+
+    def remember_verified_channel(
+        self, channel: str, *, owner_channel: str, read_info: SlackInfoReader, token: str
+    ) -> None:
+        if not channel.startswith("D") or channel == owner_channel:
+            return
+        operators = self.snapshot()
+        if not operators.user_ids or channel in operators.channels:
+            return
+        info = read_info("conversations.info", {"channel": channel}, token=token).get("channel")
+        if isinstance(info, dict) and info.get("id") == channel and info.get("is_im") is True:
+            self.remember(str(info.get("user") or ""), channel)
 
 
 @dataclass(frozen=True, slots=True)

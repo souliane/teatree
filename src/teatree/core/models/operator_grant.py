@@ -9,7 +9,10 @@ from typing import ClassVar
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser
 from django.db import models, transaction
+from django.utils import timezone
 
+from teatree.core.models.on_behalf_approval import OnBehalfApproval, canonical_on_behalf_target
+from teatree.core.models.operator_identity import OperatorIdentity, canonical_operator_key
 from teatree.utils.sealing import MasterKey, SealedValue, aad
 
 _FORGES = frozenset({"github", "gitlab"})
@@ -104,3 +107,32 @@ class OperatorGrant(models.Model):
             refresh_expires_at=self.refresh_expires_at,
             scope=self.scope,
         )
+
+    def token_for(self, action: str, target: str, approver_id: str, *, key: MasterKey) -> str:
+        if action not in {"approve", "unapprove"} or not target or self.expires_at <= timezone.now():
+            message = "operator grant cannot authorize this action"
+            raise PermissionError(message)
+        required_scope = "api" if self.forge == "gitlab" else "repo"
+        if required_scope not in self.scope.replace(",", " ").split():
+            message = "operator grant lacks the approval scope"
+            raise PermissionError(message)
+        try:
+            identity_key = canonical_operator_key(approver_id)
+        except ValueError as exc:
+            message = "operator grant identity is invalid"
+            raise PermissionError(message) from exc
+        identity = OperatorIdentity.objects.filter(
+            user_id=self.user_id, platform=self.forge, user__is_active=True, user__is_superuser=True
+        ).first()
+        if identity is None or identity.key != identity_key:
+            message = "operator grant does not belong to the approver"
+            raise PermissionError(message)
+        if not OnBehalfApproval.objects.filter(
+            target=canonical_on_behalf_target(target),
+            action=action,
+            approver_id=identity_key,
+            consumed_at__isnull=True,
+        ).exists():
+            message = "operator grant has no consent for this target"
+            raise PermissionError(message)
+        return self.reveal(key).access_token

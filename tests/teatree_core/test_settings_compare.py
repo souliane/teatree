@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.template.loader import get_template
 from django.test import SimpleTestCase
@@ -340,8 +341,19 @@ class TestConfiguredPeersNeedImports(TestCase):
     def test_every_peer_still_gets_a_row(self) -> None:
         assert [peer.label for peer in self._snapshots()] == ["good", "typo"]
 
-    def test_each_peer_names_the_required_import(self) -> None:
-        assert [peer.error for peer in self._snapshots()] == ["import a saved snapshot to compare"] * 2
+    def test_each_peer_names_its_live_fetch_failure(self) -> None:
+        with (
+            patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=list(self._PEERS)),
+            patch(
+                "teatree.core.settings.settings_peers.httpx.get",
+                side_effect=httpx.ConnectError("forward unavailable"),
+            ),
+        ):
+            rows = peer_snapshots()
+        assert [peer.error for peer in rows] == [
+            "ConnectError: forward unavailable",
+            "ValueError: Port out of range 0-65535",
+        ]
 
     def test_the_compare_page_still_answers_200(self) -> None:
         with patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=list(self._PEERS)):

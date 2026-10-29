@@ -947,8 +947,8 @@ assert_core_source() {
 
 if [ "$ROLE" != init ] && [ -n "${GITLAB_TOKEN:-}" ]; then
     "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m teatree.hooks.bot_push_gate --verify-ambient || {
-        echo "entrypoint: refusing a runtime GitLab token that is not a declared bot credential" >&2
-        exit 1
+        echo "entrypoint: withholding an unverified runtime GitLab token; declare the bot identity before enabling GitLab writes" >&2
+        unset GITLAB_TOKEN TEATREE_GITLAB_TOKEN
     }
 fi
 

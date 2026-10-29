@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.models import OnBehalfApproval, OperatorIdentity
 from teatree.core.models.operator_grant import OperatorGrant, OperatorGrantTokens
 from teatree.utils.sealing import MasterKey, SealedValueTamperedError
 
@@ -66,3 +67,20 @@ class OperatorGrantTestCase(TestCase):
                 tokens=OperatorGrantTokens("access", "refresh", self.expires_at),
                 key=self.key,
             )
+
+    def test_token_for_approval_requires_the_grant_owner_and_exact_consent(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="gitlab", handle="alice", external_id="1")
+        OperatorIdentity.objects.create(user=self.bob, platform="gitlab", handle="bob", external_id="2")
+        grant = OperatorGrant.objects.store(
+            user=self.alice,
+            forge="gitlab",
+            tokens=OperatorGrantTokens("access-alice", "refresh-alice", self.expires_at, scope="api"),
+            key=self.key,
+        )
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        assert grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key) == "access-alice"
+        with pytest.raises(PermissionError):
+            grant.token_for("approve", "org/repo!8", "gitlab:alice", key=self.key)
+        with pytest.raises(PermissionError):
+            grant.token_for("approve", "org/repo!7", "gitlab:bob", key=self.key)

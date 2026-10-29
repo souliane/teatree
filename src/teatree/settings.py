@@ -84,6 +84,7 @@ MIDDLEWARE = [
     # (Django's staticfiles app serves nothing without runserver). Placed directly
     # after SecurityMiddleware per WhiteNoise's documented ordering.
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "teatree.core.middleware.PortCookieIsolationMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
