@@ -4,7 +4,7 @@ When a Claude usage window empties, ``teatree.agents.usage_window`` PARKS the af
 tasks (a :class:`~teatree.core.models.UsageWindowState` row per lane + a ``not_before`` on
 each task) instead of failing them and going idle forever. This module is the re-arm arm:
 a single self-rescheduling ``usage_window_recovery`` loop-timer job on the existing
-``LOOPS_QUEUE`` (the #10 PR-04 machinery, NO OS cron) that, once the reset instant passes,
+``LOOPS_QUEUE`` (the existing loop-timer machinery, NO OS cron) that, once the reset instant passes,
 CLEARS the window, RELEASES the parked tasks, PUMPS the loop so they get re-claimed, and
 posts ONE Slack line. It is the deterministic, zero-inference twin of the loop-timer /
 maintenance chains (``reconcile_timers`` / ``prune_task_results``): the re-arm decision is

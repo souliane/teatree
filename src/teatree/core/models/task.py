@@ -218,7 +218,7 @@ class Task(models.Model):
         registered sub-agent (``SUBAGENT_BY_PHASE``, matched across every accepted
         phase spelling via ``phase_spellings`` — the DB-side of ``loop_dispatched``)
         AND its ticket is NOT under a live #2104 external-delivery lease
-        (``not_under_external_delivery_q``, #2217).
+        (``not_under_external_delivery_q``, #2217) or in a terminal state.
 
         The ONE source of truth every dispatch consumer builds on: the
         ``orchestrate`` planner's target + admit sweep and its in-flight budget
@@ -229,7 +229,7 @@ class Task(models.Model):
         role_phase = Q(pk__in=[])
         for role, phase in SUBAGENT_BY_PHASE:
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-        return role_phase & not_under_external_delivery_q()
+        return role_phase & not_under_external_delivery_q() & ~Q(ticket__state__in=Ticket.in_flight_excluded_states())
 
     def claim(
         self,

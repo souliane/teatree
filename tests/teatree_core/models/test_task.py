@@ -66,6 +66,24 @@ def _record_pass(*, head: str, ticket: Ticket | None) -> None:
 
 
 class TestTask(TestCase):
+    def test_dispatchable_query_skips_terminal_tickets(self) -> None:
+        task_ids: dict[str, int] = {}
+        for state in (
+            Ticket.State.WORK_STARTED,
+            Ticket.State.MERGED,
+            Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_DELIVERED,
+            Ticket.State.IGNORED,
+        ):
+            ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+            task_ids[state] = task.pk
+
+        dispatchable = set(Task.objects.filter(Task.dispatchable_q()).values_list("pk", flat=True))
+
+        assert dispatchable == {task_ids[Ticket.State.WORK_STARTED], task_ids[Ticket.State.MERGED]}
+
     def test_pr_review_attempt_without_a_verdict_cannot_complete(self) -> None:
         ticket = Ticket.objects.create(
             role=Ticket.Role.REVIEWER,
