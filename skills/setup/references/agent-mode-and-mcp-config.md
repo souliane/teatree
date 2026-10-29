@@ -104,10 +104,11 @@ What teatree models, verified against code:
 | `_check_declared_services_configured` | FAIL for each service an overlay declares that teatree holds no credentials for, naming the service and the declaring overlays — resolved through the same `SERVICE_CLIENTS` builders the tools use. |
 | `_check_teatree_mcp_liveness` | FAIL when the registered `t3 mcp serve --interactive` does not answer a real `initialize`, naming the cause and the remedy. |
 
-A Slack write tool on any MCP server but teatree's is refused at `PreToolUse`
-(`hooks/scripts/mcp_slack_write_guard.py`) and redirected to the `t3` CLI;
-teatree's own server is exempt by its exact server name, because its Slack tools
-run through the same backends and egress gates.
+Every tool on an MCP server other than teatree's own, reads included, is refused
+at `PreToolUse` (`hooks/scripts/foreign_mcp_guard.py`). The refusal points to
+`mcp__teatree__command_search` or the `t3` CLI. The separate Slack write guard
+still runs before the blanket guard; teatree's own server is exempt by its exact
+server name because its Slack tools use the same backends and egress gates.
 
 ## 2.1.2 Token-scope-failure cache (PR-19)
 

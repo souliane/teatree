@@ -183,6 +183,8 @@ def _call_signature(data: dict) -> str:
         identity = str(tool_input.get("file_path", ""))
     elif isinstance(questions := tool_input.get("questions"), list):
         identity = json.dumps(questions, sort_keys=True, default=str)
+    elif tool_name.startswith("mcp__") or "McpResource" in tool_name:
+        identity = tool_name + json.dumps(tool_input, sort_keys=True, default=str)
     else:
         identity = tool_name
     # ALL whitespace is removed (not collapsed) so a stripped token can never

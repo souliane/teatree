@@ -98,7 +98,7 @@ Agent-audited escapes require a reason and a durable per-action record. Human-on
 
 ## Escape markers & kill-switches (canonical reference)
 
-The PreToolUse router denies every tool on an MCP server other than teatree's own, including reads. `handle_block_foreign_mcp_tool` compares the exact server name with `TEATREE_MCP_SERVERS` and uses the audited `[gate-escape:foreign_mcp: <reason>]` token; the Slack MCP write guard remains an earlier, separate layer. Use teatree MCP tools or the `t3` CLI for the job.
+The PreToolUse router denies every tool on an MCP server other than teatree's own, including reads and built-in resource access without an own-server target. `handle_block_foreign_mcp_tool` compares the exact server name with `TEATREE_MCP_SERVERS` and uses the audited `[gate-escape:foreign_mcp: <reason>]` token in a string argument; the Slack MCP write guard remains an earlier, separate layer. Use `mcp__teatree__command_search` or the `t3` CLI for the job.
 
 Every over-deny gate ships a never-lockout path. This is the ONE catalog of them — the per-gate bullets above carry the gate-specific detail; this table is the flat index. `docs/blueprint/configuration.md` (the kill-switch config settings) and `hooks/scripts/deny_circuit_breaker.py` (the signature-strip set) cross-link here.
 
