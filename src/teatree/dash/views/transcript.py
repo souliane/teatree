@@ -1,7 +1,7 @@
 """Opt-in redacted agent-transcript click-through (#3673 Tier 2).
 
 Reached only from an explicit link in the ticket drawer — never during list
-rendering. Loopback/staff-gated like every other dash view; the tail read is
+rendering. Staff-login gated like every other dash view; the tail read is
 bounded and each line is already redacted by :func:`tail_transcript` before it
 reaches the template.
 

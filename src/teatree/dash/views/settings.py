@@ -169,7 +169,7 @@ def settings_group(request: "HttpRequest", slug: str) -> "HttpResponse":
 def settings_snapshot(request: "HttpRequest") -> "HttpResponse":
     """This instance's settings snapshot as JSON — the payload a peer fetches to diff against.
 
-    Read-only, and behind the same loopback-or-staff gate every other dash view carries. There
+    Read-only, and behind the same staff login every other dash view sits behind. There
     is no private mode to ask for: :func:`~teatree.core.settings_snapshot.build_snapshot` never
     emits a raw secret or a banned-term value, so the route structurally cannot serve one
     however it is called. Scope and entry names still travel; the comparison is keyed on them.
