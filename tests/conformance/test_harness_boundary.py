@@ -71,7 +71,10 @@ def _scan_references(root: Path, *, minimum_files: int) -> dict[str, dict[str, i
     for path in paths:
         if not path or path == "dev/.test_durations":
             continue
-        raw = (root / path).read_bytes()
+        source_path = root / path
+        if not source_path.is_file():
+            continue
+        raw = source_path.read_bytes()
         if b"\0" in raw:
             continue
         try:
@@ -163,7 +166,20 @@ def test_filename_and_untracked_file_are_counted(tmp_path: Path) -> None:
     assert diff_pegs(counts["attended"], {"src/teatree/core/session.py": 2}).over_peg == ()
 
 
+def test_deleted_tracked_file_is_not_read(tmp_path: Path) -> None:
+    run_checked(["git", "init", "-q", "-b", "main", str(tmp_path)])
+    core = tmp_path / "src" / "teatree" / "core"
+    core.mkdir(parents=True)
+    source = core / "session.py"
+    source.write_text("interactive\n", encoding="utf-8")
+    run_checked(["git", "-C", str(tmp_path), "add", "src/teatree/core/session.py"])
+    source.unlink()
+
+    assert _scan_references(tmp_path, minimum_files=0) == {"harness": {}, "attended": {}}
+
+
 def test_failed_git_listing_raises(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("gitdir: /nonexistent", encoding="utf-8")
     with pytest.raises(CommandFailedError):
         _scan_references(tmp_path, minimum_files=1)
 
