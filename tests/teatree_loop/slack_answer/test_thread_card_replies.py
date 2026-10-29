@@ -1,9 +1,11 @@
 """Owner card replies through the recorder and answer cycle."""
 
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -14,6 +16,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import cards_in_thread
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
+from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
@@ -208,6 +211,23 @@ class TestThreadCardReplies(TestCase):
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
         assert any("Approve" in text and "Decline" in text for _, _, text in backend.replies)
+
+    def test_question_outside_card_options_has_confirmed_thread_note(self) -> None:
+        card = _card("336.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["336.2"] = {"ts": "336.2", "thread_ts": "336.1"}
+        reply = _event(backend, ts="336.2", root="336.1", text="What does this change?")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert reply.loop_response_confirmed_at is not None
+        PendingChatInjection.objects.filter(pk=reply.pk).update(received_at=timezone.now() - timedelta(hours=2))
+        assert "inbound_unanswered" not in {report.payload["kind"] for report in LifecycleIncidentDetector().detect()}
 
     def test_top_level_instruction_with_one_option_card_reaches_answerer(self) -> None:
         card = _card("335.3")
@@ -549,6 +569,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert reply.loop_response_confirmed_at is not None
         assert any(ts == "850.2" and "tap" in text.lower() for _, ts, text in backend.replies)
 
     def test_reply_naming_a_closed_card_gets_a_note_and_binds_no_other_card(self) -> None:
@@ -567,6 +588,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert pending.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert reply.loop_response_confirmed_at is not None
         assert any(f"#{closed.pk}" in text and "no longer" in text.lower() for _, _, text in backend.replies)
 
     def test_question_text_with_two_pending_cards_is_left_to_the_ordinary_route(self) -> None:
