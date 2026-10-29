@@ -1,13 +1,26 @@
-"""Issue-URL alias matching for the ticket QuerySet.
+"""Issue-URL alias matching and create fields for the ticket QuerySet.
 
 Carved out of ``managers.py`` (mirroring managers_overlay.py / managers_task_claim.py)
-to hold that flat-root queryset hub under the 500-LOC module-health cap. A pure
-``Q``-builder leaf with no ORM/app-registry dependency.
+to hold that flat-root queryset hub under the 500-LOC module-health cap. It
+needs no app-registry access.
 """
+
+from typing import TYPE_CHECKING, TypedDict
 
 from django.db.models import Q
 
 from teatree.utils.url_slug import repo_namespaced_key
+
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
+
+class TicketCreateFields(TypedDict, total=False):
+    overlay: str
+    variant: str
+    repos: list[str]
+    kind: "Ticket.Kind"
+    short_description: str
 
 
 def matching_issue_q(issue_url: str) -> Q:
