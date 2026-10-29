@@ -32,6 +32,34 @@ def test_unmounted_docker_root_does_not_refuse_a_measurable_host_build(tmp_path:
     assert "20.0 GiB free" in result.stdout
 
 
+def test_preflight_ignores_small_tmpfs_when_disk_has_room() -> None:
+    script = (
+        "set -euo pipefail\n"
+        "TMPDIR=/tmp\n"
+        'docker() { printf "%s\\n" /var/lib/docker; }\n'
+        'df() { case "$2" in '
+        "/) source=/dev/fake; free=24117248;; "
+        "/tmp) source=tmpfs; free=3670016;; "
+        "/var/lib/docker) source=/dev/fake; free=20971520;; "
+        'esac; printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+        '%s 40000000 1000000 %s 1%% %s\\n" "$source" "$free" "$2"; }\n'
+        f'. "{DEPLOY.parent / "disk-preflight.sh"}"\n'
+        'require_build_space "deploy"\n'
+    )
+
+    result = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "20.0 GiB free" in result.stdout
+    assert "at /var/lib/docker" in result.stdout
+
+
+def test_deploy_workflow_extracts_build_context_on_disk() -> None:
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy.yml"
+
+    assert 'cd "$HOME/teatree-deploy" && TMPDIR=/var/tmp bash deploy/deploy.sh' in workflow.read_text(encoding="utf-8")
+
+
 def test_preflight_refuses_when_no_host_path_can_be_measured() -> None:
     script = (
         "set -euo pipefail\n"
