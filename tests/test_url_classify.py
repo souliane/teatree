@@ -10,6 +10,7 @@ import pytest
 from teatree.url_classify import (
     Forge,
     find_forge_refs,
+    find_forge_urls,
     forge_of,
     is_github_pr_url,
     is_gitlab_mr_url,
@@ -70,6 +71,11 @@ class TestPrRefAndRepoAndIid:
 
 
 class TestForgeReferences:
+    @pytest.mark.parametrize("kind", ["issues", "work_items"])
+    def test_finds_both_gitlab_issue_spellings_in_prose(self, kind: str) -> None:
+        url = f"https://gitlab.com/acme/app/-/{kind}/256"
+        assert find_forge_urls(f"See {url}.") == [url]
+
     def test_pr_subpath_and_trailing_slash_resolve_to_pr_url(self) -> None:
         pr = "https://github.com/o/r/pull/5"
         assert find_forge_refs(f"See {pr}/files and {pr}/") == [pr, pr]
