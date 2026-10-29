@@ -215,6 +215,18 @@ class TestStatusCommand(TestCase):
         assert result["state"] == "not_safe"
         assert result["verdict"] == ReviewVerdict.Verdict.HOLD
 
+    def test_unverified_verdict_names_the_evidence_gap(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1680,
+            slug="souliane/teatree",
+            reviewed_sha=_REVIEWED,
+            verdict="unverified",
+            reviewer_identity="cold-reviewer",
+            evidence_gaps=["ci_unreadable"],
+        )
+
+        assert "ci_unreadable" in _status_text(head=_REVIEWED)
+
     def test_status_reports_latest_verdict_after_re_review_at_moved_head(self) -> None:
         _record()
         _record(reviewed_sha=_MOVED)

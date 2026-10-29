@@ -36,7 +36,7 @@ price of those recoveries. At the bound the claim is spent either way, so the la
 nothing and adds the one thing saturation cannot say — WHY.
 
 Neither this terminal nor its twin frees an
-:class:`~teatree.core.models.mr_review_lock.MRReviewLock`. This path never takes one, and a
+:class:`~teatree.core.models.mr_review_lock.MRReviewLock`. This path takes no lasting lock, and a
 refusal — which records nothing a merge can consume — must not free a lock some OTHER,
 still-running reviewer holds. A concluded ``ReviewVerdict`` releases it because a merge
 guard is about to consume that verdict and a held lock would block the merge it just
@@ -46,11 +46,12 @@ authorised; a refusal authorises nothing, so taking the guard away would give no
 import datetime as dt
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
-from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS
+from teatree.core.modelkit.expiring_claim import acquirable_q, live_claim_q, release_head_claim, retire_head_claim
+from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
+from teatree.core.models.mr_review_lock import MRReviewLock
 
 
 class CodexReviewMarker(models.Model):
@@ -58,6 +59,7 @@ class CodexReviewMarker(models.Model):
 
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
+        UNVERIFIED = "unverified", "Unverified"
         RESOLVED = "resolved", "Resolved"
         REFUSED = "refused", "Refused"
 
@@ -68,7 +70,7 @@ class CodexReviewMarker(models.Model):
     #: REFUSED means a verdict for that exact tree is structurally unrecordable and a
     #: human has been paged. Neither is re-armable, for opposite reasons, and both are
     #: escaped the same way — by a new head (#4530).
-    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
+    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset({State.UNVERIFIED})
 
     slug = models.CharField(max_length=128)
     pr_id = models.IntegerField()
@@ -121,24 +123,36 @@ class CodexReviewMarker(models.Model):
         if not slug or not pr_id or not head_sha:
             return None
         now = timezone.now()
-        row, created = cls.objects.get_or_create(
-            slug=slug,
-            pr_id=pr_id,
-            head_sha=head_sha,
-            defaults={
-                "overlay": overlay,
-                "variant": variant,
-                "state": cls.State.DISPATCHED,
-                "deadline": now + DEFAULT_DISPATCH_TTL,
-                "attempts": 1,
-            },
-        )
-        if created:
+        with transaction.atomic():
+            lock, _ = MRReviewLock.objects.select_for_update().get_or_create(slug=slug.strip(), pr_id=pr_id)
+            MRReviewLock.objects.filter(pk=lock.pk).update(state=models.F("state"))
+            if (
+                AutoReviewDispatch.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha)
+                .filter(
+                    models.Q(state=AutoReviewDispatch.State.RESOLVED)
+                    | live_claim_q(active={AutoReviewDispatch.State.DISPATCHED}, now=now)
+                )
+                .exists()
+            ):
+                return None
+            row, created = cls.objects.get_or_create(
+                slug=slug,
+                pr_id=pr_id,
+                head_sha=head_sha,
+                defaults={
+                    "overlay": overlay,
+                    "variant": variant,
+                    "state": cls.State.DISPATCHED,
+                    "deadline": now + DEFAULT_DISPATCH_TTL,
+                    "attempts": 1,
+                },
+            )
+            if created:
+                return row
+            if not cls._reclaim(row, now=now):
+                return None
+            row.refresh_from_db()
             return row
-        if not cls._reclaim(row, now=now):
-            return None
-        row.refresh_from_db()
-        return row
 
     @classmethod
     def _reclaim(cls, row: "CodexReviewMarker", *, now: dt.datetime) -> bool:
@@ -184,11 +198,21 @@ class CodexReviewMarker(models.Model):
         legitimate no-op — most verdicts conclude a review this table never armed.
         """
         return retire_head_claim(
-            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            cls.objects.filter(state__in=(*cls._ACTIVE_STATES, cls.State.UNVERIFIED)),
             slug=slug,
             pr_id=pr_id,
             head_sha=head_sha,
             to_state=cls.State.RESOLVED,
+        )
+
+    @classmethod
+    def mark_unverified(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        return release_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.UNVERIFIED,
         )
 
     @classmethod

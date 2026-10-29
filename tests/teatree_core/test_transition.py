@@ -94,7 +94,7 @@ class TestTicketTransitionAudit(TestCase):
         # test pins the review audit row, not the #3313 unshippable-review
         # disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
-            task.complete()
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
 
         ticket.refresh_from_db()
         last = TicketTransition.objects.filter(ticket=ticket).order_by("created_at").last()
@@ -108,7 +108,7 @@ class TestTicketTransitionAudit(TestCase):
 
         task = ticket.tasks.get(phase="reviewing", status=Task.Status.PENDING)
         task.claim(claimed_by="test-worker")
-        task.complete()
+        task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED

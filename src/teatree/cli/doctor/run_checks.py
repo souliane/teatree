@@ -71,6 +71,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_loop_presets,
     _check_loop_schedule_liveness,
     _check_marker_jam,
+    _check_missing_clear_actor_kind,
     _check_shipped_seed_inertness,
     _check_t3_master_unheld_while_loops_tick,
     _check_unconsumed_merge_clears,
@@ -296,6 +297,7 @@ def _run_loop_intent_gates() -> bool:
         _check_loop_schedule_liveness(),
         _check_t3_master_unheld_while_loops_tick(),
         _check_unconsumed_merge_clears(),
+        _check_missing_clear_actor_kind(),
         _check_sweep_repos_resolve_a_forge(),
     ]
     return all(verdicts)

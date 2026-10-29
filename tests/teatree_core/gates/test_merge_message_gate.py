@@ -202,7 +202,10 @@ class TestSweepRouteIsGated(TestCase):
     def test_the_no_clear_bound_merge_refuses_a_footer_body(self) -> None:
         _record_merge_safe_verdict(pr_id=859, sha=_SHA)
         stub = _MessageStub(body=f"Tidies the widget.\n\n{_FOOTER}")
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             result = GhPrApiClient().merge_pr_bound(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
 
         assert result.merged is False

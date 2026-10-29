@@ -17,8 +17,9 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import cold_reader
 from teatree.config.cold_reader import SettingRead
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
-from teatree.core.models import Session, Task
+from teatree.core.models import Session, Task, Worktree
 from teatree.skill_support.loading import SkillLoadingPolicy
+from tests._git_repo import make_git_repo, run_git
 from tests.factories import planned_ticket
 
 _TEATREE_CHECKOUT = Path(__file__).resolve().parents[2]
@@ -82,6 +83,44 @@ class TestT3TeatreeSkillDispatch(TestCase):
         prompt = self._prepare("coding", _TEATREE_CHECKOUT).prompt
 
         assert prompt.splitlines().count("  - /internals") == 1
+
+    def test_coding_dispatch_records_the_round_start_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            Worktree.objects.create(
+                ticket=self.ticket,
+                repo_path=str(repo),
+                branch="main",
+                extra={"worktree_path": str(repo)},
+            )
+            self._prepare("coding", repo)
+            self.ticket.refresh_from_db(fields=["extra"])
+            assert list(self.ticket.extra["brief_start_heads"].values()) == [run_git(repo, "rev-parse", "HEAD")]
+
+    def test_retry_keeps_the_first_round_start_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            Worktree.objects.create(
+                ticket=self.ticket,
+                repo_path=str(repo),
+                branch="main",
+                extra={"worktree_path": str(repo)},
+            )
+            task = self._task("coding")
+            dispatch = DispatchHarness(
+                harness=SimpleNamespace(capabilities=HarnessCapabilities()),
+                name="codex_app_server",
+                provider=None,
+                model=None,
+                route_candidate_index=None,
+            )
+            preflight = Preflight(stage_skills=[], dispatch=dispatch, skills=self._bundle("coding", repo))
+            start = run_git(repo, "rev-parse", "HEAD")
+            prepare_run(task, preflight, phase="coding", handoff=None, credential=DispatchCredential())
+            run_git(repo, "commit", "--allow-empty", "-m", "second")
+            prepare_run(task, preflight, phase="coding", handoff=None, credential=DispatchCredential())
+            self.ticket.refresh_from_db(fields=["extra"])
+            assert self.ticket.extra["brief_start_heads"][str(task.pk)] == start
 
     def test_claude_child_keeps_native_compaction_available(self) -> None:
         dispatch = DispatchHarness(
