@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
     from teatree.core.models.self_review import SelfReview
     from teatree.core.models.task import Task
+    from teatree.core.models.task_attempt import TaskAttempt
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
@@ -397,7 +398,8 @@ class TicketSchedulingModel(TicketFacet):
         """
         from teatree.core.models.session import Session  # noqa: PLC0415 — import cycle
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
-        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — import cycle
+
+        task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         pending = list(Task.objects.pending_in_phase(phase).filter(ticket=self))
         keep_for_push = phase in {"coding", "debugging"} and _checkout_has_unpushed_commits(cast("Ticket", self))
@@ -407,7 +409,7 @@ class TicketSchedulingModel(TicketFacet):
             if keep_for_push and not has_attempt:
                 continue
             if not has_attempt:
-                TaskAttempt.objects.create(  # no-usage: superseded before an agent turn
+                task_attempt_model.objects.create(  # no-usage: superseded before an agent turn
                     task=task,
                     ended_at=timezone.now(),
                     exit_code=1,
