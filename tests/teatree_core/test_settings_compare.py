@@ -345,7 +345,7 @@ class TestConfiguredPeersNeedImports(TestCase):
         with (
             patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=list(self._PEERS)),
             patch(
-                "teatree.core.settings.settings_peers.httpx.get",
+                "teatree.core.settings.settings_peers.httpx.Client.get",
                 side_effect=httpx.ConnectError("forward unavailable"),
             ),
         ):

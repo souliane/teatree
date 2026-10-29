@@ -15,7 +15,7 @@ def test_peer_login_redirect_reports_sign_in_and_keeps_live_url() -> None:
     )
     with (
         patch.object(settings_peers, "load_peer_instances", return_value=[peer]),
-        patch.object(httpx, "get", return_value=response) as get,
+        patch.object(httpx.Client, "get", return_value=response) as get,
     ):
         rows = settings_peers.peer_snapshots()
 
