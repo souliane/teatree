@@ -18,6 +18,7 @@ from teatree.core.modelkit.question_card import QuestionCard
 class MisfitAction(enum.StrEnum):
     ENVIRONMENT_FAILURE = "environment_failure"
     REFUSE_AND_DECIDE = "refuse_and_decide"
+    BACKGROUND_RETRY = "background_retry"
 
 
 def _words(alternatives: str) -> re.Pattern[str]:
@@ -97,12 +98,41 @@ OWNER_STOP_MISFITS = (
 )
 
 
+_AUTOMATIC_REVIEW_ASK = re.compile(
+    r"(?:Can I have one-time approval to rerun the focused regression tests|"
+    r"Can you approve local command access so testing can continue|"
+    r"(?:Can|May|Could|Should) (?:I|we) (?:please )?(?:re-?run|retry|run) "
+    r"(?:the |my )?(?:focused )?(?:tests?|command)(?: in the background)?)\?",
+    re.IGNORECASE,
+)
+_AUTOMATIC_REVIEW_FACT = re.compile(
+    r"(?=.*\bautomatic approval review\b)(?=.*\b(?:refused|rejected|denied|blocked)\b)"
+    r"(?=.*\b(?:command|tests?|preamble|runs?|work)\b)",
+    re.IGNORECASE,
+)
+_REAL_CREDENTIAL = _words(r"tokens?|credentials?|passwords?|secrets?|admin|sso|scopes?|roles?|keys?")
+
+
+def _automatic_review_refusal(card: QuestionCard, question: str) -> bool:
+    options = (text for option in card.options for text in (option.label, option.description))
+    readable = (question, card.why, card.blocker, *options)
+    return (
+        card.decision is OwnerDecision.CREDENTIALS
+        and _AUTOMATIC_REVIEW_ASK.fullmatch(_squashed(question)) is not None
+        and bool(card.checked)
+        and all(_AUTOMATIC_REVIEW_FACT.search(fact) and not _REAL_CREDENTIAL.search(fact) for fact in card.checked)
+        and not any(_REAL_CREDENTIAL.search(text) for text in readable)
+    )
+
+
 def owner_stop_misfit(result: Mapping[str, object]) -> MisfitAction | None:
     """The action for an owner stop that a row proves is no owner decision, or ``None``: record the card."""
     card = QuestionCard.from_envelope(result)
     if card is None or result.get("needs_user_input") is not True:
         return None
     question = str(result.get("user_input_reason", ""))
+    if _automatic_review_refusal(card, question):
+        return MisfitAction.BACKGROUND_RETRY
     options = (text for option in card.options for text in (option.label, option.description))
     texts = tuple(filter(None, (*card.checked, card.blocker, card.why, *options)))
     return next((row.action for row in OWNER_STOP_MISFITS if row.fits(card.decision, question, texts)), None)

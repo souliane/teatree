@@ -28,6 +28,27 @@ class TestTheTableNeverReachesAMoneyOrColleagueDecision:
 
 
 class TestARowFiresOnlyOnItsOwnKindAndWords:
+    def test_automatic_review_refusal_is_environment_only_when_facts_name_the_refused_test(self) -> None:
+        question = "Can I have one-time approval to rerun the focused regression tests?"
+        refused = "The automatic approval review refused the focused regression tests as foreground heavy work."
+        credential = f"{refused} An admin token is required."
+
+        assert _misfit("credentials", question, refused) is MisfitAction.BACKGROUND_RETRY
+        assert _misfit("credentials", question, credential) is None
+
+    def test_automatic_review_classifies_a_new_wording_but_keeps_real_access_decisions(self) -> None:
+        fact = "The automatic approval review rejected the test command as foreground heavy work."
+        routine = owner_stop("Can I rerun the tests in the background?", "credentials", fact)
+        credential = owner_stop("Can I use an admin token to run the tests?", "credentials", fact)
+        altered = owner_stop("Can I rerun the tests in the background?", "credentials", fact)
+        card = altered["user_input_card"]
+        assert isinstance(card, dict)
+        card["why"] = "A deployment token is missing."
+
+        assert owner_stop_misfit(routine) is MisfitAction.BACKGROUND_RETRY
+        assert owner_stop_misfit(credential) is None
+        assert owner_stop_misfit(altered) is None
+
     @pytest.mark.parametrize(
         ("kind", "question", "facts", "expected"),
         [

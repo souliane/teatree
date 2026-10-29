@@ -203,6 +203,7 @@ class TestCheckingShow:
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay")
+        assert out.startswith("Status by feature\n")
         assert "Since " in out
         assert "Merged" in out
         assert "[acme/widgets#7]" in out
@@ -243,6 +244,7 @@ class TestCheckingShow:
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
         assert set(payload) == {
+            "status_by_feature",
             "since",
             "merged",
             "in_flight",
@@ -1408,6 +1410,7 @@ class TestCheckingShowAllOverlays:
 
         with _two_overlay_patch():
             out = _call("checking", "show", "--no-advance")
+        assert out.startswith("Status by feature\n")
         assert "acme/widgets#10" in out
         assert "beta/core#20" in out
 
@@ -1475,6 +1478,8 @@ class TestCheckingShowAllOverlays:
             out = _call("checking", "show", "--no-advance", "--json")
 
         payload = json.loads(out)
+        assert next(iter(payload)) == "status_by_feature"
+        assert payload["status_by_feature"]["features"][0]["title"] == "acme work"
         assert "all_overlays" in payload
         assert "merged" in payload
 

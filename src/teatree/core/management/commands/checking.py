@@ -21,6 +21,7 @@ human view on stderr — and returned as the typed payload.
 import hashlib
 import io
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, TYPE_CHECKING, Annotated, cast
@@ -29,6 +30,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import command, initialize
 
+from teatree.backends.slack.listener_heartbeat import ListenerBeat, heartbeat_is_stale, read_heartbeat
 from teatree.backends.slack.table_format import render_table_message, slack_table_block
 from teatree.core.checking import (
     DEFAULT_CAP,
@@ -38,6 +40,7 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
+from teatree.core.checking_slack import ShootReportDict, shoot_questions
 from teatree.core.checking_types import CheckItem, OwnerWaitItem
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 from teatree.core.machine_output import MachineOutputCommand, emit
@@ -61,13 +64,33 @@ class _ShowFlags:
     notify: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _RenderContext:
+    header: str
+    stamp: str
+    status_lines: list[str]
+
+
 def _stamp(when: datetime) -> str:
     local = timezone.localtime(when) if timezone.is_aware(when) else when
     return local.strftime("%H:%M")
 
 
+def _listener_stale(beat: ListenerBeat | None, *, now: float) -> bool:
+    if beat is None:
+        return True
+    if beat.stamps is not None:
+        return all(heartbeat_is_stale(beat, name, now=now) for name in beat.stamps)
+    return heartbeat_is_stale(beat, "", now=now)
+
+
 def _render_groups_tables(
-    groups: list[CheckGroup], *, header: str, stamp: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+    groups: list[CheckGroup],
+    *,
+    header: str,
+    stamp: str,
+    status_lines: list[str] | None = None,
+    internal_escalations: int = 0,
 ) -> str:
     """Render each non-empty group as a table under *header*.
 
@@ -75,9 +98,13 @@ def _render_groups_tables(
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
-    if all(not group.has_table_content() for group in groups) and not internal_escalations:
+    status = status_lines or []
+    cap = DEFAULT_CAP
+    if all(not group.has_table_content() for group in groups) and not internal_escalations and not status:
         return f"Nothing since {stamp}."
     buffer = io.StringIO()
+    if status:
+        buffer.write("\n".join(status) + "\n")
     buffer.write(header + "\n")
     for group in groups:
         if not group.has_table_content():
@@ -174,6 +201,31 @@ class Command(MachineOutputCommand):
         """``t3 <overlay> checking`` group root."""
 
     @command()
+    def shoot(
+        self,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the Slack question links as JSON.")] = False,
+    ) -> ShootReportDict:
+        """Post or nudge waiting owner questions through the existing Slack drains."""
+        overlay = os.environ.get("T3_OVERLAY_NAME", "")
+        stale = _listener_stale(read_heartbeat(), now=time.time())
+        result = shoot_questions(overlay=overlay, listener_stale=stale)
+        self.print_result = False
+        human = "\n".join(f"[{card['label']}]({card['permalink']})" for card in result["cards"])
+        if result["reason"]:
+            human = f"{result['reason']}\n{human}"
+        if result["remaining"]:
+            human += f"\n{result['remaining']} waiting for the next Slack send"
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human.strip(),
+        )
+        return result
+
+    @command()
     def show(
         self,
         *,
@@ -241,7 +293,8 @@ class Command(MachineOutputCommand):
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
             advance_checkpoint_monotonic(now)
-        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
+        context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
+        return self._emit(report.to_dict(), groups, context=context, flags=flags)
 
     def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> AllOverlaysReportDict:
         """All-overlays path (default): aggregate every configured overlay."""
@@ -282,15 +335,15 @@ class Command(MachineOutputCommand):
                 path = checkpoint_path(overlay=name)
                 advance_checkpoint_monotonic(now, path)
 
-        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
+        context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
+        return self._emit(report.to_dict(), groups, context=context, flags=flags)
 
     def _emit[ReportT: (CheckingReportDict, AllOverlaysReportDict)](
         self,
         payload: ReportT,
         groups: list[CheckGroup],
         *,
-        header: str,
-        stamp: str,
+        context: _RenderContext,
         flags: _ShowFlags,
     ) -> ReportT:
         self.print_result = False
@@ -300,7 +353,11 @@ class Command(MachineOutputCommand):
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human=_render_groups_tables(
-                groups, header=header, stamp=stamp, internal_escalations=payload["internal_escalations"]
+                groups,
+                header=context.header,
+                stamp=context.stamp,
+                status_lines=context.status_lines,
+                internal_escalations=payload["internal_escalations"],
             ),
         )
         return payload

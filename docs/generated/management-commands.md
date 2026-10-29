@@ -17,6 +17,7 @@ Edit the source command, not this file.
 
 | Subcommand | Description |
 | --- | --- |
+| `shoot` | Post or nudge waiting owner questions through the existing Slack drains |
 | `show` | Print a terse, grouped, clickable report of changes since the last check |
 
 ## `config_setting`

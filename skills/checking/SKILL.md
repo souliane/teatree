@@ -18,7 +18,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (READ-ONLY — never starts work, never transitions a ticket, never posts), then advances per-overlay markers. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (`checking show` is read-only), then advances per-overlay markers. After the report, it shoots waiting owner questions to Slack and gives one thread link per posted card.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -26,7 +26,7 @@ The user does NOT want a long report. Answer first; one idea per line.
 
 Load `/t3:checking` when the user wants a quick "what happened while I was away?" — phrasings like "what did I miss", "catch me up", "what changed since" — or when they want to answer the backlog from here ("ask me the questions", "shoot me the questions").
 
-The catch-up report stays read-only. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
+The catch-up report stays read-only. The walk-through may record a session-known wait or dismiss a stale card with evidence; `checking shoot` posts or nudges through the existing Slack drains. It never answers an owner card through the internal question-answer command.
 
 ## Walking the owner waits (no mode flip)
 
@@ -35,7 +35,7 @@ After the report, triage the live waits in `Needs you` and the owner cards toget
 1. Record every wait already known in this session that lacks a row — a held pull request, a gate refusal that says to ask the owner, or an approval request. Use `t3 <overlay> questions record` with the real decision kind, checked facts and a plain-language card. Check the list first so an existing row is reused. A failed record is an explicit unresolved wait, never an empty list.
 2. List cards with `mcp__teatree__question_list` (fallback: `t3 <overlay> questions list --json`, filtered to `owner_question`). The MCP list contains only owner-audience cards, oldest first. Read the complete non-row list with `t3 <overlay> waiting list --json` because the report caps its rows at five; exclude its `question` entries whose `row_id` is already in the card list, then join by age, oldest first. Internal escalations are a separate factory count, never questions for the owner.
 3. Before each card say how many remain to triage (`N left`). Re-read the facts. If the underlying wait ended, dismiss with evidence. If a recorded rule or earlier answer settles it without crossing an owner-kept decision, take the sanctioned action and dismiss with `--resolver agent:interactive --reason '<facts and action>'`; report each automatic resolution in one line so the owner can overrule it.
-4. Otherwise raise one card at a time through `AskUserQuestion`. Spending money, irreversible deletion of work on no remote, widening security or credential use, and colleague-visible posts stay with the owner: never decide, dismiss, or act on these in his place. The owner-only row remains pending until the authenticated Slack reply; `questions answer` and MCP `question_answer` refuse it. Say `awaiting your Slack reply` and let the existing question drain mirror it. A reply in this client is useful context but is not the durable owner-channel answer.
+4. Run `t3 <overlay> checking shoot --json`. It posts unmirrored cards and nudges mirrored cards on their existing schedule, then returns a Slack permalink for each mirrored card; print the word-labelled links, not the card texts. While its mode is `slack`, ask nothing through `AskUserQuestion`. Only when Slack is broken and shoot returns `fallback`, state its one-line reason and raise one card at a time through `AskUserQuestion`. Spending money, irreversible deletion of work on no remote, widening security or credential use, and colleague-visible posts stay with the owner: never decide, dismiss, or act on these in his place. The owner-only row remains pending until the authenticated Slack reply; `questions answer` and MCP `question_answer` refuse it. Say `awaiting your Slack reply` until that reply lands.
 5. End with zero **untriaged** waits: name each still-open card and the count awaiting Slack, or say `No pending owner waits.` only when both cards and non-row waits are empty. Do not call an awaiting-reply card resolved.
 
 A Slack-given answer is read on demand with `questions list --all`; the walk-through does not flip the user's mode or start ticket work.
@@ -48,6 +48,7 @@ t3 <overlay> checking show --this-overlay  # scope to the current overlay only (
 t3 <overlay> checking show --since 2026-05-30T08:00:00   # explicit window start (does NOT advance the marker)
 t3 <overlay> checking show --no-advance     # read without moving the last-checked markers
 t3 <overlay> checking show --json           # structured payload instead of the terse view
+t3 <overlay> checking shoot --json          # post or nudge owner questions on Slack; return thread links
 ```
 
 The default path aggregates **all configured overlays** into one report. Each overlay's marker advances independently — only after the gather, so an immediate second run reports nothing. `--this-overlay` restores the old single-overlay scope. `--since` and `--no-advance` leave markers untouched.
@@ -56,8 +57,9 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
-- Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
+- `Status by feature` opens the report: one short block per active feature, at most eight, with merged/live, what is left, and who acts next. A completed, live block has no link; a named open problem has a word-labelled link. No two-digit run appears in a visible heading, sentence, or link label.
+- Groups in fixed order after the feature status — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
+- Every linked PR / issue / ticket reference in the feature status uses a markdown link `[label](url)` with a label in words.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
 - No preamble, no "Here is your report."

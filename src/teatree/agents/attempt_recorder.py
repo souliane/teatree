@@ -60,6 +60,7 @@ from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_
 from teatree.core.models import NoCurrentPlanError, SessionCommand, Task, TaskAttempt
 from teatree.core.models.critic_dispatch import CriticDispatch as _CriticDispatch
 from teatree.core.models.critic_verdict import CRITIC_EVIDENCE_UNAVAILABLE_PREFIX as _CRITIC_EVIDENCE_UNAVAILABLE_PREFIX
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.models.task_claim import atomic_after_checkout_exit
 
 if TYPE_CHECKING:
@@ -165,8 +166,14 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
         return owner_stop_refusal("; ".join(problems))
-    if owner_stop_misfit(result) is MisfitAction.REFUSE_AND_DECIDE:
-        return owner_stop_refusal("the standing factory rule already decides this action")
+    misfit = owner_stop_misfit(result)
+    if misfit in {MisfitAction.BACKGROUND_RETRY, MisfitAction.REFUSE_AND_DECIDE}:
+        detail = (
+            "automatic approval review refused a command; retry once in the background"
+            if misfit is MisfitAction.BACKGROUND_RETRY
+            else "the standing factory rule already decides this action"
+        )
+        return owner_stop_refusal(detail)
     return ""
 
 
@@ -224,7 +231,11 @@ def record_result_envelope(
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
-        return _record_failure(task, error=checked.error, result=result, usage=usage)
+        return (
+            _record_automatic_review_refusal(task, result, usage=usage)
+            if checked.error == _AUTOMATIC_REVIEW_PREFIX
+            else _record_failure(task, error=checked.error, result=result, usage=usage)
+        )
 
     server_side_error = _record_returned_envelopes(
         task, result, phase=phase, executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness)
@@ -260,6 +271,29 @@ def record_result_envelope(
         return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
     announce_completed_architectural_review(task, result, phase=phase)
     return attempt
+
+
+_AUTOMATIC_REVIEW_PREFIX = "result_error: automatic approval review refused"
+
+
+def _record_automatic_review_refusal(task: Task, result: AgentResultBlob, *, usage: AttemptUsage) -> TaskAttempt:
+    previous = TaskAttempt.objects.filter(task=task, error__startswith=_AUTOMATIC_REVIEW_PREFIX).exists()
+    if previous:
+        facts = result.get("user_input_checked")
+        detail = str(facts[0]) if isinstance(facts, list) and facts else "refused command"
+        ScannerFault.objects.record_failure(
+            f"task:{task.pk}:permission", "HarnessPermission", f"Task {task.pk}, {task.phase}: {detail}"
+        )
+        return _record_failure(task, error=f"harness permission fault: {detail}", result=result, usage=usage)
+    instruction = "Retry the refused command once in the background, then read its output."
+    task.execution_reason = f"{task.execution_reason}\n{instruction}".strip()
+    task.save(update_fields=["execution_reason"])
+    return _record_failure(
+        task,
+        error=f"{_AUTOMATIC_REVIEW_PREFIX} a command; retry once in the background",
+        result=result,
+        usage=usage,
+    )
 
 
 class SpendColumns(TypedDict, total=False):
@@ -379,7 +413,8 @@ def _check_before_recording(
     rather than a ladder of early returns.
     """
     if error := (
-        validate_result_keys(result)
+        (_AUTOMATIC_REVIEW_PREFIX if owner_stop_misfit(result) is MisfitAction.BACKGROUND_RETRY else "")
+        or validate_result_keys(result)
         or review_head_mismatch_refusal(task, result, phase=phase)
         or review_venue_limit_refusal(task, result, phase=phase)
         or (
