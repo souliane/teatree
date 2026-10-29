@@ -6,40 +6,43 @@ import os
 import sys
 import threading
 from typing import Any
+from unittest.mock import patch
 
 import httpx2 as httpx
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
 
+from teatree.agents import pydantic_ai_config
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_mailbox_client import MailboxClient
-from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
+from teatree.agents.runner_heartbeat import drive_with_heartbeat
 from teatree.agents.runner_stream import HarnessOutcome
-from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
+from tests.integration.live_control.live_pydantic import live_runtime, resolve_live_route
 from tests.teatree_agents.test_live_control_integration import _until as wait_until
 
-_REQUIRED = ("OPENAI_API_KEY", "T3_LIVE_PYDANTIC_BASE_URL", "T3_LIVE_PYDANTIC_MODEL")
 _NONCE = "PINEAPPLE-MAILBOX-NONCE"
 
 
 @pytest.mark.integration
 @pytest.mark.timeout(300)
+@pytest.mark.usefixtures("pass_store")
 class LivePydanticNonceTests(TestCase):
     def setUp(self) -> None:
         super().setUp()
         if os.environ.get("T3_LIVE_PYDANTIC_MAILBOX") != "1":
             self.skipTest("set T3_LIVE_PYDANTIC_MAILBOX=1 to run the live router mailbox proof")
-        missing = [name for name in _REQUIRED if not os.environ.get(name)]
-        if missing:
-            self.skipTest(f"missing live router configuration: {', '.join(missing)}")
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
+        try:
+            self.route = resolve_live_route()
+        except RuntimeError as exc:
+            self.skipTest(str(exc))
 
     def test_a_real_router_run_carries_the_admitted_nonce_in_its_next_request_body(self) -> None:
         ticket = planned_ticket()
@@ -59,31 +62,25 @@ class LivePydanticNonceTests(TestCase):
                 await asyncio.to_thread(release_request.wait, 20)
 
         async def run() -> HarnessOutcome:
-            async with httpx.AsyncClient(event_hooks={"request": [observe]}) as http_client:
-                model = OpenAIChatModel(
-                    os.environ["T3_LIVE_PYDANTIC_MODEL"],
-                    provider=OpenAIProvider(
-                        base_url=os.environ["T3_LIVE_PYDANTIC_BASE_URL"],
-                        api_key=os.environ["OPENAI_API_KEY"],
-                        http_client=http_client,
-                    ),
-                )
-                runtime = HeartbeatRuntime(
-                    watchdog=LoopWatchdog(max_runtime_seconds=240, max_turns=0, max_cost_usd=0.0),
-                    heartbeat_interval=60,
-                    sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
-                    renew_lease=lambda _task: None,
-                    drain_reason=lambda: "",
-                )
+            original_client = pydantic_ai_config.DefaultAsyncHttpxClient
+
+            def observing_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+                hooks = dict(kwargs.pop("event_hooks", {}))
+                hooks["request"] = [observe]
+                return original_client(*args, event_hooks=hooks, **kwargs)
+
+            with patch.object(pydantic_ai_config, "DefaultAsyncHttpxClient", observing_client):
                 harness = GuardedHarness(
-                    harness=PydanticAiHarness(model=model, phase="coding"), guard=CompactionGuard(), name="pydantic_ai"
+                    harness=PydanticAiHarness(config=self.route, phase="coding"),
+                    guard=CompactionGuard(),
+                    name="pydantic_ai",
                 )
                 return await drive_with_heartbeat(
                     task,
                     "Use Bash to run `sleep 8 && echo done` once, then give a one-sentence summary.",
-                    ClaudeAgentOptions(),
+                    ClaudeAgentOptions(max_turns=6),
                     harness,
-                    runtime=runtime,
+                    runtime=live_runtime(),
                 )
 
         def operator() -> None:
