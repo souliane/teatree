@@ -12,6 +12,7 @@ the upsert, the round-trip, and the three-way :class:`WriteResult` classificatio
 against actual sqlite.
 """
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 from teatree.config import cold_reader, cold_writer
 from teatree.config.cold_writer import WriteResult
 from teatree.config.host_projection import GENERATION_KEY
+from teatree.config.value_visibility import MASKED
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 # The exact ``teatree_config_setting`` shape Django's migration emits (see
@@ -54,6 +56,28 @@ def _make_real_schema_db(path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _make_audited_db_with_non_json_value(path: Path, key: str, raw: str) -> None:
+    """A real-schema DB whose stored *key* is not JSON — only reachable by bypassing the CHECK."""
+    _make_real_schema_db(path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(_AUDIT_SCHEMA)
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "INSERT INTO teatree_config_setting "
+            "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+            "VALUES ('', ?, ?, '', '', '', 'hand-edit', NULL)",
+            (key, raw),
+        )
+        conn.commit()
+
+
+def _audit_values(path: Path, key: str) -> tuple[str, str]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute(
+            "SELECT old_value, new_value FROM teatree_config_setting_change WHERE key=? ORDER BY id DESC", (key,)
+        ).fetchone()
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +216,29 @@ class TestWriteRoundTrip:
                 "SELECT new_value FROM teatree_config_setting_change WHERE key='banned_term_registry'"
             ).fetchone()[0]
         assert "private-marker" not in stored
+
+    def test_a_non_json_stored_value_is_repaired_and_kept_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "hand-edited.sqlite3"
+        _make_audited_db_with_non_json_value(db, "autoload", "yes please")
+
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+
+        assert cold_reader.read_setting("autoload", db_path=db) is False
+        old_value, new_value = _audit_values(db, "autoload")
+        assert json.loads(old_value) == "yes please"
+        assert new_value == "false"
+
+    def test_a_non_json_stored_secret_is_masked_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "hand-edited-secret.sqlite3"
+        _make_audited_db_with_non_json_value(db, "banned_term_registry", "private-marker")
+
+        outcome = cold_writer.write_setting("banned_term_registry", {"leak": ["other-marker"]}, db_path=db)
+
+        assert outcome.result is WriteResult.WROTE
+        old_value, new_value = _audit_values(db, "banned_term_registry")
+        assert json.loads(old_value) == MASKED
+        assert "private-marker" not in old_value + new_value
+        assert "other-marker" not in old_value + new_value
 
 
 class TestNoDbTierIsClassified:

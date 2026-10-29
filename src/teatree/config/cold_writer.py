@@ -184,14 +184,23 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
     return WriteResult.WROTE, ""
 
 
+def _audit_old_json(key: str, stored: str | None) -> str | None:
+    # A hand-edited row may hold non-JSON: take it as the raw string so the rescue still repairs it.
+    if stored is None:
+        return None
+    try:
+        old_value = json.loads(stored)
+    except (TypeError, ValueError):
+        old_value = str(stored)
+        stored = json.dumps(old_value)
+    return json.dumps(MASKED) if old_value is not None and withholds_value(key, old_value) else stored
+
+
 def _write_audit_row(conn: sqlite3.Connection, scope: str, key: str, value: object, *, old_json: str | None) -> None:
     if not _audit_table_present(conn):
         sys.stderr.write("WARNING: config audit table is absent; rescue write has no audit row\n")
         return
     now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
-    old_value = json.loads(old_json) if old_json is not None else None
-    if old_value is not None and withholds_value(key, old_value):
-        old_json = json.dumps(MASKED)
     new_json = json.dumps(MASKED if withholds_value(key, value) else value)
     conn.execute("SAVEPOINT audit_row")
     try:
@@ -199,7 +208,7 @@ def _write_audit_row(conn: sqlite3.Connection, scope: str, key: str, value: obje
             "INSERT INTO teatree_config_setting_change "
             "(scope, key, action, old_value, new_value, written_by, changed_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (scope, key, "set", old_json, new_json, "cold-writer", now),
+            (scope, key, "set", _audit_old_json(key, old_json), new_json, "cold-writer", now),
         )
     except sqlite3.Error as error:
         conn.execute("ROLLBACK TO audit_row")
