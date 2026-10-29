@@ -90,7 +90,10 @@ def sweep_next_task(reason: str, decision: str, *, behind_main: bool) -> str:
         "solo_overlay_no_review": "Run independent review",
         "clear_present_unusable": "Refresh merge authorization for current head",
         "mergeable_awaiting_review": "Request independent review",
+        "review_rounds_exhausted": "Inspect three recorded review rounds",
     }
+    if decision == "waiting_on_critic":
+        return "Wait for the merge-quality critic"
     return actions.get(reason, f"Inspect PR blocker: {(reason or decision).replace('_', ' ')}")
 
 

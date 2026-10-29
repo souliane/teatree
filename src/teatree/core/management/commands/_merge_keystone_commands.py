@@ -15,6 +15,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.gates.merge_quality_gate import MergeAwaitingCriticError
 from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
@@ -112,6 +113,8 @@ class MergeKeystoneCommands(TyperCommand):
                 expedite_authorized=expedite_authorized,
                 squash=not no_squash,
             )
+        except MergeAwaitingCriticError as exc:
+            return {"merged": False, "error": str(exc), "escalation_kind": "awaiting_critic"}
         except MergePreconditionError as exc:
             self.stdout.write(f"  merge refused (re-escalating): {exc}")
             return escalated_merge_result(clear, str(exc))

@@ -157,8 +157,8 @@ class TestRequireCurrentBranch:
 
         assert staleness is not None
         assert staleness.base_oid == pre_merge_sha
-        assert result["auto_merged"] is True
         assert result["error"] is None
+        assert _git(clone, "rev-parse", "HEAD") == pre_merge_sha
 
     def test_refuses_to_merge_into_another_checked_out_branch(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
@@ -173,8 +173,6 @@ class TestRequireCurrentBranch:
 
         result = require_current_branch(str(clone), "feat/x")
 
-        assert result["auto_merged"] is False
-        assert result["post_merge_sha"] is None
         assert "is on 'other', not recorded branch 'feat/x'" in (result["error"] or "")
         assert _git(clone, "rev-parse", "HEAD") == before
 
@@ -188,25 +186,22 @@ class TestRequireCurrentBranch:
 
         result = require_current_branch(str(clone), "feat/x")
 
-        assert result["auto_merged"] is False
-        assert result["post_merge_sha"] is None
         assert "detached HEAD" in (result["error"] or "")
         assert _git(clone, "rev-parse", "HEAD") == before
 
-    def test_auto_merged_when_zero_conflict(self, tmp_path: Path) -> None:
+    def test_clean_behind_branch_keeps_its_reviewed_head(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
         _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
 
+        before = _git(clone, "rev-parse", "HEAD")
         result = require_current_branch(str(clone), "feat/x", target="origin/main")
 
         assert isinstance(result, dict)
-        assert result["auto_merged"] is True
         assert result["error"] is None
-        post_merge_sha = result["post_merge_sha"]
-        assert post_merge_sha is not None
-        assert post_merge_sha == _git(clone, "rev-parse", "HEAD")
+        assert _git(clone, "rev-parse", "HEAD") == before
+        assert _git(clone, "status", "--porcelain") == ""
 
     def test_refuses_on_conflict_with_actionable_hint(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
@@ -216,7 +211,6 @@ class TestRequireCurrentBranch:
 
         result = require_current_branch(str(clone), "feat/x", target="origin/main")
 
-        assert result["auto_merged"] is False
         error = result["error"]
         assert error is not None
         assert "conflict" in error.lower()
@@ -234,10 +228,8 @@ class TestRequireCurrentBranch:
 
         result = require_current_branch(str(clone), "feat/x", target="origin/main")
 
-        assert result["auto_merged"] is False
         assert result["error"] is None
-        # Already-current: no merge performed, SHA unchanged.
-        assert result["post_merge_sha"] is None or result["post_merge_sha"] == pre_sha
+        assert _git(clone, "rev-parse", "HEAD") == pre_sha
 
     def test_dry_run_does_not_merge(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
@@ -250,8 +242,7 @@ class TestRequireCurrentBranch:
 
         # No merge ran — HEAD unchanged.
         assert _git(clone, "rev-parse", "HEAD") == pre_sha
-        # The result reports the staleness, no auto_merged side effect.
-        assert result["auto_merged"] is False
+        assert result["hint"] is not None
 
 
 class TestShaConflictsWithTarget:
@@ -330,7 +321,6 @@ class TestFetchFailureSurface:
         result = require_current_branch(str(clone), "feat/x", target="origin/main")
 
         # Inconclusive — no error block, no merge.
-        assert result["auto_merged"] is False
         assert result["error"] is None
 
 

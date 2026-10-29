@@ -60,14 +60,8 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
-from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
-from teatree.loop.scanners.pr_sweep_decision import (
-    head_review_state,
-    own_or_same_repo,
-    record_mergeable_notified,
-    red_required_at_stale_base,
-    with_ci_context,
-)
+from teatree.loop.scanners.pr_sweep_ci_classify import ci_block_attempt, ci_gate_verdict, main_uv_audit_red
+from teatree.loop.scanners.pr_sweep_decision import head_review_state, own_or_same_repo, record_mergeable_notified
 from teatree.loop.scanners.pr_sweep_head_carry import look_up_clear
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_reporting import (
@@ -76,7 +70,13 @@ from teatree.loop.scanners.pr_sweep_reporting import (
     signal_from_attempt,
     write_inventory_for_scan,
 )
-from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
+from teatree.loop.scanners.pr_sweep_review_gate import (
+    REVIEW_ROUNDS_EXHAUSTED,
+    ReviewArmContext,
+    held_head_attempt,
+    no_review_attempt,
+    review_rounds_exhausted,
+)
 from teatree.loop.scanners.pr_sweep_ticket_gate import precondition_skip_reason, unowned_pr_refusal
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
@@ -90,6 +90,7 @@ from teatree.loop.scanners.pr_sweep_types import (
     UV_AUDIT_CHECK_NAME,
     MergeAttempt,
     PrSummary,
+    awaiting_critic_attempt,
     blocked_merge_attempt,
     skip_attempt,
 )
@@ -335,26 +336,15 @@ class PrSweepScanner:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
 
-    #: CI-red skip reasons a merge-update can resolve. ``ci_pending`` (still
-    #: running) and ``required_checks_indeterminate`` (fails closed) are absent.
-    _STALE_BASE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
-
     def _ci_block(self, pr: PrSummary, *, reason: str, failing: set[str]) -> MergeAttempt:
-        """Merge-update a CI-red block whose verdict judged a STALE base (#4063).
-
-        A required check that went red on a branch BEHIND main judged a base the
-        branch has since fallen behind, so its verdict is UNKNOWN: the fix may
-        already be on main, and ``gh run rerun --failed`` re-tests the run's
-        pinned OLD base, which clears neither a repo-state check nor a test. A
-        red on an already-up-to-date branch is the branch's own verdict and stays
-        a plain skip — that is what keeps a broken PR from being update-looped.
-        """
-        if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
-            failing, behind_main=pr.behind_main, conflicted=pr.is_conflicted
-        ):
-            return with_ci_context(skip_attempt(pr, reason=reason), pr=pr, failing=failing)
-        remedy = branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
-        return with_ci_context(remedy, pr=pr, failing=failing)
+        return ci_block_attempt(
+            pr,
+            reason=reason,
+            failing=failing,
+            remedy=lambda candidate: branch_update.remedy_stale_base(
+                candidate, ctx=self._remedy_ctx(), budget=self.branch_update_budget
+            ),
+        )
 
     def _remedy_ctx(self) -> branch_update.RemedyContext:
         return branch_update.RemedyContext(
@@ -363,7 +353,7 @@ class PrSweepScanner:
 
     def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
         """Delegate to :func:`ci_gate_verdict`. Shared by the CLEAR path and the solo-overlay bypass."""
-        return ci_gate_verdict(pr, main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug))
+        return ci_gate_verdict(pr, main_uv_audit_red=lambda: main_uv_audit_red(self.api, slug=pr.slug))
 
     def _evaluate_solo_overlay(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
         """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
@@ -416,7 +406,11 @@ class PrSweepScanner:
             expected_head_oid=pr.head_sha,
         )
         if not result.merged:
-            return blocked_merge_attempt(pr, reason_prefix="solo_overlay_merge_refused", refusal=result.refusal)
+            return (
+                awaiting_critic_attempt(pr, reason=result.refusal)
+                if result.waiting
+                else blocked_merge_attempt(pr, reason_prefix="solo_overlay_merge_refused", refusal=result.refusal)
+            )
         self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=result.merged_sha, fallback=fallback)
         reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
         logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, result.merged_sha, authorizing)
@@ -489,19 +483,17 @@ class PrSweepScanner:
         refuses first (#4380). A reviewer who looked and said no is not "no independent
         review", and arming another over a held head is how the newer verdict came to be.
         """
-        self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
-        return MergeAttempt(
+        exhausted = review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
+        self._flag(
             slug=pr.slug,
             pr_id=pr.number,
-            decision="flag_no_review",
-            reason=CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review",
+            reason=REVIEW_ROUNDS_EXHAUSTED if exhausted else "no_independent_review",
             url=pr.url,
-            review_dispatched=self._enqueue_review(pr),
         )
-
-    def _enqueue_review(self, pr: PrSummary) -> bool:
-        return arm_cold_review(
+        return no_review_attempt(
             pr,
+            unusable_clear=unusable_clear,
+            exhausted=exhausted,
             ctx=ReviewArmContext(
                 dispatcher=self.review_dispatcher,
                 enabled=self.auto_review_dispatch,
@@ -515,13 +507,6 @@ class PrSweepScanner:
             self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url, detail=detail)
         except Exception:
             logger.exception("pr_sweep failed to post flag notification for %s#%d", slug, pr_id)
-
-    def _main_uv_audit_red(self, *, slug: str) -> bool:
-        try:
-            return self.api.main_check_failed(slug=slug, check_name=UV_AUDIT_CHECK_NAME)
-        except Exception:
-            logger.exception("pr_sweep failed to fetch main uv-audit status for %s", slug)
-            return False
 
     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
         # #3413: for a substrate-labeled CLEAR, re-present the owner's standing
@@ -560,6 +545,8 @@ class PrSweepScanner:
                 merged_sha=merged_sha,
                 reason="fallback_uv_audit" if fallback else "all_green",
             )
+        if escalation_kind == "awaiting_critic":
+            return awaiting_critic_attempt(pr, reason=error)
         # Finding 1 (fail-open): the uv-audit-fallback raw-merge must NOT fire for a
         # substrate CLEAR. A substrate change that lands on the fallback path (the
         # only red check is uv-audit, red on main too) would otherwise raw-merge
@@ -583,6 +570,8 @@ class PrSweepScanner:
                     merged_sha=result.merged_sha,
                     reason="fallback_uv_audit_gh",
                 )
+            if result.waiting:
+                return awaiting_critic_attempt(pr, reason=result.refusal)
             fallback_refusal = result.refusal
         if escalation_kind == "substrate" or clear.is_substrate():
             substrate.ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)

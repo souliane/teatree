@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from itertools import starmap
 from typing import TYPE_CHECKING, NoReturn, TypedDict, cast
 
+from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.head_read_diagnosis import read_credential_state
@@ -192,6 +193,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
     except ReviewVerdictError as exc:
         _refuse(command, f"record refused: {exc}")
 
+    arm_for_recorded_review(recorded)
     published, publish_line = _publish_on_record(recorded)
     lines = [
         (
@@ -280,6 +282,8 @@ def trigger_sweep(recorded: ReviewVerdict) -> list[str]:
         return [f"  pr_sweep merged {attempt.slug}#{attempt.pr_id} @ {attempt.merged_sha[:8]}"]
     if attempt is not None and attempt.decision == "blocked":
         return [f"  pr_sweep blocked {attempt.slug}#{attempt.pr_id}: {attempt.reason}"]
+    if attempt is not None and attempt.decision == "waiting_on_critic":
+        return [f"  pr_sweep waiting for critic {attempt.slug}#{attempt.pr_id}: {attempt.reason}"]
     return []
 
 

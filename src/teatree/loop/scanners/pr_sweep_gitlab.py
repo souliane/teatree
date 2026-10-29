@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.gates.merge_quality_gate import MergeAwaitingCriticError
 from teatree.core.merge import MergePreconditionError
 from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.core.merge.uncleared_merge import merge_without_clear
@@ -112,6 +113,8 @@ class GlabPrApiClient:
                 ref=PrRef(slug=slug, pr_id=pr_id, host_kind="gitlab"),
                 expected_head_oid=expected_head_oid,
             )
+        except MergeAwaitingCriticError as exc:
+            return BoundMergeResult(merged=False, refusal=str(exc), waiting=True)
         except MergePreconditionError as exc:
             return BoundMergeResult(merged=False, refusal=str(exc))
         return BoundMergeResult(merged=True, merged_sha=merged_sha)

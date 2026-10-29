@@ -31,6 +31,7 @@ from teatree.core.models import (
     AutoReviewDispatch,
     ClearRequest,
     ConfigSetting,
+    CriticDispatch,
     Finding,
     HonestyEscalation,
     MergeClear,
@@ -509,12 +510,16 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
             ) as track,
         ):
             provider.return_value.get_code_host_for_url.return_value = object()
-            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+            with self.captureOnCommitCallbacks(execute=True):
+                attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
 
         assert attempt.error == ""
         recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
         assert recorded.verdict == ReviewVerdict.Verdict.MERGE_SAFE
         assert recorded.structured_findings[0].kind == "nit"
+        claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_HEAD)
+        assert claim.task is not None
+        assert claim.task.phase == "critic_reviewing"
         track.assert_called_once()
         ticket.refresh_from_db()
         assert has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("a.py", 2, "rename helper"),))

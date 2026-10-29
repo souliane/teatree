@@ -189,7 +189,6 @@ class TicketExtra(TicketRepoExtra, total=False):
     # Stacked-delivery override keyed by canonical owner/repo slug. The string
     # shape is retained only for tickets written before repo scoping.
     target_branch: dict[str, str] | str
-    branch_currency_post_merge_sha: str
     ship_branch_currency_blocker: "BranchCurrencyBlocker"
     last_approval_sha: str
     # #88 DoD gate escape hatch: an explicit operator override recording WHY

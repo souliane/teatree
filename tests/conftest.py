@@ -165,7 +165,7 @@ def readable_ship_tree() -> Iterator[None]:
         patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
         patch(
             "teatree.core.management.commands._ship.gates.require_current_branch",
-            return_value={"auto_merged": False, "post_merge_sha": None, "error": None, "hint": None},
+            return_value={"error": None, "hint": None},
         ),
     ):
         yield

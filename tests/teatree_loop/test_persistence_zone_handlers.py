@@ -24,6 +24,7 @@ from teatree.core.models import DeferredQuestion, HeadCarryOver, Mode, ModeOverr
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.on_behalf_gate_recorded import owner_voice_permitted
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
@@ -385,6 +386,25 @@ class TestSelfPrReviewZoneRevived(TestCase):
     scanner emit would create a fresh reviewing task every tick (the flood) instead
     of the single, per-SHA-deduped task these assertions pin.
     """
+
+    def test_recorded_review_limit_creates_no_fourth_task(self) -> None:
+        owner = Ticket.objects.create(issue_url="https://github.com/o/r/issues/70", role=Ticket.Role.AUTHOR)
+        PullRequest.objects.create(
+            ticket=owner, overlay="acme", url="https://github.com/o/r/pull/70", repo="o/r", iid="70"
+        )
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=70,
+                slug="o/r",
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=owner,
+            )
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user"):
+            created = persist_agent_actions(_agent_actions(self._signal()))
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=70).exists()
 
     def _signal(
         self,

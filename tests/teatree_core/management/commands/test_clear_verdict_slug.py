@@ -17,7 +17,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands.ticket import ClearIssueResult, _verdict_slug
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.models import ClearRequest, MergeClear, ReviewVerdict
+from teatree.core.models import ClearRequest, CriticDispatch, MergeClear, PullRequest, ReviewVerdict, Ticket
 
 _SHA = "b" * 40
 _RECONCILE = "teatree.core.merge.pr_slug_resolution._reconcile_slug_against_reviewed_sha"
@@ -175,3 +175,20 @@ class TestClearCommandReconcilesTheVerdictSlug(TestCase):
         self._issue_clear()
 
         assert MergeClear.objects.get(pr_id=_PR_ID).slug == _WORKSTREAM_SLUG
+
+    def test_clear_pass_arms_the_merge_critic_before_merge(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url=f"https://github.com/{_RECOVERED}/pull/{_PR_ID}",
+            repo=_RECOVERED,
+            iid=str(_PR_ID),
+        )
+        with self.captureOnCommitCallbacks(execute=True):
+            result = self._issue_clear()
+
+        assert result.get("issued") is True
+        claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_SHA)
+        assert claim.task is not None
+        assert claim.task.phase == "critic_reviewing"

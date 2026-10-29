@@ -16,7 +16,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ReviewHoldDisposition, Session, Task, Ticket
+from teatree.core.models import HeadCarryOver, PullRequest, ReviewHoldDisposition, RoundMetric, Session, Task, Ticket
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
@@ -103,6 +103,85 @@ def _record(*, verdict: str, reviewer: str, sha: str = HEAD, at: dt.datetime | N
 
 class TestArmColdReview:
     """The arm is best-effort: every refusal degrades to "no task armed"."""
+
+    def test_three_recorded_heads_refuse_a_fourth_review(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=ticket,
+            )
+        dispatcher = _FakeDispatcher()
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
+        assert dispatcher.calls == []
+        assert notify.call_count == 1
+        assert all(digit * 40 in notify.call_args.args[0] for digit in "abc")
+
+    def test_carried_verdict_does_not_spend_a_review_round(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4805")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=ticket,
+            )
+        HeadCarryOver.objects.create(
+            slug=SLUG,
+            pr_id=PR_ID,
+            from_head="b" * 40,
+            to_head="c" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
+        )
+        dispatcher = _FakeDispatcher()
+        assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
+
+    def test_venue_limit_round_does_not_spend_the_third_slot(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4806")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "ab":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=ticket,
+            )
+        RoundMetric.objects.open(kind="review", ticket=ticket, subject="c" * 40, size=1, detail={})
+        RoundMetric.objects.settle(kind="review", ticket=ticket, subject="c" * 40, outcome="venue_limit")
+
+        dispatcher = _FakeDispatcher()
+        assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
+
+    def test_counted_head_can_rearm_without_spending_another_round(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4807")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for head in ("a" * 40, "b" * 40, HEAD):
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=head,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=ticket,
+            )
+
+        dispatcher = _FakeDispatcher()
+        assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
 
     def test_arms_one_task_for_an_own_pr(self) -> None:
         dispatcher = _FakeDispatcher()

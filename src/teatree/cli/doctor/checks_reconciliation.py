@@ -41,6 +41,7 @@ from teatree.cli.doctor.reconciliation_finding import Level, ReconciliationFindi
 # in the ORM, so it is imported lazily inside :func:`_notify_finding` to keep this
 # module import-clean under the Django-free CLI, matching the sibling ``checks_*``.
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.review_contract import CRITIC_REMEDY
 
 # Django-free pure arithmetic, so it is safe beside ``notify_policy`` above — and it is
 # the ONE home for "how stale is stale", which a local re-derivation here would fork.
@@ -435,10 +436,11 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
                 None,
             )
             stranded.append((f"`codex:{row.slug}#{row.pr_id}@{row.head_sha[:8]}`", _review_saturation_reason(task)))
-        stranded.extend(
+        critic_rows = [
             (f"`ticket:{row.ticket_id}/{row.transition}@{row.head_sha[:8]}`", _review_saturation_reason(row.task))
             for row in CriticDispatch.saturated(at=moment).select_related("task")
-        )
+        ]
+        stranded.extend(critic_rows)
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
     if not stranded:
@@ -447,12 +449,16 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
     for ref, reason in stranded:
         by_reason.setdefault(reason, []).append(ref)
     details = "; ".join(f"{reason}: {', '.join(refs)}" for reason, refs in by_reason.items())
+    remedy = (
+        f"For merge critics: {CRITIC_REMEDY} For review claims, review each by hand or push a new commit."
+        if critic_rows
+        else "Review each by hand or push a new commit."
+    )
     return _alarm(
         check_id,
         f"Review-dispatch saturation alarm: {len(stranded)} claim(s) exhausted the retry budget "
         f"without a terminal verdict. Causes by reason: {details}. Nothing will re-arm those heads "
-        f"and the merge gate stays unsatisfied — review each by hand "
-        f"or push a new commit to arm a fresh head.",
+        f"and their gates stay unsatisfied — {remedy}",
     )
 
 

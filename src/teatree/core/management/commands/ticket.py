@@ -9,6 +9,7 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import command
 
 from teatree.core import session_identity
+from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.machine_output import MachineOutputCommand
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
@@ -474,6 +475,7 @@ class Command(
         # verdict is: ``clear.slug`` is a workstream name that matches no PR row.
         if resolved_ticket is None:
             resolved_ticket = clear.adopt_owning_ticket(verdict_slug)
+        arm_for_recorded_review(verdict)
         self.stdout.write(
             f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]} on {clear.host_kind}"
         )

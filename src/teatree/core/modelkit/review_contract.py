@@ -17,6 +17,11 @@ array against a median merged diff of 287 lines.
 
 from typing import Final
 
+CRITIC_REMEDY: Final[str] = (
+    "Inspect the failed critic tasks; record a verified verdict with `manage.py ticket critic-record` "
+    "or push a new commit."
+)
+
 #: Stamped verbatim into every reviewer-facing brief teatree renders, and mirrored
 #: in the ``findings`` JSON-schema description a structured-output model reads.
 ENVELOPE_FINDINGS_RULE: Final[str] = (

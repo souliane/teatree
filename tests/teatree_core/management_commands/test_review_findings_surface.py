@@ -20,7 +20,7 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrReview
 from teatree.core.modelkit.forge_readability import LiveHeadRead
-from teatree.core.models import ConfigSetting, Finding, ReviewVerdict
+from teatree.core.models import ConfigSetting, CriticDispatch, Finding, PullRequest, ReviewVerdict, Ticket
 from teatree.core.review.verdict_findings import marker_for
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_forge_repos
@@ -238,6 +238,20 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         review = self.host.posted[0]
         assert [(c.path, c.line) for c in review.comments] == [("a.py", 9)]
         assert "rename x" in review.body
+
+    def test_recording_a_pass_arms_the_merge_critic_before_sweep(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=_URL, repo=_SLUG, iid="4476")
+        with (
+            patch("teatree.loop.sweep_on_demand.trigger_sweep_for_verdict", return_value=None),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            result = self._record(verdict="merge_safe", findings_json="[]", ticket_id=ticket.pk)
+
+        assert result["verdict"] == "merge_safe"
+        claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_SHA)
+        assert claim.task is not None
+        assert claim.task.phase == "critic_reviewing"
 
     def test_recording_on_an_own_pr_posts_nothing_and_says_self_review(self) -> None:
         self._allow_posting()
