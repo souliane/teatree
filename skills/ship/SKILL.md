@@ -337,7 +337,7 @@ This gate exists because the overlay's own CI MR-title validator (the validating
 - **PR description first line = same format as title** (CI validates it). NEVER start with `## Summary` — that fails validation.
 - **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
-> **PreToolUse hook:** The unified hook router intercepts `glab mr create/update` (and the MCP equivalents) and validates title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
+> **PreToolUse hook:** The unified hook router validates `glab mr create/update` title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. Foreign MCP equivalents are denied first; an audited `foreign_mcp` escape lets them reach the validator. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
 
 #### Concise Body (directive #4)
 
