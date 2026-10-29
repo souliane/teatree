@@ -1,17 +1,43 @@
-"""Shared route and runtime for opt-in Pydantic mailbox proofs."""
+"""Shared route, evidence and operator helpers for opt-in Pydantic mailbox proofs."""
 
+import asyncio
+import json
 import os
-from collections.abc import Mapping
+import re
+import sys
+import threading
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
+from types import TracebackType
+from typing import Any, Self
+
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryFeedbackPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.runner_heartbeat import HeartbeatRuntime
+from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.llm.credentials import CredentialError, CredentialSource, PassSource
 from teatree.llm.openai_compatible import OpenAICompatibleCredential
 
 LIVE_ROUTE_ENTRY_ENV = "T3_LIVE_PYDANTIC_CREDENTIAL_ENTRY"
+LIVE_ROUTE_MODEL_ENV = "T3_LIVE_PYDANTIC_MODEL"
 LIVE_ROUTE_BASE_URL = "https://openrouter.ai/api/v1"
-LIVE_ROUTE_MODEL = "qwen/qwen3-235b-a22b-instruct-2507"
+LIVE_ROUTE_DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+OPERATOR_DEADLINE_SECONDS = 150.0
+OPERATOR_JOIN_SECONDS = OPERATOR_DEADLINE_SECONDS + 90.0
+
+_PROVIDER_KEY = re.compile(r"sk-or-[A-Za-z0-9_-]+")
+_TEXT_EXCERPT = 80
 
 
 def resolve_live_route(
@@ -29,7 +55,7 @@ def resolve_live_route(
         backend=OpenAICompatibleLaneConfig(
             base_url=LIVE_ROUTE_BASE_URL,
             credential_entry=entry,
-            model=LIVE_ROUTE_MODEL,
+            model=os.environ.get(LIVE_ROUTE_MODEL_ENV, "").strip() or LIVE_ROUTE_DEFAULT_MODEL,
             request_limit=6,
         ),
         max_tokens=512,
@@ -46,3 +72,113 @@ def live_runtime(*, idle_window_seconds: float = 0) -> HeartbeatRuntime:
         drain_reason=lambda: "",
         idle_window_seconds=idle_window_seconds,
     )
+
+
+def masked(text: str) -> str:
+    entry = os.environ.get(LIVE_ROUTE_ENTRY_ENV, "").strip()
+    return _PROVIDER_KEY.sub("<key>", text.replace(entry, "<entry>") if entry else text)
+
+
+def _return_summary(content: object) -> dict[str, object]:
+    if isinstance(content, dict):
+        return {"keys": sorted(content), "error": content.get("error"), "receipt_outcome": content.get("outcome")}
+    if isinstance(content, str):
+        return {"text": content[:_TEXT_EXCERPT]}
+    if isinstance(content, list):
+        return {"count": len(content)}
+    return {"type": type(content).__name__}
+
+
+def tool_trail(thread: Sequence[ModelMessage] | None) -> list[dict[str, object]]:
+    trail: list[dict[str, object]] = []
+    for message in thread or ():
+        for part in message.parts:
+            if isinstance(part, ToolCallPart) and isinstance(message, ModelResponse):
+                args = part.args_as_dict()
+                call: dict[str, object] = {"call": part.tool_name, "arg_keys": sorted(args)}
+                if part.tool_name == "Bash":
+                    call["command"] = args.get("command")
+                trail.append(call)
+            elif isinstance(part, ToolReturnPart) and isinstance(message, ModelRequest):
+                trail.append({"return": part.tool_name, "outcome": part.outcome, **_return_summary(part.content)})
+            elif isinstance(part, RetryFeedbackPart):
+                trail.append({"retry_feedback": str(part.content)[:_TEXT_EXCERPT]})
+    return trail
+
+
+def _described(error: BaseException | None) -> str | None:
+    return None if error is None else f"{type(error).__name__}: {str(error)[:300]}"
+
+
+class Evidence:
+    """One node's evidence line, written on exit whether the node passed, failed or raised."""
+
+    def __init__(self, node: str, *, model: str) -> None:
+        self.node = node
+        self.model = model
+        self.outcome: HarnessOutcome | BaseException | None = None
+        self.facts: dict[str, object] = {}
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        sys.stdout.write(masked(json.dumps(self.line(exc), sort_keys=True, default=str)) + "\n")
+        sys.stdout.flush()
+
+    def line(self, failure: BaseException | None) -> dict[str, object]:
+        outcome = self.outcome if isinstance(self.outcome, HarnessOutcome) else None
+        result = outcome.result_message if outcome is not None else None
+        return {
+            "node": self.node,
+            "model": self.model,
+            "request_count": result.num_turns if result is not None else None,
+            "cost_usd": result.total_cost_usd if result is not None else None,
+            "paused": outcome.paused if outcome is not None else None,
+            "tool_calls": outcome.tool_calls if outcome is not None else None,
+            "tool_trail": tool_trail(outcome.thread) if outcome is not None else [],
+            "drive_error": _described(self.outcome if isinstance(self.outcome, BaseException) else None),
+            "failure": _described(failure),
+            **self.facts,
+        }
+
+
+async def gather_settled[T, U](
+    first: Awaitable[T], second: Awaitable[U]
+) -> tuple[T | BaseException, U | BaseException]:
+    return await asyncio.gather(first, second, return_exceptions=True)
+
+
+class Operator:
+    """A background actor that waits for a live condition, with a deadline and a stop signal."""
+
+    def __init__(self, act: Callable[["Operator"], None]) -> None:
+        self.seen: dict[str, Any] = {}
+        self._drive_ended = threading.Event()
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-operator")
+        self._future = pool.submit(act, self)
+        pool.shutdown(wait=False)
+
+    def wait_for(self, ready: Callable[[], bool], *, what: str) -> bool:
+        deadline = time.monotonic() + OPERATOR_DEADLINE_SECONDS
+        while not ready():
+            if self._drive_ended.wait(0.1):
+                self.seen["error"] = f"drive ended before {what}"
+                return False
+            if time.monotonic() >= deadline:
+                self.seen["error"] = f"{what} never happened"
+                return False
+        return True
+
+    def stop(self) -> None:
+        self._drive_ended.set()
+
+    def finish(self) -> dict[str, Any]:
+        self.stop()
+        done, _ = wait([self._future], timeout=OPERATOR_JOIN_SECONDS)
+        assert "error" not in self.seen, self.seen
+        assert done, "operator is still running past its deadline"
+        self._future.result()
+        return self.seen

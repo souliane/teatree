@@ -1,10 +1,10 @@
 """Opt-in router proof that a live provider sees admitted peer input."""
 
 import asyncio
-import json
 import os
-import sys
 import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -16,7 +16,7 @@ from django.test import TestCase
 from teatree.agents import pydantic_ai_config
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.live_client import LiveClient
+from teatree.agents.live_client import LiveClient, LiveOfflineError
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.agents.runner_heartbeat import drive_with_heartbeat
@@ -24,10 +24,36 @@ from teatree.agents.runner_stream import HarnessOutcome
 from teatree.core.models import Session, Task
 from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
-from tests.integration.live_control.live_pydantic import live_runtime, resolve_live_route
-from tests.teatree_agents.test_live_control_integration import _until as wait_until
+from tests.integration.live_control.live_pydantic import Evidence, Operator, live_runtime, resolve_live_route
 
 _NONCE = "PINEAPPLE-MAILBOX-NONCE"
+
+
+class _RequestGate:
+    """Holds the first provider request open so a peer message is admitted before it is answered."""
+
+    def __init__(self) -> None:
+        self.first_request = threading.Event()
+        self.release = threading.Event()
+        self.bodies: list[str] = []
+
+    async def observe(self, request: httpx.Request) -> None:
+        self.bodies.append(request.content.decode())
+        if len(self.bodies) == 1:
+            self.first_request.set()
+            await asyncio.to_thread(self.release.wait, 20)
+
+    @contextmanager
+    def installed(self) -> Generator[None]:
+        original_client = pydantic_ai_config.DefaultAsyncHttpxClient
+
+        def observing_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            hooks = dict(kwargs.pop("event_hooks", {}))
+            hooks["request"] = [self.observe]
+            return original_client(*args, event_hooks=hooks, **kwargs)
+
+        with patch.object(pydantic_ai_config, "DefaultAsyncHttpxClient", observing_client):
+            yield
 
 
 @pytest.mark.integration
@@ -51,26 +77,11 @@ class LivePydanticNonceTests(TestCase):
         broker = shared_broker()
         sender = broker.register(room=str(ticket.pk), harness="claude_sdk", label="live-sender")
         client = MailboxClient(sender.socket_path, sender.token)
-        first_request = threading.Event()
-        release_request = threading.Event()
-        requests: list[str] = []
+        gate = _RequestGate()
         receipt: dict[str, Any] = {}
 
-        async def observe(request: httpx.Request) -> None:
-            requests.append(request.content.decode())
-            if len(requests) == 1:
-                first_request.set()
-                await asyncio.to_thread(release_request.wait, 20)
-
         async def run() -> HarnessOutcome:
-            original_client = pydantic_ai_config.DefaultAsyncHttpxClient
-
-            def observing_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-                hooks = dict(kwargs.pop("event_hooks", {}))
-                hooks["request"] = [observe]
-                return original_client(*args, event_hooks=hooks, **kwargs)
-
-            with patch.object(pydantic_ai_config, "DefaultAsyncHttpxClient", observing_client):
+            with gate.installed():
                 harness = GuardedHarness(
                     harness=PydanticAiHarness(config=self.route, phase="coding"),
                     guard=CompactionGuard(),
@@ -84,9 +95,15 @@ class LivePydanticNonceTests(TestCase):
                     runtime=live_runtime(),
                 )
 
-        def operator() -> None:
+        def one_pending_input() -> bool:
             try:
-                if not first_request.wait(60):
+                return LiveClient().inspect(task.pk)["pending_inputs"] == 1
+            except LiveOfflineError:
+                return False
+
+        def send_while_first_request_waits(operator: Operator) -> None:
+            try:
+                if not operator.wait_for(gate.first_request.is_set, what="first provider request"):
                     return
                 peers = asyncio.run(client.peers())
                 recipient = next(peer for peer in peers if peer["ticket"] == str(ticket.pk))
@@ -97,29 +114,31 @@ class LivePydanticNonceTests(TestCase):
                     daemon=True,
                 )
                 sending.start()
-                wait_until(lambda: LiveClient().inspect(task.pk)["pending_inputs"] == 1, "pending live input")
-                release_request.set()
+                if operator.wait_for(one_pending_input, what="pending live input"):
+                    gate.release.set()
                 sending.join(timeout=30)
             finally:
-                release_request.set()
+                gate.release.set()
 
-        thread = threading.Thread(target=operator, daemon=True)
-        thread.start()
-        try:
-            outcome = asyncio.run(run())
-            thread.join(timeout=35)
-            evidence = {
-                "receipt": receipt,
-                "request_count": len(requests),
-                "nonce_request_indexes": [index for index, body in enumerate(requests) if _NONCE in body],
-                "result_subtype": outcome.result_message.subtype if outcome.result_message else None,
-            }
-            sys.stdout.write(json.dumps(evidence, sort_keys=True) + "\n")
+        outcome: HarnessOutcome | None = None
+        with Evidence("nonce", model=self.route.backend.model) as evidence:
+            operator = Operator(send_while_first_request_waits)
+            try:
+                outcome = asyncio.run(run())
+                evidence.outcome = outcome
+                operator.finish()
+            finally:
+                operator.stop()
+                gate.release.set()
+                evidence.facts.update(
+                    receipt=receipt,
+                    request_count=len(gate.bodies),
+                    nonce_request_indexes=[index for index, body in enumerate(gate.bodies) if _NONCE in body],
+                    result_subtype=outcome.result_message.subtype if outcome and outcome.result_message else None,
+                )
+                broker.unregister(sender.address)
             assert receipt["outcome"] == "accepted_current_turn"
             assert receipt["queued_in_inbox"] is True
-            assert len(requests) >= 2
-            assert _NONCE not in requests[0]
-            assert requests[1].count(_NONCE) == 1
-        finally:
-            release_request.set()
-            broker.unregister(sender.address)
+            assert len(gate.bodies) >= 2
+            assert _NONCE not in gate.bodies[0]
+            assert gate.bodies[1].count(_NONCE) == 1
