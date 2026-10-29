@@ -25,6 +25,9 @@ shows divergent overrides with that context and flags rows below a floor;
 Review and critic child environments mark their phase, and the settings write paths
 refuse canonical database writes while that marker is present; verification scripts
 that change settings must use a private test database.
+The 24-hour watchdog default requires a 48-hour claim drive-marker grace (twice the
+watchdog window); after a hard kill, a reused process id can delay reclaim for up to
+that grace. The in-session claim lease remains three hours.
 `config_setting set` and `clear` print the previous value from the audit row
 so an operator can restore the prior override.
 

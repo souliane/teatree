@@ -11,6 +11,8 @@ from django.test import TestCase, override_settings
 from teatree.config.db_router import CONFIG_DB_ALIAS, PINNED_MODEL_LABELS
 from teatree.config.enums import Autonomy
 from teatree.core.models import ConfigSetting, ConfigSettingChange
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from tests._loop_principal_env import pinned_loop_principal
 
 
 class TestConfigSettingChange(TestCase):
@@ -70,7 +72,7 @@ class TestConfigSettingChange(TestCase):
     def test_unattended_clear_cannot_remove_a_governed_setting(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", authorized_by="operator")
         with (
-            patch("teatree.core.models.config_setting.is_unattended_unauthorized_write", return_value=True),
+            pinned_loop_principal(LOOP_RUNNER_SESSION_ID),
             pytest.raises(ValidationError, match="not an unattended write"),
         ):
             ConfigSetting.objects.clear("autonomy")
@@ -101,7 +103,7 @@ class TestConfigSettingChange(TestCase):
         assert ConfigSettingChange.objects.filter(key="autonomy").count() == 1
 
     def test_a_write_without_session_identity_names_the_missing_attribution(self) -> None:
-        with patch("teatree.core.models.config_setting.loop_principal", return_value=("", "")):
+        with pinned_loop_principal():
             ConfigSetting.objects.set_value("agent_max_turns", 1000)
         assert ConfigSettingChange.objects.get(key="agent_max_turns").written_by == "unattributed"
 

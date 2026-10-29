@@ -79,9 +79,9 @@ class TestValidateConfigWrite:
     @pytest.mark.parametrize(
         ("key", "minimum"),
         [
-            ("agent_max_turns", 1000),
+            ("agent_max_turns", 300),
             ("pydantic_ai_request_limit", 300),
-            ("watchdog_max_turns", 1000),
+            ("watchdog_max_turns", 300),
             ("watchdog_max_runtime_seconds", 21600),
             ("watchdog_max_cost_usd", 30),
             ("ticket_budget_max_cost_usd", 60),

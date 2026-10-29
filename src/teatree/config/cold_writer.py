@@ -161,13 +161,9 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
             if _audit_table_present(conn):
                 now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
                 old_value = json.loads(previous[0]) if previous else None
-                old_json = (
-                    json.dumps(MASKED)
-                    if old_value is not None and withholds_value(key, old_value)
-                    else previous[0]
-                    if previous
-                    else None
-                )
+                old_json = previous[0] if previous else None
+                if old_value is not None and withholds_value(key, old_value):
+                    old_json = json.dumps(MASKED)
                 new_json = json.dumps(MASKED if withholds_value(key, value) else value)
                 conn.execute("SAVEPOINT audit_row")
                 try:

@@ -13,7 +13,6 @@ currently indistinguishable from an intended one — that is the whole finding.
 
 import io
 from contextlib import redirect_stdout
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import OperationalError
@@ -128,13 +127,12 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
             message = "no audit table"
             raise OperationalError(message)
 
-        audit = SimpleNamespace(objects=SimpleNamespace(order_by=unavailable, filter=unavailable))
         with (
             patch(
                 "teatree.cli.doctor.checks_config_drift.declared_defaults",
                 return_value={"issue_implementer_label": "t3-auto"},
             ),
-            patch("teatree.cli.doctor.checks_config_drift.apps.get_model", return_value=audit),
+            patch("teatree.cli.doctor.checks_config_drift.ConfigSettingChange.objects.filter", side_effect=unavailable),
         ):
             out = _run()
         assert "issue_implementer_label" in out

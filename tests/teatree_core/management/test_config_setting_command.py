@@ -111,8 +111,10 @@ class TestConfigSettingSet(TestCase):
         with pytest.raises(SystemExit) as caught:
             call_command("config_setting", "set", "agent_max_turns", "9", stderr=err)
         assert caught.value.code == 2
-        assert "at least 1000" in err.getvalue()
+        assert "at least 300" in err.getvalue()
         assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
+        call_command("config_setting", "set", "agent_max_turns", "300")
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 300
         call_command("config_setting", "set", "agent_max_turns", "1000")
         assert ConfigSetting.objects.get_effective("agent_max_turns") == 1000
         call_command("config_setting", "set", "agent_max_turns", "0")

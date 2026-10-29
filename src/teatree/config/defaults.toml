@@ -69,7 +69,7 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_max_turns = 3000 # int, 0 or at least 1000 — turn ceiling for one agent run
+agent_max_turns = 3000 # int, 0 or at least 300 — turn ceiling for one agent run
 agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
@@ -87,7 +87,7 @@ subagent_spawn_ceiling = 20 # int, 0 or at least 2 — sub-agents one dispatch m
 ticket_budget_max_cost_usd = 0.0 # float, 0 or at least 60 — dollars one ticket may cost before it is halted
 watchdog_max_cost_usd = 0.0 # float, 0 or at least 30 — dollars a watched run may spend before the watchdog stops it
 watchdog_max_runtime_seconds = 86400 # int, 0 or at least 21600 — seconds a watched run may take before the watchdog stops it
-watchdog_max_turns = 0 # int, 0 or at least 1000 — turns a watched run may take before the watchdog stops it
+watchdog_max_turns = 0 # int, 0 or at least 300 — turns a watched run may take before the watchdog stops it
 
 [teatree.Loops."Cadence & throughput"]
 loop_cadence_seconds = 720 # int — default seconds between ticks of a loop that declares none

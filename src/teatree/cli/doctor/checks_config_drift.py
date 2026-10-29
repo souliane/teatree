@@ -20,10 +20,8 @@ NAMED, with the shipped value beside the stored one so the reader can judge in o
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
 
 import typer
-from django.apps import apps
 from django.db import DatabaseError
 from django.utils import timezone
 
@@ -31,9 +29,7 @@ from teatree.config.declared_defaults import declared_defaults
 from teatree.config.overlay_scope import unhonourable_overlay_scope_reason
 from teatree.config.setting_registries import SETTING_BOUNDS
 from teatree.core.config_display import masked_display
-
-if TYPE_CHECKING:
-    from teatree.core.models import ConfigSetting, ConfigSettingChange
+from teatree.core.models import ConfigSetting, ConfigSettingChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,13 +72,11 @@ def drifted_settings(
     )
 
 
-def _stored_rows() -> list["ConfigSetting"]:
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM needs the app registry
-
+def _stored_rows() -> list[ConfigSetting]:
     return list(ConfigSetting.objects.all().order_by("key", "scope"))
 
 
-def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSettingChange | None") -> str:
+def _finding_line(drift: DriftedSetting, row: ConfigSetting, change: ConfigSettingChange | None) -> str:
     """One advisory line — key, scope, stored value, shipped value, both mask-safe.
 
     A drifted SECRET still has to surface: a stale secret row is exactly as misleading as any
@@ -136,10 +130,9 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
         if not drifted:
             return
         coordinates = {(row.key, row.scope): row for row in rows}
-        change_model = cast("type[ConfigSettingChange]", apps.get_model("core", "ConfigSettingChange"))
         latest: dict[tuple[str, str], ConfigSettingChange] = {}
         try:
-            for change in change_model.objects.filter(key__in={drift.key for drift in drifted}).order_by(
+            for change in ConfigSettingChange.objects.filter(key__in={drift.key for drift in drifted}).order_by(
                 "-changed_at", "-pk"
             ):
                 latest.setdefault((change.key, change.scope), change)

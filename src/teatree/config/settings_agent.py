@@ -254,7 +254,7 @@ class _ModeHarnessSettings:
         spec=SettingSpec(
             help="turns a watched run may take before the watchdog stops it",
             parse=_parse_strict_int,
-            bounds=Bounds(1000, zero_disables=True, why="a smaller cap can strand a run"),
+            bounds=Bounds(300, zero_disables=True, why="a smaller cap can strand a run"),
         ),
     )
     watchdog_max_cost_usd: float = setting(
@@ -314,6 +314,6 @@ class _ModeHarnessSettings:
         spec=SettingSpec(
             help="turn ceiling for one agent run",
             parse=_parse_strict_int,
-            bounds=Bounds(1000, zero_disables=True, why="a smaller cap can strand a run"),
+            bounds=Bounds(300, zero_disables=True, why="a smaller cap can strand a run"),
         ),
     )

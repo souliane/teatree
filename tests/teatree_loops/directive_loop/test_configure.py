@@ -10,7 +10,9 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 from teatree.loops.directive_loop.configure import Activation, apply_activation, clear_activation
+from tests._loop_principal_env import pinned_loop_principal
 from tests._owner_channel import answer_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
@@ -78,6 +80,15 @@ class TestApplyActivation(TestCase):
 
 
 class TestClearActivation(TestCase):
+    def test_unattended_rollback_clears_a_ratified_governed_activation(self) -> None:
+        directive = _admitted(
+            setting_key="autonomy", setting_type="str", neutral_default="babysit", activation_value="notify"
+        )
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID):
+            assert apply_activation(directive).applied is True
+            assert clear_activation(directive) is True
+        assert ConfigSetting.objects.get_effective("autonomy", scope=_SCOPE) is None
+
     def test_clear_rolls_back_the_row(self) -> None:
         directive = _admitted()
         apply_activation(directive)
