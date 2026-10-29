@@ -11,14 +11,10 @@ nothing to do is silent by design: the loop exists to reduce what the owner read
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +23,6 @@ _LOOP_NAME = "dm_sweep"
 
 @dataclass(slots=True)
 class DmSweepScanner:
-    backend: "MessagingBackend | None" = None
     name: str = "dm_sweep"
 
     def scan(self) -> list[ScanSignal]:

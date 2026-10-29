@@ -2,16 +2,43 @@
 
 import asyncio
 import logging
+import threading
+from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_control import PeerIdentity
+from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
-from teatree.core.models import NoPlanArtifactError
+from teatree.core.models import NoPlanArtifactError, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_handoff import schedule_card_discussion
+from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, CardThreadStop, UnmatchedCardThread
 from teatree.loop.slack_answer.coalescing import _Unit
+from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
+
+if TYPE_CHECKING:
+    from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 logger = logging.getLogger(__name__)
+_SENDER_LOCK = threading.Lock()
+_SENDERS: WeakKeyDictionary[live_mailbox.LiveMailboxBroker, tuple[MailboxIdentity, set[str]]] = WeakKeyDictionary()
+
+
+def _router_sender(broker: live_mailbox.LiveMailboxBroker, key: str) -> MailboxIdentity:
+    state = _SENDERS.get(broker)
+    if (
+        state is None
+        or broker.identity_of(state[0].address) is None
+        or (len(state[1]) >= MAX_SENT_KEYS // 2 and key not in state[1])
+    ):
+        replacement = broker.register(room="0", harness="card_router", label="card discussion router")
+        if state is not None:
+            broker.unregister(state[0].address)
+        state = (replacement, set())
+        _SENDERS[broker] = state
+    state[1].add(key)
+    return state[0]
 
 
 def _responsible_ticket(row: DeferredQuestion) -> int | None:
@@ -103,25 +130,41 @@ def _resume_responsible_task(row: DeferredQuestion, unit: _Unit) -> bool:
 
 def route_card_discussion(row: DeferredQuestion, unit: _Unit) -> bool:
     """Deliver one free-text reply without resolving the question or posting a canned refusal."""
+    key = f"card-discussion:{unit.overlay}:{unit.channel}:{unit.slack_ts}"
     try:
         broker = live_mailbox.shared_broker()
-        identity = broker.register(room="0", harness="orchestrator", label="card discussion router")
-    except (OSError, RuntimeError, ValueError):
-        logger.warning("Card %s discussion mailbox is unavailable", row.pk, exc_info=True)
-        return _resume_responsible_task(row, unit)
-    try:
-        accepted, peer_found = asyncio.run(
-            _send(
-                MailboxClient(identity.socket_path, identity.token),
-                ticket_id=_responsible_ticket(row),
-                parked_task_id=row.parked_task_id,
-                message=_message(row, unit),
-                key=f"card-discussion:{unit.overlay}:{unit.channel}:{unit.slack_ts}",
+        with _SENDER_LOCK:
+            identity = _router_sender(broker, key)
+            accepted, _peer_found = asyncio.run(
+                _send(
+                    MailboxClient(identity.socket_path, identity.token),
+                    ticket_id=_responsible_ticket(row),
+                    parked_task_id=row.parked_task_id,
+                    message=_message(row, unit),
+                    key=key,
+                )
             )
-        )
-        return accepted or (not peer_found and _resume_responsible_task(row, unit))
-    except (MailboxError, OSError, RuntimeError):
+        return accepted or _resume_responsible_task(row, unit)
+    except (MailboxError, OSError, RuntimeError, ValueError):
         logger.warning("Card %s discussion was not accepted by a live peer", row.pk, exc_info=True)
         return _resume_responsible_task(row, unit)
-    finally:
-        broker.unregister(identity.address)
+
+
+def route_card_result(
+    unit: _Unit, result: UnmatchedCardThread | AmbiguousCards | BoundAnswer | None, report: "SlackAnswerReport"
+) -> bool:
+    if not isinstance(result, UnmatchedCardThread) or result.reason is not CardThreadStop.OPTIONS_ONLY:
+        return False
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
+        return True
+    try:
+        question = DeferredQuestion.objects.filter(pk=result.question_id).first()
+        routed = question is not None and route_card_discussion(question, unit)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    if not routed:
+        _unmark_unit_loop_replied(unit)
+        return True
+    report.dispatched += 1
+    return True

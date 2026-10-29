@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 #: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
 RESUME_ANSWER_PREFIX = "The user answered your earlier question:"
+CARD_DISCUSSION_PREFIX = "Owner card discussion "
 
 #: What :func:`dispatch_reason` DERIVES: true only while the dispatch actually resumes. Storing it
 #: froze it into the prompt, and a requeue that answered FRESH still told the agent to continue
@@ -143,11 +144,24 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
-    existing = task.child_tasks.filter(
-        status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
-    ).first()
+    existing = (
+        task.child_tasks.filter(
+            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+        )
+        .exclude(execution_reason__startswith=CARD_DISCUSSION_PREFIX)
+        .first()
+    )
     if existing is not None:
         return existing
+    discussion = task.child_tasks.filter(
+        status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
+    ).first()
+    if discussion is not None:
+        discussion.execution_reason = (
+            f"{RESUME_ANSWER_PREFIX} {answer}. The question was: {question}. {discussion.execution_reason}"
+        )
+        discussion.save(update_fields=["execution_reason"])
+        return discussion
     refuse_unplanned_mint(task.ticket, phase=task.phase)
     last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
@@ -170,17 +184,25 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
 
 def schedule_card_discussion(task: Task, *, event_id: str, message: str) -> Task:
     """Queue a continuation to answer one owner message without treating it as a card decision."""
-    marker = f"Owner card discussion {event_id}: "
+    marker = f"{CARD_DISCUSSION_PREFIX}{event_id}: "
     with transaction.atomic():
-        existing = task.child_tasks.filter(execution_reason__startswith=marker).first()
+        existing = task.child_tasks.filter(execution_reason__contains=marker).first()
         if existing is not None:
             return existing
+        pending = task.child_tasks.filter(
+            status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
+        ).first()
+        if pending is not None:
+            pending.execution_reason = f"{pending.execution_reason}\n{marker}{message}"
+            pending.save(update_fields=["execution_reason"])
+            return pending
         refuse_unplanned_mint(task.ticket, phase=task.phase)
         last = task.attempts.order_by("-pk").first()
         agent_session_id = last.agent_session_id if last else ""
         session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
         continuation = Task.SessionContinuation.PARENT
         if last is not None and last.cannot_continue_its_conversation():
+            task.ticket.pop_task_thread(int(task.pk))
             continuation = Task.SessionContinuation.FRESH
         return Task.objects.create(
             ticket=task.ticket,

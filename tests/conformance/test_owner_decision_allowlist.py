@@ -132,7 +132,6 @@ def test_only_the_pinned_call_sites_record_an_owner_card() -> None:
 def test_only_the_pinned_places_build_a_card_and_name_its_kind() -> None:
     built = {(path, function, _kind(call)) for path, function, call in _calls("QuestionCard")}
     assert built == _CARD_KINDS
-    assert not {site for site in built if site[2] == "PRODUCT_SCOPE"}
 
 
 def test_only_the_review_request_sender_asks_the_owner_about_a_merge_request() -> None:

@@ -98,7 +98,11 @@ async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdenti
                 page = await client.wait(after_id=cursor, timeout_seconds=1)
                 peers = await client.peers() if page["messages"] else []
             except MailboxError:
-                return
+                if broker.identity_of(identity.address) is None:
+                    return
+                logger.warning("Orchestrator mailbox read failed; retrying", exc_info=True)
+                await asyncio.sleep(0.1)
+                continue
             cursor = page["next_cursor"]
             for message in page["messages"]:
                 sender = next((peer for peer in peers if peer["address"] == message["from"]), None)
@@ -109,12 +113,14 @@ async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdenti
                     logger.warning("Orchestrator mailbox reply was not accepted", exc_info=True)
                 replies += 1
                 if replies >= MAX_SENT_KEYS // 2:
+                    replacement = broker.register(room="0", harness="orchestrator", label="orchestrator")
                     broker.unregister(identity.address)
-                    identity = broker.register(room="0", harness="orchestrator", label="orchestrator")
+                    identity = replacement
                     client = MailboxClient(identity.socket_path, identity.token)
                     replies = 0
                     logger.info("Orchestrator mailbox identity rotated")
     finally:
+        broker.unregister(identity.address)
         close_thread_db_connections()
 
 

@@ -1,4 +1,9 @@
-from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import (
+    OWNER_QUESTION_ROUTE,
+    OWNER_RAISABLE_DECISIONS,
+    OwnerDecision,
+    owner_decision,
+)
 
 
 class TestOwnerQuestionRoute:
@@ -14,7 +19,8 @@ class TestOwnerQuestionRoute:
         assert "plain English everywhere, quotes included" in OWNER_QUESTION_ROUTE
 
     def test_names_every_kind_and_files_an_access_grant_under_credentials(self) -> None:
-        assert all(kind.value in OWNER_QUESTION_ROUTE for kind in OwnerDecision)
+        assert all(kind.value in OWNER_QUESTION_ROUTE for kind in OWNER_RAISABLE_DECISIONS)
+        assert OwnerDecision.PRODUCT_SCOPE.value not in OWNER_QUESTION_ROUTE
         assert "access or permission grant is credentials" in OWNER_QUESTION_ROUTE
 
 

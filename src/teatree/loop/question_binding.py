@@ -10,8 +10,7 @@ module, so the reply→question join cannot drift between them.
 
 The ladder, strongest evidence first:
 
-(a) an explicit ``#<id>`` prefix — the format the backlog digest already
-instructs the owner to reply in, and which until now nothing parsed — naming a
+(a) an explicit ``#<id>`` prefix naming a
 question mirrored on the reply's own DM;
 (b) the reply's ``thread_ts`` — in a ticket root, the newest recorded post before
 the reply must name a pending card; in an older card thread, two candidate cards
@@ -58,10 +57,11 @@ from teatree.loop.owner_identity import configured_owner_id, is_the_owner
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
 
-# The digest's instructed form, ``#<id> <your answer>``. At least one separator
+# The addressed form, ``#<id> <your answer>``. At least one separator
 # is required so ``#12abc`` is not read as question 12 answered "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
+_EXPLICIT_ANSWER_RE = re.compile(r"^\s*answer:\s*(\S(?:.*\S)?)\s*$", re.IGNORECASE | re.DOTALL)
 OPTION_ACTION_PREFIX = "owner-question-option-"
 _READS_AS_QUESTION = "the text reads as a question"
 logger = logging.getLogger(__name__)
@@ -83,7 +83,6 @@ class AmbiguousCards:
 
 
 class CardThreadStop(StrEnum):
-    TAPS_ONLY = "the card takes taps only"
     CLOSED = "no pending card in this thread"
     NOT_WAITING = "the named question is not waiting"
     OPTIONS_ONLY = "the reply does not match a card option"
@@ -260,6 +259,13 @@ def answer_from_click(
     return False
 
 
+def _owner_free_text_answer(text: str) -> str | None:
+    explicit = _EXPLICIT_ANSWER_RE.match(text)
+    if explicit is not None:
+        return explicit.group(1)
+    return text if text.strip().casefold() in {"yes", "no", "approve", "decline"} else None
+
+
 def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundReader) -> str | None:
     """Map a reply body to the answer to apply, or ``None`` when it is not one.
 
@@ -267,27 +273,23 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     live option set: a mismatch returns ``None`` (stale — no wrong-label
     application) so the reply is left for the ordinary DM path; a matching hash
     with ``N`` in range maps to ``options[N-1].label``. An out-of-range digit
-    is applied as typed only for questions without recorded owner-card options.
+    is applied as typed only for non-owner questions without recorded options.
 
     A free-text body used to be applied as typed, which meant a message that was
     itself a QUESTION got consumed as the answer to the pending one, claimed, and
     reacted ✅ — the owner's question answered by nobody and marked handled. So a
     non-digit body on other questions is READ first, and an interrogative one
     returns ``None``: it is left to the reactive cycle, which answers it or dispatches it. Owner
-    option cards accept only recorded labels without a model read. The asymmetry
+    option cards accept only recorded labels without a model read; an optionless
+    owner card requires ``Answer:`` or a short explicit decision word. The asymmetry
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
-    if (
-        not text.strip()
-        or is_action_question(question)
-        or (
-            question.audience == DeferredQuestion.Audience.OWNER_QUESTION
-            and not _recorded_options(question)
-            and text.strip().casefold() not in {"yes", "no", "approve", "decline"}
-        )
-    ):
+    if not text.strip() or is_action_question(question):
         return None
+    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and not _recorded_options(question):
+        return _owner_free_text_answer(text)
+    answer: str | None
     match = _DIGIT_RE.match(text)
     if match is None:
         options = _recorded_options(question) or []
@@ -309,7 +311,8 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
         answer = str(options[index - 1].get("label", "")) or text if 1 <= index <= len(options) else text
     if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and _recorded_options(question):
         labels = {str(option.get("label", "")) for option in _recorded_options(question) or []}
-        return answer if answer in labels else None
+        if answer not in labels:
+            answer = None
     return answer
 
 
@@ -432,10 +435,7 @@ def _ordinary_thread_cards(
         return pending[0], key
     if len(all_pending) == 1:
         return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, all_pending[0].pk)
-    taps_only = any(card.is_pending for card in matched)
-    return (
-        UnmatchedCardThread(CardThreadStop.TAPS_ONLY if taps_only else CardThreadStop.CLOSED) if matched else (None, "")
-    )
+    return UnmatchedCardThread(CardThreadStop.CLOSED) if matched else (None, "")
 
 
 def _recorded_options(question: DeferredQuestion) -> list[dict] | None:

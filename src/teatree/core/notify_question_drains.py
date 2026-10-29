@@ -159,7 +159,7 @@ def _question_pings_left() -> int:
 
 
 def owner_quiet_now() -> bool:
-    """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
+    """Whether it is 22:00-08:00 in the owner's zone — when re-asks are held."""
     return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
 
 

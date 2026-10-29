@@ -48,7 +48,7 @@ _NO_OPTIONS_TEXT = """\
 Can I archive the old widget logs?
 They take space and nobody reads them.
 
-Reply in this thread.
+Reply here to discuss; write Answer: followed by your decision to close this card.
 ref: question {ref}"""
 
 _DRAFT_TEXT = """\
@@ -273,7 +273,10 @@ class TestLayoutProperties(TestCase):
                 assert word_count(text) <= 120
                 for banned in ("deferred", "Pending question", "typed reply", "What I checked", "What blocks me"):
                     assert banned.lower() not in text.lower(), banned
-                assert lines[-2] in {"Or reply in this thread.", "Reply in this thread."}
+                assert lines[-2] in {
+                    "Or reply in this thread.",
+                    "Reply here to discuss; write Answer: followed by your decision to close this card.",
+                }
                 assert lines[-1] == f"ref: question {row.pk}"
                 options = [line for line in lines if re.match(r"^\[.+\]( \(recommended\))? - ", line)]
                 buttons = [e for b in blocks if b["type"] == "actions" for e in b["elements"]]

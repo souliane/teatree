@@ -21,7 +21,14 @@ OWNER_RAISABLE_DECISIONS = (
     OwnerDecision.IRREVERSIBLE,
     OwnerDecision.ARCHITECTURE,
 )
-OWNER_KEPT_DECISIONS = frozenset(OWNER_RAISABLE_DECISIONS[:-1])
+OWNER_KEPT_DECISIONS = frozenset(
+    {
+        OwnerDecision.CREDENTIALS,
+        OwnerDecision.MONEY_OR_PLAN,
+        OwnerDecision.PUBLIC_POST,
+        OwnerDecision.IRREVERSIBLE,
+    }
+)
 HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 
 
@@ -40,8 +47,9 @@ OWNER_QUESTION_ROUTE = (
 )
 
 OWNER_ANSWER_ROUTE = (
-    "an owner answer arrives in its Slack thread; an agent may dismiss a settled scope or architecture card "
-    "with `t3 <overlay> questions dismiss <id> --reason '<evidence>'`; hard-limit decisions stay with the owner."
+    "an owner answer arrives in its Slack thread; an attended coordinator may dismiss a settled architecture card "
+    "with `t3 <overlay> questions dismiss <id> --reason '<evidence>'`; "
+    "a dispatched agent cannot dismiss a live owner card."
 )
 
 

@@ -2,6 +2,7 @@ import asyncio
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 from contextlib import closing
 from datetime import timedelta
@@ -13,8 +14,9 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 
 from teatree.agents import live_orchestrator
+from teatree.agents.live_delivery import InboxPage
 from teatree.agents.live_mailbox import LiveMailboxBroker
-from teatree.agents.live_mailbox_client import MailboxClient
+from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.agents.live_orchestrator import start_orchestrator_peer
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session
@@ -99,6 +101,35 @@ class TestLiveOrchestrator(TransactionTestCase):
             peer.join(timeout=3)
         assert not peer.is_alive()
 
+    def test_transient_broker_error_keeps_the_peer_available(self) -> None:
+        ticket = planned_ticket()
+        original_wait = MailboxClient.wait
+        failed = threading.Event()
+
+        async def fail_once_for_orchestrator(
+            client: MailboxClient, *, after_id: int = 0, timeout_seconds: float = 20
+        ) -> InboxPage:
+            if threading.current_thread().name.startswith("t3-orchestrator") and not failed.is_set():
+                failed.set()
+                message = "transient"
+                raise MailboxError(message)
+            return await original_wait(client, after_id=after_id, timeout_seconds=timeout_seconds)
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
+            LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(MailboxClient, "wait", fail_once_for_orchestrator),
+        ):
+            peer = start_orchestrator_peer(broker)
+            assert failed.wait(timeout=2)
+            asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
+            address = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
+            answer = self._ask(MailboxClient(asker.socket_path, asker.token), address, "after-error", "architecture")
+            assert answer["answer_to"] == "after-error"
+            broker.unregister(address)
+            peer.join(timeout=3)
+            assert not peer.is_alive()
+
     def test_hard_limit_and_malformed_ask_do_not_create_cards(self) -> None:
         ticket = planned_ticket()
         DeferredQuestion.objects.create(
@@ -182,7 +213,14 @@ class TestLiveOrchestrator(TransactionTestCase):
             self._ask(client, first, "one", "architecture")
             self._ask(client, first, "two", "architecture")
             for _ in range(50):
-                second = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
+                second = next(
+                    (
+                        p["address"]
+                        for p in broker.identities()
+                        if p["harness"] == "orchestrator" and p["address"] != first
+                    ),
+                    first,
+                )
                 if second != first:
                     break
                 time.sleep(0.01)

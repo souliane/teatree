@@ -722,7 +722,7 @@
           "name": "dm"
         },
         {
-          "help": "",
+          "help": "Post a deduped answer in the owner's existing Slack thread",
           "name": "reply"
         },
         {

@@ -62,13 +62,11 @@ from teatree.loop.owner_identity import owner_rows
 from teatree.loop.question_binding import (
     AmbiguousCards,
     BoundAnswer,
-    CardThreadStop,
-    UnmatchedCardThread,
     apply_bound_answer,
     bind_reply,
     log_coalesced_replies,
 )
-from teatree.loop.slack_answer.card_discussion import route_card_discussion
+from teatree.loop.slack_answer.card_discussion import route_card_result
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
@@ -440,21 +438,6 @@ def _handle_priority(
     return False
 
 
-def _route_card_result(
-    unit: _Unit, result: UnmatchedCardThread | AmbiguousCards | BoundAnswer | None, report: SlackAnswerReport
-) -> bool:
-    if not isinstance(result, UnmatchedCardThread) or result.reason is not CardThreadStop.OPTIONS_ONLY:
-        return False
-    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
-        return True
-    question = DeferredQuestion.objects.filter(pk=result.question_id).first()
-    if question is None or not route_card_discussion(question, unit):
-        _unmark_unit_loop_replied(unit)
-        return True
-    report.dispatched += 1
-    return True
-
-
 def _process_unit(
     backend: MessagingBackend,
     unit: _Unit,
@@ -482,7 +465,7 @@ def _process_unit(
         if _handle_simple(backend, unit, binding) == "simple":
             report.answered_simple += 1
         return
-    if _route_card_result(unit, result, report) or (
+    if route_card_result(unit, result, report) or (
         isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result)
     ):
         return

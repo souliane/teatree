@@ -24,7 +24,7 @@ MIN_OPTIONS = 2
 MAX_OPTIONS = 4
 
 REPLY_LINE = "Or reply in this thread."
-REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
+REPLY_LINE_WITHOUT_OPTIONS = "Reply here to discuss; write Answer: followed by your decision to close this card."
 TAP_LINE = "Tap an option above."
 
 _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)

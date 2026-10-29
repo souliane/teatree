@@ -8,6 +8,7 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.task_handoff import schedule_resume
@@ -22,6 +23,7 @@ def eligible_for_coordination(row: DeferredQuestion) -> bool:
         and row.audience == DeferredQuestion.Audience.OWNER_QUESTION
         and card is not None
         and card.decision == OwnerDecision.ARCHITECTURE
+        and not is_action_question(row)
         and not card.problems(row.question)
         and finished_subject_reason(row) is None
     )
@@ -65,7 +67,12 @@ def _basis_matches(row: DeferredQuestion, basis: DeferredQuestion) -> bool:
         return False
     if basis_card.decision is not OwnerDecision.ARCHITECTURE or basis_card.problems(basis.question):
         return False
-    return row_card.checked == basis_card.checked and row_card.subject == basis_card.subject
+    return (
+        not is_action_question(basis)
+        and row.dedupe_marker == basis.dedupe_marker
+        and row_card.checked == basis_card.checked
+        and row_card.subject == basis_card.subject
+    )
 
 
 def coordinate_answer(row: DeferredQuestion, basis: DeferredQuestion, answer: str) -> DeferredQuestion | None:
@@ -103,5 +110,7 @@ def coordinate_pending(rows: list[DeferredQuestion]) -> list[DeferredQuestion]:
             logger.warning("Could not coordinate question %s; owner card remains pending", row.pk, exc_info=True)
             coordinated = False
         if not coordinated:
-            live.append(row)
+            row.refresh_from_db()
+            if row.is_pending:
+                live.append(row)
     return live

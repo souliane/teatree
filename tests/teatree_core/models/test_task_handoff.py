@@ -33,6 +33,7 @@ from teatree.core.models.task_handoff import (
     record_deferred_question,
     release_operator_pause,
     resume_on_answer,
+    schedule_card_discussion,
     schedule_resume,
 )
 from tests._owner_channel import OWNER_CARD, owner_stop
@@ -315,6 +316,23 @@ class TestResumeNeedsAPlan(TestCase):
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
 
         assert schedule_resume(parked, answer="scope it to X").phase == "planning"
+
+
+class TestCardDiscussionContinuation(TestCase):
+    def test_multiple_messages_and_later_answer_reach_one_pending_child(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        first = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        duplicate = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        second = schedule_card_discussion(parked, event_id="two", message="Explain the exception")
+        answered = schedule_resume(parked, answer="Approve", question="Change the rule?")
+
+        assert first.pk == duplicate.pk == second.pk == answered.pk
+        assert parked.child_tasks.count() == 1
+        assert "Show me the rule" in answered.execution_reason
+        assert "Explain the exception" in answered.execution_reason
+        assert "Approve" in answered.execution_reason
 
 
 class TestAnOwnerActionCardResumesNothing(TestCase):

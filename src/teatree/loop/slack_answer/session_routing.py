@@ -253,7 +253,6 @@ def _choice_reply(
 
 
 _STOP_MESSAGES = {
-    CardThreadStop.TAPS_ONLY: "This card needs a button tap. Please choose an option on the card.",
     CardThreadStop.CLOSED: "This card is no longer waiting for an answer. Please reply to a current card.",
     CardThreadStop.NOT_WAITING: "Question #{question_id} is no longer waiting. Please reply to a current card.",
     CardThreadStop.OPTIONS_ONLY: "This card accepts an option reply: {options}.",

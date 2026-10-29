@@ -92,6 +92,38 @@ class TestQuestionCoordinator(TestCase):
         assert total == 1
         assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
 
+    def test_action_card_is_not_answered_from_another_owner_action(self) -> None:
+        question = "May I waive this merge item?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        basis.evidence = {
+            **basis.evidence,
+            "action": {"kind": "merge_item_waiver", "target": "first", "binding": "one"},
+        }
+        basis.save(update_fields=["evidence"])
+        assert basis.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=owner_card())
+        pending.evidence = {
+            **pending.evidence,
+            "action": {"kind": "merge_item_waiver", "target": "second", "binding": "two"},
+        }
+        pending.save(update_fields=["evidence"])
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+
+    def test_distinct_producer_markers_do_not_share_an_owner_answer(self) -> None:
+        question = "May I lift the override?"
+        basis = DeferredQuestion.record(question, card=owner_card(), dedupe_marker="override-lift:first")
+        assert basis.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=owner_card(), dedupe_marker="override-lift:second")
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+
     def test_database_read_failure_leaves_card_pending_and_logs(self) -> None:
         pending = DeferredQuestion.record("Should we adopt the new dependency?", card=owner_card())
 
@@ -104,6 +136,22 @@ class TestQuestionCoordinator(TestCase):
         assert total == 1
         assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
         assert "owner card remains pending" in captured.output[0]
+
+    def test_answer_committed_before_a_lost_result_is_not_mirrored(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=owner_card())
+        original_apply = DeferredQuestion.apply_answer
+
+        def commit_without_result(row: DeferredQuestion, answer: str, *, resolved_via: str) -> None:
+            original_apply(row, answer, resolved_via=resolved_via)
+
+        with patch.object(DeferredQuestion, "apply_answer", commit_without_result):
+            _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 0
+        assert not DeferredQuestion.objects.get(pk=pending.pk).is_pending
 
     def test_coordinated_answer_queues_parked_task_resume(self) -> None:
         question = "Should we adopt the new dependency?"

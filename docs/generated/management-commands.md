@@ -377,7 +377,7 @@ Creates new migration(s) for apps.
 | --- | --- |
 | `send` | Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise) |
 | `dm` | DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise) |
-| `reply` |  |
+| `reply` | Post a deduped answer in the owner's existing Slack thread |
 | `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 | `react` | React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |

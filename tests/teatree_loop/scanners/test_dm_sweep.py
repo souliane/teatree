@@ -1,6 +1,5 @@
 """The tick-level owner-DM sweep — watermark, live thread read, and silence (#3658)."""
 
-from dataclasses import dataclass, field
 from datetime import timedelta
 from unittest import mock
 
@@ -12,24 +11,10 @@ from teatree.core.models import DeferredQuestion, Loop
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.dm_sweep import DmSweepScanner
-from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION
 
 CHANNEL = "D0OWNER"
 TS = "1779990001.000001"
-
-
-@dataclass
-class _FakeMessaging:
-    replies: list[RawAPIDict] = field(default_factory=list)
-    calls: list[tuple[str, str]] = field(default_factory=list)
-    error: Exception | None = None
-
-    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
-        self.calls.append((channel, thread_ts))
-        if self.error is not None:
-            raise self.error
-        return list(self.replies)
 
 
 def _thread(text: str = "Ship it?", *, age: timedelta = timedelta(minutes=5)) -> DeferredQuestion:
@@ -45,47 +30,7 @@ class TestSilenceWhenNothingToDo(TestCase):
 
     def test_a_pass_that_resolves_nothing_emits_no_signal(self) -> None:
         _thread()
-        assert DmSweepScanner(backend=_FakeMessaging()).scan() == []
-
-
-class TestOwnerReplyProbe(TestCase):
-    def test_discussion_reply_keeps_an_unanswered_card_open(self) -> None:
-        row = _thread("Keep this rule?")
-        backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "What does it say?"}])
-
-        signals = DmSweepScanner(backend=backend).scan()
-
-        row.refresh_from_db()
-        assert signals == []
-        assert row.status == DeferredQuestion.STATUS_PENDING
-        assert not row.audits.filter(action="dismissed").exists()
-
-    def test_an_owner_option_reply_does_not_let_the_sweep_resolve_it(self) -> None:
-        row = _thread()
-        backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "yes, ship"}])
-
-        signals = DmSweepScanner(backend=backend).scan()
-
-        assert signals == []
-        assert backend.calls == []
-        row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_PENDING
-
-    def test_the_bots_own_post_is_not_an_owner_reply(self) -> None:
-        row = _thread()
-        backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "Pending question", "bot_id": "B1"}])
-
-        assert DmSweepScanner(backend=backend).scan() == []
-        row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_PENDING
-
-    def test_an_unreadable_thread_is_left_open(self) -> None:
-        row = _thread()
-        backend = _FakeMessaging(error=RuntimeError("slack down"))
-
-        assert DmSweepScanner(backend=backend).scan() == []
-        row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_PENDING
+        assert DmSweepScanner().scan() == []
 
 
 class TestScanIsResilient(TestCase):
@@ -111,8 +56,5 @@ class TestWatermark(TestCase):
             },
         )
         _thread(age=timedelta(days=5))
-        backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "yes"}])
-
         # Old thread, opened long before the watermark → out of this pass entirely.
-        assert DmSweepScanner(backend=backend).scan() == []
-        assert backend.calls == []
+        assert DmSweepScanner().scan() == []

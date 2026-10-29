@@ -28,7 +28,7 @@ from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
+from teatree.core.models import BotPing, PendingTriageRecommendation, Session, Task, TaskAttempt, WaitingItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -1527,3 +1527,18 @@ class TestMachineOutputChannel:
         out, err = self._channels("--this-overlay", "--json")
         assert "since" in json.loads(out)
         assert err == ""
+
+    def test_pending_triage_recommendation_appears_in_needs_you(self, checkpoint_file: Path) -> None:
+        PendingTriageRecommendation.record_candidate(
+            issue_url="https://github.com/acme/widgets/issues/21",
+            verdict="close",
+            title="Duplicate widget report",
+            overlay="acme",
+        )
+
+        out, _err = self._channels("--this-overlay", "--json")
+
+        needs_you = json.loads(out)["needs_you"]
+        assert needs_you["total"] == 1
+        assert needs_you["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
+        assert needs_you["items"][0]["title"] == "Duplicate widget report"

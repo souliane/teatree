@@ -6,7 +6,14 @@ from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, Ticket
+from teatree.core.models import (
+    DeferredQuestion,
+    PendingArticleSuggestion,
+    PendingTriageRecommendation,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify import NotifyKind
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
@@ -149,8 +156,8 @@ class TestAnAnswerDraftIsAskedAsACard(TestCase):
         assert DeferredQuestionAudit.objects.filter(action="withheld").count() == 1
 
 
-class TestATriageBatchIsAskedAsACard(TestCase):
-    def test_the_card_counts_the_suggestions_and_names_no_task_or_label(self) -> None:
+class TestATriageBatchIsRecordedForChecking(TestCase):
+    def test_each_suggestion_is_pending_without_an_owner_card(self) -> None:
         task = _task_in("triage_assessing")
         recommendations = [
             {"issue_url": "https://git.acme.example/widgets/issues/1", "verdict": "close", "rationale": "dupe"},
@@ -159,7 +166,12 @@ class TestATriageBatchIsAskedAsACard(TestCase):
 
         record_reactive_envelopes(task, {"triage_recommendations": recommendations}, phase="triage_assessing")
 
-        row = DeferredQuestion.owner_pending().get()
-        text = assert_a_plain_card(row, "needs-triage", "triage-batch", "/t3:")
-        assert "2 open issue(s)" in text
-        assert row.parked_task_id == task.pk
+        assert not DeferredQuestion.owner_pending().exists()
+        assert set(
+            PendingTriageRecommendation.objects.filter(status=PendingTriageRecommendation.Status.PENDING).values_list(
+                "issue_url", flat=True
+            )
+        ) == {
+            "https://git.acme.example/widgets/issues/1",
+            "https://git.acme.example/widgets/issues/2",
+        }

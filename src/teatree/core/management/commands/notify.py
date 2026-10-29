@@ -237,6 +237,7 @@ class Command(TyperCommand):
         thread_ts: Annotated[str, typer.Option("--thread-ts", help="Owner DM thread to reply into.")],
         user_id: Annotated[str, typer.Option("--user-id", help="Slack user id to DM.")] = "",
     ) -> str:
+        """Post a deduped answer in the owner's existing Slack thread."""
         return self._deliver(
             _DmRequest(
                 body, idempotency_key, user_id, NotifyKind.ANSWER.value, "", requested_push=True, thread_ts=thread_ts

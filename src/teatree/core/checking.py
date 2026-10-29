@@ -59,6 +59,7 @@ from teatree.core.checking_types import (
     RemainingGroupDict,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -97,6 +98,21 @@ def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitI
             )
         )
     return items
+
+
+def pending_triage_items(*, overlay: str = "") -> list[CheckItem]:
+    rows = PendingTriageRecommendation.objects.filter(status=PendingTriageRecommendation.Status.PENDING)
+    if overlay:
+        rows = rows.filter(overlay__in=(overlay, ""))
+    return [
+        CheckItem(
+            label="Triage recommendation",
+            url=row.issue_url,
+            title=row.title or "Issue awaiting triage",
+            detail="review before acting",
+        )
+        for row in rows
+    ]
 
 
 def internal_escalation_count() -> int:
@@ -293,7 +309,7 @@ def gather_all_overlays_report(
         reverse=True,
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
-    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug)]
+    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug), *pending_triage_items()]
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
@@ -476,7 +492,10 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
-    items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
+    items: list[CheckItem] = [
+        *owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name),
+        *pending_triage_items(overlay=overlay_name),
+    ]
 
     failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()

@@ -127,6 +127,62 @@ class TestCardDiscussion(TestCase):
         assert card.is_pending
         assert reply.answer_kind == "delegated"
 
+    def test_peer_that_does_not_accept_gets_a_durable_followup(self) -> None:
+        card = _card("341.1")
+        ticket = planned_ticket(issue_url="https://github.com/acme/widgets/issues/44")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        card.parked_task = task
+        card.save(update_fields=["parked_task"])
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["341.2"] = {"ts": "341.2", "thread_ts": "341.1"}
+        reply = _event(backend, ts="341.2", root="341.1", text="Show me the rule")
+        assert reply is not None
+
+        with patch("teatree.loop.slack_answer.card_discussion._send", return_value=(False, True)):
+            _cycle(backend)
+
+        assert task.child_tasks.count() == 1
+        assert "Show me the rule" in task.child_tasks.get().execution_reason
+        assert DeferredQuestion.objects.get(pk=card.pk).is_pending
+
+    def test_routing_error_releases_the_inbound_reply_for_retry(self) -> None:
+        card = _card("342.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["342.2"] = {"ts": "342.2", "thread_ts": "342.1"}
+        reply = _event(backend, ts="342.2", root="342.1", text="Show me the rule")
+        assert reply is not None
+
+        with patch(
+            "teatree.loop.slack_answer.card_discussion.route_card_discussion",
+            side_effect=RuntimeError("db unavailable"),
+        ):
+            report = _cycle(backend)
+
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert report.errors == 1
+        assert reply.loop_replied_at is None
+
+    def test_unaccepted_mailbox_retry_does_not_enqueue_the_message_twice(self) -> None:
+        card = _card("343.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["343.2"] = {"ts": "343.2", "thread_ts": "343.1"}
+        reply = _event(backend, ts="343.2", root="343.1", text="Show me the rule")
+        assert reply is not None
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+        ):
+            peer = broker.register(room="", harness="interactive", label="owner coordinator")
+            with patch.object(live_mailbox, "shared_broker", return_value=broker):
+                _cycle(backend)
+                _cycle(backend)
+            messages = asyncio.run(MailboxClient(peer.socket_path, peer.token).inbox())["messages"]
+
+        assert len(messages) == 1
+        assert DeferredQuestion.objects.get(pk=card.pk).is_pending
+
     def test_card_without_options_still_routes_discussion_to_coordinator(self) -> None:
         card = DeferredQuestion.record(
             "Which dependency should we use?",

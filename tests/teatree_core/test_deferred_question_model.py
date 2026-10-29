@@ -18,7 +18,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree import answer_handback
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -99,7 +99,7 @@ class TestDeferredQuestionAudience:
         assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert row.evidence == {}
 
-    @pytest.mark.parametrize("decision", list(OwnerDecision))
+    @pytest.mark.parametrize("decision", OWNER_RAISABLE_DECISIONS)
     def test_a_named_decision_makes_an_owner_row(self, decision: OwnerDecision) -> None:
         row = DeferredQuestion.record("Ship it?", card=owner_card(decision, "the issue is silent"))
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION

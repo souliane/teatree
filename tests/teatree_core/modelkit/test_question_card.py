@@ -164,7 +164,10 @@ class TestTheLayout:
 
         text = plain_text(card.view(SAMPLE_QUESTION, ref=3))
 
-        assert text.splitlines()[-2:] == ["Reply in this thread.", "ref: question 3"]
+        assert text.splitlines()[-2:] == [
+            "Reply here to discuss; write Answer: followed by your decision to close this card.",
+            "ref: question 3",
+        ]
         assert "[" not in text
 
     def test_a_quote_sits_between_the_why_and_the_options(self) -> None:
