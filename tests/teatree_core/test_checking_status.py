@@ -104,6 +104,22 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.deploy_state == "verified"
         assert "http" not in status.render()[1]
 
+    def test_partly_live_feature_lists_only_the_undeployed_merge(self) -> None:
+        repo = str(teatree_source_root())
+        serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
+        future_sha = run_strict(repo=repo, args=["rev-parse", "origin/main"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/401", short_description="message delivery"
+        )
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets", clear__pr_id=402, merged_sha=serving_sha)
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="example/widgets", clear__pr_id=403, merged_sha=future_sha)
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].live == "partly"
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/example/widgets/pull/403"]
+
     def test_related_features_share_a_named_lane_and_keep_problem_links(self) -> None:
         first = TicketFactory(
             issue_url="https://github.com/example/widgets/issues/501",

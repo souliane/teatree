@@ -300,8 +300,7 @@ def build_feature_status(
         live = [_live_state(sha, serving_sha) for sha in block.merge_shas]
         unknown = unknown or None in live
         block.live = True if live and all(state is True for state in live) else "partly" if True in live else False
-        if block.merged and block.live is not True:
-            undeployed.extend(block.merged)
+        undeployed.extend(item for item, state in zip(block.merged, live, strict=True) if state is not True)
     if starting:
         deploy_state = "running"
     elif not serving_sha or unknown:
