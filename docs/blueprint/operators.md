@@ -66,3 +66,9 @@ A forge account signs in only when an existing superuser has already attached it
 ## Acting as a person
 
 GitLab MR approval and unapproval (`cli/review/operator_approval.py`) need all of: a recorded requester on the MR's ticket, that requester's unconsumed `OnBehalfApproval` for the exact action and target, and that requester's sealed grant. The API must report the same GitLab identity as the consent before the write. A failed write rolls the consent back unconsumed, the audit row carries the requester's identity key as `approver_id`, and neither the owner's stored token nor another operator's grant can stand in. `approve-live-post` verifies the Slack approval's author and channel against the same addressee.
+
+## Bot-owned pushes
+
+`self_forge_identities` declares bot logins by forge host. A repository under one of those logins is bot-owned. The core pre-push hook and the factory's two push paths require the credential to authenticate as that bot and every newly pushed commit to name the bot as author and committer, including their email local parts. An unreadable identity or commit range refuses the push. The interactive command hook refuses a raw push to a bot-owned repo and directs the agent through `t3 push`. Other repository namespaces keep their existing push rules.
+
+`t3 doctor check` reads recent GitHub or GitLab push events for bot-owned repositories in the workspace and reports a human or unknown actor. A failed or saturated event read is a failed check, not a clean result. The forge APIs expose a bounded recent history, so this check detects visible past pushes; the pre-push gate is the enforcement boundary for future ones.

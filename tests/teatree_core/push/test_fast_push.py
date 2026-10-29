@@ -23,6 +23,7 @@ import pytest
 from teatree.core.authoring_credential import UnapprovableAuthorError, reset_authoring_credential_cache
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.core.push import fast_push as fast_push_module
 from teatree.core.push.fast_push import (
     EMPTY_DELTA_PR_SKIP,
     LEAK_GATES,
@@ -91,6 +92,18 @@ def _no_visibility_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 def run_fast_push(repo: Path, forge: FakeForge, **kwargs: str) -> FastPushOutcome:
     return FastPusher(repo=repo, forge=forge, **kwargs).run()
+
+
+def test_fast_push_runs_bot_gate_before_its_hookless_push(repo: Path, leak_env: None) -> None:
+    (repo / "clean.txt").write_text("new work\n")
+    with patch.object(fast_push_module, "bot_push_error", return_value="bot identity mismatch") as guard:
+        outcome = run_fast_push(repo, FakeForge())
+
+    assert not outcome.ok
+    assert outcome.committed
+    assert not outcome.pushed
+    assert any(finding.gate == "bot-identity" for finding in outcome.findings)
+    assert guard.call_count == 1
 
 
 class TestLeakGatesRefuse:
@@ -279,14 +292,20 @@ class TestAuthorIdentityGate:
         assert not outcome.pushed
 
 
-class TestNonLeakGatesSkipped:
-    def test_executes_exactly_the_leak_gate_set(self, repo: Path, leak_env: None) -> None:
+class TestHooklessFastPush:
+    def test_executes_the_leak_gates_and_bot_identity_guard(self, repo: Path, leak_env: None) -> None:
         (repo / "feature.py").write_text("x = 1\n")
 
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
-        assert outcome.executed_gates == LEAK_GATES
-        assert outcome.executed_gates == ("banned-terms", "secret-scan", "overlay-leak", "author-identity")
+        assert outcome.executed_gates == (*LEAK_GATES, "bot-identity")
+        assert outcome.executed_gates == (
+            "banned-terms",
+            "secret-scan",
+            "overlay-leak",
+            "author-identity",
+            "bot-identity",
+        )
 
     def test_bypasses_repo_hook_chain(self, repo: Path, leak_env: None) -> None:
         hooks = repo / ".git" / "hooks"

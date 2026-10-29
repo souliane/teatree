@@ -55,12 +55,13 @@ from teatree.core.authoring_credential import (
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.gates.forge_write_guard import item_key_of_url, vet_text_write
 from teatree.core.public_identity import is_noreply_email
-from teatree.core.push.push_range import PushRange
+from teatree.core.push.push_range import PushRange, _added_lines_from_diff
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.bot_push_gate import bot_push_error
 from teatree.hooks.commit_objects import READ_FLAGS
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.repo_visibility_cli import visibility_for_remote
@@ -445,29 +446,6 @@ def _path_for_line(scanned: list[tuple[str, str]], line: int) -> str:
     return scanned[line - 1][1] if 0 < line <= len(scanned) else ""
 
 
-def _added_lines_from_diff(diff_text: str) -> dict[str, list[str]]:
-    """``{path: added line bodies}`` from a unified diff.
-
-    HUNK-AWARE, for the reason :func:`staged_added_lines` is: git renders an added line
-    whose own text starts with ``++`` as ``+++text``, so a naive
-    ``not line.startswith("+++")`` filter drops it — and a banned term on such a line
-    would slip the gate. File headers only ever appear BEFORE the first ``@@``.
-    """
-    by_path: dict[str, list[str]] = {}
-    path = ""
-    in_hunk = False
-    for line in diff_text.splitlines():
-        if line.startswith("diff --git "):
-            path, in_hunk = "", False
-        elif line.startswith("@@"):
-            in_hunk = True
-        elif not in_hunk and line.startswith("+++ b/"):
-            path = line[len("+++ b/") :]
-        elif in_hunk and line.startswith("+") and path:
-            by_path.setdefault(path, []).append(line[1:])
-    return by_path
-
-
 class FastPusher:
     """Sub-minute leak-gated ship: the hook chain is bypassed BECAUSE the gates ran here."""
 
@@ -503,6 +481,17 @@ class FastPusher:
         if staged:
             self._commit(message)
             outcome.committed = True
+        bot_error = bot_push_error(
+            repo=self._repo,
+            remote_name="origin",
+            remote_url=git.remote_url(repo=str(self._repo)),
+            refs=([(run_checked(["git", "rev-parse", "HEAD"], cwd=self._repo).stdout.strip(), "")], True),
+        )
+        outcome.executed_gates = (*LEAK_GATES, "bot-identity")
+        if bot_error:
+            outcome.ok = False
+            outcome.findings.append(LeakFinding(gate="bot-identity", path="<commit-identity>", detail=bot_error))
+            return outcome
         run_checked(
             # An explicit same-name refspec overrides any `remote.origin.push` remap, and
             # `--no-follow-tags` any `push.followTags`: both would publish a ref the

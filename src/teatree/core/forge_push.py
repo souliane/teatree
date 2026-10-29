@@ -43,6 +43,7 @@ from teatree.core.forge_push_verdict import gate_aborted_verdict as _gate_aborte
 from teatree.core.forge_push_verdict import hooks_repair_verdict
 from teatree.core.push_gate_record import GateRunRecord
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
+from teatree.hooks.bot_push_gate import bot_push_error
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.git_run import run as git_read
@@ -498,6 +499,21 @@ def push_branch(
     if config.failure:
         return _refusal(config, branch=resolved_branch, remote=remote, credential=credential)
     refusal = _refuse_missing_forge_credential(forge, credential, resolved_branch=resolved_branch, remote=remote)
+    if refusal is None:
+        bot_error = bot_push_error(
+            repo=Path(repo_path),
+            remote_name=remote,
+            remote_url=RemoteUrls.read(repo=repo_path, remote=remote).push,
+            refs=([(local_tip(repo=repo_path, ref=resolved_branch.source), "")], True),
+            token=credential.token,
+        )
+        if bot_error:
+            refusal = _refusal(
+                _PushVerdict(_PushFailure.GATE_REFUSED, f"refuse: {bot_error}"),
+                branch=resolved_branch,
+                remote=remote,
+                credential=credential,
+            )
     if refusal is None:
         refusal = _refuse_unrepairable_hooks(
             repo_path, resolved_branch=resolved_branch, remote=remote, credential=credential
