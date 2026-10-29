@@ -29,12 +29,9 @@ exhausted:
     and moves only to one carrying its own fresh measured row. Exhaustion is far too late
     to start looking: an account may sit at 98 % of its weekly window for days without ever
     being "exhausted", stranding the whole scope on it while an idle account goes unused.
-*   A candidate with no row, or one whose verdict has aged out, is OFFERED rather than
-    skipped and pinned as the new sticky pick — a cold or lagging table must never halt
-    dispatch, and a genuinely spent account costs one refused call before
-    :func:`record_reactive_exhaustion_and_reselect` writes that verdict down. That
-    reactive write is the ONLY thing that keeps the stored health current; nothing
-    probes on a cadence.
+*   A dispatch refreshes missing or expired OAuth readings before selecting an account.
+    A failed probe leaves the candidate offered; a cold table never halts dispatch.
+    Direct selector calls remain cache-only.
 *   When the overlay's own accounts are all exhausted the selector falls back to ANY
     other configured account (across overlays); when every account's CACHED verdict still
     reads FRESHLY exhausted it raises :class:`AllTokensExhaustedError` (a
@@ -53,11 +50,13 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree import credential_readings as _credential_readings
 from teatree.account_headroom import AccountHeadroom, headroom_at, rank
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
-from teatree.core.models.anthropic_token_usage import HEALTH_TTL, AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, AnthropicTokenUsage
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
-from teatree.credential_readings import reading_from, unverified_exhaustion
+from teatree.credential_readings import unverified_exhaustion
+from teatree.credential_refresh import AccountProber, refresh_oauth_readings
 from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
 from teatree.llm.credentials import (
     AnthropicApiKeyCredential,
@@ -65,14 +64,15 @@ from teatree.llm.credentials import (
     Credential,
     CredentialError,
 )
-from teatree.llm.rate_limits import RateLimitProbeError, RateLimitReader, read_rate_limits, used_fraction
+from teatree.llm.rate_limits import read_rate_limits, used_fraction
 from teatree.utils.eval_container import in_container
-from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
+from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
     from teatree.config.agent_enums import AgentHarnessProvider
 
 logger = logging.getLogger(__name__)
+reading_from = _credential_readings.reading_from
 
 
 class TokenKind(StrEnum):
@@ -135,13 +135,13 @@ class PassPathSelector:
         configured = self._configured_paths(kind, scope)
         fell_back_across_scopes = False
         if not configured:
-            configured = self._all_configured_paths(kind)
+            configured = self.all_configured_paths(kind)
             if not configured:
                 return None
             fell_back_across_scopes = True
         now = timezone.now()
 
-        everywhere = self._all_configured_paths(kind)
+        everywhere = self.all_configured_paths(kind)
         sticky = AnthropicActivePick.objects.pick_for(kind.value, scope)
         # A sticky pinned before the operator dropped that account from routing is not a
         # reuse candidate — it names an account this install is no longer configured for.
@@ -233,7 +233,7 @@ class PassPathSelector:
         return _as_path_list(stored)
 
     @staticmethod
-    def _all_configured_paths(kind: TokenKind) -> list[str]:
+    def all_configured_paths(kind: TokenKind) -> list[str]:
         """Every configured ``pass`` entry for *kind* across all scopes, order-preserving deduped."""
         setting = LIST_SETTING[kind]
         seen: dict[str, None] = {}
@@ -244,7 +244,7 @@ class PassPathSelector:
 
     @staticmethod
     def _all_exhausted_error(kind: TokenKind) -> AllTokensExhaustedError:
-        candidates = PassPathSelector._all_configured_paths(kind)
+        candidates = PassPathSelector.all_configured_paths(kind)
         rows = AnthropicTokenUsage.objects.filter(pass_path__in=candidates)
         # ``frees_up_at``, not ``earliest_reset``: the answer is when an account actually
         # re-arms (its blocking windows all clear), not the soonest reset it happens to
@@ -277,35 +277,11 @@ def _as_path_list(stored: object) -> list[str]:
 _SELECTOR = PassPathSelector()
 
 
-@dataclass(frozen=True)
-class AccountProber:
-    """How to read one account's live OAuth health: fetch its token, then probe it.
-
-    The store read and the probe are one seam because neither is useful alone, and a
-    caller that needs one always needs the other.
-    """
-
-    reader: RateLimitReader
-    secret_reader: SecretReader
-
-    def read(self, pass_path: str) -> TokenHealthReading | None:
-        """*pass_path*'s REAL current health, or ``None`` when the account cannot be read.
-
-        A 429 carries the same unified headers as a 200, so probing a SPENT account is
-        exactly how its true windows are learned.
-        """
-        try:
-            token = self.secret_reader(pass_path)
-        except SecretStoreError:
-            logger.warning("reactive exhaustion: the secret store could not be read for %s", pass_path)
-            return None
-        if not token:
-            return None
-        try:
-            return reading_from(self.reader(token, is_oauth=True))
-        except RateLimitProbeError:
-            logger.warning("reactive exhaustion: probing %s failed; recording an unverified verdict", pass_path)
-            return None
+def oauth_lane_available(*, scope: str = GLOBAL_SCOPE) -> bool:
+    try:
+        return _SELECTOR.select(TokenKind.OAUTH, scope, persist_pick=False) is not None
+    except AllTokensExhaustedError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -404,6 +380,11 @@ def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSu
     the loud error names it without this factory itself having to fail eagerly (a caller
     that only inspects or patches the credential is never blocked at construction).
     """
+    refresh_oauth_readings(
+        _SELECTOR.all_configured_paths(TokenKind.OAUTH),
+        now=timezone.now(),
+        prober=AccountProber(reader=read_rate_limits, secret_reader=read_pass),
+    )
     override = _SELECTOR.select(TokenKind.OAUTH, scope)
     missing_context = None if override is not None else _empty_routing_note("OAuth", scope)
     return AnthropicSubscriptionCredential(pass_path_override=override, missing_context=missing_context)

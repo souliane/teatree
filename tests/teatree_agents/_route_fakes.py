@@ -7,12 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 from teatree.agents import codex_app_server_options, harness_registry
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
+from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 MANAGED = "codex_like"
@@ -97,6 +100,29 @@ def route_config(skill: str, *harnesses: str) -> AgentConfig:
 
 def routed_by(config: AgentConfig) -> AbstractContextManager[object]:
     return patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config)
+
+
+def two_healthy_oauth_accounts() -> tuple[str, str]:
+    """Two configured, healthy OAuth accounts on the subscription provider, the first the active pick."""
+    first, second = "anthropic/first/oauth", "anthropic/second/oauth"
+    ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+    ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", [first, second])
+    AnthropicActivePick.objects.set_pick("oauth", "", first)
+    for path in (first, second):
+        AnthropicTokenUsage.objects.record(
+            path,
+            TokenHealthReading(
+                organization_id="org",
+                utilization_5h=0.1,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+            now=timezone.now(),
+        )
+    return first, second
 
 
 def make_codex_available(test: TestCase, home: Path) -> None:

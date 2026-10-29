@@ -23,7 +23,7 @@ from django.utils import timezone
 
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import TaskAttempt, UsageWindowState
-from teatree.credential_config import api_key_lane_available, record_api_key_exhausted
+from teatree.credential_config import api_key_lane_available, oauth_lane_available, record_api_key_exhausted
 from teatree.llm.anthropic_limits import LimitCause
 
 logger = logging.getLogger(__name__)
@@ -55,9 +55,12 @@ def open_plan_window(now: datetime | None = None) -> UsageWindowState | None:
     )
 
 
-def subscription_lane_exhausted(*, now: datetime | None = None) -> bool:
+def subscription_lane_exhausted(*, scope: str = "", now: datetime | None = None) -> bool:
     """True while an uncleared plan-exhaustion window still covers the subscription lane."""
-    return open_plan_window(now) is not None
+    window = open_plan_window(now)
+    return window is not None and (
+        window.cause != ALL_ACCOUNTS_EXHAUSTED_CAUSE or not oauth_lane_available(scope=scope)
+    )
 
 
 def spend_metered_key(*, scope: str, lane: str, signer: str, moment: datetime) -> datetime | None:
@@ -101,7 +104,7 @@ def resolve_credential_provider(
     """
     if configured is not AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY:
         return configured
-    if not subscription_lane_exhausted(now=now):
+    if not subscription_lane_exhausted(scope=scope, now=now):
         return AgentHarnessProvider.SUBSCRIPTION_OAUTH
     if api_key_lane_available(scope=scope):
         return AgentHarnessProvider.API_KEY
