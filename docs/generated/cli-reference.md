@@ -1630,6 +1630,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
+│ page                                                                         │
 │ list                      List discovered eval scenarios as a table or one   │
 │                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
@@ -2290,6 +2291,17 @@ Usage: t3 eval history [OPTIONS]
 │ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
 │                                 for its model, then show history.            │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval page`
+
+```
+Usage: t3 eval page [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --out         PATH  Write the results page to this path.                     │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

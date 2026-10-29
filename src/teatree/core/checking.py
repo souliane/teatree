@@ -58,6 +58,7 @@ from teatree.core.checking_types import (
     RemainingGroup,
     RemainingGroupDict,
 )
+from teatree.core.factory.eval_measurement import eval_measurement_signal
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -294,6 +295,9 @@ def gather_all_overlays_report(
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
     needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug)]
+    needs_you_items.extend(
+        _eval_measurement_items(now=max((window[1] for window in overlay_windows.values()), default=datetime.now(UTC)))
+    )
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
@@ -477,6 +481,7 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
     items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
+    items.extend(_eval_measurement_items(now=now))
 
     failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()
@@ -495,3 +500,8 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
         )
 
     return CheckGroup(title="Needs you", items=items[:cap], total=len(items))
+
+
+def _eval_measurement_items(*, now: datetime) -> list[CheckItem]:
+    signal = eval_measurement_signal(now)
+    return [CheckItem(label="evals", url="", detail=signal.summary)] if signal is not None else []

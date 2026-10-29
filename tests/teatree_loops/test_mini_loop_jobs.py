@@ -116,7 +116,7 @@ class TestEvalLocalLoopBuildJobs:
 
         from teatree.loop.scanners.eval_local import EvalLocalScanner  # noqa: PLC0415
 
-        fake = EvalLocalScanner(overlay_name="t3-teatree", skill="running-evals")
+        fake = EvalLocalScanner(overlay_name="t3-teatree")
         with patch("teatree.loop.global_scanner_factories._eval_local_scanner", return_value=fake):
             jobs = EVAL_LOCAL_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)

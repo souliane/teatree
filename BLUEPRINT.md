@@ -1102,7 +1102,7 @@ The managed Claude settings template caps skill listing descriptions at one char
 
 Raw Agent-tool briefs use `t3 <overlay> skill-preamble` for only the skills named in the brief: aliases render once, framework stack skills render as required load directives, and other requested skills embed their bodies. An unresolved skill still fails the command.
 
-**Skill supply control.** The dashboard's Skills inventory separates teatree-required prompt skills from user-managed Claude/Codex installs: required entries and their transitive references are read-only, while harness-local extras may be removed or excluded. The four configurable loop selectors (`scanning_news_skill`, `eval_local_skill`, `backlog_sweep_skill`, `dogfood_smoke_skill`) therefore live under `Agents / mode & harness`, not their individual `Loops` groups — both the owning loop and the cross-cutting supply inventory consume them.
+**Skill supply control.** The dashboard's Skills inventory separates teatree-required prompt skills from user-managed Claude/Codex installs: required entries and their transitive references are read-only, while harness-local extras may be removed or excluded. The three configurable loop selectors (`scanning_news_skill`, `backlog_sweep_skill`, `dogfood_smoke_skill`) therefore live under `Agents / mode & harness`, not their individual `Loops` groups — both the owning loop and the cross-cutting supply inventory consume them.
 
 **Sub-agents (`agents/`).** Phase agents wrap skill bundles (`orchestrator`, `coder`, `tester`, `e2e`, `e2e-review`, `reviewer`, `review-request`, `shipper`, `debugger`, `followup`, `planner`, `answerer`, `scanning-news`, `bughunter`, `triage-assessor`) — each a YAML+description wrapper referencing skills via `skills:` frontmatter, no content duplication. `e2e-review` ([#2298](https://github.com/souliane/teatree/issues/2298)) is the reviewer leg of the EXTERNAL review loop (dispatched for the `e2e_reviewing` phase), making the skill↔agent pairing 1:1 for `e2e`/`e2e-review`. `review-request` (`(author, requesting_review) → t3:review-request` in `SUBAGENT_BY_PHASE`) is the spawnable agent for the review-request phase — read-only on the codebase, it discovers the ready PR and posts the request under the on-behalf policy. They are invoked by lifecycle skills, by the headless executor (§5.2) on a claimed phase task, and by the loop tick (§5.6) when a scanner signal calls for agent judgment. Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
 
@@ -1347,6 +1347,8 @@ state; a configured but unowned target and a failed reconciliation are both
 explicit `action_needed` signals. A successful reconciliation is an explicitly
 dropped housekeeping observation. None may fall through the generic in-flight
 route silently.
+
+**Local behavioral eval measurement (#5805).** The `eval_local` task uses the deterministic phase registry rather than an agent prompt. Its runner pins `t3 eval run --backend api --credential subscription_oauth --local --persist`, removes the metered API key from the child environment, and reads the recorded run ledger after the child exits. A run that grades no selected scenario fails the task and is recorded as skipped if the child could not write a run. The health chip, check-in report, and `t3 eval page` read that ledger; the page dates the newest run, names an empty measurement, and marks runs older than a week stale. Selective PR eval selection and CI workflows are separate.
 
 ## Architectural Appendices
 

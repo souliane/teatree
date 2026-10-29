@@ -1381,6 +1381,7 @@ readers/writers over the committed engine modules (`corpus_loader`,
 
 ```bash
 t3 eval history                             # recent runs + per-scenario pass-rate
+t3 eval page --out docs/evals/index.md      # render the latest recorded local run as a results page
 t3 eval history --model haiku               # scope to one model
 t3 eval history --baseline                  # show the current baseline run(s)
 t3 eval history --mark-baseline <run-id>    # promote a run to baseline

@@ -161,6 +161,17 @@ class TestHistoryCommand(TestCase):
         assert rates["alpha"]["pass_rate"] == pytest.approx(1.0)
         assert rates["beta"]["pass_rate"] == pytest.approx(0.0)
 
+    def test_error_only_run_is_reported_as_unmeasured(self) -> None:
+        run = EvalRunRecord.objects.record(model="haiku", suite="eval_local")
+        run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.ERROR)
+
+        result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
+        assert payload["runs"][0]["executed"] == 0
+        assert payload["runs"][0]["measured_nothing"] is True
+
     def test_history_model_filter_scopes_runs(self) -> None:
         self._record(model="haiku")
         self._record(model="sonnet")

@@ -32,6 +32,7 @@ classes appear only in ``TYPE_CHECKING`` (as quoted annotations) and in
 function-local runtime imports, never at module import time.
 """
 
+import os
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, TypedDict
 
@@ -197,7 +198,7 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
     with transaction.atomic():
         run = EvalRunRecord.objects.record(
             model=model,
-            suite=suite,
+            suite=suite or os.environ.get(EvalRunRecord.RECORD_SUITE_ENV, ""),
             overlay=overlay,
             max_turns_override=max_turns_override,
             git_sha=current_git_sha() if git_sha is None else git_sha,
