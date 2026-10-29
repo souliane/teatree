@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives the hook router and checks teatree MCP tool registration.
 """Foreign MCP policy through the configured PreToolUse router."""
 
 import asyncio
