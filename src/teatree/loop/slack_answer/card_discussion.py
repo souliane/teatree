@@ -11,21 +11,18 @@ from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.models import NoPlanArtifactError, PendingChatInjection
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import schedule_card_discussion
 from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, CardThreadStop, UnmatchedCardThread
 from teatree.loop.slack_answer.coalescing import _Unit
-from teatree.loop.slack_answer.session_routing import (
-    _mark_unit_loop_replied,
-    _post_live_reply,
-    _unmark_unit_loop_replied,
-)
+from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
     from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 logger = logging.getLogger(__name__)
+UNROUTED_AUDIT_ACTION = "reply_unrouted"
 NOBODY_LISTENING = (
     "No agent is working on this card and no coordinator session is connected, so nobody can answer here yet. "
     "Your message is kept and goes to the first coordinator session that connects, which will answer in this thread. "
@@ -167,6 +164,17 @@ def route_card_discussion(row: DeferredQuestion, unit: _Unit) -> bool:
         return _resume_responsible_task(row, unit)
 
 
+def _tell_owner_nobody_is_listening(backend: "MessagingBackend", unit: _Unit, question: DeferredQuestion) -> None:
+    reply_ts = unit.rows[-1].slack_ts
+    if DeferredQuestionAudit.objects.filter(question=question, action=UNROUTED_AUDIT_ACTION, note=reply_ts).exists():
+        return
+    posted = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=NOBODY_LISTENING)
+    if posted.get("ok") is True:
+        DeferredQuestionAudit.objects.create(
+            question=question, action=UNROUTED_AUDIT_ACTION, note=reply_ts, resolver_id="card_discussion"
+        )
+
+
 def route_card_result(
     backend: "MessagingBackend",
     unit: _Unit,
@@ -185,7 +193,8 @@ def route_card_result(
         raise
     if not routed:
         _unmark_unit_loop_replied(unit)
-        _post_live_reply(backend, unit, NOBODY_LISTENING)
+        if question is not None:
+            _tell_owner_nobody_is_listening(backend, unit, question)
         return True
     report.dispatched += 1
     return True

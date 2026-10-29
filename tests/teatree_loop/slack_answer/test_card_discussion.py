@@ -198,6 +198,23 @@ class TestCardDiscussion(TestCase):
         assert reply.answer_kind == "delegated"
         assert DeferredQuestion.objects.get(pk=card.pk).is_pending
 
+    def test_the_plain_line_is_not_repeated_when_the_thread_cannot_be_read_back(self) -> None:
+        _card("348.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["348.2"] = {"ts": "348.2", "thread_ts": "348.1"}
+        assert _event(backend, ts="348.2", root="348.1", text="Show me the rule") is not None
+        backend.read_after_post = False
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_mailbox, "shared_broker", return_value=broker),
+        ):
+            for _ in range(3):
+                _cycle(backend)
+
+        assert len(backend.replies) == 1
+
     def test_responsible_task_that_cannot_resume_still_gets_a_plain_line(self) -> None:
         card = _card("347.1")
         ticket = Ticket.objects.create()
