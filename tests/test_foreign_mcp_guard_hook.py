@@ -37,7 +37,12 @@ def _invoke(tool_name: str, tool_input: dict[str, object], home: Path) -> subpro
         text=True,
         check=False,
         timeout=60,
-        env={**os.environ, "HOME": str(home), "XDG_DATA_HOME": str(home / "data")},
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "XDG_DATA_HOME": str(home / "data"),
+            "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(home / "hook-state"),
+        },
     )
 
 
@@ -65,6 +70,7 @@ def test_foreign_tool_is_routed_and_denied(tool_name: str, tmp_path: Path) -> No
     assert specific["gate_id"] == "foreign_mcp"
     reason = specific["permissionDecisionReason"]
     assert "mcp__teatree__command_search" in reason
+    assert "mcp__plugin_t3_teatree__command_search" in reason
     assert "t3" in reason
 
 
@@ -117,6 +123,16 @@ def test_resource_tool_for_own_server_passes(tmp_path: Path) -> None:
     assert result.stdout == ""
 
 
+def test_allowed_tool_ignores_ambient_stale_turn_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ambient = tmp_path / "ambient-hook-state"
+    ambient.mkdir()
+    (ambient / "foreign-policy.turn-start-monotonic").write_text("0", encoding="utf-8")
+    monkeypatch.setenv("TEATREE_CLAUDE_STATUSLINE_STATE_DIR", str(ambient))
+    result = _invoke("ReadMcpResourceTool", {"server": "teatree", "uri": "file:///own"}, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == ""
+
+
 def test_distinct_foreign_calls_do_not_share_a_loop_streak(tmp_path: Path) -> None:
     for query in ("first", "second", "third"):
         result = _invoke("mcp__other__read_resource", {"query": query}, tmp_path)
@@ -125,11 +141,17 @@ def test_distinct_foreign_calls_do_not_share_a_loop_streak(tmp_path: Path) -> No
         assert "LOOPING" not in reason
 
 
-def test_escape_is_audited_and_allows_one_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_escape_replay_is_denied_when_audit_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = write_recording_t3(tmp_path / "bin")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
-    result = _invoke("mcp__other__read_resource", {"query": "[gate-escape:foreign_mcp: vetted call]"}, tmp_path)
+    tool_input = {"query": "[gate-escape:foreign_mcp: vetted call]"}
+    result = _invoke("mcp__other__read_resource", tool_input, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(record.read_text())["gate"] == "foreign_mcp"
-    denied = _invoke("mcp__other__read_resource", {"query": "sample"}, tmp_path)
+    first_request = json.loads(record.read_text())
+    assert first_request["gate"] == "foreign_mcp"
+    write_recording_t3(tmp_path / "bin", allowed=False)
+    record.unlink()
+    denied = _invoke("mcp__other__read_resource", tool_input, tmp_path)
     assert denied.returncode == 2
+    assert "Gate foreign_mcp escape refused" in denied.stderr
+    assert json.loads(record.read_text()) == first_request

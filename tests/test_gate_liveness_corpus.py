@@ -1255,9 +1255,9 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 # The two PreToolUse `Agent` arms (`dispatch-prompt-quote-scanner` and
 # `enforce-orchestrator-boundary-agent`) are now REACHABLE: #1646 wired the
-# `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
-# are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
-# `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
+# `Agent` PreToolUse matcher in hooks.json (registered matchers include
+# Bash/Edit/Write, AskUserQuestion, Slack MCP, foreign MCP, and Agent).
+# The orchestrator-boundary Agent deny is
 # additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
 # PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
 # body (verified against the Claude Code binary, docs/claude-code-internals.md

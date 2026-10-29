@@ -170,8 +170,9 @@ def _call_signature(data: dict) -> str:
     the distinct later commands. Folding this signature into the fingerprint
     keeps distinct commands apart while a real retry (identical call) still
     matches. Bash keys on the command, Edit / Write on the file path, a question
-    call on its questions, everything else on the tool name — with escape/override
-    tokens stripped so a call with-and-without a token shares one fingerprint.
+    call on its questions, foreign MCP calls on name plus uncapped JSON input,
+    everything else on tool name — with escape/override tokens stripped so a
+    call with-and-without a token shares one fingerprint.
     Never raises.
     """
     tool_input = data.get("tool_input") if isinstance(data, dict) else None

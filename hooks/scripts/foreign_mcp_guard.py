@@ -4,7 +4,8 @@ from hooks.scripts.mcp_slack_write_guard import TEATREE_MCP_SERVERS
 
 _DENY_REASON = (
     "BLOCKED: policy allows no MCP server beside teatree's own. "
-    "Find the teatree replacement with `mcp__teatree__command_search`, "
+    "Find the teatree replacement with `mcp__teatree__command_search` "
+    "(or `mcp__plugin_t3_teatree__command_search` in plugin installs), "
     "or use the `t3` CLI (`t3 --help`). "
     "One-off escape: put `[gate-escape:foreign_mcp: <reason>]` in a string argument."
 )

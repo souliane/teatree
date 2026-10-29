@@ -1,10 +1,4 @@
-"""PostToolUse: warn when a file is re-read without having changed since the last read.
-
-Extracted whole from ``hook_router`` so the shrink-only dispatcher nets smaller; the router re-exports
-:func:`handle_read_dedup` into its ``PostToolUse`` chain unchanged. The per-session state helpers stay in
-the router and are back-imported at call time, so a test patching ``router.STATE_DIR`` still steers this
-handler.
-"""
+"""PostToolUse warning for a file re-read without an intervening change."""
 
 import sys
 from pathlib import Path
