@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from teatree.core.modelkit.owner_action import ActionRequest, read_action
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision, owner_decision
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +24,14 @@ MIN_OPTIONS = 2
 MAX_OPTIONS = 4
 
 REPLY_LINE = "Or reply in this thread."
-REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
+REPLY_LINE_WITHOUT_OPTIONS = "Reply here to discuss; write Answer: followed by your decision to close this card."
 TAP_LINE = "Tap an option above."
 
 _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)
 _WORD = re.compile(r"[^\W_]+")
 _ABBREVIATION = re.compile(r"\b(?:e\.g|i\.e|etc|vs)\.", re.IGNORECASE)
 _SENTENCE_BREAK = re.compile(r"[.!?][\"')\]]*\s+\S")
+_RULES_FILE = re.compile(r"\b(?:rules?[- ]file|rules?[- ]skill|rules\.md|skills/rules)\b", re.IGNORECASE)
 
 _LABELLED_LINK = re.compile(r"<https?://[^\s|>]+\|([^>]*)>")
 _URL = re.compile(r"<https?://[^\s>]+>|https?://\S+")
@@ -336,9 +337,18 @@ class QuestionCard:
             question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref, self.action is not None
         )
 
+    def names_rules_file(self, question: str) -> bool:
+        return bool(_RULES_FILE.search(question) or _RULES_FILE.search(self.subject))
+
     def problems(self, question: str) -> list[str]:
         """Every reason this card may not be sent as an owner question, all at once."""
         problems = shown_problems(self.view(question))
+        if self.decision not in OWNER_RAISABLE_DECISIONS:
+            problems.append(
+                f"{self.decision} cannot be raised to the owner; choose from {', '.join(OWNER_RAISABLE_DECISIONS)}"
+            )
+        if self.names_rules_file(question) and not self.quoted.strip():
+            problems.append("the proposed text of a rules-file change is required on the card")
         problems += _sentence_problems("the question", question, limit=MAX_QUESTION_CHARS, ends_with="?")
         problems += _sentence_problems("the why sentence", self.why, limit=MAX_SENTENCE_CHARS)
         if not 1 <= len(self.checked) <= MAX_CHECKED_FACTS:
@@ -421,6 +431,7 @@ class QuestionCard:
             checked=tuple(map(str, checked)) if isinstance(checked, list) else (),
             blocker=str(fields.get("blocker", "")),
             why=str(fields.get("why", "")),
+            quoted=str(fields.get("proposed_text", "")),
             options=tuple(option for item in options if (option := CardOption.from_raw(item)))
             if isinstance(options, list)
             else (),

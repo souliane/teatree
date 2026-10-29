@@ -71,14 +71,17 @@ def _every_send(moment: dt.datetime) -> list[Callable[[MagicMock], object]]:
 
 
 class _QuietHours(TestCase):
-    def _assert_nothing_is_sent_at(self, moment: dt.datetime) -> None:
+    def _assert_only_new_card_is_sent_at(self, moment: dt.datetime) -> None:
         DeferredQuestion.record("Can I archive the logs?", **OWNER_DECISION)
         _mirrored(moment)
-        for send in _every_send(moment):
+        for index, send in enumerate(_every_send(moment)):
             backend = _backend()
             with _at(moment), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
                 send(backend)
-            backend.post_message.assert_not_called()
+            if index == 0:
+                backend.post_message.assert_called_once()
+            else:
+                backend.post_message.assert_not_called()
 
     def _assert_the_first_post_goes_out_at(self, moment: dt.datetime) -> None:
         row = DeferredQuestion.record("Can I archive the logs?", **OWNER_DECISION)
@@ -94,12 +97,12 @@ class TestWithTheScheduleInParis(_QuietHours):
     def setUp(self) -> None:
         _paris_schedule()
 
-    def test_nothing_is_sent_at_23_30_or_07_59_paris_time(self) -> None:
+    def test_only_new_cards_are_sent_at_23_30_or_07_59_paris_time(self) -> None:
         for day in _DAYS:
             for hour, minute in ((23, 30), (7, 59), (22, 0), (3, 0)):
                 with self.subTest(day=day, at=f"{hour}:{minute:02d}"):
                     DeferredQuestion.objects.all().delete()
-                    self._assert_nothing_is_sent_at(_paris(day, hour, minute))
+                    self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
 
     def test_the_held_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:
@@ -116,12 +119,12 @@ class TestWithTheScheduleInParis(_QuietHours):
 
 @override_settings(TIME_ZONE="UTC")
 class TestWithNoScheduleTheWindowIsStillParis(_QuietHours):
-    def test_nothing_is_sent_at_23_30_or_07_59_paris_time(self) -> None:
+    def test_only_new_cards_are_sent_at_23_30_or_07_59_paris_time(self) -> None:
         for day in _DAYS:
             for hour, minute in ((23, 30), (7, 59)):
                 with self.subTest(day=day, at=f"{hour}:{minute:02d}"):
                     DeferredQuestion.objects.all().delete()
-                    self._assert_nothing_is_sent_at(_paris(day, hour, minute))
+                    self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
 
     def test_the_held_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:

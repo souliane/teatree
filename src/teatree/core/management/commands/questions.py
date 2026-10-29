@@ -22,23 +22,35 @@ own pace; the agent reads pending questions back via the same model
 on its next turn.
 """
 
+import datetime as dt
 import io
+from collections import Counter
 from collections.abc import Mapping
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
+from django.utils import timezone
 from django_typer.management import command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
+from teatree.core.answering.question_coordinator import coordinate_answer
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
+from teatree.core.modelkit.owner_decision import (
+    OWNER_ANSWER_ROUTE,
+    OWNER_QUESTION_ROUTE,
+    OWNER_RAISABLE_DECISIONS,
+    owner_decision,
+)
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_actions import dismiss_kept_for_owner
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
 from teatree.core.table_output import print_table
+from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 
 
 class DeferredQuestionRow(TypedDict):
@@ -117,6 +129,60 @@ class Command(MachineOutputCommand):
         """``t3 teatree questions`` group root."""
 
     @command()
+    def coordinate(
+        self,
+        question_id: int,
+        text: Annotated[str, typer.Argument(help="The exact recorded owner answer.")],
+        *,
+        basis: Annotated[int, typer.Option("--basis", help="The owner-answered question to cite.")],
+    ) -> str:
+        """Reuse an exact owner answer for the same architecture question from an attended session."""
+        if is_dispatched_agent_process():
+            self.stderr.write("a dispatched agent cannot coordinate an owner answer")
+            raise SystemExit(2)
+        row = DeferredQuestion.objects.filter(pk=question_id).first()
+        cited = DeferredQuestion.objects.filter(pk=basis).first()
+        if row is None or cited is None or not text.strip() or coordinate_answer(row, cited, text) is None:
+            self.stderr.write("question or owner basis is missing, settled, or not an exact architecture match")
+            raise SystemExit(2)
+        return f"coordinated #{question_id} from owner question #{basis}."
+
+    @command()
+    def measure(
+        self,
+        *,
+        days: Annotated[int, typer.Option("--days", help="Count cards created in the last N days.")] = 7,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit daily kind counts as JSON.")] = False,
+    ) -> list[dict[str, str | int | bool]]:
+        """Count the owner cards that have a Slack mirror, grouped by creation day and kind."""
+        if days < 1:
+            self.stderr.write("--days must be positive")
+            raise SystemExit(2)
+        counts: Counter[tuple[str, str]] = Counter()
+        rows = DeferredQuestion.objects.filter(
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            created_at__gte=timezone.now() - dt.timedelta(days=days),
+        ).exclude(slack_ts="")
+        for row in rows:
+            day = timezone.localtime(row.created_at).date().isoformat()
+            kind = str(row.evidence.get("decision", "")) if isinstance(row.evidence, dict) else ""
+            counts[day, kind] += 1
+        payload: list[dict[str, str | int | bool]] = [
+            {"day": day, "kind": kind, "count": count, "unexpected": kind not in OWNER_RAISABLE_DECISIONS}
+            for (day, kind), count in sorted(counts.items())
+        ]
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(f"{row['day']} {row['kind'] or 'unknown'}: {row['count']}" for row in payload)
+            or "no mirrored owner cards.",
+        )
+        return payload
+
+    @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — django-typer command: every parameter is one flag of the `questions record` surface
         self,
@@ -140,7 +206,10 @@ class Command(MachineOutputCommand):
             str,
             typer.Option(
                 "--decision",
-                help=f"Only for a decision the owner alone makes: {', '.join(OwnerDecision)}. Absent: internal.",
+                help=(
+                    f"Only for a decision the owner alone makes: {', '.join(OWNER_RAISABLE_DECISIONS)}. "
+                    "Absent: internal."
+                ),
             ),
         ] = "",
         checked: Annotated[
@@ -157,6 +226,10 @@ class Command(MachineOutputCommand):
             str,
             typer.Option("--blocker", help="What stops you deciding; kept for operators, never shown to the owner."),
         ] = "",
+        proposed_text: Annotated[
+            str,
+            typer.Option("--proposed-text", help="Exact proposed wording for a rules-file change; shown on the card."),
+        ] = "",
     ) -> str:
         """Record a question by hand — the agent-facing capture surface.
 
@@ -170,8 +243,8 @@ class Command(MachineOutputCommand):
         and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and sets them there.
         """
         kind = owner_decision(decision) if decision else None
-        if decision and kind is None:
-            self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OwnerDecision)}")
+        if decision and kind not in OWNER_RAISABLE_DECISIONS:
+            self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OWNER_RAISABLE_DECISIONS)}")
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
             dedupe_marker = f"{kind}:{question_fingerprint(question)}"
@@ -181,7 +254,14 @@ class Command(MachineOutputCommand):
             if options_json and not options:
                 self.stderr.write("--options must be a JSON list of {label, description, recommended}")
                 raise SystemExit(2)
-            card = QuestionCard(decision=kind, checked=tuple(checked or ()), blocker=blocker, why=why, options=options)
+            card = QuestionCard(
+                decision=kind,
+                checked=tuple(checked or ()),
+                blocker=blocker,
+                why=why,
+                options=options,
+                quoted=proposed_text,
+            )
         try:
             ticket = resolve_invoking_ticket()
             session = (
@@ -360,7 +440,7 @@ class Command(MachineOutputCommand):
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
     ) -> str:
-        """Dismiss pending questions without answering them.
+        """Dismiss pending questions without answering them; live owner limits require a direct owner command.
 
         Takes MANY ids because a backlog is dismissed by the class, not one at a
         time. A containerized invocation costs a round-trip of its own, so clearing
@@ -375,9 +455,23 @@ class Command(MachineOutputCommand):
         clean_reason = reason.strip() or "no longer relevant"
         dismissed: list[int] = []
         skipped: list[int] = []
+        refused: list[tuple[int, str]] = []
+        direct_owner = direct_owner_action()
+        dispatched = is_dispatched_agent_process()
         for question_id in question_ids:
             try:
                 with transaction.atomic():
+                    pending = (
+                        DeferredQuestion.objects.select_for_update()
+                        .filter(pk=question_id, answered_at__isnull=True, dismissed_at__isnull=True)
+                        .first()
+                    )
+                    if pending is not None and dismiss_kept_for_owner(
+                        pending, direct_owner=direct_owner, dispatched=dispatched
+                    ):
+                        card = QuestionCard.from_row(pending.evidence, pending.options_json)
+                        refused.append((question_id, card.decision.value if card is not None else "unknown decision"))
+                        continue
                     row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
                     if row is None:
                         skipped.append(question_id)
@@ -396,8 +490,10 @@ class Command(MachineOutputCommand):
                 raise SystemExit(2) from exc
         if skipped:
             self.stderr.write(f"not found or already resolved: {', '.join(str(i) for i in skipped)}")
+        if refused:
+            self.stderr.write(f"owner decision required: {', '.join(f'#{pk} ({kind})' for pk, kind in refused)}")
         if not dismissed:
-            raise SystemExit(1)
+            raise SystemExit(2 if refused else 1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
 
     @command()

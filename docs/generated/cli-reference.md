@@ -12175,7 +12175,7 @@ Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree checking show [OPTIONS]
 
- Print a terse, grouped, clickable report of changes since the last check.
+ Reconcile owner questions and print changes since the last check.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --since               TEXT  ISO timestamp override for the window start      │
@@ -12279,9 +12279,10 @@ Usage: t3 teatree waiting [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree waiting list [OPTIONS]
 
- List everything currently waiting on the user.
+ List owner decisions, or the full factory inventory with --all.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all                  Include internal merge, review, and manual waits.     │
 │ --overlay        TEXT  Scope merge/review entries to this overlay (default:  │
 │                        all).                                                 │
 │ --json                 Emit the entries as JSON instead of the table view.   │
@@ -14847,6 +14848,9 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ reachability  Report which automated resolvers can decide each pending       │
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
+│ coordinate    Reuse an exact owner answer for a pending architecture         │
+│               question.                                                      │
+│ measure       Count mirrored owner cards by day and decision kind.           │
 │ dismiss       Dismiss a pending question without answering it.               │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
@@ -14884,14 +14888,15 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │                              carrying it is returned unchanged.              │
 │ --decision             TEXT  Only for a decision the owner alone makes:      │
 │                              credentials, money_or_plan, public_post,        │
-│                              irreversible, product_scope, architecture.      │
-│                              Absent: internal.                               │
+│                              irreversible, architecture. Absent: internal.   │
 │ --checked              TEXT  A fact you checked before asking; repeat per    │
 │                              fact. Required with --decision.                 │
 │ --why                  TEXT  One sentence the owner reads: why you ask.      │
 │                              Required with --decision.                       │
 │ --blocker              TEXT  What stops you deciding; kept for operators,    │
 │                              never shown to the owner.                       │
+│ --proposed-text        TEXT  Exact proposed wording for a rules-file change; │
+│                              shown on the card.                              │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -14960,12 +14965,46 @@ Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree questions coordinate`
+
+```
+Usage: t3 teatree questions coordinate [OPTIONS] QUESTION_ID TEXT
+
+ Reuse an exact owner answer for the same architecture question from an
+ attended session.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    question_id      INTEGER  [required]                                    │
+│ *    text             TEXT     The exact recorded owner answer. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --basis        INTEGER  The owner-answered question to cite. [required]   │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions measure`
+
+```
+Usage: t3 teatree questions measure [OPTIONS]
+
+ Count the owner cards that have a Slack mirror, grouped by creation day and
+ kind.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --days        INTEGER  Count cards created in the last N days. [default: 7]  │
+│ --json                 Emit daily kind counts as JSON.                       │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree questions dismiss`
 
 ```
 Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 
- Dismiss pending questions without answering them.
+ Dismiss pending questions without answering them; live owner limits require a
+ direct owner command.
 
  Takes MANY ids because a backlog is dismissed by the class, not one at a
  time. A containerized invocation costs a round-trip of its own, so clearing
@@ -15086,6 +15125,7 @@ Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 │         history.                                                             │
 │ post    Post, token routed by destination (self-DM→bot,                      │
 │         colleague/channel→xoxp); exit 0 on ``ok``.                           │
+│ reply   Reply in an existing owner thread with an idempotency key.           │
 │ react   React, token routed by destination (self-DM→bot,                     │
 │         colleague/channel→xoxp); exit 0 on ``ok``.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -15207,6 +15247,24 @@ Usage: t3 teatree notify post [OPTIONS]
 │ --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay       │
 │                          credentials).                                       │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify reply`
+
+```
+Usage: t3 teatree notify reply [OPTIONS] BODY
+
+ Post a deduped answer in the owner's existing Slack thread.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    body      TEXT  Slack mrkdwn reply body. [required]                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --idempotency-key        TEXT  Required dedupe key. [required]            │
+│ *  --thread-ts              TEXT  Owner DM thread to reply into. [required]  │
+│    --user-id                TEXT  Slack user id to DM.                       │
+│    --help                         Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

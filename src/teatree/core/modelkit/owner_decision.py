@@ -14,6 +14,13 @@ class OwnerDecision(enum.StrEnum):
     ARCHITECTURE = "architecture"
 
 
+OWNER_RAISABLE_DECISIONS = (
+    OwnerDecision.CREDENTIALS,
+    OwnerDecision.MONEY_OR_PLAN,
+    OwnerDecision.PUBLIC_POST,
+    OwnerDecision.IRREVERSIBLE,
+    OwnerDecision.ARCHITECTURE,
+)
 OWNER_KEPT_DECISIONS = frozenset(
     {
         OwnerDecision.CREDENTIALS,
@@ -22,6 +29,7 @@ OWNER_KEPT_DECISIONS = frozenset(
         OwnerDecision.IRREVERSIBLE,
     }
 )
+HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 
 
 def owner_kept_decision(decision: OwnerDecision | None) -> bool:
@@ -32,15 +40,16 @@ OWNER_QUESTION_ROUTE = (
     "Ask the owner only via `t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
     "--checked '<fact>' --why '<one sentence on why you ask>' --blocker '<what stops you>' "
     '--options \'[{"label": "<answer>", "description": "<what happens next>", "recommended": true}, ...]\'`, '
-    f"<kind> being one of {', '.join(OwnerDecision)} (an access or permission grant is credentials), "
+    f"<kind> being one of {', '.join(OWNER_RAISABLE_DECISIONS)} (an access or permission grant is credentials), "
     "listing every fact you checked first and 2 to 4 options with the recommended one first, or none; "
     "at most 120 words in all; plain English everywhere, quotes included (no ids, snake_case names, paths or "
-    "commands); decide everything else yourself."
+    "commands); include `--proposed-text '<exact wording>'` for a rules-file change; decide everything else yourself."
 )
 
 OWNER_ANSWER_ROUTE = (
-    "an owner question is answered only by the owner, in its Slack thread; if it no longer applies, "
-    "`t3 <overlay> questions dismiss <id> --reason '<evidence>'`."
+    "an owner answer arrives in its Slack thread; an attended coordinator may dismiss a settled architecture card "
+    "with `t3 <overlay> questions dismiss <id> --reason '<evidence>'`; "
+    "a dispatched agent cannot dismiss a live owner card."
 )
 
 
@@ -53,9 +62,11 @@ def owner_decision(value: object) -> OwnerDecision | None:
 
 
 __all__ = [
+    "HELD_PR_MARKER_PREFIX",
     "OWNER_ANSWER_ROUTE",
     "OWNER_KEPT_DECISIONS",
     "OWNER_QUESTION_ROUTE",
+    "OWNER_RAISABLE_DECISIONS",
     "OwnerDecision",
     "owner_decision",
     "owner_kept_decision",

@@ -29,10 +29,11 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.eval_run import EvalRunRecord, EvalVerdict
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.session import Session
@@ -92,6 +93,24 @@ class CheckingTestBase(TestCase):
             exit_code=exit_code,
         )
         TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=hours_ago))
+
+
+class TestPendingTriageSuggestions(CheckingTestBase):
+    def test_per_overlay_report_includes_global_and_own_suggestions_only(self) -> None:
+        for overlay in (self.OVERLAY, "", "other"):
+            PendingTriageRecommendation.record_candidate(
+                issue_url=f"https://github.com/acme/widgets/issues/{overlay or 'global'}",
+                verdict="keep",
+                overlay=overlay,
+            )
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert report.triage_suggestions.total == 2
+        assert {item.url for item in report.triage_suggestions.items} == {
+            "https://github.com/acme/widgets/issues/acme",
+            "https://github.com/acme/widgets/issues/global",
+        }
 
 
 class TestMeteredGroup(CheckingTestBase):
@@ -406,7 +425,7 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert "1 internal escalations" in report.to_terse()
         assert report.to_dict()["internal_escalations"] == 1
 
-    def test_all_wait_kinds_are_oldest_first_and_linked(self) -> None:
+    def test_only_owner_cards_are_oldest_first_and_linked(self) -> None:
         oldest = DeferredQuestion.record(
             "May I use this plan?", card=replace(owner_card(), subject="https://example.com/plan")
         )
@@ -443,53 +462,48 @@ class TestNeedsYouGroup(CheckingTestBase):
 
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
 
-        assert [item.kind for item in report.needs_you.items] == [
-            "question",
-            "merge_authorization",
-            "review_request",
-            "manual",
-            "question",
+        assert [item.kind for item in report.needs_you.items] == ["question", "question"]
+        assert [item.age_days for item in report.needs_you.items] == [10, 1]
+        assert [item.url for item in report.needs_you.items] == [
+            "https://example.com/plan",
+            "https://example.com/scope",
         ]
-        assert [item.age_days for item in report.needs_you.items] == [10, 7, 5, 3, 1]
-        assert [item.url for item in report.needs_you.items[:3]] == ["https://example.com/plan", pr.url, review.mr_url]
-        assert report.needs_you.total == 5
+        assert report.needs_you.total == 2
 
-    def test_young_wait_age_renders_in_hours_not_zero_days(self) -> None:
+    def test_young_owner_card_stays_visible_without_a_manual_wait(self) -> None:
         manual = WaitingItem.objects.add("Read the plan")
         WaitingItem.objects.filter(pk=manual.pk).update(created_at=self.now - timedelta(hours=3))
+        DeferredQuestion.record("May I change the design?", card=owner_card())
 
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
 
-        assert [item.detail for item in report.needs_you.items] == ["waiting 3h"]
+        assert len(report.needs_you.items) == 1
+        assert report.needs_you.items[0].age_days == 0
 
     def test_kept_decisions_are_owner_only(self) -> None:
-        for decision in OwnerDecision:
+        for decision in OWNER_RAISABLE_DECISIONS:
             DeferredQuestion.record("May I proceed?", card=owner_card(decision))
 
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, cap=10)
 
         assert {item.kind for item in report.needs_you.items} == {"question"}
-        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False, False]
+        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False]
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
-        assert report.needs_you.total == 1
-        item = report.needs_you.items[0]
-        assert item.label == "#42"
-        assert item.url == ticket.issue_url
-        assert item.detail == "failed agent run"
+        assert report.needs_you.total == 0
+        assert "Needs you" not in report.to_terse(overlay_name=self.OVERLAY)
 
-    def test_failed_attempt_renders_title_inline(self) -> None:
-        # #2092: the needs-you row must carry the ticket title inline. The
-        # rendered line includes the title text next to the id.
+    def test_owner_question_renders_its_text_inline(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=1)
+        DeferredQuestion.record("May I change the design?", card=owner_card())
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         item = report.needs_you.items[0]
-        assert item.title == "ticket 42 work"
-        assert "ticket 42 work" in item.render()
+        assert "May I change the design?" in item.render()
+        assert "failed agent run" not in report.to_terse(overlay_name=self.OVERLAY)
 
     def test_successful_attempt_does_not_block(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)
@@ -506,8 +520,7 @@ class TestNeedsYouGroup(CheckingTestBase):
         # A second failed run on one ticket must not double-count it.
         self._attempt(Ticket.objects.get(issue_url__endswith="/300"), hours_ago=0.5, exit_code=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
-        assert report.needs_you.total == 6
-        assert len(report.needs_you.items) == 5
+        assert report.needs_you.total == 0
 
 
 class TestTerseFormatting(CheckingTestBase):
@@ -603,6 +616,7 @@ class TestJsonShape(CheckingTestBase):
             "merged",
             "in_flight",
             "needs_you",
+            "triage_suggestions",
             "metered",
             "internal_escalations",
             "remaining",
@@ -642,6 +656,7 @@ class TestPureRenderers:
             merged=CheckGroup(title="Merged"),
             in_flight=CheckGroup(title="In-flight"),
             needs_you=CheckGroup(title="Needs you"),
+            triage_suggestions=CheckGroup(title="Triage suggestions"),
             metered=CheckGroup(title="Metered"),
         )
         assert report.to_terse().startswith("Nothing since ")
@@ -762,7 +777,7 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         assert f"[{self.OVERLAY}]" in terse
         assert f"[{self.OVERLAY_B}]" in terse
 
-    def test_overlay_scoped_waits_are_tagged_only_in_the_combined_report(self) -> None:
+    def test_factory_waits_stay_off_the_owner_group_across_overlays(self) -> None:
         pr = PullRequest.objects.create(
             ticket=self._ticket(),
             overlay=self.OVERLAY,
@@ -791,11 +806,7 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         scoped = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         combined = gather_all_overlays_report(overlay_windows=windows, overlay_configs=configs)
 
-        assert [item.label for item in scoped.needs_you.items] == ["acme/widgets#31", review.mr_url]
-        assert [item.label for item in combined.needs_you.items] == [
-            f"[{self.OVERLAY}] acme/widgets#31",
-            f"[{self.OVERLAY}] {review.mr_url}",
-        ]
+        assert scoped.needs_you.total == combined.needs_you.total == 0
 
     def test_empty_across_all_overlays(self) -> None:
         overlay_windows = {
@@ -889,9 +900,7 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
         assert isinstance(report, AllOverlaysReport)
 
-    def test_multi_overlay_in_flight_and_failed_carry_title_inline(self) -> None:
-        # #2092: the multi-overlay in-flight and needs-you rows carry the ticket
-        # title inline next to the id — never a bare/link-only ``#N``.
+    def test_multi_overlay_in_flight_carries_title_and_failed_runs_stay_off_needs_you(self) -> None:
         moving = self._ticket(number=1, state=Ticket.State.CODED)
         self._transition(moving, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         blocked = self._ticket_b(number=2, state=Ticket.State.WORK_STARTED)
@@ -910,6 +919,4 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         in_flight = report.in_flight.items[0]
         assert in_flight.title == "ticket 1 work"
         assert "ticket 1 work" in in_flight.render()
-        failed = next(item for item in report.needs_you.items if not item.label.startswith("Q"))
-        assert failed.title == "ticket 2 beta work"
-        assert "ticket 2 beta work" in failed.render()
+        assert report.needs_you.total == 0
