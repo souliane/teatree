@@ -21,6 +21,43 @@ from tests.teatree_loop.slack_answer.test_thread_card_replies import Backend, _a
 
 
 class TestCardDiscussion(TestCase):
+    def test_twelve_stuck_replies_rotate_to_their_responsible_agent(self) -> None:
+        ticket = planned_ticket(issue_url="https://github.com/acme/widgets/issues/42")
+        session = Session.objects.create(ticket=ticket)
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        replies: list[PendingChatInjection] = []
+        for index in range(12):
+            root = f"{900 + index}.1"
+            timestamp = f"{900 + index}.2"
+            card = _card(root)
+            if index >= 10:
+                card.task_session = session
+                card.save(update_fields=["task_session"])
+            backend.message_meta[timestamp] = {"ts": timestamp, "thread_ts": root}
+            reply = _event(backend, ts=timestamp, root=root, text="Show me the rule")
+            assert reply is not None
+            replies.append(reply)
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_mailbox, "shared_broker", return_value=broker),
+        ):
+            _cycle(backend)
+            _cycle(backend)
+            assert len(backend.replies) == 12
+            peer = broker.register(room=str(ticket.pk), harness="claude_sdk", label="coding task 42")
+            _cycle(backend)
+            delivered = asyncio.run(MailboxClient(peer.socket_path, peer.token).inbox())["messages"]
+            assert len(delivered) == 2
+            _cycle(backend)
+            assert len(asyncio.run(MailboxClient(peer.socket_path, peer.token).inbox())["messages"]) == 2
+
+        for reply in replies[-2:]:
+            reply.refresh_from_db()
+            assert reply.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
+        assert len(backend.replies) == 12
+
     def _reply_with_peer(
         self, *, responsible: bool, action: bool = False
     ) -> tuple[str, DeferredQuestion, PendingChatInjection, Backend]:

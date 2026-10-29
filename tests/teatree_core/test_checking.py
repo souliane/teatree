@@ -32,6 +32,7 @@ from teatree.core.checking import (
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.session import Session
@@ -91,6 +92,24 @@ class CheckingTestBase(TestCase):
             exit_code=exit_code,
         )
         TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=hours_ago))
+
+
+class TestPendingTriageSuggestions(CheckingTestBase):
+    def test_per_overlay_report_includes_global_and_own_suggestions_only(self) -> None:
+        for overlay in (self.OVERLAY, "", "other"):
+            PendingTriageRecommendation.record_candidate(
+                issue_url=f"https://github.com/acme/widgets/issues/{overlay or 'global'}",
+                verdict="keep",
+                overlay=overlay,
+            )
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert report.triage_suggestions.total == 2
+        assert {item.url for item in report.triage_suggestions.items} == {
+            "https://github.com/acme/widgets/issues/acme",
+            "https://github.com/acme/widgets/issues/global",
+        }
 
 
 class TestMeteredGroup(CheckingTestBase):

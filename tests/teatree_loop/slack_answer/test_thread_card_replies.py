@@ -9,6 +9,7 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, PendingChatInjection
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import cards_in_thread
@@ -118,6 +119,56 @@ def _cycle(backend: Backend):
 
 
 class TestThreadCardReplies(TestCase):
+    def _assert_unrouted_burst(self, size: int) -> None:
+        card = _card("336.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        timestamps = [f"336.{index + 10}" for index in range(size)]
+        for timestamp in timestamps:
+            reply = _event(backend, ts=timestamp, root="336.1", text=f"Explain part {timestamp}?")
+            assert reply is not None
+
+        for _ in range(4):
+            _cycle(backend)
+
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
+        assert set(card.audits.filter(action=UNROUTED_AUDIT_ACTION).values_list("note", flat=True)) == set(timestamps)
+        assert (
+            PendingChatInjection.objects.filter(slack_ts__in=timestamps, loop_replied_at__isnull=True).count() == size
+        )
+
+    def test_two_coalesced_unrouted_replies_get_one_notice_across_cycles(self) -> None:
+        self._assert_unrouted_burst(2)
+
+    def test_four_coalesced_unrouted_replies_get_one_notice_across_cycles(self) -> None:
+        self._assert_unrouted_burst(4)
+
+    def test_an_audit_on_another_channel_does_not_hide_a_new_reply(self) -> None:
+        older_card = _card("599.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        for index in range(10):
+            timestamp = f"599.{index + 10}"
+            assert _event(backend, ts=timestamp, root="", text="Thanks for the update") is not None
+            DeferredQuestionAudit.objects.create(
+                question=older_card, action=UNROUTED_AUDIT_ACTION, note=timestamp, resolver_id="card_discussion"
+            )
+        other_card = DeferredQuestion.record("Other channel?", slack_channel="D2", slack_ts="600.1", card=OWNER_CARD)
+        DeferredQuestionAudit.objects.create(
+            question=other_card, action=UNROUTED_AUDIT_ACTION, note="600.2", resolver_id="card_discussion"
+        )
+        reply = _event(backend, ts="600.2", root="", text="Thanks for the update")
+        assert reply is not None
+
+        report = run_slack_answer_cycle(
+            messaging_resolver=lambda _overlay: backend,
+            reader=lambda _text: InboundReading(
+                intent=InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC
+            ),
+        )
+
+        reply.refresh_from_db()
+        assert report.processed == 11
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+
     def test_nested_card_reply_binds_by_thread_membership(self) -> None:
         card = _card("200.2")
         backend = Backend(user_id=OWNER_SLACK_ID)

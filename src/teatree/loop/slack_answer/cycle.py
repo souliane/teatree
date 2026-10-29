@@ -52,7 +52,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Subquery
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
@@ -537,10 +537,11 @@ def run_slack_answer_cycle(
         question__slack_channel=OuterRef("channel"),
     )
     queue = owner_rows(PendingChatInjection.loop_unreplied(), resolver).annotate(
-        unrouted_audited=Exists(unrouted_audit)
+        unrouted_audited=Exists(unrouted_audit),
+        unrouted_tried_at=Subquery(unrouted_audit.order_by("-resolved_at").values("resolved_at")[:1]),
     )
     rows = list(queue.filter(unrouted_audited=False)[:_BATCH])
-    retries = list(queue.filter(unrouted_audited=True)[:_BATCH])
+    retries = list(queue.filter(unrouted_audited=True).order_by("unrouted_tried_at", "received_at")[:_BATCH])
     units = [*_coalesce(rows), *_coalesce(retries)]
     for unit in units:
         report.processed += len(unit.rows)

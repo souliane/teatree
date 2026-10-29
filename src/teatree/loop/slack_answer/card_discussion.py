@@ -6,6 +6,8 @@ import threading
 from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
+from django.utils import timezone
+
 from teatree.agents import live_mailbox
 from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
@@ -165,13 +167,22 @@ def route_card_discussion(row: DeferredQuestion, unit: _Unit) -> bool:
 
 
 def _tell_owner_nobody_is_listening(backend: "MessagingBackend", unit: _Unit, question: DeferredQuestion) -> None:
-    reply_ts = unit.rows[-1].slack_ts
-    if DeferredQuestionAudit.objects.filter(question=question, action=UNROUTED_AUDIT_ACTION, note=reply_ts).exists():
+    reply_timestamps = [row.slack_ts for row in unit.rows]
+    audits = DeferredQuestionAudit.objects.filter(
+        question=question, action=UNROUTED_AUDIT_ACTION, note__in=reply_timestamps
+    )
+    if audits.exists():
+        audits.update(resolved_at=timezone.now())
         return
     posted = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=NOBODY_LISTENING)
     if posted.get("ok") is True:
-        DeferredQuestionAudit.objects.create(
-            question=question, action=UNROUTED_AUDIT_ACTION, note=reply_ts, resolver_id="card_discussion"
+        DeferredQuestionAudit.objects.bulk_create(
+            [
+                DeferredQuestionAudit(
+                    question=question, action=UNROUTED_AUDIT_ACTION, note=timestamp, resolver_id="card_discussion"
+                )
+                for timestamp in reply_timestamps
+            ]
         )
 
 
