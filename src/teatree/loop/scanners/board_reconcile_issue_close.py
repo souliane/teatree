@@ -85,10 +85,15 @@ def closed_issue_transitions(
         )
     closed, reads = _closed_issue_verdicts(probed)
     transitions = collect(
-        [t for t in probed if t.issue_url in closed],
-        lambda ticket: _retire(ticket, closed[ticket.issue_url], dry_run=dry_run),
+        [t for t in probed if _read_url(t) in closed],
+        lambda ticket: _retire(ticket, closed[_read_url(ticket)], dry_run=dry_run),
     )
     return transitions, reads
+
+
+def _read_url(ticket: "Ticket") -> str:
+    """The URL the forge is asked about; a fragment names a row, not another issue, so such rows share one read."""
+    return ticket.issue_url.partition("#")[0]
 
 
 def _closed_issue_verdicts(tickets: "list[Ticket]") -> tuple[dict[str, IssueCloseVerdict], int]:
@@ -107,9 +112,9 @@ def _closed_issue_verdicts(tickets: "list[Ticket]") -> tuple[dict[str, IssueClos
     overlays = get_all_overlays()
     verdicts: dict[str, IssueCloseVerdict] = {}
     for ticket in tickets:
-        if ticket.overlay not in overlays or ticket.issue_url in verdicts:
+        if ticket.overlay not in overlays or _read_url(ticket) in verdicts:
             continue
-        verdicts[ticket.issue_url] = issue_close_verdict(overlays[ticket.overlay], ticket.issue_url)
+        verdicts[_read_url(ticket)] = issue_close_verdict(overlays[ticket.overlay], _read_url(ticket))
     closed = {url: verdict for url, verdict in verdicts.items() if verdict.state is IssueOpenState.CLOSED}
     return closed, len(verdicts)
 

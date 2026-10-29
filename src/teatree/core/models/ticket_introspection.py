@@ -185,6 +185,10 @@ class TicketIntrospectionModel(TicketFacet):
         """Whether this is a Slack lane's bookkeeping row rather than a tracked work item (#5685)."""
         return is_slack_conversation_anchor(self.issue_url)
 
+    def owes_no_work(self) -> bool:
+        """Whether this conversation row was opened by a message recorded as asking for nothing to be built."""
+        return self.is_conversation() and self._slack_answer().get("implies_work") is False
+
     def conversation_in_use(self) -> bool:
         """Whether a conversation row still has a live task or a recent thread, so no sweep may retire it."""
         if not self.is_conversation():

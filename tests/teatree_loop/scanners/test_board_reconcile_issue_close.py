@@ -368,3 +368,23 @@ class TestConversationTicketsOutliveTheirAnchorOnlyWhileInUse(TestCase):
             reconcile_board()
 
         probe.assert_not_called()
+
+    def test_conversations_sharing_one_umbrella_spend_a_single_probe(self) -> None:
+        for ts in ("1700000000.000100", "1700000000.000200"):
+            Ticket.objects.create(
+                overlay="t3-teatree",
+                issue_url=slack_conversation_anchor(channel="D1", slack_ts=ts),
+                short_description="Is the rounding still wrong?",
+            )
+
+        with (
+            _forge(_COMPLETED),
+            patch.object(
+                board_reconcile_issue_close,
+                "issue_close_verdict",
+                wraps=board_reconcile_issue_close.issue_close_verdict,
+            ) as probe,
+        ):
+            report = reconcile_board()
+
+        assert (probe.call_count, len(report.applied)) == (1, 2)

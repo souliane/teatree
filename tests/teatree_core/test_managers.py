@@ -9,6 +9,7 @@ from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQu
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import DeferredQuestion, IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests.factories import planned_ticket
 from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
@@ -61,6 +62,24 @@ class TestTicketQuerySet(TestCase):
 
         assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
         assert handled not in Ticket.objects.unfindable()
+
+    def test_a_conversation_row_that_asked_for_nothing_is_not_a_dead_row(self) -> None:
+        """A noted or simply answered thread owes no work item, so its bookkeeping row dropped nothing."""
+        anchor = slack_conversation_anchor(channel="D1", slack_ts="1.0")
+        Ticket.objects.create(
+            issue_url=anchor,
+            state=Ticket.State.NOT_STARTED,
+            short_description="thanks",
+            extra={"slack_answer": {"implies_work": False}},
+        )
+        dropped = Ticket.objects.create(
+            issue_url=slack_conversation_anchor(channel="D1", slack_ts="2.0"),
+            state=Ticket.State.NOT_STARTED,
+            short_description="fix it",
+            extra={"slack_answer": {"implies_work": True}},
+        )
+
+        assert Ticket.objects.unfindable() == [dropped]
 
 
 class TestWorktreeQuerySet(TestCase):
