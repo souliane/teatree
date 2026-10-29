@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from teatree.loop.drain import quiesce_status
 
 if TYPE_CHECKING:
-    from teatree.core.agent_admission import HeadlessAdmissionJson
+    from teatree.core.admission.headless_status_types import HeadlessAdmissionJson
     from teatree.loop.drain import QuiescePayload
     from teatree.loops.loop_staleness import LoopHealth
     from teatree.utils.singleton import HolderRecord

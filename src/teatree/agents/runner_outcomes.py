@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.agents.compaction_guard import COMPACTION_BLOCKED_REASON
+from teatree.agents.credential_policy import PLANS_ONLY_MARKER
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness
 from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
@@ -132,6 +133,8 @@ def record_round_handoff(task: Task, outcome: HarnessOutcome, *, usage: "Attempt
         )
         if Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).exists():
             base = task.execution_reason.partition(_ROUND_NOTE_MARKER)[0].rstrip()
+            if PLANS_ONLY_MARKER in task.execution_reason and PLANS_ONLY_MARKER not in base:
+                base = f"{base}\n{PLANS_ONLY_MARKER}".strip()
             reason = f"{base}\n\n{note}" if base else note
             Task.objects.filter(pk=task.pk).update(execution_reason=reason)
             task.execution_reason = reason

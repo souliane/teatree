@@ -10,6 +10,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.config import worktree_root
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
+from teatree.core.agent_admission import pending_lane_denial
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import enqueue_llm_critic, record_critic_findings
@@ -97,6 +98,8 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         return _not_admitted(task_id, f"admission blocked: {blocked}")
 
     task_obj = Task.objects.get(pk=task_id)
+    if denied := pending_lane_denial(task_obj):
+        return _not_admitted(task_id, denied)
 
     # The atomic claim is the sole PER-ROW admission decision (F4). Win the compare-and-swap
     # BEFORE any work runs — including the poison-pill and routing failure paths — so a
@@ -113,7 +116,7 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         )
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
-        return {"skipped": f"not claimable: {exc}"}
+        refusal = f"not claimable: {exc}"
 
     if refusal:
         return _not_admitted(task_id, refusal)

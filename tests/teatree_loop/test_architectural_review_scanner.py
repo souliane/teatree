@@ -24,13 +24,21 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import UserSettings
+from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.agent_admission import AgentAdmission, agent_admission_verdict
 from teatree.core.models import PullRequest
+from teatree.core.models.bot_ping import BotPing
+from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.owner_dm.architectural_review_notice import announce_held
 from teatree.loop.scanners.architectural_review import ARCHITECTURAL_REVIEW_PHASE, ArchitecturalReviewScanner
+from teatree.loop.transient_requeue import requeue_transient_failed
 from teatree.provisioning.declared import project_root_for_running_code, skills_declared_in_apm_manifest
 from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
@@ -162,7 +170,91 @@ def _seed_terminal_review(status: Task.Status, *, hours_ago: float, overlay: str
     )
 
 
+def _queued_review_from_scan() -> Task:
+    quota = QuotaSignal(
+        fresh=True,
+        all_accounts_exhausted=False,
+        weekly_utilization=0.1,
+        short_utilization=0.1,
+        seconds_to_weekly_reset=7 * 24 * 3600,
+    )
+    with (
+        patch("teatree.core.agent_admission.read_quota_signal", return_value=quota),
+        patch(
+            "teatree.core.agent_admission.read_machine_signal",
+            return_value=MachineSignal(cores=8, load1=1, ram_available_gb=20),
+        ),
+        patch.object(Ticket, "has_dispatchable_overlay", return_value=True),
+        patch("teatree.core.task_dispatch.enqueue_execution"),
+    ):
+        assert [signal.kind for signal in _scanner().scan()] == ["architectural_review.queued"]
+    task = _last_review_task()
+    assert task is not None
+    return task
+
+
 class ArchitecturalReviewScannerTests(TestCase):
+    def test_scanned_review_completion_notifies_once_with_pr_link(self) -> None:
+        task = _queued_review_from_scan()
+        task.claim(claimed_by="test")
+        url = "https://github.com/example-org/example-repo/pull/900"
+
+        record_result_envelope(task, {"summary": f"Opened {url}"}, phase=task.phase)
+
+        notes = BotPing.objects.filter(idempotency_key=f"architectural-review:completed:{task.pk}")
+        assert notes.count() == 1
+        assert url in notes.get().text
+
+    def test_scanned_review_terminal_failure_notifies_once(self) -> None:
+        task = _queued_review_from_scan()
+        task.claim(claimed_by="test")
+        task.fail(reason="credential available: none", by_holder=True)
+        Task.objects.filter(pk=task.pk).update(execution_reason="[plans-only-retry]")
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="credential available: none")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            assert requeue_transient_failed() == 0
+            assert requeue_transient_failed() == 0
+
+        notes = BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}")
+        assert notes.count() == 1
+        assert "No credential configured" in notes.get().text
+
+    def test_due_review_is_seated_at_creation_beside_full_coding_lane(self) -> None:
+        quota = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.1,
+            short_utilization=0.1,
+            seconds_to_weekly_reset=7 * 24 * 3600,
+        )
+        machine = MachineSignal(cores=8, load1=1, ram_available_gb=20)
+        with (
+            patch("teatree.core.agent_admission.read_quota_signal", return_value=quota),
+            patch("teatree.core.agent_admission.read_machine_signal", return_value=machine),
+            patch.object(Ticket, "has_dispatchable_overlay", return_value=True),
+            patch("teatree.core.task_dispatch.enqueue_execution") as enqueue,
+        ):
+            width = agent_admission_verdict().expensive_lane.ceiling
+            assert width is not None
+            ticket = Ticket.objects.create(overlay=OVERLAY)
+            session = Session.objects.create(ticket=ticket, overlay=OVERLAY)
+            for _ in range(width):
+                Task.objects.create(
+                    ticket=ticket,
+                    session=session,
+                    phase="coding",
+                    status=Task.Status.CLAIMED,
+                    lease_expires_at=timezone.now() + timedelta(hours=1),
+                )
+            signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["architectural_review.queued"]
+        review = _last_review_task()
+        assert review is not None
+        assert review.admitted_at is not None
+        enqueue.assert_called_once_with(review.pk, "architectural_review")
+
     def test_due_review_queues_with_twenty_live_pull_requests(self) -> None:
         for index in range(20):
             PullRequest.objects.record_opened(
@@ -171,10 +263,83 @@ class ArchitecturalReviewScannerTests(TestCase):
             )
 
         signals = _scanner().scan()
-
-        assert len(signals) == 1
-        assert signals[0].kind == "architectural_review.queued"
+        assert [signal.kind for signal in signals] == ["architectural_review.queued"]
         assert _last_review_task() is not None
+
+    def test_admission_hold_emits_reason_and_one_owner_notice(self) -> None:
+        denied = AgentAdmission(
+            expensive_denied="load HALT",
+            cheap_denied="load HALT",
+            review_denied="load HALT",
+            retiring_denied="load HALT",
+            architectural_review_denied="load HALT",
+        )
+        with patch("teatree.core.agent_admission.agent_admission_verdict", return_value=denied):
+            first = _scanner().scan()
+            second = _scanner().scan()
+        assert first[0].kind == "architectural_review.held"
+        assert first[0].payload["reason"] == "load HALT"
+        assert second[0].kind == "architectural_review.held"
+        assert BotPing.objects.filter(idempotency_key__startswith="architectural-review:held:").count() == 1
+        assert KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
+
+        Task.objects.filter(pk=first[0].payload["task_id"]).update(admitted_at=timezone.now())
+        assert _scanner().scan() == []
+        assert not KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
+
+    def test_lapsed_plans_retry_reports_governor_hold(self) -> None:
+        task = _queued_review_from_scan()
+        task.claim(claimed_by="test")
+        task.fail(reason="api_credit: credit balance is too low", by_holder=True)
+        TaskAttempt.objects.create(
+            task=task, ended_at=timezone.now(), exit_code=1, error="api_credit: credit balance is too low"
+        )
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert "[plans-only-retry]" in task.execution_reason
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - timedelta(minutes=6))
+        denied = AgentAdmission(
+            expensive_denied=None,
+            cheap_denied=None,
+            review_denied=None,
+            retiring_denied=None,
+            architectural_review_denied="load HALT",
+        )
+
+        with patch("teatree.core.agent_admission.agent_admission_verdict", return_value=denied):
+            signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["architectural_review.held"]
+        assert signals[0].payload == {"overlay": OVERLAY, "task_id": task.pk, "reason": "load HALT"}
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:held:{task.pk}:admission").count() == 1
+        assert KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
+
+    def test_admission_and_owner_answer_holds_have_distinct_receipts(self) -> None:
+        task = _queued_review_from_scan()
+        announce_held(task, "load HALT", hold_kind="admission")
+        announce_held(task, "awaiting the owner's answer", hold_kind="owner_answer")
+        announce_held(task, "load HALT", hold_kind="admission")
+        assert BotPing.objects.filter(idempotency_key__startswith=f"architectural-review:held:{task.pk}:").count() == 2
+
+    def test_masked_dispatch_reports_held_instead_of_queued(self) -> None:
+        allowed = AgentAdmission(
+            expensive_denied=None,
+            cheap_denied=None,
+            review_denied=None,
+            retiring_denied=None,
+        )
+        with (
+            patch("teatree.core.admission.dispatch_mask.loop_admits", return_value=False),
+            patch("teatree.core.agent_admission.agent_admission_verdict", return_value=allowed),
+            patch.object(Ticket, "has_dispatchable_overlay", return_value=True),
+        ):
+            signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["architectural_review.held"]
+        assert "dispatch loop is masked off" in signals[0].payload["reason"]
+        task = _last_review_task()
+        assert task is not None
+        assert task.admitted_at is None
 
     def test_no_overlay_name_queues_nothing(self) -> None:
         """Defensive: an empty overlay_name short-circuits to no-op.
@@ -238,7 +403,9 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         second = _scanner(cadence_hours=168).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
+        completed_at = Session.objects.get(pk=prior.session_id).started_at
+        assert second[0].payload["next_due_at"] == (completed_at + timedelta(hours=168)).isoformat()
         # No new task created.
         latest = _last_review_task()
         assert latest is not None
@@ -309,7 +476,7 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         second = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
 
     def test_a_recent_failure_does_not_suppress_the_cadence_trigger(self) -> None:
         """A FAILED attempt suppresses nothing — the cadence is the only clock.
@@ -364,7 +531,7 @@ class ArchitecturalReviewScannerTests(TestCase):
         # Old merge predates the review — should not count.
         second = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
 
     def test_overlay_isolation(self) -> None:
         """Merges in another overlay don't count toward this overlay's quota."""
@@ -381,7 +548,7 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         second = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["architectural_review.not_due"]
 
     def test_queued_task_carries_skill_name(self) -> None:
         """The skill name lands in the Task's execution_reason for the dispatcher to pick up."""

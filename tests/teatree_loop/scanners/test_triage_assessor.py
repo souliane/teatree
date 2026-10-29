@@ -6,18 +6,22 @@ list behind an ASK-GATE marker. It performs ZERO host writes (it never closes or
 comments — that is the interactive approval skill's job) and self-gates on a
 cadence (``Session.started_at`` last-run + in-flight-task dedup, the scanning_news
 shape). Issues already carrying a ``PendingTriageRecommendation`` row are dropped.
-Zero survivors ⇒ no task, no signal.
+Zero survivors ⇒ no task and a held signal.
 """
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import NEEDS_TRIAGE_LABEL, PendingTriageRecommendation
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.loop.scanners.base import PartialScanError
+from teatree.loop.scanners.needs_triage_query import needs_triage_issues
 from teatree.loop.scanners.triage_assessor import TRIAGE_ASSESSOR_PHASE, TriageAssessorScanner
 from teatree.types import RawAPIDict
 
@@ -28,13 +32,18 @@ class _Host:
 
     user: str = "alice"
     issues: list[RawAPIDict] = field(default_factory=list)
+    assigned_issues: list[RawAPIDict] | None = None
     writes: list[str] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
 
-    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
-        _ = assignee
+    def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        _ = (assignee, repo_slugs)
+        return self.issues if self.assigned_issues is None else self.assigned_issues
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...]) -> list[RawAPIDict]:
+        _ = (label, repo_slugs)
         return self.issues
 
     def close_issue(self, *args: object, **kwargs: object) -> None:
@@ -69,6 +78,14 @@ def _backdate(task: Task, *, hours: int) -> None:
 
 
 class TriageAssessorScanTests(TestCase):
+    def test_unassigned_read_failure_without_partial_result_channel_raises(self) -> None:
+        host = _Host(assigned_issues=[])
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("forge unavailable")),
+            pytest.raises(RuntimeError, match="forge unavailable"),
+        ):
+            needs_triage_issues(host, ("alice",), repo_slugs=("souliane/teatree",), include_unassigned=True)
+
     URL = "https://github.com/souliane/teatree/issues/700"
     URL_B = "https://github.com/souliane/teatree/issues/701"
 
@@ -99,13 +116,70 @@ class TriageAssessorScanTests(TestCase):
 
     def test_no_needs_triage_issues_queues_nothing(self) -> None:
         host = _Host(issues=[_issue(self.URL, labels=["bug"])])
-        assert _scanner(host).scan() == []
+        assert [signal.kind for signal in _scanner(host).scan()] == ["triage_assessor.held"]
+        assert _last_task() is None
+
+    def test_unassigned_owned_repo_issue_queues_assessment(self) -> None:
+        host = _Host(issues=[_issue(self.URL)], assigned_issues=[])
+
+        signals = _scanner(host, repo_slugs=("souliane/teatree",)).scan()
+
+        assert [signal.kind for signal in signals] == ["triage_assessor.queued"]
+        assert self.URL in _last_task().execution_reason
+
+    def test_unassigned_read_failure_keeps_assigned_results(self) -> None:
+        host = _Host(assigned_issues=[_issue(self.URL)])
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("forge unavailable")),
+            pytest.raises(PartialScanError) as failure,
+        ):
+            _scanner(host, repo_slugs=("souliane/teatree",)).scan()
+        assert [signal.kind for signal in failure.value.signals] == ["triage_assessor.queued"]
+        assert self.URL in _last_task().execution_reason
+
+    def test_unassigned_read_failure_with_no_assigned_issues_is_not_a_clean_hold(self) -> None:
+        host = _Host(assigned_issues=[])
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("forge unavailable")),
+            pytest.raises(PartialScanError) as failure,
+        ):
+            _scanner(host, repo_slugs=("souliane/teatree",)).scan()
+        assert failure.value.signals == []
+        assert _last_task() is None
+
+    def test_assigned_read_failure_is_not_a_clean_hold(self) -> None:
+        host = _Host(issues=[])
+        with (
+            patch.object(host, "list_assigned_issues", side_effect=RuntimeError("forge unavailable")),
+            pytest.raises(PartialScanError) as failure,
+        ):
+            _scanner(host).scan()
+        assert failure.value.signals == []
+
+    def test_unassigned_issue_is_read_when_identity_is_unavailable(self) -> None:
+        host = _Host(user="", issues=[_issue(self.URL)], assigned_issues=[])
+        signals = _scanner(host, repo_slugs=("souliane/teatree",)).scan()
+        assert [signal.kind for signal in signals] == ["triage_assessor.queued"]
+
+    def test_explicit_empty_owned_repo_scope_queues_nothing(self) -> None:
+        host = _Host(issues=[_issue(self.URL)])
+        assert _scanner(host, repo_slugs=()).scan() == []
+        assert _last_task() is None
+
+    def test_labeled_issue_assigned_to_someone_else_is_not_assessed(self) -> None:
+        issue = _issue(self.URL)
+        issue["assignee"] = {"login": "other"}
+        host = _Host(issues=[issue], assigned_issues=[])
+
+        signals = _scanner(host, repo_slugs=("souliane/teatree",)).scan()
+
+        assert [signal.kind for signal in signals] == ["triage_assessor.held"]
         assert _last_task() is None
 
     def test_closed_issue_is_ignored(self) -> None:
         issue = _issue(self.URL)
         issue["state"] = "closed"
-        assert _scanner(_Host(issues=[issue])).scan() == []
+        assert [signal.kind for signal in _scanner(_Host(issues=[issue])).scan()] == ["triage_assessor.held"]
 
     def test_no_identity_resolves_to_no_scan(self) -> None:
         assert _scanner(_Host(user="", issues=[_issue(self.URL)])).scan() == []
@@ -113,7 +187,7 @@ class TriageAssessorScanTests(TestCase):
     def test_issue_with_existing_recommendation_is_dropped(self) -> None:
         PendingTriageRecommendation.record_candidate(issue_url=self.URL, verdict="keep")
         host = _Host(issues=[_issue(self.URL)])
-        assert _scanner(host).scan() == []
+        assert [signal.kind for signal in _scanner(host).scan()] == ["triage_assessor.held"]
         assert _last_task() is None
 
     def test_only_survivors_are_queued(self) -> None:
