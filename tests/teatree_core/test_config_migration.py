@@ -30,7 +30,6 @@ from teatree.core.config_interchange.secret_guard import (
 )
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
-from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.placeholder_terms import TEST_TERM_REGISTRY
 
 _LEAK = TEST_TERM_REGISTRY["leak"][0]
@@ -53,9 +52,6 @@ class TestExportDbToToml(TestCase):
     full round-trip interchange: global rows -> ``[teatree]``, each overlay scope
     -> ``[overlays.<name>]``, each stored value rendered as its native TOML scalar.
     """
-
-    def setUp(self) -> None:
-        seed_default_loops_and_prompts()
 
     def test_global_rows_render_under_teatree_table(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -568,7 +564,6 @@ class _SeedRowsTestCase(TestCase):
     """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
 
     def setUp(self) -> None:
-        seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
 
 

@@ -29,7 +29,6 @@ from teatree.core.config_interchange.seed_tables import (
 )
 from teatree.core.models import Loop
 from teatree.core.models.config_setting import ConfigValue
-from teatree.loops.seed import seed_default_loops_and_prompts
 
 _SEEDED_LOOP = "housekeeping"
 
@@ -56,9 +55,6 @@ class TestLiveSeedRows(TestCase):
 
 class TestEmitOnlyDivergences(TestCase):
     """The override rule: an untouched box exports no seed table."""
-
-    def setUp(self) -> None:
-        seed_default_loops_and_prompts()
 
     def test_an_untouched_box_emits_nothing(self) -> None:
         assert _emitted() == {}

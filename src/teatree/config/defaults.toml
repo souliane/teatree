@@ -369,7 +369,7 @@ description = "Assesses OPEN needs-triage issues daily and queues keep/close/nee
 [loops.dm_sweep]
 delay_seconds = 3600
 colleague_facing = false
-description = "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (subject merged/closed, duplicate of an open thread); leaves anything older than a day for the resurfacing side, and says nothing when it resolved nothing."
+description = "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner already replied, subject merged/closed, duplicate of an open thread); leaves anything older than a day for the resurfacing side, and says nothing when it resolved nothing."
 
 [loops.housekeeping]
 delay_seconds = 3600

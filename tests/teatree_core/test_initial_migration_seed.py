@@ -21,13 +21,7 @@ from django.db import connection
 from django.test import TransactionTestCase
 
 from teatree.core.models import Loop, Mode, Prompt
-from teatree.loops.seed import (
-    ARCH_REVIEW_PROMPT_BODY,
-    DEFAULT_LOOPS,
-    DM_SWEEP_PREVIOUS_DESCRIPTION,
-    script_entry_point_for,
-    seed_default_loops_and_prompts,
-)
+from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS, script_entry_point_for
 from tests.teatree_core._migration_graph import core_initial_migration
 
 _migration = importlib.import_module(f"teatree.core.migrations.{core_initial_migration()}")
@@ -46,8 +40,6 @@ class TestSeedLiteralsMatchTheShippedSeed:
         for spec in DEFAULT_LOOPS:
             row = _LOOP_ROWS[spec.name]
             as_seeded = _dispatch_rewrite._OLD if spec.description == _dispatch_rewrite._NEW else spec.description
-            if spec.name == "dm_sweep":
-                as_seeded = DM_SWEEP_PREVIOUS_DESCRIPTION
             assert (row["delay_seconds"], row["daily_at"], row["description"], row["colleague_facing"]) == (
                 spec.delay_seconds,
                 spec.daily_at,
@@ -98,16 +90,8 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
 
     def test_seeds_each_loop_description_from_the_canonical_seed(self) -> None:
         by_name = dict(Loop.objects.values_list("name", "description"))
-        expected = {spec.name: spec.description for spec in DEFAULT_LOOPS}
-        expected["dm_sweep"] = DM_SWEEP_PREVIOUS_DESCRIPTION
-        assert by_name == expected
+        assert by_name == {spec.name: spec.description for spec in DEFAULT_LOOPS}
         assert all(by_name.values())
-
-    def test_runtime_seed_reconciles_previous_dm_sweep_description(self) -> None:
-        seed_default_loops_and_prompts()
-        assert Loop.objects.get(name="dm_sweep").description == next(
-            spec.description for spec in DEFAULT_LOOPS if spec.name == "dm_sweep"
-        )
 
     def test_slack_answer_is_not_seeded(self) -> None:
         assert not Loop.objects.filter(name="slack_answer").exists()
