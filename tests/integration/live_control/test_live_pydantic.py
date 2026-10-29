@@ -189,6 +189,21 @@ def test_sender_evidence_keeps_the_drive_trail_when_the_receive_side_fails(
     assert line["tool_trail"][-1]["error"] == "unknown peer"
 
 
+def test_evidence_line_quotes_what_the_agent_said_when_it_made_no_tool_call(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    said = "I will run the commands for you. " * 20
+    answered = HarnessOutcome(agent_text=said, result_message=None, stuck_reason=None, thread=[], tool_calls=0)
+
+    with Evidence("pause_resume", model="model-x") as evidence:
+        evidence.outcome = answered
+
+    line = json.loads(capsys.readouterr().out)
+    assert line["tool_calls"] == 0
+    assert line["agent_text"] == said[:160]
+    assert len(line["agent_text"]) == 160
+
+
 def test_evidence_line_names_a_failed_drive(capsys: pytest.CaptureFixture[str]) -> None:
     async def drive() -> HarnessOutcome:
         await asyncio.sleep(0)

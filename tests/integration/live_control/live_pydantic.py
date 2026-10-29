@@ -46,6 +46,7 @@ OPERATOR_JOIN_SECONDS = OPERATOR_DEADLINE_SECONDS + 90.0
 
 _PROVIDER_KEY = re.compile(r"sk-or-[A-Za-z0-9_-]+")
 _TEXT_EXCERPT = 80
+_AGENT_TEXT_EXCERPT = 160
 
 
 def resolve_live_route(
@@ -173,6 +174,7 @@ class Evidence:
             "cost_usd": result.total_cost_usd if result is not None else None,
             "paused": outcome.paused if outcome is not None else None,
             "tool_calls": outcome.tool_calls if outcome is not None else None,
+            "agent_text": outcome.agent_text[:_AGENT_TEXT_EXCERPT] if outcome is not None else None,
             "tool_trail": tool_trail(outcome.thread) if outcome is not None else [],
             "drive_error": _described(self.outcome if isinstance(self.outcome, BaseException) else None),
             "failure": _described(failure),

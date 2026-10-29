@@ -165,10 +165,12 @@ class LivePydanticLaneTests(TestCase):
     def test_pause_preserves_completed_tool_work_and_resume_reads_it(self) -> None:
         nonce = secrets.token_hex(12)
         marker = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="t3-pydantic-pause-"))) / "second-bash"
+        echo_arguments = json.dumps({"command": f"echo {nonce}"})
+        sleep_arguments = json.dumps({"command": f"touch {marker} && sleep 30"})
         prompt = (
-            "Make exactly two Bash tool calls, one per message, never combined. "
-            f"First call Bash with the command `echo {nonce}` and wait for its result. "
-            f"Only after you have seen that result, call Bash with the command `touch {marker} && sleep 30`. "
+            "Make exactly two tool calls, one per message, never combined. "
+            f"First call Bash with exactly these JSON arguments: {echo_arguments}. Wait for its result. "
+            f"Then call Bash with exactly these JSON arguments: {sleep_arguments}. "
             "Do not answer before the second call returns."
         )
         with Evidence("pause_resume", model=self.route.backend.model) as evidence:
