@@ -14,7 +14,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import cards_in_thread
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
-from teatree.loop.slack_answer.card_discussion import NOBODY_LISTENING
+from teatree.loop.slack_answer.card_discussion import NOBODY_LISTENING, UNROUTED_AUDIT_ACTION
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
@@ -211,6 +211,27 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
+
+    def test_question_outside_card_options_gets_one_thread_note_while_waiting(self) -> None:
+        card = _card("336.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["336.2"] = {"ts": "336.2", "thread_ts": "336.1"}
+        reply = _event(backend, ts="336.2", root="336.1", text="What does this change?")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert reply.loop_response_confirmed_at is None
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
+
+        _cycle(backend)
+
+        assert card.audits.filter(action=UNROUTED_AUDIT_ACTION).count() == 1
         assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_top_level_instruction_with_one_option_card_reaches_answerer(self) -> None:
@@ -571,6 +592,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert pending.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert reply.loop_response_confirmed_at is not None
         assert any(f"#{closed.pk}" in text and "no longer" in text.lower() for _, _, text in backend.replies)
 
     def test_question_text_with_two_pending_cards_is_left_to_the_ordinary_route(self) -> None:
