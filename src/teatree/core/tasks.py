@@ -10,6 +10,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.config import worktree_root
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
+from teatree.core.agent_admission import pending_lane_denial
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import enqueue_llm_critic, record_critic_findings
@@ -24,7 +25,6 @@ from teatree.core.models.task_phase_disposition import record_stuck_transition_q
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
-from teatree.core.task_claim_gate import pending_lane_denial
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 from teatree.types import RawAPIDict
 

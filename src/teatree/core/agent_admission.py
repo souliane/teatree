@@ -289,10 +289,6 @@ def _ceiling_denial(ceiling: int, occupied: int, *, lane: str) -> str | None:
     return f"{lane} lane occupancy {occupied} at/over the {lane} ceiling {ceiling}"
 
 
-def _lane_bound(width: int, occupied: int) -> LaneBound:
-    return LaneBound(ceiling=width, headroom=max(0, width - occupied))
-
-
 def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     """The budget this box's CONFIGURED lane would actually spend, and only that one.
 
@@ -324,13 +320,13 @@ class HeadlessAdmissionStatus:
 
     def verdict(self) -> AgentAdmission:
         widths, occupied = self.widths, self.occupied
-        cheap_lane = _lane_bound(widths.cheap, occupied.cheap)
-        review_lane = _lane_bound(widths.review, occupied.review)
-        retiring_lane = _lane_bound(widths.retiring, occupied.retiring)
-        expensive_lane = _lane_bound(widths.expensive, occupied.expensive)
-        answering_lane = _lane_bound(widths.answering, occupied.answering)
-        architectural_review_lane = _lane_bound(widths.architectural_review, occupied.architectural_review)
-        maintenance_lane = _lane_bound(widths.maintenance, occupied.maintenance)
+        cheap_lane = LaneBound.from_width(widths.cheap, occupied.cheap)
+        review_lane = LaneBound.from_width(widths.review, occupied.review)
+        retiring_lane = LaneBound.from_width(widths.retiring, occupied.retiring)
+        expensive_lane = LaneBound.from_width(widths.expensive, occupied.expensive)
+        answering_lane = LaneBound.from_width(widths.answering, occupied.answering)
+        architectural_review_lane = LaneBound.from_width(widths.architectural_review, occupied.architectural_review)
+        maintenance_lane = LaneBound.from_width(widths.maintenance, occupied.maintenance)
         if self.blocked:
             return AgentAdmission(
                 expensive_denied=self.blocked,
@@ -549,6 +545,12 @@ def agent_admission_denied_reason(phase: str = "") -> str | None:
     return agent_admission_verdict().denied_reason(phase)
 
 
+def pending_lane_denial(task_obj: "Task") -> str | None:
+    if task_obj.status != task_obj.Status.PENDING:
+        return None
+    return agent_admission_verdict().claim_denied_reason(task_obj.phase, seated=task_obj.admitted_at is not None)
+
+
 __all__ = [
     "AgentAdmission",
     "HeadlessAdmissionStatus",
@@ -558,5 +560,6 @@ __all__ = [
     "agent_admission_verdict",
     "headless_admission_status",
     "headless_lane_widths",
+    "pending_lane_denial",
     "review_lane_width",
 ]

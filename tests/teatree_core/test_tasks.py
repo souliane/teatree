@@ -1848,7 +1848,7 @@ class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
                 self.task.refresh_from_db()
                 attempts_before = TaskAttempt.objects.filter(task=self.task).count()
                 with (
-                    patch("teatree.core.task_claim_gate.agent_admission_verdict") as verdict,
+                    patch("teatree.core.agent_admission.agent_admission_verdict") as verdict,
                     patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 ):
                     verdict.return_value.claim_denied_reason.return_value = "machine load HALT"
@@ -1858,6 +1858,18 @@ class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
                 assert "machine load HALT" in result.get("skipped", "")
                 assert self.task.status == Task.Status.PENDING
                 assert TaskAttempt.objects.filter(task=self.task).count() == attempts_before
+
+    def test_finished_row_skips_the_lane_probe(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED)
+        with (
+            patch("teatree.core.agent_admission.agent_admission_verdict") as verdict,
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        verdict.assert_not_called()
+        assert "not claimable" in result.get("skipped", "")
+        assert not TaskAttempt.objects.filter(task=self.task).exists()
 
     def test_the_off_posture_leaves_the_task_pending_with_no_attempt(self) -> None:
         ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
