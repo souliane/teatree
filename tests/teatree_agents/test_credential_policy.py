@@ -24,6 +24,7 @@ from teatree.agents.credential_policy import (
 from teatree.agents.harness import resolve_harness
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.runner import _resolve_dispatch_lane
+from teatree.agents.usage_window import maybe_park_for_active_window
 from teatree.config import AgentHarnessProvider
 from teatree.config.cross_key_consistency import check_harness_provider_pair
 from teatree.config.schema import setting_choices
@@ -37,6 +38,7 @@ from teatree.core.models import (
     Ticket,
     UsageWindowState,
 )
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.credential_config import api_key_lane_available, resolve_eval_credential
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import AnthropicSubscriptionCredential
@@ -100,6 +102,14 @@ class TestExhaustionRule(CredentialPolicyCase):
         _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         assert subscription_lane_exhausted() is True
 
+    def test_newly_available_oauth_account_overrides_an_old_all_accounts_window(self) -> None:
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/new/oauth"])
+        task = _claimed_task()
+
+        assert subscription_lane_exhausted() is False
+        assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
+
     def test_an_elapsed_window_does_not(self) -> None:
         now = timezone.now()
         _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE, resets_at=now + timedelta(hours=1))
@@ -120,6 +130,32 @@ class TestExhaustionRule(CredentialPolicyCase):
 
 
 class TestResolvedProvider(CredentialPolicyCase):
+    def test_non_claude_review_retry_keeps_unset_provider(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        task = _claimed_task()
+        Task.objects.filter(pk=task.pk).update(phase="architectural_review", execution_reason="[plans-only-retry]")
+        task.refresh_from_db()
+
+        assert resolve_dispatch_harness(task).provider is None
+
+    def test_unset_provider_review_retry_explicitly_selects_plans(self) -> None:
+        assert resolve_credential_provider(None, scope="", plans_only=True) is AgentHarnessProvider.SUBSCRIPTION_OAUTH
+
+    def test_architectural_review_retry_stays_on_plans_after_credit_refusal(self) -> None:
+        _pin(_COMPOSITE.value)
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        task = _claimed_task()
+        Task.objects.filter(pk=task.pk).update(phase="architectural_review", execution_reason="[plans-only-retry]")
+        task.refresh_from_db()
+
+        provider = resolve_dispatch_harness(task, phase=task.phase).provider
+        assert provider is AgentHarnessProvider.SUBSCRIPTION_OAUTH
+        assert _resolve_dispatch_lane(resolve_harness(), provider) == TaskAttempt.Lane.SUBSCRIPTION
+        child = _provider_child_env(provider).env
+        assert child is not None
+        assert _OAUTH_VAR in child
+        assert _API_KEY_VAR not in child
+
     def test_plans_only_never_reaches_the_api_even_when_exhausted(self) -> None:
         _pin(AgentHarnessProvider.SUBSCRIPTION_OAUTH.value)
         _plan_window(LimitCause.SUBSCRIPTION_WEEKLY.value)
@@ -170,6 +206,29 @@ class TestResolvedProvider(CredentialPolicyCase):
         assert metered_child is not None
         assert _API_KEY_VAR in metered_child
         assert _OAUTH_VAR not in metered_child
+
+    def test_an_all_accounts_window_over_spent_accounts_still_fails_over_to_the_api(self) -> None:
+        _pin(_COMPOSITE.value)
+        oauth_paths = ["anthropic/a/oauth", "anthropic/b/oauth"]
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", oauth_paths)
+        for path in oauth_paths:
+            AnthropicTokenUsage.objects.record(
+                path,
+                TokenHealthReading(
+                    organization_id="org",
+                    utilization_5h=0.99,
+                    utilization_7d=0.1,
+                    status_5h="allowed",
+                    status_7d="allowed",
+                    reset_5h=timezone.now() + timedelta(hours=2),
+                    reset_7d=None,
+                ),
+                now=timezone.now(),
+            )
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+
+        assert subscription_lane_exhausted() is True
+        assert resolve_dispatch_harness().provider is AgentHarnessProvider.API_KEY
 
     def test_every_plan_exhaustion_cause_fails_over(self) -> None:
         _pin(_COMPOSITE.value)

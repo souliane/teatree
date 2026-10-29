@@ -25,7 +25,7 @@ from teatree.core.models.task_claim import window_parked
 
 #: A phase with no registered agent, so the headless auto-enqueue seam stays live under the
 #: default interactive runtime (a loop-dispatched phase would short-circuit the signal).
-_FREE_FORM_PHASE = "architectural_review"
+_FREE_FORM_PHASE = "unregistered_phase"
 _LANE = TaskAttempt.Lane.SUBSCRIPTION
 
 

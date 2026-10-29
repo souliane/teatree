@@ -28,6 +28,7 @@ from teatree.agents.envelope_refusal import (
     REVIEW_CONTEXT_REFUSAL_PREFIX,
 )
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
+from teatree.config import AgentHarnessProvider
 from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
@@ -45,6 +46,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.models.bot_ping import BotPing
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
@@ -263,18 +265,83 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.PENDING
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
-    def test_synthetic_cadence_ticket_still_escalates_on_a_stall(self) -> None:
+    def test_synthetic_review_stall_notifies_owner_once(self) -> None:
         # The cap exemption must not swallow stall detection.
         task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
         for _ in range(2):
             _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
 
-        reopened = requeue_transient_failed()
+        with self.captureOnCommitCallbacks(execute=True):
+            reopened = requeue_transient_failed()
 
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").count() == 1
+
+        notice = BotPing.objects.get(idempotency_key=f"architectural-review:failed:{task.pk}")
+        assert "stalled" in notice.text
+
+    def test_architectural_review_credit_failure_retries_on_plans(self) -> None:
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        _add_failed_attempt(task, error="api_credit: no credit")
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "[plans-only-retry]" in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED)
+        _add_failed_attempt(task, error="api_credit: still no credit")
+        with self.captureOnCommitCallbacks(execute=True):
+            assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").count() == 1
+        assert requeue_transient_failed() == 0
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").count() == 1
+
+    def test_architectural_review_auth_failure_retries_once_on_plans(self) -> None:
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        _add_failed_attempt(task, error="credential available: none")
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "[plans-only-retry]" in task.execution_reason
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").count() == 0
+
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.FAILED)
+        _add_failed_attempt(task, error="credential available: none")
+        with self.captureOnCommitCallbacks(execute=True):
+            assert requeue_transient_failed() == 0
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").count() == 1
+
+    def test_api_only_review_credit_failure_does_not_retry_on_the_same_lane(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", AgentHarnessProvider.API_KEY.value)
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        _add_failed_attempt(task, error="api_credit: no credit")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert HALT_STAMP in task.execution_reason
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:failed:{task.pk}").exists()
+
+    def test_subscription_only_review_credit_failure_does_not_repeat_same_lane(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", AgentHarnessProvider.SUBSCRIPTION_OAUTH.value)
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        _add_failed_attempt(task, error="api_credit: no credit")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "[plans-only-retry]" not in task.execution_reason
 
     def test_tick_recovery_reopens_transient_failed(self) -> None:
         # The sweep is wired into the loop tick's recovery step, not just callable.

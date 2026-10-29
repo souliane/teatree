@@ -29,12 +29,13 @@ from teatree.core.issue_hygiene import (
 from teatree.core.issue_writes.issue_candidate_selection import description_of, open_candidates
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.news_digest import DigestItem, render_digest
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.owner_dm.architectural_review_notice import announce_completed, announce_held
 from teatree.core.question_heal import record_withheld
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
@@ -78,6 +79,14 @@ def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str
     _maybe_record_article_suggestions(task, result, phase=phase)
     _maybe_record_triage_recommendations(task, result, phase=phase)
     _maybe_record_answer_draft(task, result, phase=phase, work_item=_maybe_file_work_item(task, result, phase=phase))
+
+
+def announce_completed_architectural_review(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    if normalize_phase(phase or task.phase) == ARCHITECTURAL_REVIEW_PHASE:
+        if result.get("needs_user_input"):
+            announce_held(task, "awaiting the owner's answer", hold_kind="owner_answer")
+        else:
+            announce_completed(task, str(result.get("summary") or ""))
 
 
 def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, phase: str) -> None:

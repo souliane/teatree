@@ -11,15 +11,8 @@ of ``teatree.core.notify`` (at its module-health LOC cap). Both post pending
 * :func:`drain_unmirrored_deferred_questions` — the headless ask-loop poster:
     posts rows with no Slack mirror yet under their subject ticket when known,
     otherwise at the DM root, and stamps the card's own mirror coordinates;
-* :func:`resurface_question_backlog` — the RECURRING nag's DIGEST half
-    (directive #36). The two drains above are single-shot per question (each keys
-    its idempotency on the row's ``stable_notify_ref``), so a question the owner
-    never answers is never raised again. This one re-raises the backlog as ONE
-    count per :data:`RESURFACE_INTERVAL_HOURS` bucket in the owner's DM;
-* :func:`reask_escalated_questions` — the RECURRING nag's ANSWERABLE half. A
-    digest is a place the owner cannot answer from (a reply under it carries the
-    digest's thread ts, which joins no question), so the per-question bump is
-    posted in its subject ticket thread when known, otherwise its mirror thread,
+* :func:`reask_escalated_questions` — the recurring per-question bump, posted
+    in its subject ticket thread when known, otherwise its mirror thread,
     once per escalation generation.
     It records no row and re-records nothing: ``DeferredQuestion.record`` returns
     the existing pending row for a marker, so a re-ask built on it posts nothing
@@ -49,22 +42,14 @@ from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, owner_decision
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.modelkit.reask_cadence import (
-    REASK_KEY_PREFIX,
-    REASK_UNIT,
-    RESURFACE_INTERVAL_HOURS,
-    bump_due,
-    first_posted_at,
-    owner_quiet_at,
-    reask_key,
-)
-from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost
-from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
+from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, bump_due, first_posted_at, owner_quiet_at, reask_key
+from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost, TicketDmThread
+from teatree.core.notify import NotifyKind, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.core.owner_dm.question_ticket import single_question_ticket_id
+from teatree.core.owner_dm.ticket_dm_delivery import root_is_deleted
 from teatree.core.owner_question_message import (
     bump_text,
-    digest_text,
     render_blocks,
     render_text,
     replace_root,
@@ -74,6 +59,7 @@ from teatree.core.owner_question_message import (
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
 from teatree.loop.preset_resolution import owner_zone
 
+# Bound repeat-notification bursts after the owner returns; later ticks read the remaining backlog.
 _MAX_RESURFACE_PER_TICK = 3
 
 #: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
@@ -111,20 +97,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: How many questions one re-ask bucket bumps in their own Slack threads. The
-#: digest can name a hundred rows in one message and none of them is answerable
-#: there; five bumps are five threads the owner can actually reply into, which is
-#: the number that decides how fast the backlog can shrink.
+#: Bound the number of distinct answerable threads bumped in one scanner pass.
 _REASK_BATCH = 5
 
 _MIRROR_KEY_PREFIX = "mirror-deferred-question:"
-_DIGEST_KEY_PREFIX = "question-backlog-digest:"
+_STRANDED_SEND_WINDOW = dt.timedelta(hours=1)
 
-#: Owner DMs the four drains may send in any rolling hour; what the hour cannot carry waits for the next one.
-OWNER_QUESTION_PINGS_PER_HOUR = 6
-_CEILING_WINDOW = dt.timedelta(hours=1)
-
-_QUESTION_PING_KEY_PREFIXES = (_RESURFACE_KEY_PREFIX, _MIRROR_KEY_PREFIX, _DIGEST_KEY_PREFIX, REASK_KEY_PREFIX)
+_QUESTION_PING_KEY_PREFIXES = (_RESURFACE_KEY_PREFIX, _MIRROR_KEY_PREFIX, REASK_KEY_PREFIX)
 
 #: One sender across every process: a live holder keeps it for its whole send, a dead one frees it.
 _QUESTION_PING_SLOT = "work:owner-question-ping"
@@ -141,21 +120,6 @@ _QUESTION_PING_THREAD_WAIT_SECONDS = 15
 
 def _question_ping_keys() -> Q:
     return reduce(or_, (Q(idempotency_key__startswith=prefix) for prefix in _QUESTION_PING_KEY_PREFIXES))
-
-
-def _in_flight(now: dt.datetime) -> Q:
-    # In-flight sends hold their slot past the lease; a crashed one frees it at the send path's staleness bound.
-    return Q(status=BotPing.Status.SENDING, posted_at__gt=now - BotPing.SENDING_STALE_AFTER)
-
-
-def _question_pings_left() -> int:
-    now = timezone.now()
-    delivered = Q(
-        status__in=(BotPing.Status.SENT, BotPing.Status.SENT_UNVERIFIED),
-        posted_at__gt=now - _CEILING_WINDOW,
-    )
-    spent = BotPing.objects.filter(_question_ping_keys(), delivered | _in_flight(now)).count()
-    return OWNER_QUESTION_PINGS_PER_HOUR - spent
 
 
 def owner_quiet_now() -> bool:
@@ -179,13 +143,7 @@ def _question_ping_slot(*, first_post: bool = False) -> Generator[bool]:
         return
     try:
         with _held_question_ping_slot() as held:
-            open_slot = held and (first_post or _question_pings_left() > 0)
-            if held and not open_slot:
-                logger.info(
-                    "Owner question pings are at %d this hour; the backlog waits for the next slot",
-                    OWNER_QUESTION_PINGS_PER_HOUR,
-                )
-            yield open_slot
+            yield held
     finally:
         _QUESTION_PING_THREAD_GUARD.release()
 
@@ -226,9 +184,9 @@ def _release_a_stranded_holder() -> None:
     if holder["lease_expires_at"] is None or holder["lease_expires_at"] >= now:
         return
     with transaction.atomic():
-        # A send claimed inside the hour can still land in the window it is counted in, even past the stale bound.
+        # A live send can outlast its claim and must keep the serialized slot.
         if BotPing.objects.filter(
-            _question_ping_keys(), status=BotPing.Status.SENDING, posted_at__gt=now - _CEILING_WINDOW
+            _question_ping_keys(), status=BotPing.Status.SENDING, posted_at__gt=now - _STRANDED_SEND_WINDOW
         ).exists():
             return
         LoopLease.objects.filter(
@@ -252,47 +210,6 @@ def _held_question_ping_slot() -> Generator[bool]:
         yield True
     finally:
         LoopLease.objects.release_ownership(_QUESTION_PING_SLOT, session_id=session)
-
-
-def resurface_question_backlog(
-    *,
-    user_id: str = "",
-    overlay: str = "",
-    backend: "MessagingBackend | None" = None,
-    now: dt.datetime | None = None,
-) -> tuple[bool, int]:
-    """Post at most one backlog digest per interval; return ``(posted, pending)``.
-
-    Directive #36's recurring half: an unanswered question is re-raised until the
-    owner reacts, in the owner's DM and never as a per-question burst. The interval bucket IS
-    the idempotency key, so every tick inside one bucket collapses onto the single
-    delivered ``BotPing`` row and only a new bucket posts again. INTERNAL-audience
-    rows (an agent's own tool-lack self-report) are excluded, as in the two
-    first-post drains.
-    """
-    rows = _checked(live_owner_questions(), backend=backend)
-    if not rows:
-        return False, 0
-
-    stamped_at = now or timezone.now()
-    if all(first_posted_at(row.slack_ts, row.created_at) > stamped_at - REASK_UNIT for row in rows):
-        return False, len(rows)
-    bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
-    previous_overlay = _scoped_overlay_env(overlay)
-    try:
-        with _question_ping_slot() as open_slot:
-            posted = open_slot and notify_user(
-                digest_text(rows, now=stamped_at),
-                kind=NotifyKind.QUESTION,
-                idempotency_key=f"{_DIGEST_KEY_PREFIX}{bucket}",
-                audience=NotifyAudience.OWNER_QUESTION,
-                backend=backend,
-                user_id=user_id or None,
-                linkify=False,
-            )
-    finally:
-        _restore_overlay_env(overlay, previous_overlay)
-    return posted, len(rows)
 
 
 def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None") -> list[DeferredQuestion]:
@@ -326,8 +243,15 @@ def _post(
     """Send a card or chase through its subject ticket when uniquely known."""
     mirrored = bool(row.slack_ts)
     ticket_id = single_question_ticket_id(row)
-    return notify_user_outcome(
-        bump_text(row, now=now) if mirrored else render_text(row),
+    old_root = (
+        TicketDmThread.objects.filter(ticket_id=ticket_id, channel=row.slack_channel, root_ts=row.slack_ts).exists()
+        if mirrored and ticket_id is not None
+        else False
+    )
+    target = (backend or resolve_owner_dm_backend()[0]) if old_root else None
+    deleted_root = bool(old_root and target and root_is_deleted(target, row.slack_channel, row.slack_ts))
+    outcome = notify_user_outcome(
+        bump_text(row, now=now) if mirrored and not deleted_root else render_text(row),
         kind=NotifyKind.QUESTION,
         idempotency_key=key,
         audience=NotifyAudience.OWNER_QUESTION,
@@ -335,13 +259,27 @@ def _post(
             backend=backend,
             user_id=user_id or None,
             thread_ts="" if ticket_id is not None else row.slack_ts,
-            fallback_thread_ts=row.slack_ts,
+            fallback_thread_ts="" if deleted_root else row.slack_ts,
             ticket_id=ticket_id,
             question_id=row.pk if ticket_id is not None else None,
             linkify=False,
-            blocks=None if mirrored else render_blocks(row),
+            blocks=None if mirrored and not deleted_root else render_blocks(row),
         ),
     )
+    if deleted_root and outcome.sent:
+        ping = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).first()
+        if (
+            ping
+            and ping.posted_ts
+            and TicketDmPost.objects.filter(channel=ping.channel_ref, slack_ts=ping.posted_ts, question=row).exists()
+        ):
+            changed = DeferredQuestion.objects.filter(
+                pk=row.pk, slack_ts=row.slack_ts, answered_at__isnull=True, dismissed_at__isnull=True
+            ).update(slack_ts=ping.posted_ts, slack_channel=ping.channel_ref)
+            if changed:
+                row.slack_ts = ping.posted_ts
+                row.slack_channel = ping.channel_ref
+    return outcome
 
 
 def _stamp_mirror_from(row: DeferredQuestion, key: str) -> bool:

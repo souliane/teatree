@@ -19,7 +19,6 @@ from teatree.core.notify_question_drains import (
     drain_deferred_questions,
     drain_unmirrored_deferred_questions,
     reask_escalated_questions,
-    resurface_question_backlog,
 )
 from teatree.core.owner_question_message import render_blocks, render_text
 from tests._owner_channel import legacy_owner_row, owner_card
@@ -84,15 +83,6 @@ class TestAJargonRowIsNeverSent(TestCase):
 
         self._assert_withheld_and_unsent(row, backend)
         assert (bumped, candidates) == (0, 0)
-
-    def test_the_digest_neither_posts_nor_counts_it(self) -> None:
-        row, backend = _jargon_row(), _backend()
-
-        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            posted, pending = resurface_question_backlog(user_id="U0DEMOOWNER", backend=backend)
-
-        self._assert_withheld_and_unsent(row, backend)
-        assert (posted, pending) == (False, 0)
 
     def test_a_row_without_a_marker_gets_one_that_names_it(self) -> None:
         row = _jargon_row()

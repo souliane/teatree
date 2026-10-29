@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.agents.credential_policy import resolve_credential_provider
+from teatree.agents.credential_policy import plans_only, resolve_credential_provider
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
@@ -237,7 +237,21 @@ def _route_provider(
         provider = provider_under(context.settings, candidate.harness, context.phase)
     assert_provider_valid_for_harness(candidate.harness, provider.value if provider is not None else None)
     if spec.allows_provider:
-        provider = resolve_credential_provider(provider, scope=context.overlay)
+        provider = _resolved_provider_for_harness(
+            provider, name=candidate.harness, scope=context.overlay, task=context.task
+        )
+    return provider
+
+
+def _resolved_provider_for_harness(
+    configured: AgentHarnessProvider | None, *, name: str, scope: str, task: "Task | None"
+) -> AgentHarnessProvider | None:
+    valid = valid_providers_for(name)
+    subscription_allowed = not valid or AgentHarnessProvider.SUBSCRIPTION_OAUTH.value in valid
+    provider = resolve_credential_provider(
+        configured, scope=scope, plans_only=plans_only(task) and subscription_allowed
+    )
+    assert_provider_valid_for_harness(name, provider.value if provider is not None else None)
     return provider
 
 
@@ -408,7 +422,9 @@ def resolve_dispatch_harness(
             )
     provider = None
     if spec.allows_provider:
-        provider = resolve_credential_provider(provider_under(settings, name, phase), scope=overlay or "")
+        provider = _resolved_provider_for_harness(
+            provider_under(settings, name, phase), name=name, scope=overlay or "", task=task
+        )
     spawn_selection = None
     if phase is not None:
         subject = honesty_subject(task) if task is not None else None

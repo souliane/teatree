@@ -20,7 +20,7 @@ def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
     recent_attempts = TaskAttempt.objects.filter(attempt_filter)
     completed_24h = recent_attempts.count()
     succeeded_24h = recent_attempts.filter(exit_code=0).count()
-    failed_24h = completed_24h - succeeded_24h
+    failed_24h = recent_attempts.exclude(exit_code=0).exclude(outcome=TaskAttempt.Outcome.PARKED).count()
     token_stats = recent_attempts.aggregate(
         total_input=Sum("input_tokens"),
         total_output=Sum("output_tokens"),

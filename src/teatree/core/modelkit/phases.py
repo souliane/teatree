@@ -185,10 +185,17 @@ class PhaseCost(StrEnum):
     CHEAP = "cheap"
     EXPENSIVE = "expensive"
     ANSWERING = "answering"
+    ARCHITECTURAL_REVIEW = "architectural_review"
+    MAINTENANCE = "maintenance"
+
+
+MAINTENANCE_PHASES: frozenset[str] = frozenset(
+    {BACKLOG_SWEEP_PHASE, EVAL_LOCAL_PHASE, DOGFOOD_SMOKE_PHASE, "scanning_news", "triage_assessing"}
+)
 
 
 #: Review and work-retiring phases have separate bounds outside the coding ceiling.
-#: Background assessors gate no merge, so they stay in the coding lane.
+#: Periodic maintenance has its own bounded lane; other background work stays with coding.
 #: Cheap is not free: ``_TOOLS_BY_PHASE`` grants these phases ``shell``, the
 #: cold-review procedure provisions a detached review checkout, a
 #: reviewer is told to run the suite, and a ``shipping`` agent's push fires the parity
@@ -233,8 +240,8 @@ class CheapClass(StrEnum):
 def phase_cost(phase: str) -> PhaseCost:
     """Classify *phase* for admission. Anything unrecognised is EXPENSIVE.
 
-    Fail-safe by construction: only an explicitly registered member of
-    :data:`CHEAP_PHASES` or :data:`ANSWERING_PHASES` leaves the braked class, so a new or
+    Fail-safe by construction: only explicitly registered cheap, answering,
+    architectural-review, or maintenance phases leave the coding class, so a new or
     misspelled phase inherits the coding bound rather than an exemption. ``phase`` is
     normalized, so a row stored under a short verb (``review``) classifies like its
     canonical gerund.
@@ -242,6 +249,10 @@ def phase_cost(phase: str) -> PhaseCost:
     canonical = normalize_phase(phase)
     if canonical in ANSWERING_PHASES:
         return PhaseCost.ANSWERING
+    if canonical == ARCHITECTURAL_REVIEW_PHASE:
+        return PhaseCost.ARCHITECTURAL_REVIEW
+    if canonical in MAINTENANCE_PHASES:
+        return PhaseCost.MAINTENANCE
     return PhaseCost.CHEAP if canonical in CHEAP_PHASES else PhaseCost.EXPENSIVE
 
 

@@ -217,8 +217,8 @@ TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 —
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_db.DatabaseBackend",
-        # "default" carries coding/headless tasks, "cheap" carries review/draining
-        # phases, and "loops" carries the timer/control chains (#1796). Dedicated
+        # "default" carries coding tasks, "cheap" carries bounded review, answering,
+        # and maintenance tasks; "loops" carries timer/control chains (#1796). Dedicated
         # executors keep review and reactive timers off the heavy coding queue.
         "QUEUES": ["default", "loops", "cheap"],
     },

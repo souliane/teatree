@@ -1,20 +1,29 @@
 """A routed candidate refused for credit has spent its key, not the route: rotate, else wait for the plans."""
 
+import asyncio
 import contextlib
+import datetime as dt
+import json
 import os
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from typing import Any
 from unittest.mock import patch
 
+from claude_agent_sdk.types import RateLimitInfo
 from django.test import TestCase
 from django.utils import timezone
 
 import teatree.agents.harness as harness_mod
 from teatree.agents.runner import run_agent
+from teatree.agents.runner_route_recording import RouteFailureRecord
+from teatree.agents.runner_stream import HarnessOutcome
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import (
     LIMIT_PARKED_PREFIX,
     AgentRouteAvailability,
+    AnthropicActivePick,
     AnthropicTokenUsage,
+    ConfigSetting,
     Session,
     Task,
     TaskAttempt,
@@ -22,9 +31,17 @@ from teatree.core.models import (
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._metered_keys import KEY_1, KEY_2, cap_the_plans, route_metered_keys
-from tests.teatree_agents._route_fakes import CLAUDE_LIKE, CLAUDE_SDK, register_stub_harnesses, route_config, routed_by
+from tests.teatree_agents._route_fakes import (
+    CLAUDE_LIKE,
+    CLAUDE_SDK,
+    register_stub_harnesses,
+    route_config,
+    routed_by,
+    two_healthy_oauth_accounts,
+)
 from tests.teatree_agents._sdk_fake import (
     FakeHarnessSession,
+    assistant_text,
     assistant_tool_use,
     fake_sdk,
     result_message,
@@ -36,6 +53,38 @@ _REFUSAL = result_message(
     subtype="error_during_execution", is_error=True, result="The request failed: you are out of credits."
 )
 _SUCCESS = success_stream({"summary": "done", "files_modified": [{"path": "src/x.py", "action": "modified"}]})
+_SESSION_REFUSAL = result_message(
+    subtype="error_during_execution", is_error=True, result="You've hit your five-hour limit."
+)
+
+
+def test_route_hold_uses_the_reported_reset() -> None:
+    reset = timezone.now() + dt.timedelta(hours=3)
+    outcome = HarnessOutcome(
+        agent_text="",
+        result_message=_SESSION_REFUSAL,
+        stuck_reason=None,
+        rate_limit_info=RateLimitInfo(status="rejected", rate_limit_type="five_hour", resets_at=int(reset.timestamp())),
+    )
+
+    hold = RouteFailureRecord(reason="subscription_session: limit", skills=[], outcome=outcome).hold
+
+    assert hold is not None
+    assert dt.timedelta(hours=2, minutes=59) < hold < dt.timedelta(hours=3, minutes=1)
+
+
+def test_access_denial_ignores_a_key_lifetime_as_its_reset() -> None:
+    expiration = timezone.now() + dt.timedelta(days=365)
+    outcome = HarnessOutcome(
+        agent_text="",
+        result_message=result_message(subtype="error_during_execution", is_error=True, api_error_status=403),
+        stuck_reason=None,
+        rate_limit_info=RateLimitInfo(
+            status="rejected", rate_limit_type="five_hour", resets_at=int(expiration.timestamp())
+        ),
+    )
+
+    assert RouteFailureRecord(reason="http 403", skills=[], outcome=outcome).hold == dt.timedelta(hours=1)
 
 
 @contextlib.contextmanager
@@ -78,6 +127,7 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert AnthropicTokenUsage.objects.get(pass_path=KEY_1).is_exhausted
         assert not AgentRouteAvailability.objects.exists()
         assert attempt.exit_code == 0
+        assert list(self.task.attempts.order_by("pk").values_list("account", flat=True)) == [KEY_1, KEY_2]
 
     def test_every_key_spent_parks_until_the_plan_reset_outside_the_route_hold_cap(self) -> None:
         route_metered_keys(self, [KEY_1, KEY_2])
@@ -151,3 +201,79 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert AgentRouteAvailability.objects.filter(harness=CLAUDE_SDK).exists()
         assert not AnthropicTokenUsage.objects.exists()
         assert self.task.status == Task.Status.PENDING
+        assert self.task.attempts.order_by("pk").first().account == KEY_1
+
+
+class TestRoutedSubscriptionLimit(TestCase):
+    def test_session_limit_rotates_account_without_holding_the_route(self) -> None:
+        first, second = two_healthy_oauth_accounts()
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with (
+            routed_by(route_config(_SKILL, CLAUDE_SDK)),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=[_SKILL]),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: path),
+            patch.object(Task, "renew_lease", lambda self, **_kw: None),
+            scripted_sdk([_SESSION_REFUSAL]),
+        ):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata=SkillMetadata())
+
+        task.refresh_from_db()
+        assert attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}rotating")
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert task.not_before <= timezone.now()
+        assert AnthropicActivePick.objects.pick_for("oauth", "") == second
+        assert AnthropicTokenUsage.objects.get(pass_path=first).is_exhausted
+        assert not AgentRouteAvailability.objects.exists()
+        assert attempt.account == first
+
+
+class _HangsAfterItsMessages(FakeHarnessSession):
+    def __init__(self, messages: list[Any]) -> None:
+        super().__init__(messages)
+        self._interrupt_landed = asyncio.Event()
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        async for message in super().receive_response():
+            yield message
+        await self._interrupt_landed.wait()
+
+    async def interrupt(self) -> None:
+        await super().interrupt()
+        self._interrupt_landed.set()
+
+
+class TestARoutedRunThatHitsItsRuntimeCeiling(TestCase):
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 1, scope="")
+        ticket = planned_ticket()
+        self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+    def _run(self, *messages: Any) -> TaskAttempt:
+        with (
+            routed_by(route_config(_SKILL, CLAUDE_SDK)),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=[_SKILL]),
+            patch.object(Task, "renew_lease", lambda self, **_kw: None),
+            fake_sdk(list(messages)),
+            patch.object(harness_mod, "ClaudeSDKClient", lambda **_: _HangsAfterItsMessages(list(messages))),
+        ):
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata=SkillMetadata())
+        self.task.refresh_from_db()
+        return attempt
+
+    def test_an_envelope_written_before_the_ceiling_is_kept(self) -> None:
+        envelope = {"summary": "implemented", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+
+        attempt = self._run(assistant_tool_use(), assistant_text(json.dumps(envelope)))
+
+        assert self.task.status == Task.Status.COMPLETED
+        assert attempt.result["summary"] == "implemented"
+
+    def test_a_run_with_no_envelope_fails_as_a_runtime_ceiling(self) -> None:
+        attempt = self._run(assistant_tool_use(), assistant_text("still reading the fixtures"))
+
+        assert self.task.status == Task.Status.FAILED
+        assert attempt.error.startswith("stuck_loop: ")
+        assert attempt.failure_kind == FailureKind.RUNTIME_CEILING

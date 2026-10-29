@@ -302,7 +302,10 @@ class InterruptedRunnerRecoveryTests(TestCase):
         assert "deferred_exit" not in extra
         Worktree.objects.filter(pk=worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
         table = table_with_unreadable_pid(path.parent, nspid="NSpid:\t21\n")
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table),
+            patch.object(checkout_safety, "read_process_table", return_value=clear),
+        ):
             assert claim_task_checkout_or_park(next_task) is None
 
         worktree.refresh_from_db()

@@ -20,7 +20,6 @@ from teatree.core.notify_question_drains import (
     drain_unmirrored_deferred_questions,
     owner_quiet_now,
     reask_escalated_questions,
-    resurface_question_backlog,
 )
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from tests._owner_channel import OWNER_DECISION
@@ -67,7 +66,6 @@ def _every_send(moment: dt.datetime) -> list[Callable[[MagicMock], object]]:
     return [
         lambda backend: drain_unmirrored_deferred_questions(user_id="U0DEMOOWNER", backend=backend),
         lambda backend: drain_deferred_questions(user_id="U0DEMOOWNER", backend=backend),
-        lambda backend: resurface_question_backlog(user_id="U0DEMOOWNER", backend=backend, now=moment),
         lambda backend: reask_escalated_questions(user_id="U0DEMOOWNER", backend=backend, now=moment),
     ]
 

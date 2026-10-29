@@ -387,7 +387,7 @@ The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and
 | `provision_ram_ceiling_percent` | #2949: RAM-used-percent ceiling above which a new worktree provision is HELD (queued, not started) rather than admitted (default `75`) — tighter than the self-improve budget gate's `DEFAULT_RAM_USED_CEILING_PCT` (85) because provisioning arrives in bursts a per-sample gate reads too late. A held request drains automatically once RAM frees, bounded by an internal max-hold ceiling. Per-overlay overridable; enforced by `teatree.core.gates.provision_admission_gate`. |
 | `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
-| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker runs W+1 `cheap` executors plus one per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned, not this setting). Both classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
+| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker also runs one executor per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned), one for architectural review, and one per maintenance seat. Cheap classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
 | `single_branch_repo_gate_enabled` | Kill-switch for `single_branch_repos` (default `true`). `false` reverts both seams to the pre-gate behaviour byte-for-byte while leaving the entries declared. Per-call escape on the Bash seam: append `[gate-escape:single_branch_repo: <reason>]` to the command. Per-overlay overridable. |
 | `dream_memory_promote` | Whether Pass-2 memory→fix promotion runs (default `true`, #2426, #4776) — a pass batches its promotions into ONE ticket. |
@@ -627,17 +627,19 @@ row for its key, so workers do not share healthy observations. A worker reads th
 durable row once per key and checks it again during a long quota or authentication
 hold, but does not query the DB on every other request. Cached unavailability avoids
 repeating a known-dead lane; cached health repeats the cheap local capability probe
-so a binary that disappears is detected. A runtime failure immediately updates the cache. A quota or authentication
-failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
-or an outcome made tool calls; other failures keep the two-minute hold.
+so a binary that disappears is detected. A runtime failure immediately updates the cache. A typed quota or
+authentication failure holds its candidate for an hour; a classified timed limit with a reported reset holds it
+until that reset. Agent narration alone cannot hold a route. Other failures keep the two-minute hold. A routed
+subscription limit rotates the signing account or parks the task to its reset without holding the route.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next
-candidate. Protocol/schema errors, unsupported policy, and programmer failures
+candidate. Content guardrail blocks are terminal. Protocol/schema errors,
+unsupported policy, and programmer failures
 do not. If a tool or other external side effect has already started, TeaTree
 records the failed candidate and requeues the task instead of replaying it on the
 next model. Every attempt records the selected harness/provider/model, candidate
-index, owning skill, fallback reason, predecessor attempt, lane, tokens, and
+index, owning skill, fallback reason, predecessor attempt, lane, signing account path, tokens, and
 runtime usage. A parked thread resumes only through the same harness, so a
 fallback never feeds a Codex thread id to Claude or vice versa.
 

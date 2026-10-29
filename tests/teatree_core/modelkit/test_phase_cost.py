@@ -42,6 +42,14 @@ class TestPhaseCost:
         assert phase_cost("coding") is PhaseCost.EXPENSIVE
         assert phase_cost("code") is PhaseCost.EXPENSIVE
 
+    def test_architectural_review_has_its_own_cost_class(self) -> None:
+        assert phase_cost("architectural_review") is PhaseCost.ARCHITECTURAL_REVIEW
+        assert phase_cost("architectural_review_typo") is PhaseCost.EXPENSIVE
+
+    def test_periodic_maintenance_phases_do_not_wait_in_the_coding_lane(self) -> None:
+        for phase in ("backlog_sweep", "eval_local", "triage_assessing", "scanning_news", "dogfood_smoke"):
+            assert phase_cost(phase) is PhaseCost.MAINTENANCE
+
     def test_an_unknown_phase_is_expensive(self) -> None:
         # Fail-safe: an unregistered phase must never be handed the cheap-lane
         # exemption on the strength of not being recognised.

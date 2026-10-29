@@ -7,6 +7,8 @@ CLI sweep can render a report without importing the janitor's internals.
 from dataclasses import dataclass
 from enum import StrEnum
 
+from teatree.core.models import MergeAudit
+
 
 class BoardAction(StrEnum):
     """What the reconcile did to one ticket.
@@ -36,6 +38,13 @@ class BoardTransition:
     reason: str
     applied: bool
     error: str = ""
+
+    def unaudited_flag(self) -> str:
+        unaudited = (
+            self.action is BoardAction.ADVANCED_MERGED
+            and not MergeAudit.objects.filter(clear__ticket_id=self.ticket_id).exists()
+        )
+        return " (no merge audit)" if unaudited else ""
 
     def line(self) -> str:
         if self.action is BoardAction.REFUSED:

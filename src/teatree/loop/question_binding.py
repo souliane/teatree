@@ -10,7 +10,7 @@ module, so the reply→question join cannot drift between them.
 
 The ladder, strongest evidence first:
 
-(a) an explicit ``#<id>`` prefix naming a
+(a) an explicit ``#<id>`` prefix — a direct question reference in an owner reply — naming a
 question mirrored on the reply's own DM;
 (b) the reply's ``thread_ts`` — in a ticket root, the newest recorded post before
 the reply must name a pending card; in an older card thread, two candidate cards
@@ -57,8 +57,7 @@ from teatree.loop.owner_identity import configured_owner_id, is_the_owner
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
 
-# The addressed form, ``#<id> <your answer>``. At least one separator
-# is required so ``#12abc`` is not read as question 12 answered "abc".
+# Require a separator so ``#12abc`` cannot answer question 12 with "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
 _EXPLICIT_ANSWER_RE = re.compile(r"^\s*answer:\s*(\S(?:.*\S)?)\s*$", re.IGNORECASE | re.DOTALL)

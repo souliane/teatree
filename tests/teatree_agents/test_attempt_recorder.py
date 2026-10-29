@@ -24,6 +24,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     classify_failure,
 )
 from teatree.core.models import (
+    BotPing,
     DeferredQuestion,
     Directive,
     DirectiveDispatch,
@@ -38,6 +39,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.owner_dm.architectural_review_notice import announce_completed
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.loop.transient_requeue import requeue_transient_failed
@@ -177,6 +179,37 @@ class TestRecordResultEnvelope(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
         return task
+
+    def test_completed_architectural_review_notifies_once_with_pr_link(self) -> None:
+        task = self._claimed(phase="architectural_review")
+        url = "https://github.com/example-org/example-repo/pull/123"
+        attempt = record_result_envelope(task, {"summary": f"Opened {url}"}, phase=task.phase)
+        assert attempt.error == ""
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        notes = BotPing.objects.filter(idempotency_key=f"architectural-review:completed:{task.pk}")
+        assert notes.count() == 1
+        assert url in notes.get().text
+
+        announce_completed(task, f"Opened {url}")
+        assert notes.count() == 1
+
+    def test_completed_architectural_review_without_reported_pr_url_says_so(self) -> None:
+        task = self._claimed(phase="architectural_review")
+        record_result_envelope(task, {"summary": "No changes needed"}, phase=task.phase)
+        note = BotPing.objects.get(idempotency_key=f"architectural-review:completed:{task.pk}")
+        assert "No pull request URL was reported" in note.text
+
+    def test_owner_stopped_architectural_review_reports_hold_instead_of_completion(self) -> None:
+        task = self._claimed(phase="architectural_review")
+        record_result_envelope(
+            task,
+            owner_stop("May I publish this review?", "public_post") | {"summary": "Waiting for owner approval"},
+            phase=task.phase,
+        )
+
+        assert BotPing.objects.filter(idempotency_key=f"architectural-review:held:{task.pk}:owner_answer").exists()
+        assert not BotPing.objects.filter(idempotency_key=f"architectural-review:completed:{task.pk}").exists()
 
     def test_accepted_operator_directions_are_carried_into_the_handoff_result(self) -> None:
         task = self._claimed()
