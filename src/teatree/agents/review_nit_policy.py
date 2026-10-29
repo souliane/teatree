@@ -18,7 +18,12 @@ def normalize_review_envelope(envelope: ReviewVerdictEnvelope, ticket: "Ticket |
     nit_follow_up = bool(ticket and isinstance(ticket.extra, dict) and ticket.extra.get("nit_follow_up") is True)
     findings = [Finding.from_dict(row) for row in raw_findings if isinstance(row, dict)]
     if nit_follow_up:
-        findings = [replace(finding, kind=FindingKind.BLOCKING) for finding in findings]
+        findings = [
+            replace(finding, kind=FindingKind.BLOCKING, basis="follow_up")
+            if finding.kind == FindingKind.NIT
+            else finding
+            for finding in findings
+        ]
     normalized: ReviewVerdictEnvelope = {
         **envelope,
         "findings": [cast("ReviewFinding", finding.as_dict()) for finding in findings],
@@ -29,7 +34,7 @@ def normalize_review_envelope(envelope: ReviewVerdictEnvelope, ticket: "Ticket |
         normalized["verdict"] = ReviewVerdict.Verdict.HOLD
     elif (
         findings
-        and not blocking
+        and all(finding.kind == FindingKind.NIT for finding in findings)
         and requested == ReviewVerdict.Verdict.HOLD
         and str(envelope.get("gh_verify_result") or "green").strip().lower() == "green"
     ):

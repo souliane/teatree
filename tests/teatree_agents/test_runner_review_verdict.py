@@ -294,7 +294,7 @@ class TestAnEmittedVerdictIsPersistedOrTheTaskFails(TestCase):
 
     def test_a_verdict_the_read_back_cannot_find_fails_instead_of_completing(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
-        with patch("teatree.agents.review_envelope_recorder.ReviewVerdict.record", return_value=None):
+        with patch("teatree.agents.review_envelope_recorder.verdict_at", return_value=None):
             attempt = record_result_envelope(task, _verdict_envelope(), phase="reviewing")
 
         task.refresh_from_db()
@@ -500,6 +500,16 @@ def _exhaust_marker(*, head_sha: str = _HEAD, pr_id: int = _PR_ID) -> CodexRevie
     """
     row = CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=pr_id, head_sha=head_sha).first()
     if row is None:
+        if AutoReviewDispatch.objects.filter(slug=_SLUG, pr_id=pr_id, head_sha=head_sha).exists():
+            return CodexReviewMarker.objects.create(
+                slug=_SLUG,
+                pr_id=pr_id,
+                head_sha=head_sha,
+                variant="claude:review",
+                state=CodexReviewMarker.State.DISPATCHED,
+                attempts=MAX_DISPATCH_ATTEMPTS,
+                deadline=timezone.now() - dt.timedelta(minutes=1),
+            )
         row = CodexReviewMarker.claim(slug=_SLUG, pr_id=pr_id, head_sha=head_sha, variant="claude:review")
     assert row is not None
     while row.attempts < MAX_DISPATCH_ATTEMPTS:

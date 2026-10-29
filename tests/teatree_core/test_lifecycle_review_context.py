@@ -128,7 +128,7 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             execution_reason="cold review",
         )
         with pytest.raises(TransitionNotAllowed):
-            task.complete()
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
 
@@ -147,7 +147,7 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
         # test pins "review allowed with context", not the #3313
         # unshippable-review disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
-            task.complete()
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
@@ -170,7 +170,7 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             patch("teatree.agents.review_context_recorder.git.head_sha", return_value="a" * 40),
         ):
             assert record_returned_review_context(task, result, phase="reviewing") == ""
-            task.complete()
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED

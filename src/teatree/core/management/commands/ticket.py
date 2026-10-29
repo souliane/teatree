@@ -8,6 +8,7 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import command
 
+from teatree.core import session_identity
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.machine_output import MachineOutputCommand
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
@@ -314,6 +315,14 @@ class Command(
                 help="ONLY for blast_class=substrate: the human/owner id authorising the substrate merge.",
             ),
         ] = "",
+        actor_kind: Annotated[
+            str,
+            typer.Option(help="Clearance issuer: factory_loop or hand_session (must match the issuing session)."),
+        ] = "",
+        delegation: Annotated[
+            str,
+            typer.Option(help="Authorization source; 'none' when no delegation applies."),
+        ] = "",
         expedite_authorize: Annotated[
             str,
             typer.Option(
@@ -380,6 +389,17 @@ class Command(
         if preflight_refusal is not None:
             self._refuse(f"CLEAR refused: {preflight_refusal}")
 
+        runner = session_identity.runner_principal()
+        session_actor_kind = (
+            "factory_loop" if runner and session_identity.is_loop_runner_session(runner[0]) else "hand_session"
+        )
+        if actor_kind and actor_kind != session_actor_kind:
+            self._refuse("CLEAR refused: actor kind must match the issuing session")
+        default_delegation = "factory_session" if session_actor_kind == "factory_loop" else "none"
+        clear_delegation = delegation or (
+            f"per_clear:{human_authorize.strip()}" if human_authorize.strip() else default_delegation
+        )
+
         request = ClearRequest(
             pr_id=pr_id,
             # Strip so the by-product verdict keys off the same normalized slug the
@@ -391,6 +411,8 @@ class Command(
             blast_class=blast_class,
             ticket=resolved_ticket,
             human_authorizer=human_authorize,
+            actor_kind=session_actor_kind,
+            delegation=clear_delegation,
             expedite_authorizer=expedite_authorize,
             local_ci_green_sha=local_ci_green_sha,
             executing_loop_identity=executing_loop_identity,

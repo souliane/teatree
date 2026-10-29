@@ -16,7 +16,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ReviewHoldDisposition, Session, Task, Ticket
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
@@ -217,7 +217,7 @@ class TestHeadReviewState:
         with CaptureQueriesContext(connection) as queries:
             review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
-        assert len(queries) == 1
+        assert len(queries) == 2
         assert len(review.held_verdicts) == 1
         assert review.standing_merge_safe is not None
         assert review.authorizing_verdict is None
@@ -233,6 +233,19 @@ class TestHeadReviewState:
         assert review.hold_reason == CONTESTED_HOLD_REASON
         assert review.held_verdicts == ((hold.pk, "cold-reviewer-a"),)
         assert review.authorizing_verdict is None
+
+    def test_dispositioned_hold_does_not_block_authorization(self) -> None:
+        hold = _record(verdict="hold", reviewer="cold-reviewer-a")
+        clearing = _record(verdict="merge_safe", reviewer="cold-reviewer-b")
+        ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[{"index": -1, "classification": "disproved_premise", "citation": "fresh independent review"}],
+        )
+
+        review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        assert review.held_verdicts == ()
+        assert review.authorizing_verdict == (clearing.pk, "cold-reviewer-b")
 
     def test_lone_hold_is_not_reported_as_a_disagreement(self) -> None:
         # The ORDINARY outcome of a cold review that holds — one verdict, nobody

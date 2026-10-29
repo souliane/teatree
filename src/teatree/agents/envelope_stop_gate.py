@@ -29,7 +29,7 @@ from typing import Any, cast
 
 from claude_agent_sdk.types import HookCallback, HookContext, HookJSONOutput, HookMatcher, StopHookInput
 
-from teatree.agents.envelope_refusal import required_keys_phrase
+from teatree.agents.envelope_contract import required_keys_phrase
 from teatree.agents.result_schema import ProseSummaryPolicy, check_evidence
 from teatree.agents.runner_result import ResultEnvelopeError, parse_result
 

@@ -22,19 +22,15 @@ from teatree.agents.result_schema_review import (
     REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
     REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY,
     REVIEW_VERDICT_SCHEMA_PROPERTY,
+    ReviewFinding,
     ReviewHeadMismatch,
     ReviewVenueLimit,
+    ReviewVerdictEnvelope,
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import (
-    FIX_RECORD_FIELDS,
-    FixRecord,
-    PlanAdequacy,
-    RubricGrade,
-    fix_record_required_fields,
-)
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, fix_record_required_fields
 
 
 class FileChange(TypedDict, total=False):
@@ -54,14 +50,6 @@ class SingleTestResult(TypedDict, total=False):
 class SkillApplication(TypedDict):
     skill: str
     evidence: str
-
-
-class ReviewFinding(TypedDict, total=False):
-    severity: str
-    summary: str
-    file: str
-    line: int
-    kind: str
 
 
 class ArticleSuggestion(TypedDict, total=False):
@@ -109,19 +97,6 @@ class WorkItemEnvelope(TypedDict, total=False):
     body: str
     existing_issue_url: str
     no_work_reason: str
-
-
-class ReviewVerdictEnvelope(TypedDict, total=False):
-    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
-
-    verdict: str
-    reviewed_sha: str
-    reviewer_identity: str
-    gh_verify_result: str
-    blast_class: str
-    findings: list[ReviewFinding]
-    merge_result_retake: bool
-    rubric_grades: list[RubricGrade]
 
 
 class ReviewContextEnvelope(TypedDict, total=False):

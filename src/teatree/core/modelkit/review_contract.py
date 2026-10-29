@@ -20,12 +20,11 @@ from typing import Final
 #: Stamped verbatim into every reviewer-facing brief teatree renders, and mirrored
 #: in the ``findings`` JSON-schema description a structured-output model reads.
 ENVELOPE_FINDINGS_RULE: Final[str] = (
-    'Record in "findings" what you actually observed — the low-severity and the uncertain ones too, '
-    "and anything you could not check — whatever verdict you reach. Nothing here is published, so an "
-    'omitted observation is a lost record rather than spared noise: "findings" is what you looked at, '
-    '"verdict" is the separate judgement. A "hold" carries the observations that block. A "merge_safe" '
-    'with an empty "findings" asserts you looked and found nothing worth recording, so emit that only '
-    "when it is true."
+    'Record all observations in "findings": low severity, uncertainty, and unreadable checks too. '
+    'This is internal, never posted. A merge_safe with empty findings means none found. Name "basis" '
+    '(executed, documentation, venue_limit); executed failures give command and result in "reproduction". '
+    "Untested behaviour and duplicate definitions may cite file:line. A hold records blocking findings; "
+    "unexecuted documentation and venue limits are notes."
 )
 
 #: Stamped beside :data:`ENVELOPE_FINDINGS_RULE` into every reviewer-facing brief that

@@ -15,6 +15,7 @@ from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task, Ticket
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, MAX_DISPATCH_ATTEMPTS, build_review_contract
+from teatree.core.models.codex_review_marker import CodexReviewMarker
 
 REVIEWING_PHASE = "reviewing"
 
@@ -63,6 +64,35 @@ class TestEnqueueCreatesClaimableTask:
 
 
 class TestDedupPerHead:
+    def test_live_codex_claim_blocks_headless_dispatch(self) -> None:
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD) is not None
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
+
+    @pytest.mark.parametrize("attempts", [1, MAX_DISPATCH_ATTEMPTS])
+    def test_expired_codex_claim_does_not_block_headless_dispatch(self, attempts: int) -> None:
+        marker = CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        assert marker is not None
+        CodexReviewMarker.objects.filter(pk=marker.pk).update(
+            deadline=timezone.now() - dt.timedelta(minutes=1), attempts=attempts
+        )
+
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert row is not None
+        assert row.task is not None
+
+    def test_resolved_codex_review_does_not_block_headless_evidence_producer(self) -> None:
+        marker = CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        assert marker is not None
+        assert CodexReviewMarker.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD)
+
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert row is not None
+        assert row.task is not None
+        assert row.task.phase == REVIEWING_PHASE
+
     def test_enqueue_reuses_existing_review_task_for_same_ticket_and_head(self) -> None:
         ticket = Ticket.objects.create(issue_url=URL, overlay="teatree", role=Ticket.Role.REVIEWER)
         ticket.merge_extra(set_keys={"reviewed_sha": HEAD})
@@ -333,7 +363,10 @@ class TestDispatchedTaskReachesTerminalState:
 
         record_review_context_for_test(ticket)
 
-        task.complete()
+        ReviewVerdict.record(
+            pr_id=6230, slug=SLUG, reviewed_sha=HEAD, verdict="merge_safe", reviewer_identity="cold-reviewer"
+        )
+        task.complete_with_attempt()
 
         ticket.refresh_from_db()
         task.refresh_from_db()
@@ -645,5 +678,14 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         AutoReviewDispatch.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD)
 
         assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is False
+        row.refresh_from_db()
+        assert row.state == AutoReviewDispatch.State.RESOLVED
+
+    def test_a_later_verdict_retires_an_unverified_claim(self) -> None:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert row is not None
+        assert AutoReviewDispatch.mark_unverified(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
+
+        assert AutoReviewDispatch.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
         row.refresh_from_db()
         assert row.state == AutoReviewDispatch.State.RESOLVED

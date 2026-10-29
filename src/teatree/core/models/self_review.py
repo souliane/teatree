@@ -124,11 +124,12 @@ class SelfReview:
 
     @property
     def is_hold(self) -> bool:
-        return self.verdict == ReviewVerdict.Verdict.HOLD
+        return self.verdict in {ReviewVerdict.Verdict.HOLD, ReviewVerdict.Verdict.UNVERIFIED}
 
     def rework_reason(self) -> str:
         header = (
-            f"Self-review HOLD at {self.reviewed_sha or 'an unrecorded head'} (reviewing task {self.task_pk}): "
+            f"Self-review {self.verdict.upper()} at {self.reviewed_sha or 'an unrecorded head'} "
+            f"(reviewing task {self.task_pk}): "
             "fix every finding below on this ticket branch, commit, run the tests. "
             "Testing and a fresh self-review follow automatically; do not open a PR."
         )

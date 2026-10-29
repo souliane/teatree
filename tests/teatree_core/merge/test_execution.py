@@ -21,8 +21,8 @@ from teatree.core.merge import execution
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import assert_ci_not_failed
-from teatree.core.merge.post_hook import record_merge_and_advance
-from teatree.core.models import MergeClear, PullRequest, Ticket
+from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
+from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
 from teatree.utils.pr_ref import PrRef
 
 _SHA = "a" * 40
@@ -61,6 +61,20 @@ def _pull_request(ticket: Ticket, *, slug: str, pr_id: int) -> PullRequest:
 
 
 class TestKeystoneRecordsTheForgeMerge(TestCase):
+    def test_post_hook_audits_the_forge_account_used(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        clear = _clear(ticket, slug="acme/widget", pr_id=41)
+        _pull_request(ticket, slug="acme/widget", pr_id=41)
+
+        record_merge_and_advance(
+            clear=clear,
+            merged_sha="c" * 40,
+            required_checks_status="green",
+            authorizers=MergeAuditStamps(forge_account="merge-bot"),
+        )
+
+        assert MergeAudit.objects.get(clear=clear).forge_account == "merge-bot"
+
     def test_merge_marks_the_pull_request_row_merged(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pull_request(ticket, slug="acme/widget", pr_id=42)

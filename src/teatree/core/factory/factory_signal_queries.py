@@ -24,10 +24,11 @@ from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, PLAN_STALE_PREFIX, SUPERSEDED_PREFIX
+from teatree.core.models.finding_standard import Severity
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
-from teatree.core.models.review_verdict import ReviewVerdict, Severity
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.task_repair_queries import repair_iterations, repair_observations
 from teatree.core.models.ticket import Ticket

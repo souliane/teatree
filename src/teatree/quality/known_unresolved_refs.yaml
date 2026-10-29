@@ -26,8 +26,6 @@ python_prose:
   - scripts/lib/skill_loader.suggest_skills
   src/teatree/_overlay_api.py:
   - teatree.overlays
-  src/teatree/agents/envelope_refusal.py:
-  - agents/prompt.py
   src/teatree/agents/harness_registry.py:
   - teatree.harnesses
   - teatree.overlays

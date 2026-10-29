@@ -14,6 +14,7 @@ from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 from tests.teatree_core.conftest import record_review_context_for_test
+from tests.teatree_loop._review_fixture import complete_review_task
 
 _PR_URL = "https://github.com/o/r/pull/90"
 
@@ -43,8 +44,7 @@ class TestHandleSelfPrReview(TestCase):
 
         row = AutoReviewDispatch.enqueue(slug="o/r", pr_id=90, head_sha="a" * 40, pr_url=_PR_URL, overlay="acme")
 
-        assert row is not None
-        assert row.task_id == task.pk
+        assert row is None
         assert Task.objects.filter(ticket=task.ticket, phase="reviewing").count() == 1
 
     def test_auto_dispatch_then_self_pr_keeps_one_review_task(self) -> None:
@@ -70,7 +70,7 @@ class TestHandleSelfPrReview(TestCase):
         first = handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91"))
         assert first is not None
         record_review_context_for_test(first.ticket)
-        first.complete()
+        complete_review_task(first)
         assert handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91")) is None
         assert Task.objects.filter(ticket__issue_url=_PR_URL, phase="reviewing").count() == 1
 
@@ -84,7 +84,7 @@ class TestHandleSelfPrReview(TestCase):
         assert first is not None
         assert first.ticket.extra["reviewed_sha"] == "selfsha-93-a"
         record_review_context_for_test(first.ticket)
-        first.complete()
+        complete_review_task(first)
         second = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-b"))
         assert second is not None
         assert second.ticket.pk == first.ticket.pk

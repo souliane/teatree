@@ -51,6 +51,7 @@ from teatree.core.models.eval_run import (
 )
 from teatree.core.models.external_outcome_snapshot import ExternalOutcomeSnapshot, ExternalOutcomeSnapshotManager
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
+from teatree.core.models.finding_standard import Finding, Severity
 from teatree.core.models.gate_escape import GateEscape as GateEscape
 from teatree.core.models.head_carry_over import HeadCarryOver
 from teatree.core.models.honesty_escalation import HonestyEscalation
@@ -111,8 +112,9 @@ from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
+from teatree.core.models.review_hold_disposition import ReviewHoldDisposition, ReviewHoldDispositionError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, Severity
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.round_metric import RoundMetric as RoundMetric
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
@@ -324,6 +326,8 @@ __all__ = [
     "ReviewBackendCooldown",
     "ReviewEvidence",
     "ReviewEvidenceError",
+    "ReviewHoldDisposition",
+    "ReviewHoldDispositionError",
     "ReviewIntent",
     "ReviewRequestPost",
     "ReviewVerdict",

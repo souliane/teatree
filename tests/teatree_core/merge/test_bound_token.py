@@ -38,7 +38,7 @@ def _token_seen_by_merge(ref: PrRef) -> str:
 
     with (
         patch("teatree.forge_credentials.resolve_slug_token", return_value=resolution),
-        patch("teatree.core.merge.execution.CodeHostQuery.for_ref", return_value=object()),
+        patch("teatree.core.merge.execution.CodeHostQuery.for_ref", return_value=CodeHostQuery(ref, MagicMock())),
         patch("teatree.core.merge.execution.assert_merge_provenance_trusted", side_effect=stop_merge),
         pytest.raises(RuntimeError, match="merge stopped"),
     ):
