@@ -789,8 +789,8 @@ class TestGetNamesWhoDecided(TestCase):
 
     def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
-        ConfigSetting.objects.set_value("agent_max_turns", 7)
-        assert "agent_max_turns = 7" in self._get("agent_max_turns")
+        ConfigSetting.objects.set_value("agent_max_turns", 100)
+        assert "agent_max_turns = 100" in self._get("agent_max_turns")
 
     def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")

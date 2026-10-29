@@ -28,7 +28,7 @@ from django.utils import timezone
 from teatree.config.declared_defaults import declared_defaults
 from teatree.config.write_bounds import bound_refusal
 from teatree.core.config_display import masked_display
-from teatree.core.time_format import format_age
+from teatree.core.modelkit.time_format import format_age
 
 
 @dataclass(frozen=True, slots=True)

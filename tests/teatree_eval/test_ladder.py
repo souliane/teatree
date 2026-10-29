@@ -22,7 +22,7 @@ from teatree.llm.anthropic_limits import CreditExhaustedError
 
 _HAIKU = "claude-haiku-4-5"
 _SONNET = tier_models()["balanced"]
-_OPUS = tier_models()["frontier"]
+_OPUS = "claude-opus-5-5"
 _LADDER = [_HAIKU, _SONNET, _OPUS]
 
 

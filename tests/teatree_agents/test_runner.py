@@ -1159,12 +1159,12 @@ class TestLoopWatchdog(TestCase):
         assert watchdog.breach_reason(self.task, elapsed_seconds=60) is None
 
     def test_from_settings_reads_defaults(self) -> None:
-        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 42, scope="")
-        ConfigSetting.objects.set_value("watchdog_max_turns", 7, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 3600, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_turns", 100, scope="")
         ConfigSetting.objects.set_value("watchdog_max_cost_usd", 1.5, scope="")
         watchdog = LoopWatchdog.from_settings()
-        assert watchdog.max_runtime_seconds == 42
-        assert watchdog.max_turns == 7
+        assert watchdog.max_runtime_seconds == 3600
+        assert watchdog.max_turns == 100
         assert watchdog.max_cost_usd == pytest.approx(1.5)
 
     def test_from_settings_uses_shipped_defaults(self) -> None:
@@ -1178,7 +1178,7 @@ class TestLoopWatchdog(TestCase):
         ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
         watchdog = LoopWatchdog.from_settings()
         assert watchdog.max_turns == 250
-        assert watchdog.max_runtime_seconds == 3 * 60 * 60
+        assert watchdog.max_runtime_seconds == 24 * 60 * 60
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
 

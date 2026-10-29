@@ -546,8 +546,8 @@ class TestVerdictKeySettings(TestCase):
         cases = [
             ("setting", "pydantic_ai", "openai_compatible_model", "vendor/model-b"),
             ("setting", "pydantic_ai", "openai_compatible_base_url", "https://models.example.test/v2"),
-            ("setting", "pydantic_ai", "pydantic_ai_request_limit", 41),
-            ("setting", "anthropic_api", "pydantic_ai_request_limit", 41),
+            ("setting", "pydantic_ai", "pydantic_ai_request_limit", 101),
+            ("setting", "anthropic_api", "pydantic_ai_request_limit", 101),
             ("setting", "pydantic_ai", "pydantic_ai_max_tokens", 1234),
             ("setting", "anthropic_api", "pydantic_ai_max_tokens", 1234),
             ("env_model", "pydantic_ai", "T3_OPENAI_COMPATIBLE_MODEL", "vendor/model-b"),
@@ -561,7 +561,7 @@ class TestVerdictKeySettings(TestCase):
         baselines = {
             "openai_compatible_model": "vendor/model-a",
             "openai_compatible_base_url": "https://models.example.test/v1",
-            "pydantic_ai_request_limit": 40,
+            "pydantic_ai_request_limit": 100,
             "pydantic_ai_max_tokens": 1233,
         }
         for index, (kind, backend, name, value) in enumerate(cases):

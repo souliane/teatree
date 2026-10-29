@@ -35,7 +35,7 @@ import typer
 import yaml
 
 from teatree.agents.model_tiering import tier_models
-from teatree.core.cost import tier_rank
+from teatree.core.cost import FAMILY_TO_TIER, tier_of_model, tier_rank
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matrix_payload import MatrixCell, MatrixPayloadError, load_matrix_payload
 from teatree.eval.presets import BASELINE_HEADER, BASELINE_PRESET_PATH
@@ -99,9 +99,7 @@ def set_baseline(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     discovered = {spec.name for spec in discover_specs()}
-    tier_by_model = {
-        model: tier for tier, model in sorted(tier_models().items(), key=lambda entry: tier_rank(entry[0]))
-    }
+    tier_by_model = _tier_by_model()
     scenario_tiers: dict[str, str] = {}
     frontier_ok: set[str] = set()
     unresolved: list[str] = []
@@ -143,6 +141,18 @@ def set_baseline(
         raise typer.Exit(code=2)
     _write_baseline(target, scenario_tiers, frontier_ok)
     typer.echo(f"wrote {len(scenario_tiers)} scenario tier(s) to {target}")
+
+
+def _tier_by_model() -> dict[str, str]:
+    """Choose each model's cheapest abstract rung, bounded by its actual family."""
+    result: dict[str, str] = {}
+    for tier, model in sorted(tier_models().items(), key=lambda entry: tier_rank(entry[0])):
+        family_tier = FAMILY_TO_TIER.get(tier_of_model(model), tier)
+        effective_tier = max((tier, family_tier), key=tier_rank)
+        current = result.get(model)
+        if current is None or tier_rank(effective_tier) < tier_rank(current):
+            result[model] = effective_tier
+    return result
 
 
 def _passing_models(results: dict[str, MatrixCell | None]) -> list[str]:

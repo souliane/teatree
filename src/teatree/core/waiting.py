@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core import time_format
+from teatree.core.modelkit import time_format
 from teatree.core.modelkit.owner_decision import owner_kept_decision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion

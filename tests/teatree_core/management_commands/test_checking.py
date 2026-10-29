@@ -248,6 +248,7 @@ class TestCheckingShow:
             "in_flight",
             "needs_you",
             "metered",
+            "settings",
             "internal_escalations",
             "remaining",
             "terse",

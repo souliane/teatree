@@ -264,30 +264,30 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         reject_unlisted_extra_header(key, value)
         reject_out_of_bounds(key, value)
         self.reject_inconsistent_cross_key(key, value, scope)
-        with transaction.atomic():
-            row = self._write_row(key, value, scope, written_by=decider(authorized_by))
+        row = self._write_row(key, value, scope, written_by=decider(authorized_by))
         if key == QUIESCE_SETTING_KEY:
             advance_quiesce_fence()
         return row
 
     def _write_row(self, key: str, value: ConfigValue, scope: str, *, written_by: str) -> "ConfigSetting":
-        row, created = self.select_for_update().get_or_create(
-            scope=scope,
-            key=key,
-            defaults={"value": value, "seeded_by": "", "seed_value": None, "written_by": written_by},
-        )
-        old_value = None if created else row.value
-        if not created:
-            row.value = value
-            row.seeded_by = ""
-            row.seed_value = None
-            row.written_by = written_by
-            row.save(update_fields=["value", "seeded_by", "seed_value", "written_by", "updated_at"])
-        if created or old_value != value:
-            ConfigSettingChange.record(
-                scope=scope, key=key, action="set", values=(old_value, value), written_by=written_by
+        with transaction.atomic():
+            row, created = self.select_for_update().get_or_create(
+                scope=scope,
+                key=key,
+                defaults={"value": value, "seeded_by": "", "seed_value": None, "written_by": written_by},
             )
-        return row
+            old_value = None if created else row.value
+            if not created:
+                row.value = value
+                row.seeded_by = ""
+                row.seed_value = None
+                row.written_by = written_by
+                row.save(update_fields=["value", "seeded_by", "seed_value", "written_by", "updated_at"])
+            if created or old_value != value:
+                ConfigSettingChange.record(
+                    scope=scope, key=key, action="set", values=(old_value, value), written_by=written_by
+                )
+            return row
 
     def set_values(self, rows: "Sequence[tuple[str, ConfigValue, str]]", *, authorized_by: str = "") -> None:
         """Upsert every ``(key, value, scope)`` in one transaction, judged as one SET.

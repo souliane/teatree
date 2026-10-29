@@ -47,7 +47,7 @@ def test_documented_group_order_matches_report() -> None:
         metered=CheckGroup("Metered"),
     )
     names = [group.title for group in report.groups]
-    assert names == ["Merged", "In-flight", "Needs you", "Metered", "Remaining"]
+    assert names == ["Merged", "In-flight", "Needs you", "Metered", "Settings", "Remaining"]
     line = next(line for line in skill.splitlines() if "Groups in fixed order" in line)
     assert ", ".join(f"`{name}`" for name in names) in line
-    assert "Five groups: Merged / In-flight / Needs you / Metered / Remaining" in blueprint
+    assert "Six groups: Merged / In-flight / Needs you / Metered / Settings / Remaining" in blueprint

@@ -19,7 +19,9 @@ from teatree.core.models import Session, Task, Ticket
 
 class TestResolveFallbackModel:
     def test_frontier_degrades_to_balanced(self) -> None:
-        assert resolve_fallback_model(tier_models()["frontier"]) == resolve_tier("balanced")
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"frontier": "claude-opus-5-5"}):
+            assert resolve_fallback_model(tier_models()["frontier"]) == resolve_tier("balanced")
 
     def test_balanced_degrades_to_a_distinct_cheap_model(self) -> None:
         defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
@@ -56,6 +58,8 @@ class TestBuildOptionsFallbackWiring(TestCase):
     def test_frontier_phase_pins_the_balanced_fallback(self) -> None:
         # coding resolves to the frontier tier, so its exhaustion fallback is the
         # next-cheaper rung (balanced) — driven by the catalog, never hardcoded.
-        options = self._options_for("coding")
-        assert options.fallback_model == resolve_tier("balanced")
-        assert options.fallback_model != options.model
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"frontier": "claude-opus-5-5"}):
+            options = self._options_for("coding")
+            assert options.fallback_model == resolve_tier("balanced")
+            assert options.fallback_model != options.model

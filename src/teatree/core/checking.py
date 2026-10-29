@@ -49,7 +49,6 @@ from teatree.core._checking_gather import (
     ticket_url,
 )
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
-from teatree.core.checking_settings import gather_all_settings_group, gather_settings_group
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
@@ -63,6 +62,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.settings.checking import gather_all_settings_group, gather_settings_group
 from teatree.core.waiting import WaitingKind, format_age, gather_waiting
 
 CheckItemDict = checking_types.CheckItemDict

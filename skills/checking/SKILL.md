@@ -56,7 +56,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
+- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`, `Settings`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
 - Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`

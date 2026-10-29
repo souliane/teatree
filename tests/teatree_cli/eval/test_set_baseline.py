@@ -23,13 +23,13 @@ from teatree.eval.models import EvalSpec
 
 _HAIKU = "claude-haiku-4-5"
 _SONNET = tier_models()["balanced"]
-_OPUS = tier_models()["frontier"]
+_OPUS = "claude-opus-5-5"
 
 
 @pytest.fixture(autouse=True)
 def _three_distinct_tier_models() -> Iterator[None]:
     defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
-    with patch.dict(defaults, {"cheap": _HAIKU}):
+    with patch.dict(defaults, {"cheap": _HAIKU, "frontier": _OPUS}):
         yield
 
 

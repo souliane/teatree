@@ -80,7 +80,7 @@ each cap. The four existing admission and forge-pool ranges share this table.
 Fresh installs ship 3000 agent turns, 3000 pydantic-ai requests and an 86400
 second watchdog runtime. Every shipped bounded default passes its write bound.
 The shipped `agent_phase_models` table maps `architectural_review` to `frontier`,
-and all three shipped `agent_tier_models` tiers resolve to `claude-sonnet-5-5`.
+and all three shipped `agent_tier_models` tiers resolve to the Sonnet family.
 
 Each changed `set_value`, `set_values`, `clear` or `seed` write appends a
 `ConfigSettingChange` audit row in the same transaction. The row stores the

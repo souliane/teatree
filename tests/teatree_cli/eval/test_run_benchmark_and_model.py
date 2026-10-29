@@ -111,12 +111,11 @@ class TestBenchmark:
     def test_a_model_shared_by_two_tiers_runs_once_per_scenario(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
         defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
-        with patch.dict(defaults, {"cheap": tier_models()["balanced"]}):
+        frontier_model = "claude-opus-5-5"
+        with patch.dict(defaults, {"cheap": tier_models()["balanced"], "frontier": frontier_model}):
             out = _invoke(["--benchmark", "--no-persist"], specs)
         assert out.exit_code == 0, out.output
-        assert sorted(_StubRunner.seen_models) == sorted(
-            [tier_models()["balanced"], tier_models()["frontier"]] * len(specs)
-        )
+        assert sorted(_StubRunner.seen_models) == sorted([tier_models()["balanced"], frontier_model] * len(specs))
 
     def test_writes_html_dashboard(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]

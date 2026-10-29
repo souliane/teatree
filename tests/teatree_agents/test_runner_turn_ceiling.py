@@ -54,8 +54,8 @@ class TestTheCeilingIsConfigurable(_Dispatch):
         assert resolve_agent_max_turns() == UserSettings().agent_max_turns
 
     def test_an_operator_row_wins_over_the_shipped_default(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 42, scope="")
-        assert resolve_agent_max_turns() == 42
+        ConfigSetting.objects.set_value("agent_max_turns", 100, scope="")
+        assert resolve_agent_max_turns() == 100
 
     def test_zero_disables_the_ceiling(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", 0, scope="")
@@ -64,9 +64,9 @@ class TestTheCeilingIsConfigurable(_Dispatch):
 
 class TestTheCeilingReachesTheSpawn(_Dispatch):
     def test_the_configured_ceiling_is_pinned_on_the_sdk_options(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 42, scope="")
+        ConfigSetting.objects.set_value("agent_max_turns", 100, scope="")
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])
-        assert options.max_turns == 42
+        assert options.max_turns == 100
 
     def test_the_default_dispatch_is_bounded(self) -> None:
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])

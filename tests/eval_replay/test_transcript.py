@@ -227,13 +227,11 @@ class TestRequestedModelPresent:
         assert requested_model_present(events, "claude-opus-4-8@xhigh") is True
 
     def test_short_alias_request_matches_full_model_usage_key(self) -> None:
-        # The documented `--models opus,sonnet,haiku` short aliases must normalize
-        # to the CURRENT concrete id at the comparison chokepoint, or alias matching
-        # breaks (the requested `opus` never matches the reported usage key).
-        key = tier_models()["frontier"]
+        # A short family alias must normalize to the current concrete id.
+        key = tier_models()["balanced"]
         stream = f'{{"type":"result","subtype":"success","model_usage":{{"{key}":{{"input_tokens":80}}}}}}\n'
         events = parse_stream_json(stream)
-        assert requested_model_present(events, "opus") is True
+        assert requested_model_present(events, "sonnet") is True
 
     def test_short_alias_with_effort_request_matches_full_key(self) -> None:
         key = f"{tier_models()['balanced']}-20260514"
@@ -294,15 +292,15 @@ class TestExtractModelCostSplit:
         assert split.aux_cost_usd == pytest.approx(0.0)
 
     def test_short_alias_request_splits_main_from_aux(self) -> None:
-        # A `--models opus` short-alias request must key the frontier tier's usage
+        # A `--models sonnet` short-alias request must key the balanced tier's usage
         # entry as MAIN, not lump it into AUXILIARY (which would zero the main cost
         # and double-count the requested model as background).
         stream = (
             '{"type":"result","subtype":"success","model_usage":'
-            f'{{"{tier_models()["cheap"]}":{{"costUSD":0.02}},"{tier_models()["frontier"]}":{{"costUSD":0.5}}}}}}\n'
+            f'{{"claude-haiku-4-5":{{"costUSD":0.02}},"{tier_models()["balanced"]}":{{"costUSD":0.5}}}}}}\n'
         )
         events = parse_stream_json(stream)
-        split = extract_model_cost_split(events, "opus")
+        split = extract_model_cost_split(events, "sonnet")
         assert split.main_cost_usd == pytest.approx(0.5)
         assert split.aux_cost_usd == pytest.approx(0.02)
 

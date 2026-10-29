@@ -90,13 +90,13 @@ RELEASED_CLAIM: ReleasedClaim = {
 #: whose ``acquired_at`` IS a per-tick heartbeat, this marker is written ONCE at drive-entry
 #: and never renewed — a starved event loop that cannot heartbeat is the whole case it
 #: exists for. So it dates the drive rather than proving recent liveness, and the bound is
-#: the longest a drive can legitimately last: twice ``LoopWatchdog``'s 3h default runtime
+#: the longest a drive can legitimately last: longer than ``LoopWatchdog``'s 24h default runtime
 #: ceiling, past which the watchdog would itself have interrupted the run and
 #: :func:`~teatree.core.models.task_claim.drive_claim`'s ``finally`` cleared the marker.
 #: Unbounded, a ``finally`` skipped by a hard kill (SIGKILL, an OOM kill) pinned the row
 #: CLAIMED forever as soon as the OS reused that pid for any long-lived process — an
 #: unrecoverable stall, where the bounded worst case is one late reclaim the sweep retries.
-DRIVE_MARKER_GRACE = timedelta(hours=6)
+DRIVE_MARKER_GRACE = timedelta(hours=30)
 
 
 @dataclass(frozen=True, slots=True)
