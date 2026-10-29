@@ -73,7 +73,12 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
             current_user=lambda: "owner",
             get_repo=lambda *, repo: {"name": repo},
         )
-        overlay = SimpleNamespace(metadata=SimpleNamespace(validate_pr=lambda title, body, *, repo: {"errors": []}))
+        overlay = SimpleNamespace(
+            metadata=SimpleNamespace(validate_pr=lambda title, body, *, repo: {"errors": []}),
+            provisioning=SimpleNamespace(
+                repo_clone_url=lambda _repo: "https://github.com/example-org/example-repo.git"
+            ),
+        )
         provider = SimpleNamespace(
             get_code_host_for_url=lambda overlay, url: host,
             get_code_host_for_repo=lambda overlay, repo: host,
