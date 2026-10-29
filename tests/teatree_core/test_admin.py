@@ -201,7 +201,7 @@ class TestConfigSettingAdminWritesThroughSetValue(django.test.TestCase):
         row = ConfigSetting.objects.set_value("agent_max_turns", 1000)
         response = self._post_change(row, "9")
         assert response.status_code == 200
-        assert "at least 1000" in str(response.context["adminform"].form.errors)
+        assert "at least 300" in str(response.context["adminform"].form.errors)
         row.refresh_from_db()
         assert row.value == 1000
 

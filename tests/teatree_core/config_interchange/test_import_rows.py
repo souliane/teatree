@@ -14,7 +14,7 @@ _OV = TEST_TERM_REGISTRY["overlay"][0]
 class TestImportRows(TestCase):
     def test_a_turn_ceiling_below_the_floor_is_rejected(self) -> None:
         result = import_toml_to_db("[teatree]\nagent_max_turns = 9\n", scan_terms=_SCAN)
-        assert any(row.key == "agent_max_turns" and "at least 1000" in row.reason for row in result.rejected)
+        assert any(row.key == "agent_max_turns" and "at least 300" in row.reason for row in result.rejected)
         assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
 
     def test_the_rows_under_a_term_carrying_scope_are_refused_once_without_the_name(self) -> None:
