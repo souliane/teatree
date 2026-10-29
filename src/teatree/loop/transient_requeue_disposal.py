@@ -11,6 +11,8 @@ is finishing it, so marking it COMPLETED would advance the ticket over the succe
 run whose TARGET MOVED under it is parked FAILED too, once the sweep has queued its recovery.
 """
 
+from dataclasses import dataclass
+
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
@@ -58,7 +60,21 @@ def stale_plan_halt_reason(task: Task) -> str | None:
     return f"phase {normalize_phase(task.phase)!r} on ticket {task.ticket_id} reached {stale_count} stale-plan failures"
 
 
-def retire_if_dead_artifact(task: Task) -> bool:
+@dataclass(frozen=True)
+class DeadArtifactReads:
+    landed: bool
+    review_target_dead: bool
+
+
+def read_dead_artifact(task: Task) -> DeadArtifactReads:
+    landed = bool(
+        task.ticket.has_completed_phase(task.phase)
+        or phase_landing_evidence(task, trust_phase_artifact=task.failure_kind == FailureKind.LEASE_LOST)
+    )
+    return DeadArtifactReads(landed=landed, review_target_dead=not landed and _review_target_dead(task))
+
+
+def retire_if_dead_artifact(task: Task, reads: DeadArtifactReads) -> bool:
     """Retire a FAILED task whose phase output is already moot; ``True`` if retired.
 
     Two ways a FAILED row becomes a dead artifact to retire (COMPLETED) rather than
@@ -76,12 +92,10 @@ def retire_if_dead_artifact(task: Task) -> bool:
     finds no matching guard. A live-successor row is NOT one of them: its phase is
     unfinished, so it is parked FAILED by :func:`_park_live_successor` instead.
     """
-    if task.ticket.has_completed_phase(task.phase) or phase_landing_evidence(
-        task, trust_phase_artifact=task.failure_kind == FailureKind.LEASE_LOST
-    ):
+    if reads.landed:
         _retire_superseded(task)
         return True
-    if _review_target_dead(task):
+    if reads.review_target_dead:
         _retire_dead_review(task)
         return True
     return False
@@ -231,8 +245,10 @@ __all__ = [
     "MOVED_TARGET_KINDS",
     "SUPERSEDED_HEAD_STAMP",
     "SUPERSEDED_STAMP",
+    "DeadArtifactReads",
     "park_if_live_successor",
     "park_moved_target",
+    "read_dead_artifact",
     "retire_if_dead_artifact",
     "stale_plan_halt_reason",
 ]

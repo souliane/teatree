@@ -26,6 +26,11 @@ if TYPE_CHECKING:
 TASK_THREADS_KEY = "pydantic_ai_threads"
 
 
+def phase_attempt_count(ticket: "TicketEvidenceModel", phase: str) -> int:
+    spent = dict((ticket.extra or {}).get("phase_attempts") or {})
+    return int(spent.get(phase, 0))
+
+
 def recorded_anti_vacuity_attestation(ticket: "Ticket", head_sha: str = "") -> AntiVacuityAttestation:
     """Read the proof for a head, including legacy single-record tickets."""
     extra = ticket.extra or {}
@@ -98,8 +103,7 @@ class TicketEvidenceModel(TicketFacet):
         """
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
-            spent = dict((locked.extra or {}).get("phase_attempts") or {})
-            already = int(spent.get(phase, 0))
+            already = phase_attempt_count(locked, phase)
             if already >= max_attempts:
                 return False
             self.merge_extra(merge_into_dicts={"phase_attempts": {phase: already + 1}})
