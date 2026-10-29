@@ -9,6 +9,7 @@ from django.db import connections
 from django.test import TestCase, override_settings
 
 from teatree.config.db_router import CONFIG_DB_ALIAS, PINNED_MODEL_LABELS
+from teatree.config.enums import Autonomy
 from teatree.core.models import ConfigSetting, ConfigSettingChange
 
 
@@ -66,6 +67,16 @@ class TestConfigSettingChange(TestCase):
         assert ConfigSetting.objects.get_effective("agent_max_turns") == 1000
         assert ConfigSettingChange.objects.filter(key="agent_max_turns").count() == 1
 
+    def test_unattended_clear_cannot_remove_a_governed_setting(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "notify", authorized_by="operator")
+        with (
+            patch("teatree.core.models.config_setting.is_unattended_unauthorized_write", return_value=True),
+            pytest.raises(ValidationError, match="not an unattended write"),
+        ):
+            ConfigSetting.objects.clear("autonomy")
+        assert ConfigSetting.objects.get_effective("autonomy") == "notify"
+        assert ConfigSettingChange.objects.filter(key="autonomy").count() == 1
+
     def test_set_then_clear_keeps_both_old_values_and_writers(self) -> None:
         ConfigSetting.objects.set_value("agent_max_turns", 1500, authorized_by="operator")
         ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="review-loop")
@@ -83,6 +94,16 @@ class TestConfigSettingChange(TestCase):
         ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
         ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
         assert ConfigSettingChange.objects.filter(key="agent_max_turns").count() == 1
+
+    def test_same_str_enum_value_does_not_add_an_audit_row(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.NOTIFY, authorized_by="operator")
+        ConfigSetting.objects.set_value("autonomy", Autonomy.NOTIFY, authorized_by="operator")
+        assert ConfigSettingChange.objects.filter(key="autonomy").count() == 1
+
+    def test_a_write_without_session_identity_names_the_missing_attribution(self) -> None:
+        with patch("teatree.core.models.config_setting.loop_principal", return_value=("", "")):
+            ConfigSetting.objects.set_value("agent_max_turns", 1000)
+        assert ConfigSettingChange.objects.get(key="agent_max_turns").written_by == "unattributed"
 
     def test_equal_python_values_with_different_json_types_are_written(self) -> None:
         ConfigSetting.objects.set_value("autoload", value=True, authorized_by="operator")

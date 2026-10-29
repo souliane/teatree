@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, cast
 
 import typer
 from django.apps import apps
+from django.db import DatabaseError
 from django.utils import timezone
 
 from teatree.config.declared_defaults import declared_defaults
@@ -93,7 +94,7 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
     stored = masked_display(drift.key, drift.stored)
     shipped = masked_display(drift.key, drift.shipped)
     hours = max(0, int((timezone.now() - row.updated_at).total_seconds() // 3600))
-    writer = change.written_by if change else row.written_by or row.seeded_by or "unknown writer"
+    writer = (change.written_by if change else None) or row.written_by or row.seeded_by or "unknown writer"
     previous = masked_display(drift.key, change.old_value) if change else "unknown (written before audit)"
     ignored = unhonourable_overlay_scope_reason(drift.key, drift.scope)
     bounds = SETTING_BOUNDS.get(drift.key)
@@ -128,23 +129,28 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
     finding.
     """
     try:
-        change_model = cast("type[ConfigSettingChange]", apps.get_model("core", "ConfigSettingChange"))
         rows = _stored_rows()
-        coordinates = {(row.key, row.scope): row for row in rows}
         drifted = drifted_settings(
             stored=((row.key, row.scope, row.value) for row in rows), shipped=declared_defaults()
         )
+        if not drifted:
+            return
+        coordinates = {(row.key, row.scope): row for row in rows}
+        change_model = cast("type[ConfigSettingChange]", apps.get_model("core", "ConfigSettingChange"))
         latest: dict[tuple[str, str], ConfigSettingChange] = {}
-        for change in change_model.objects.order_by("-changed_at", "-pk"):
-            latest.setdefault((change.key, change.scope), change)
+        try:
+            for change in change_model.objects.filter(key__in={drift.key for drift in drifted}).order_by(
+                "-changed_at", "-pk"
+            ):
+                latest.setdefault((change.key, change.scope), change)
+        except DatabaseError as exc:
+            typer.echo(f"WARN  Config audit unavailable: {exc.__class__.__name__}: {exc}")
         lines = [
             _finding_line(drift, coordinates[drift.key, drift.scope], latest.get((drift.key, drift.scope)))
             for drift in drifted
         ]
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Config-drift check crashed: {exc.__class__.__name__}: {exc}")
-        return
-    if not drifted:
         return
     typer.echo(
         f"INFO  {len(drifted)} stored config row(s) differ from the shipped default. "

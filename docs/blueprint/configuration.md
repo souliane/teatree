@@ -22,8 +22,9 @@ zero keeps the documented uncapped option. Every manager or cold rescue change
 records an audit row with the previous value, writer and time. `t3 doctor check`
 shows divergent overrides with that context and flags rows below a floor;
 `t3 <overlay> notify digest` lists recent setting changes.
-Review and critic dispatches cannot write the canonical settings database;
-verification scripts that change settings must use a private test database.
+Review and critic child environments mark their phase, and the settings write paths
+refuse canonical database writes while that marker is present; verification scripts
+that change settings must use a private test database.
 `config_setting set` and `clear` print the previous value from the audit row
 so an operator can restore the prior override.
 
@@ -1203,7 +1204,7 @@ so the cross-key check and the seed-provenance clear fire exactly as they do for
 `config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
 inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
 ONE function (`teatree.config.value_visibility.is_secret`) shared by all three rendering
-surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
+surfaces — it lives in `config` so the Django-free rescue writer can use it too. There
 is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
 and the changelist formset writes through `Model.save()` (so it cannot use the seam).
 

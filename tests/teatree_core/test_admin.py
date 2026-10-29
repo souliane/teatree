@@ -20,6 +20,7 @@ from django.urls import reverse
 from teatree.core.admin import ReadOnlyAdmin
 from teatree.core.models import (
     ConfigSetting,
+    ConfigSettingChange,
     DeferredQuestion,
     DeferredQuestionAudit,
     Loop,
@@ -226,6 +227,33 @@ class TestConfigSettingAdminWritesThroughSetValue(django.test.TestCase):
         assert row.value == "operator-chosen"
         assert row.seeded_by == ""
         assert row.seed_value is None
+        assert (
+            ConfigSettingChange.objects.filter(key="issue_implementer_label", action="set").latest("pk").written_by
+            == "admin-seam"
+        )
+
+    def test_admin_delete_records_the_removed_value(self) -> None:
+        row = ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+        request = django.http.HttpRequest()
+        request.user = get_user_model().objects.get(username="admin-seam")
+        admin.site._registry[ConfigSetting].delete_model(request, row)
+        assert not ConfigSetting.objects.filter(pk=row.pk).exists()
+        assert list(ConfigSettingChange.objects.filter(key="agent_max_turns").values_list("action", "old_value"))[
+            -1
+        ] == ("clear", 1000)
+
+    def test_admin_bulk_delete_records_every_removed_value(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+        ConfigSetting.objects.set_value("watchdog_max_turns", 1000, authorized_by="operator")
+        request = django.http.HttpRequest()
+        request.user = get_user_model().objects.get(username="admin-seam")
+        admin.site._registry[ConfigSetting].delete_queryset(
+            request, ConfigSetting.objects.filter(key__in=["agent_max_turns", "watchdog_max_turns"])
+        )
+        assert set(ConfigSettingChange.objects.filter(action="clear").values_list("key", flat=True)) == {
+            "agent_max_turns",
+            "watchdog_max_turns",
+        }
 
 
 class TestConfigSettingAdminSaves(django.test.TestCase):

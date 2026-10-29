@@ -167,7 +167,11 @@ class _ModeHarnessSettings:
     # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
     pydantic_ai_max_tokens: int = setting(
         PYDANTIC_AI_MAX_TOKENS_DEFAULT,
-        spec=SettingSpec(help="token ceiling for one pydantic-ai request", parse=_parse_strict_int),
+        spec=SettingSpec(
+            help="token ceiling for one pydantic-ai request",
+            parse=_parse_strict_int,
+            bounds=Bounds(8192, zero_disables=True, why="a smaller cap can truncate a result"),
+        ),
     )
     # The generic OpenAI-compatible backend (#3666) — where, which model, whose key.
     # A provider is ORDINARY CONFIGURATION here, never a code path: pointing the
@@ -277,7 +281,12 @@ class _ModeHarnessSettings:
     # not its fan-out, so a wall clock cannot see a delegation runaway. ``0`` disables
     # the gate, matching the watchdog convention above. Per-overlay overridable.
     subagent_spawn_ceiling: int = setting(
-        20, spec=SettingSpec(help="sub-agents one dispatch may spawn", parse=_parse_strict_int)
+        20,
+        spec=SettingSpec(
+            help="sub-agents one dispatch may spawn",
+            parse=_parse_strict_int,
+            bounds=Bounds(2, zero_disables=True, why="one sub-agent can strand review fan-out"),
+        ),
     )
     # How many envelope-less turn-ends ONE headless run may have refused before the
     # Stop gate (``agents/envelope_stop_gate.py``) stands down. The gate fails open

@@ -147,10 +147,17 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
     try:
         conn.execute("BEGIN IMMEDIATE")
         previous = conn.execute(
-            "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?", (scope, key)
+            "SELECT value, seeded_by, seed_value, written_by FROM teatree_config_setting WHERE scope=? AND key=?",
+            (scope, key),
         ).fetchone()
         _upsert(conn, scope, key, value)
-        if previous is None or previous[0] != json.dumps(value):
+        if (
+            previous is None
+            or previous[0] != json.dumps(value)
+            or previous[1]
+            or previous[2] is not None
+            or previous[3] != "cold-writer"
+        ):
             if _audit_table_present(conn):
                 now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
                 old_value = json.loads(previous[0]) if previous else None

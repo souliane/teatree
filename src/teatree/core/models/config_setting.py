@@ -100,7 +100,7 @@ def decider(authorized_by: str) -> str:
     A ratified directive is a human's decision a machine types, so the authorizer is the
     answer whenever one is named; otherwise the acting principal is.
     """
-    return authorized_by or loop_principal()[0]
+    return authorized_by or loop_principal()[0] or "unattributed"
 
 
 def reject_unattended_governed_write(key: str, *, authorized_by: str) -> None:
@@ -146,8 +146,9 @@ def reject_review_config_write(database: str) -> None:
 def unchanged_operator_row(row: "ConfigSetting | None", value: ConfigValue, writer: str) -> "ConfigSetting | None":
     if row is None:
         return None
+    same_json_type = type(row.value) is type(value) or (type(row.value) is str and isinstance(value, StrEnum))
     if (
-        type(row.value) is type(value)
+        same_json_type
         and row.value == value
         and not row.seeded_by
         and row.seed_value is None
@@ -421,6 +422,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
 
     def _clear_locked(self, key: str, scope: str, *, authorized_by: str) -> bool:
         reject_review_config_write(self.db)
+        reject_unattended_governed_write(key, authorized_by=authorized_by)
         previous = self.select_for_update().filter(scope=scope, key=key).first()
         if previous is None:
             return False

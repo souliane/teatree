@@ -13,8 +13,10 @@ currently indistinguishable from an intended one — that is the whole finding.
 
 import io
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_config_drift import (
@@ -118,6 +120,25 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         ):
             out = _run()
         assert "WARN" in out
+
+    def test_missing_audit_table_keeps_drift_findings(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "t3-batch")
+
+        def unavailable(*args: object, **kwargs: object) -> None:
+            message = "no audit table"
+            raise OperationalError(message)
+
+        audit = SimpleNamespace(objects=SimpleNamespace(order_by=unavailable, filter=unavailable))
+        with (
+            patch(
+                "teatree.cli.doctor.checks_config_drift.declared_defaults",
+                return_value={"issue_implementer_label": "t3-auto"},
+            ),
+            patch("teatree.cli.doctor.checks_config_drift.apps.get_model", return_value=audit),
+        ):
+            out = _run()
+        assert "issue_implementer_label" in out
+        assert "no audit table" in out
 
     def test_a_drifted_secret_is_reported_with_its_value_masked(self) -> None:
         # The row still has to surface — a secret that drifted is exactly as misleading as any

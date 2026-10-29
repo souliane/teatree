@@ -7,6 +7,7 @@ so the test that matters is that a WRITE moves the generation and a mere read do
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -73,6 +74,35 @@ def _generation(db: Path) -> object:
 
 
 class TestTheColdWriteSeamRepublishes:
+    def test_equal_value_seed_takeover_is_audited(self, canonical: tuple[Path, Path]) -> None:
+        db, _ = canonical
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting_change (id INTEGER PRIMARY KEY, scope TEXT NOT NULL, "
+                "key TEXT NOT NULL, action TEXT NOT NULL, old_value TEXT, new_value TEXT, "
+                "written_by TEXT NOT NULL, changed_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting "
+                "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("", "autoload", "true", "2026-01-01", "2026-01-01", "entrypoint", "entrypoint", "true"),
+            )
+            conn.commit()
+
+        assert cold_writer.write_setting("autoload", value=True).result is cold_writer.WriteResult.WROTE
+
+        with closing(sqlite3.connect(db)) as conn:
+            row = conn.execute(
+                "SELECT seeded_by, written_by FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT action, old_value, new_value, written_by "
+                "FROM teatree_config_setting_change WHERE key='autoload'"
+            ).fetchall()
+        assert row == ("", "cold-writer")
+        assert audit == [("set", "true", "true", "cold-writer")]
+
     def test_a_setting_write_publishes_a_projection_the_hooks_can_read(self, canonical: tuple[Path, Path]) -> None:
         _, data_dir = canonical
         assert not (data_dir / "host-projection.json").exists(), "control: nothing published before the write"

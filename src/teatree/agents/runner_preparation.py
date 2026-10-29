@@ -220,7 +220,11 @@ def _resolve_child_env_or_failure(
 ) -> DispatchCredential | TaskAttempt:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
-        return DispatchCredential(env=_capped_forge_env(task, None) if harness.capabilities.managed_lane else None)
+        return DispatchCredential(
+            env=_capped_forge_env(task, None)
+            if harness.capabilities.managed_lane
+            else {CONFIG_WRITE_PHASE_ENV: task.phase}
+        )
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:

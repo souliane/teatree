@@ -319,7 +319,16 @@ class ConfigSettingAdmin(admin.ModelAdmin):
             previous = ConfigSetting.objects.filter(pk=obj.pk).first()
             if previous is not None and (previous.scope, previous.key) != (obj.scope, obj.key):
                 ConfigSetting.objects.clear(previous.key, scope=previous.scope)
-        ConfigSetting.objects.set_value(obj.key, obj.value, scope=obj.scope)
+        ConfigSetting.objects.set_value(obj.key, obj.value, scope=obj.scope, authorized_by=request.user.get_username())
+
+    @override
+    def delete_model(self, request: "HttpRequest", obj: ConfigSetting) -> None:
+        ConfigSetting.objects.clear(obj.key, scope=obj.scope, authorized_by=request.user.get_username())
+
+    @override
+    def delete_queryset(self, request: "HttpRequest", queryset: models.QuerySet[ConfigSetting]) -> None:
+        for key, scope in queryset.values_list("key", "scope"):
+            ConfigSetting.objects.clear(key, scope=scope, authorized_by=request.user.get_username())
 
 
 @admin.register(Mode)
