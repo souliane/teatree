@@ -96,6 +96,13 @@ class TestTaskAttemptOutcome(TestCase):
         attempt.refresh_from_db()
         assert attempt.outcome == TaskAttempt.Outcome.CRASH
 
+    def test_scheduling_events_have_a_parked_outcome(self) -> None:
+        for prefix in ("limit_parked: ", "checkout_parked: ", "superseded: "):
+            attempt = TaskAttempt.objects.create(task=self.task, exit_code=1, error=f"{prefix}waiting")
+            attempt.refresh_from_db()
+            assert attempt.outcome == TaskAttempt.Outcome.PARKED
+            assert attempt.outcome not in TaskAttempt.FAILED_OUTCOMES
+
     def test_outcome_restamped_when_terminal_fields_written_after_insert(self) -> None:
         # The common lifecycle: the row is inserted in flight (blank outcome),
         # then the terminal exit_code/error are written on completion — the

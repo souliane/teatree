@@ -52,6 +52,10 @@ from teatree.utils.agent_spawn_marker import dispatched_agent_env
 logger = logging.getLogger(__name__)
 
 
+def credential_fallback_kind(error: CredentialError) -> HarnessFallbackKind:
+    return HarnessFallbackKind.QUOTA if isinstance(error, AllTokensExhaustedError) else HarnessFallbackKind.AUTH
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedRun:
     prompt: str
@@ -262,8 +266,7 @@ def _resolve_child_env_or_failure(
             if parked is not None:
                 return parked
         if context.route_candidate:
-            kind = HarnessFallbackKind.QUOTA if isinstance(exc, AllTokensExhaustedError) else HarnessFallbackKind.AUTH
-            raise HarnessFallbackError(str(exc), kind=kind) from exc
+            raise HarnessFallbackError(str(exc), kind=credential_fallback_kind(exc)) from exc
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
     return replace(resolved, env=_capped_forge_env(task, resolved.env))

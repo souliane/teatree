@@ -39,7 +39,7 @@ import datetime as dt
 import io
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -51,12 +51,13 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend, MessagingReadRefusedError
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
-from teatree.core.models import BotPing, ConfigSettingChange
+from teatree.core.models import BotPing, ConfigSettingChange, TicketDmPost
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
+from teatree.core.notify_targets import resolve_user_id
 from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.settings.config_change_digest import render_change_rows
@@ -72,6 +73,7 @@ _WITHHELD_BY_DESIGN: frozenset[NotifyReason] = frozenset({NotifyReason.INTERNAL_
 
 #: Column budget for the digest's "most recent" cell — the rest is on the row itself.
 _DIGEST_EXCERPT_CHARS = 90
+_CENSUS_HISTORY_LIMIT = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,59 @@ class _DmRequest:
 def _first_line(text: str) -> str:
     line = text.strip().splitlines()[0] if text.strip() else ""
     return line if len(line) <= _DIGEST_EXCERPT_CHARS else f"{line[: _DIGEST_EXCERPT_CHARS - 3]}..."
+
+
+def _census_timestamp(value: object) -> float | None:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _census_history(
+    backend: MessagingBackend, channel: str, cutoff: dt.datetime
+) -> tuple[list[RawAPIDict], dict[str, RawAPIDict]]:
+    roots = backend.fetch_channel_history_or_refuse(channel=channel, limit=_CENSUS_HISTORY_LIMIT)
+    messages = {str(message["ts"]): message for message in roots if message.get("ts")}
+    for root in roots:
+        root_ts = root.get("ts")
+        if not root_ts or not root.get("reply_count"):
+            continue
+        latest = _census_timestamp(root.get("latest_reply"))
+        if latest is not None and latest < cutoff.timestamp():
+            continue
+        try:
+            replies = backend.fetch_thread_replies(channel=channel, thread_ts=str(root_ts))
+        except MessagingReadRefusedError as exc:
+            if exc.error_code not in {"thread_not_found", "message_not_found"}:
+                raise
+            continue
+        for reply in replies:
+            if reply.get("ts"):
+                messages[str(reply["ts"])] = reply
+    return roots, messages
+
+
+def _census_counts(channel: str, messages: dict[str, RawAPIDict], cutoff: dt.datetime) -> Counter[tuple[str, str]]:
+    pings = {
+        row.posted_ts: signal_of(row.idempotency_key)
+        for row in BotPing.objects.filter(channel_ref=channel, posted_ts__in=messages)
+    }
+    ticket_posts = set(
+        TicketDmPost.objects.filter(channel=channel, slack_ts__in=messages).values_list("slack_ts", flat=True)
+    )
+    counts: Counter[tuple[str, str]] = Counter()
+    for ts, message in messages.items():
+        if not message.get("bot_id"):
+            continue
+        try:
+            timestamp = dt.datetime.fromtimestamp(float(ts), tz=dt.UTC)
+        except (ValueError, OverflowError, OSError):
+            continue
+        if timestamp >= cutoff:
+            category = pings.get(ts) or ("ticket-thread" if ts in ticket_posts else "unledgered")
+            counts[timestamp.date().isoformat(), category] += 1
+    return counts
 
 
 @contextmanager
@@ -287,6 +342,43 @@ class Command(TyperCommand):
             )
             raise SystemExit(1)
         return f"sent ({request.idempotency_key})."
+
+    @command()
+    def census(
+        self,
+        days: Annotated[int, typer.Option("--days", help="How many days of owner DM history to count.")] = 8,
+        overlay: Annotated[str, typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the owner DM read.")] = "",
+    ) -> str:
+        """Count bot messages in the owner DM by UTC day and ledger class."""
+        if days <= 0:
+            self.stderr.write("--days must be positive")
+            raise SystemExit(2)
+        cutoff = timezone.now() - dt.timedelta(days=days)
+        with _overlay_env(overlay):
+            backend = self._resolve_backend(overlay)
+            try:
+                channel = backend.open_dm(resolve_user_id())
+                if not channel:
+                    self.stderr.write("owner DM channel is unavailable")
+                    raise SystemExit(1)
+                roots, messages = _census_history(backend, channel, cutoff)
+            except (OSError, RuntimeError, ValueError, KeyError) as exc:
+                self.stderr.write(f"owner DM census read failed: {exc}")
+                raise SystemExit(1) from exc
+            counts = _census_counts(channel, messages, cutoff)
+
+        rendered = io.StringIO()
+        print_table(
+            ["UTC day", "Class", "Count"],
+            [[day, category, str(count)] for (day, category), count in sorted(counts.items())],
+            title=f"Owner DM bot messages, last {days}d",
+            stream=rendered,
+        )
+        self.stdout.write(rendered.getvalue())
+        root_times = [stamp for root in roots if (stamp := _census_timestamp(root.get("ts"))) is not None]
+        if len(roots) == _CENSUS_HISTORY_LIMIT and root_times and min(root_times) > cutoff.timestamp():
+            self.stdout.write("window truncated at oldest fetched message")
+        return f"{sum(counts.values())} message(s) across {len(counts)} day/class row(s)."
 
     @command()
     def digest(

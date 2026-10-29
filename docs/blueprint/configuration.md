@@ -641,17 +641,19 @@ row for its key, so workers do not share healthy observations. A worker reads th
 durable row once per key and checks it again during a long quota or authentication
 hold, but does not query the DB on every other request. Cached unavailability avoids
 repeating a known-dead lane; cached health repeats the cheap local capability probe
-so a binary that disappears is detected. A runtime failure immediately updates the cache. A quota or authentication
-failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
-or an outcome made tool calls; other failures keep the two-minute hold.
+so a binary that disappears is detected. A runtime failure immediately updates the cache. A typed quota or
+authentication failure holds its candidate for an hour; a classified timed limit with a reported reset holds it
+until that reset. Agent narration alone cannot hold a route. Other failures keep the two-minute hold. A routed
+subscription limit rotates the signing account or parks the task to its reset without holding the route.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next
-candidate. Protocol/schema errors, unsupported policy, and programmer failures
+candidate. Content guardrail blocks are terminal. Protocol/schema errors,
+unsupported policy, and programmer failures
 do not. If a tool or other external side effect has already started, TeaTree
 records the failed candidate and requeues the task instead of replaying it on the
 next model. Every attempt records the selected harness/provider/model, candidate
-index, owning skill, fallback reason, predecessor attempt, lane, tokens, and
+index, owning skill, fallback reason, predecessor attempt, lane, signing account path, tokens, and
 runtime usage. A parked thread resumes only through the same harness, so a
 fallback never feeds a Codex thread id to Claude or vice versa.
 

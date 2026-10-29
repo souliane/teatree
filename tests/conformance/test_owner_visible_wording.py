@@ -1,6 +1,6 @@
 """No surface the owner reads says "deferred" or "Pending question" (#4990).
 
-The owner never sees the queue's internal name: not in a card, a bump, the digest, a click update, the
+The owner never sees the queue's internal name: not in a card, a bump, a click update, the
 ``questions`` command, its help, nor the dispatch loop's line on the loops page.
 """
 
@@ -21,7 +21,6 @@ from teatree.core.owner_question_message import (
     answered_line,
     bump_text,
     closed_message,
-    digest_text,
     render_blocks,
     render_text,
     withheld_message,
@@ -44,7 +43,6 @@ def _every_owner_message(row: DeferredQuestion) -> Iterator[tuple[str, str]]:
     yield "card text", render_text(row)
     yield "card blocks", json.dumps(render_blocks(row))
     yield "bump", bump_text(row, now=now + dt.timedelta(hours=2))
-    yield "digest", digest_text([row], now=now)
     yield "answered line", answered_line(row)
     yield "closed card", closed_message(row, "This question no longer needs an answer.").text
     yield "withheld card", withheld_message().text

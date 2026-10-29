@@ -87,6 +87,7 @@ class AttemptUsage:
     # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
     # attempt's credential authenticated through, or ``""`` when unattributed.
     lane: str = ""
+    account: str = ""
     # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) rather than a real
     # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
     # not compute a reported cost is flagged conservatively as an estimate.
@@ -272,6 +273,7 @@ class SpendColumns(TypedDict, total=False):
     context_window_tokens: int | None
     model_fell_back: bool
     lane: str
+    account: str
     cost_is_estimated: bool
     usage_unknown: bool
     reasoning_effort: str
@@ -312,6 +314,7 @@ def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
         context_window_tokens=usage.context_window_tokens,
         model_fell_back=usage.model_fell_back,
         lane=usage.lane,
+        account=usage.account,
         cost_is_estimated=usage.cost_is_estimated,
         usage_unknown=usage.usage_unknown,
         reasoning_effort=usage.reasoning_effort,

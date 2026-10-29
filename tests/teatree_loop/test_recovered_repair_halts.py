@@ -102,9 +102,9 @@ class TestRecoveredRepairHalts(TestCase):
         Ticket.objects.filter(pk=self.other.pk).update(state=Ticket.State.MERGED)
         self._assert_pending()
 
-    def test_checkout_park_is_a_refusal_not_a_pass(self) -> None:
+    def test_checkout_park_is_not_a_pass(self) -> None:
         _task, attempt = self._attempt(error=f"{CHECKOUT_PARKED_PREFIX}occupied")
-        assert attempt.outcome == TaskAttempt.Outcome.REFUSAL
+        assert attempt.outcome == TaskAttempt.Outcome.PARKED
         Ticket.objects.filter(pk=self.other.pk).update(state=Ticket.State.MERGED)
         self._assert_pending()
 

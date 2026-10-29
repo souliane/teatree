@@ -4,11 +4,6 @@ import datetime as dt
 
 from teatree.core.modelkit.fibonacci import fibonacci_bump_index
 
-#: How long one backlog-digest bucket lasts. The digest's idempotency key is the
-#: bucket index, so the ``BotPing`` ledger collapses every tick inside a bucket to
-#: a single delivered message and a new bucket is the next nag.
-RESURFACE_INTERVAL_HOURS = 24
-
 #: The unit of the per-question bump schedule: 1, 2, 4, 7, 12 … hours after the first post.
 REASK_UNIT = dt.timedelta(hours=1)
 
