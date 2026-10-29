@@ -38,6 +38,7 @@ from teatree.core.models import (
     Ticket,
     UsageWindowState,
 )
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.credential_config import api_key_lane_available, resolve_eval_credential
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import AnthropicSubscriptionCredential
@@ -179,6 +180,29 @@ class TestResolvedProvider(CredentialPolicyCase):
         assert metered_child is not None
         assert _API_KEY_VAR in metered_child
         assert _OAUTH_VAR not in metered_child
+
+    def test_an_all_accounts_window_over_spent_accounts_still_fails_over_to_the_api(self) -> None:
+        _pin(_COMPOSITE.value)
+        oauth_paths = ["anthropic/a/oauth", "anthropic/b/oauth"]
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", oauth_paths)
+        for path in oauth_paths:
+            AnthropicTokenUsage.objects.record(
+                path,
+                TokenHealthReading(
+                    organization_id="org",
+                    utilization_5h=0.99,
+                    utilization_7d=0.1,
+                    status_5h="allowed",
+                    status_7d="allowed",
+                    reset_5h=timezone.now() + timedelta(hours=2),
+                    reset_7d=None,
+                ),
+                now=timezone.now(),
+            )
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+
+        assert subscription_lane_exhausted() is True
+        assert resolve_dispatch_harness().provider is AgentHarnessProvider.API_KEY
 
     def test_every_plan_exhaustion_cause_fails_over(self) -> None:
         _pin(_COMPOSITE.value)
