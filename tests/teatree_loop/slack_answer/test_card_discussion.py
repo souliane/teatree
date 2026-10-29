@@ -14,7 +14,7 @@ from django.test import TestCase
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_mailbox_client import MailboxClient
-from teatree.core.models import DeferredQuestion, PendingChatInjection, Session, Task
+from teatree.core.models import DeferredQuestion, PendingChatInjection, Session, Task, Ticket
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
 from tests.factories import planned_ticket
 from tests.teatree_loop.slack_answer.test_thread_card_replies import Backend, _action_card, _card, _cycle, _event
@@ -162,6 +162,64 @@ class TestCardDiscussion(TestCase):
         assert card.is_pending
         assert report.errors == 1
         assert reply.loop_replied_at is None
+
+    def test_nobody_to_answer_gets_one_plain_line_and_the_message_is_kept(self) -> None:
+        card = _card("346.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["346.2"] = {"ts": "346.2", "thread_ts": "346.1"}
+        reply = _event(backend, ts="346.2", root="346.1", text="Show me the rule")
+        assert reply is not None
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_mailbox, "shared_broker", return_value=broker),
+        ):
+            reports = [_cycle(backend) for _ in range(3)]
+            reply.refresh_from_db()
+            kept_for_retry = reply.loop_replied_at is None
+            peer = broker.register(room="", harness="interactive", label="owner coordinator")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                received = executor.submit(
+                    lambda: asyncio.run(MailboxClient(peer.socket_path, peer.token).wait(timeout_seconds=3))
+                )
+                _cycle(backend)
+                page = received.result(timeout=5)
+
+        reply.refresh_from_db()
+        (_channel, answered_ts, line) = backend.replies[0]
+        assert len(backend.replies) == 1
+        assert answered_ts == "346.2"
+        assert "no coordinator session is connected" in line
+        assert "The card stays open." in line
+        assert [report.dispatched for report in reports] == [0, 0, 0]
+        assert kept_for_retry
+        assert "Show me the rule" in page["messages"][0]["text"]
+        assert reply.answer_kind == "delegated"
+        assert DeferredQuestion.objects.get(pk=card.pk).is_pending
+
+    def test_responsible_task_that_cannot_resume_still_gets_a_plain_line(self) -> None:
+        card = _card("347.1")
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        card.parked_task = task
+        card.save(update_fields=["parked_task"])
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["347.2"] = {"ts": "347.2", "thread_ts": "347.1"}
+        assert _event(backend, ts="347.2", root="347.1", text="Show me the rule") is not None
+
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_mailbox, "shared_broker", return_value=broker),
+        ):
+            _cycle(backend)
+            _cycle(backend)
+
+        assert len(backend.replies) == 1
+        assert "No agent is working on this card" in backend.replies[0][2]
+        assert not task.child_tasks.exists()
+        assert DeferredQuestion.objects.get(pk=card.pk).is_pending
 
     def test_unaccepted_mailbox_retry_does_not_enqueue_the_message_twice(self) -> None:
         card = _card("343.1")

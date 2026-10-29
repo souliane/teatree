@@ -465,7 +465,7 @@ def _process_unit(
         if _handle_simple(backend, unit, binding) == "simple":
             report.answered_simple += 1
         return
-    if route_card_result(unit, result, report) or (
+    if route_card_result(backend, unit, result, report) or (
         isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result)
     ):
         return

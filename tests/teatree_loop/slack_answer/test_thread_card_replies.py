@@ -14,6 +14,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import cards_in_thread
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
+from teatree.loop.slack_answer.card_discussion import NOBODY_LISTENING
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
@@ -210,7 +211,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
-        assert not backend.replies
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_top_level_instruction_with_one_option_card_reaches_answerer(self) -> None:
         card = _card("335.3")
@@ -322,7 +323,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
-        assert not backend.replies
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_api_post_by_other_user_in_card_thread_is_not_recorded(self) -> None:
         _card("338.1")
@@ -552,7 +553,7 @@ class TestThreadCardReplies(TestCase):
         reply.refresh_from_db()
         assert card.is_pending
         assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
-        assert not backend.replies
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_reply_naming_a_closed_card_gets_a_note_and_binds_no_other_card(self) -> None:
         pending = _card("700.1")

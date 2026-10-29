@@ -15,12 +15,22 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_handoff import schedule_card_discussion
 from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, CardThreadStop, UnmatchedCardThread
 from teatree.loop.slack_answer.coalescing import _Unit
-from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
+from teatree.loop.slack_answer.session_routing import (
+    _mark_unit_loop_replied,
+    _post_live_reply,
+    _unmark_unit_loop_replied,
+)
 
 if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
     from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 logger = logging.getLogger(__name__)
+NOBODY_LISTENING = (
+    "No agent is working on this card and no coordinator session is connected, so nobody can answer here yet. "
+    "Your message is kept and goes to the first coordinator session that connects, which will answer in this thread. "
+    "The card stays open."
+)
 _SENDER_LOCK = threading.Lock()
 _SENDERS: WeakKeyDictionary[live_mailbox.LiveMailboxBroker, tuple[MailboxIdentity, set[str]]] = WeakKeyDictionary()
 
@@ -158,7 +168,10 @@ def route_card_discussion(row: DeferredQuestion, unit: _Unit) -> bool:
 
 
 def route_card_result(
-    unit: _Unit, result: UnmatchedCardThread | AmbiguousCards | BoundAnswer | None, report: "SlackAnswerReport"
+    backend: "MessagingBackend",
+    unit: _Unit,
+    result: UnmatchedCardThread | AmbiguousCards | BoundAnswer | None,
+    report: "SlackAnswerReport",
 ) -> bool:
     if not isinstance(result, UnmatchedCardThread) or result.reason is not CardThreadStop.OPTIONS_ONLY:
         return False
@@ -172,6 +185,7 @@ def route_card_result(
         raise
     if not routed:
         _unmark_unit_loop_replied(unit)
+        _post_live_reply(backend, unit, NOBODY_LISTENING)
         return True
     report.dispatched += 1
     return True
