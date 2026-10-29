@@ -100,12 +100,12 @@ class TestEveryDiscoveryQueryFailing(TestCase):
 
         assert host.attempts == [f"authored:{OWNER}", f"labeled:{ADMIT_LABEL}"]
 
-    def test_all_rate_limited_queries_report_the_cause_before_the_query_text(self) -> None:
+    def test_all_header_rate_limited_queries_report_the_cause_before_the_query_text(self) -> None:
         error = CommandFailedError(
             ["gh", "api", "search/issues?q=" + "x" * 240],
             1,
             "",
-            "gh api: HTTP 403: You have exceeded a secondary rate limit [retry-after=45]",
+            "gh api: HTTP 403: Forbidden resource=search retry-after=45",
         )
         host = _BrokenHost(error=error)
 
@@ -114,7 +114,7 @@ class TestEveryDiscoveryQueryFailing(TestCase):
 
         detail = caught.value.detail or ""
         assert caught.value.error_class == ScannerErrorClass.RATE_LIMIT
-        assert "rate limit" in detail[:200]
+        assert "retry-after=45" in detail[:200]
         assert "GNUPGHOME" not in detail
         assert f"list_authored_issues({OWNER})" in detail
         assert f"list_labeled_issues({ADMIT_LABEL})" in detail

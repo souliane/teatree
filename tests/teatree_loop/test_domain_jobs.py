@@ -1,9 +1,12 @@
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
+import httpx
+import pytest
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
+from teatree.backends.github import api
 from teatree.core.models import ScannerFault
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
@@ -11,6 +14,7 @@ from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.utils.run import CommandFailedError
+from tests.teatree_loop.scanners.test_issue_intake_fails_loud import _BrokenHost
 
 
 class _SwitchingScanner:
@@ -25,15 +29,15 @@ class _SwitchingScanner:
 
 class ScannerFaultRecordingTests(TestCase):
     def test_rate_limited_intake_fault_keeps_cause_after_truncation(self) -> None:
-        error = CommandFailedError(
-            ["gh", "api", "search/issues?q=" + "x" * 240],
-            1,
-            "",
-            "gh api: HTTP 403: You have exceeded a secondary rate limit",
+        response = httpx.Response(
+            403,
+            json={"message": "You have exceeded a secondary rate limit " + "x" * 236},
+            headers={"X-RateLimit-Resource": "search", "Retry-After": "45"},
+            request=httpx.Request("GET", "https://api.github.com/x"),
         )
-        host = Mock()
-        host.list_authored_issues.side_effect = error
-        host.list_labeled_issues.side_effect = error
+        with patch.object(httpx.Client, "request", return_value=response), pytest.raises(CommandFailedError) as raised:
+            api._run_gh("gh", "api", "x", token="test-token")
+        host = _BrokenHost(error=raised.value)
         scanner = IssueIntakeScanner(
             host=host,
             admit_label="t3-auto",
@@ -51,6 +55,8 @@ class ScannerFaultRecordingTests(TestCase):
         assert fault.error_class == "rate_limit"
         assert len(fault.detail) <= 200
         assert "rate limit" in fault.detail
+        assert "resource=search" in fault.detail
+        assert "retry-after=45" in fault.detail
 
     def test_failure_twice_records_one_fault_and_clean_run_heals(self) -> None:
         scanner = _SwitchingScanner()

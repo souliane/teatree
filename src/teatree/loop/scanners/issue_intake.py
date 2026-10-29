@@ -571,6 +571,8 @@ class IssueIntakeScanner:
             found = fetch()
         except Exception as exc:
             logger.warning("%s failed — skipping", label, exc_info=True)
+            # This string reaches the owner's DM through ScannerError.detail, and a forge
+            # exception routinely echoes the request that carried the credential.
             reason = exc.stderr if isinstance(exc, CommandFailedError) and exc.stderr else str(exc)
             failures.append((label, redact_secrets(reason)))
             return

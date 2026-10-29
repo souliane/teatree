@@ -127,6 +127,26 @@ def test_a_missing_resource_keeps_the_http_404_text_that_is_not_found_reads(pool
     assert api.is_not_found(raised.value)
 
 
+def test_pooled_error_message_cannot_turn_http_403_into_not_found(pooled_server: ForgeServer) -> None:
+    pooled_server.statuses["/forbidden"] = 403
+    pooled_server.payloads["/forbidden"] = {"message": "quoted HTTP 404 from a previous request"}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "forbidden", token="test-token")
+
+    assert not api.is_not_found(raised.value)
+
+
+def test_quota_counter_401_does_not_turn_http_404_into_auth(pooled_server: ForgeServer) -> None:
+    pooled_server.statuses["/missing"] = 404
+    pooled_server.response_headers["/missing"] = {"X-RateLimit-Remaining": "401"}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "missing", token="test-token")
+
+    assert classify_gh_stderr(raised.value.stderr) == ScannerErrorClass.UNKNOWN
+
+
 def test_pooled_rate_limit_keeps_the_response_cause_and_retry_header(pooled_server: ForgeServer) -> None:
     echoed_token = "a" * 20
     pooled_server.statuses["/limited"] = 403
@@ -148,17 +168,52 @@ def test_pooled_rate_limit_keeps_the_response_cause_and_retry_header(pooled_serv
     assert classify_gh_stderr(stderr) == ScannerErrorClass.RATE_LIMIT
 
 
+def test_pooled_error_redacts_a_quoted_credential_before_shortening_the_message(pooled_server: ForgeServer) -> None:
+    pooled_server.statuses["/limited"] = 403
+    pooled_server.payloads["/limited"] = {"message": "x" * 170 + ' "token": "PLACEHOLDER-NOT-A-CREDENTIAL"'}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "limited", token="test-token")
+
+    assert "PLACEHOLD" not in raised.value.stderr
+    assert '"token": "<redacted>"' in raised.value.stderr
+
+
+def test_pooled_error_redacts_a_quoted_credential_before_shortening_a_header(pooled_server: ForgeServer) -> None:
+    pooled_server.statuses["/limited"] = 403
+    pooled_server.response_headers["/limited"] = {
+        "X-RateLimit-Resource": "x" * 20 + ' "token": "PLACEHOLDER-NOT-A-CREDENTIAL"'
+    }
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "limited", token="test-token")
+
+    assert "PLACEHOLDER" not in raised.value.stderr
+    assert '"token": "<redacted>"' in raised.value.stderr
+
+
+def test_pooled_blank_error_message_has_no_dangling_separator(pooled_server: ForgeServer) -> None:
+    pooled_server.statuses["/limited"] = 403
+    pooled_server.payloads["/limited"] = {"message": " \n "}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "limited", token="test-token")
+
+    assert raised.value.stderr == "gh api: HTTP 403"
+
+
 @pytest.mark.parametrize(
-    ("headers", "diagnostic"),
+    ("status", "headers", "diagnostic"),
     [
-        ({"Retry-After": "45"}, "retry-after=45"),
-        ({"X-RateLimit-Remaining": "0"}, "remaining=0"),
+        (403, {"Retry-After": "45"}, "retry-after=45"),
+        (429, {"Retry-After": "45"}, "retry-after=45"),
+        (403, {"X-RateLimit-Remaining": "0"}, "remaining=0"),
     ],
 )
 def test_pooled_rate_limit_header_classifies_without_message(
-    pooled_server: ForgeServer, headers: dict[str, str], diagnostic: str
+    pooled_server: ForgeServer, status: int, headers: dict[str, str], diagnostic: str
 ) -> None:
-    pooled_server.statuses["/limited"] = 403
+    pooled_server.statuses["/limited"] = status
     pooled_server.payloads["/limited"] = {"message": "Forbidden"}
     pooled_server.response_headers["/limited"] = headers
 
