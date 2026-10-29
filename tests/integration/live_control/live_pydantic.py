@@ -7,11 +7,15 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import asynccontextmanager
+from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Protocol, Self
+from unittest.mock import patch
 
+import httpx2 as httpx
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -21,10 +25,14 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+from teatree.agents import pydantic_ai_config
+from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
+from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.runner_heartbeat import HeartbeatRuntime
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
+from teatree.config.agent_enums import AgentHarness
 from teatree.llm.credentials import CredentialError, CredentialSource, PassSource
 from teatree.llm.openai_compatible import OpenAICompatibleCredential
 
@@ -61,6 +69,33 @@ def resolve_live_route(
         max_tokens=512,
         context_windows=context_windows or {},
     )
+
+
+def live_harness(
+    config: PydanticAiModelConfig, *, history: list[ModelRequest | ModelResponse] | None = None
+) -> GuardedHarness:
+    return GuardedHarness(
+        harness=PydanticAiHarness(history=history, phase="coding", config=config),
+        guard=CompactionGuard(),
+        name=AgentHarness.PYDANTIC_AI.value,
+    )
+
+
+@asynccontextmanager
+async def closing_provider_clients() -> AsyncGenerator[None]:
+    opened: list[httpx.AsyncClient] = []
+    original_client = pydantic_ai_config.DefaultAsyncHttpxClient
+
+    def recording_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        client = original_client(*args, **kwargs)
+        opened.append(client)
+        return client
+
+    with patch.object(pydantic_ai_config, "DefaultAsyncHttpxClient", recording_client):
+        try:
+            yield
+        finally:
+            await asyncio.gather(*(client.aclose() for client in opened))
 
 
 def live_runtime(*, idle_window_seconds: float = 0) -> HeartbeatRuntime:
@@ -164,12 +199,13 @@ class Operator:
     def wait_for(self, ready: Callable[[], bool], *, what: str) -> bool:
         deadline = time.monotonic() + OPERATOR_DEADLINE_SECONDS
         while not ready():
-            if self._drive_ended.wait(0.1):
+            if self._drive_ended.is_set():
                 self.seen["error"] = f"drive ended before {what}"
                 return False
             if time.monotonic() >= deadline:
                 self.seen["error"] = f"{what} never happened"
                 return False
+            self._drive_ended.wait(0.1)
         return True
 
     def stop(self) -> None:
@@ -182,3 +218,15 @@ class Operator:
         assert done, "operator is still running past its deadline"
         self._future.result()
         return self.seen
+
+
+class PauseClient(Protocol):
+    def pause(self, task: int, text: str, *, command_id: str, wait: float) -> Mapping[str, Any]: ...
+
+
+def pause_when_marked(client: PauseClient, task_pk: int, marker: Path) -> Callable[[Operator], None]:
+    def act(operator: Operator) -> None:
+        if operator.wait_for(marker.exists, what="second Bash command starting"):
+            operator.seen["receipt"] = client.pause(task_pk, "pause", command_id="pydantic-pause", wait=20)
+
+    return act

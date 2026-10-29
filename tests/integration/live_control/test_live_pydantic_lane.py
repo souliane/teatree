@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import tempfile
+from pathlib import Path
 from unittest import SkipTest
 from unittest.mock import Mock, patch
 
@@ -13,7 +14,6 @@ from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolReturnPart, UserPromptPart
 
-from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.live_client import LiveClient, LiveOfflineError
 from teatree.agents.live_control import frame_operator_input
 from teatree.agents.live_delivery import InboxMessage
@@ -29,8 +29,11 @@ from tests.factories import planned_ticket
 from tests.integration.live_control.live_pydantic import (
     Evidence,
     Operator,
+    closing_provider_clients,
     gather_settled,
+    live_harness,
     live_runtime,
+    pause_when_marked,
     resolve_live_route,
 )
 
@@ -114,15 +117,16 @@ class LivePydanticLaneTests(TestCase):
         idle_window_seconds: float = 0,
     ) -> HarnessOutcome:
         config = resolve_live_route(context_windows=context_windows) if context_windows else self.route
-        harness = PydanticAiHarness(history=history, phase="coding", config=config)
+        harness = live_harness(config, history=history)
         with tempfile.TemporaryDirectory(prefix="t3-pydantic-live-") as cwd:
-            return await drive_with_heartbeat(
-                task,
-                prompt,
-                ClaudeAgentOptions(cwd=cwd, max_turns=6),
-                harness,
-                runtime=live_runtime(idle_window_seconds=idle_window_seconds),
-            )
+            async with closing_provider_clients():
+                return await drive_with_heartbeat(
+                    task,
+                    prompt,
+                    ClaudeAgentOptions(cwd=cwd, max_turns=6),
+                    harness,
+                    runtime=live_runtime(idle_window_seconds=idle_window_seconds),
+                )
 
     def test_sender_calls_mailbox_tool_and_recipient_reads_the_nonce(self) -> None:
         broker = shared_broker()
@@ -160,27 +164,15 @@ class LivePydanticLaneTests(TestCase):
 
     def test_pause_preserves_completed_tool_work_and_resume_reads_it(self) -> None:
         nonce = secrets.token_hex(12)
-        client = LiveClient()
-
-        def second_bash_is_open() -> bool:
-            try:
-                facts = client.inspect(self.task.pk)
-            except LiveOfflineError:
-                return False
-            return facts["open_tool"] == "Bash" and facts["tool_calls"] >= 2
-
-        def pause_when_second_bash_opens(operator: Operator) -> None:
-            if operator.wait_for(second_bash_is_open, what="second Bash tool opening"):
-                operator.seen["receipt"] = client.pause(self.task.pk, "pause", command_id="pydantic-pause", wait=20)
-
+        marker = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="t3-pydantic-pause-"))) / "second-bash"
         prompt = (
             "Make exactly two Bash tool calls, one per message, never combined. "
             f"First call Bash with the command `echo {nonce}` and wait for its result. "
-            "Only after you have seen that result, call Bash with the command `sleep 60`. "
+            f"Only after you have seen that result, call Bash with the command `touch {marker} && sleep 30`. "
             "Do not answer before the second call returns."
         )
         with Evidence("pause_resume", model=self.route.backend.model) as evidence:
-            operator = Operator(pause_when_second_bash_opens)
+            operator = Operator(pause_when_marked(LiveClient(), self.task.pk, marker))
             try:
                 outcome = asyncio.run(self._drive(self.task, prompt))
             finally:

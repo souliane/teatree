@@ -14,8 +14,6 @@ from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 
 from teatree.agents import pydantic_ai_config
-from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
-from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.live_client import LiveClient, LiveOfflineError
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_mailbox_client import MailboxClient
@@ -24,7 +22,14 @@ from teatree.agents.runner_stream import HarnessOutcome
 from teatree.core.models import Session, Task
 from teatree.llm.credentials import CredentialError
 from tests.factories import planned_ticket
-from tests.integration.live_control.live_pydantic import Evidence, Operator, live_runtime, resolve_live_route
+from tests.integration.live_control.live_pydantic import (
+    Evidence,
+    Operator,
+    closing_provider_clients,
+    live_harness,
+    live_runtime,
+    resolve_live_route,
+)
 
 _NONCE = "PINEAPPLE-MAILBOX-NONCE"
 
@@ -81,17 +86,16 @@ class LivePydanticNonceTests(TestCase):
         receipt: dict[str, Any] = {}
 
         async def run() -> HarnessOutcome:
+            async with closing_provider_clients():
+                return await run_gated()
+
+        async def run_gated() -> HarnessOutcome:
             with gate.installed():
-                harness = GuardedHarness(
-                    harness=PydanticAiHarness(config=self.route, phase="coding"),
-                    guard=CompactionGuard(),
-                    name="pydantic_ai",
-                )
                 return await drive_with_heartbeat(
                     task,
                     "Use Bash to run `sleep 8 && echo done` once, then give a one-sentence summary.",
                     ClaudeAgentOptions(max_turns=6),
-                    harness,
+                    live_harness(self.route),
                     runtime=live_runtime(),
                 )
 

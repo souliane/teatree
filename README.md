@@ -458,7 +458,7 @@ An answering task started from Slack binds its thread root to the ticket. A dire
 
 ### Live agent mailbox
 
-Live provider pairing proof remains owed; the coordinator will run the opt-in nodes in a credentialed venue and attach results to the umbrella issue. Pydantic nodes use `T3_LIVE_PYDANTIC_MAILBOX=1` and the unset-by-default `T3_LIVE_PYDANTIC_CREDENTIAL_ENTRY`; they skip with a named reason if either is absent.
+Live provider pairing proof remains owed; the coordinator will run the opt-in nodes in a credentialed venue and attach results to the umbrella issue. Pydantic nodes use `T3_LIVE_PYDANTIC_MAILBOX=1` and the unset-by-default `T3_LIVE_PYDANTIC_CREDENTIAL_ENTRY`; they skip with a named reason if either is absent. `T3_LIVE_PYDANTIC_MODEL` replaces the default route model `openai/gpt-oss-120b`.
 
 Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. New Codex threads use App Server `dynamicTools` handled by their worker, including the isolated read-only phases; older Codex threads retain their creation-time tool catalog when resumed. Workers
 
