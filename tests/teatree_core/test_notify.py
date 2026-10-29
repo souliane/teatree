@@ -314,8 +314,9 @@ class TestNotifyUser(TestCase):
         assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 1
         assert len(posts) == 2
 
-    def test_header_read_releases_the_write_transaction(self) -> None:
+    def test_existing_root_read_releases_the_write_transaction(self) -> None:
         ticket = Ticket.objects.create(short_description="Read outside lock")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
         backend = _backend()
         atomic_depth = len(connection.atomic_blocks)
 
@@ -333,6 +334,7 @@ class TestNotifyUser(TestCase):
         )
 
         assert outcome.sent
+        backend.fetch_thread_replies.assert_called_once_with(channel="D-USER", thread_ts="1700000000.000001")
 
     def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
         ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
