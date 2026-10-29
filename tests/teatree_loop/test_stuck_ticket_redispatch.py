@@ -20,6 +20,7 @@ from unittest import mock
 from unittest.mock import patch
 
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -599,6 +600,49 @@ class TestFinishedPrsMintNothing(TestCase):
         )
         _finished_task(ticket, phase=phase, status=Task.Status.FAILED, error="result_error: no verdict")
         return ticket
+
+    def test_open_pr_is_read_before_the_write_window(self) -> None:
+        ticket = self._failed_reviewer()
+        baseline = len(connection.atomic_blocks)
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 1
+
+        assert host.atomic_depths == [baseline]
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
+
+    def test_merged_pr_is_read_before_the_write_window(self) -> None:
+        ticket = self._failed_reviewer()
+        baseline = len(connection.atomic_blocks)
+
+        with pr_open_state(PrOpenState.MERGED) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert host.atomic_depths == [baseline]
+        assert ticket.state == Ticket.State.IGNORED
+
+    def test_halted_reviewer_pr_is_read_before_the_write_window(self) -> None:
+        ticket = self._halted_reviewer()
+        baseline = len(connection.atomic_blocks)
+
+        with pr_open_state(PrOpenState.MERGED) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert host.atomic_depths == [baseline]
+        assert ticket.state == Ticket.State.IGNORED
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_unknown_pr_is_read_before_the_write_window(self) -> None:
+        ticket = self._failed_reviewer()
+        baseline = len(connection.atomic_blocks)
+
+        with pr_open_state(PrOpenState.UNKNOWN) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        assert host.atomic_depths == [baseline]
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
     def test_a_reviewer_ticket_whose_pr_is_merged_mints_no_task_and_is_retired(self) -> None:
         ticket = self._failed_reviewer()
