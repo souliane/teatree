@@ -7,10 +7,15 @@ so the test that matters is that a WRITE moves the generation and a mere read do
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
+from django.db import connections
 from django.db.models.signals import post_delete, post_save
+from django.test import TestCase, override_settings
 
 from teatree.config import cold_db, cold_writer
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE, ProjectionReader
@@ -28,6 +33,9 @@ CREATE TABLE teatree_config_setting (
     value TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    seeded_by TEXT NOT NULL,
+    written_by TEXT NOT NULL,
+    seed_value TEXT,
     UNIQUE (scope, key)
 );
 CREATE TABLE teatree_loop_state (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL);
@@ -66,6 +74,35 @@ def _generation(db: Path) -> object:
 
 
 class TestTheColdWriteSeamRepublishes:
+    def test_equal_value_seed_takeover_is_audited(self, canonical: tuple[Path, Path]) -> None:
+        db, _ = canonical
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting_change (id INTEGER PRIMARY KEY, scope TEXT NOT NULL, "
+                "key TEXT NOT NULL, action TEXT NOT NULL, old_value TEXT, new_value TEXT, "
+                "written_by TEXT NOT NULL, changed_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting "
+                "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("", "autoload", "true", "2026-01-01", "2026-01-01", "entrypoint", "entrypoint", "true"),
+            )
+            conn.commit()
+
+        assert cold_writer.write_setting("autoload", value=True).result is cold_writer.WriteResult.WROTE
+
+        with closing(sqlite3.connect(db)) as conn:
+            row = conn.execute(
+                "SELECT seeded_by, written_by FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT action, old_value, new_value, written_by "
+                "FROM teatree_config_setting_change WHERE key='autoload'"
+            ).fetchall()
+        assert row == ("", "cold-writer")
+        assert audit == [("set", "true", "true", "cold-writer")]
+
     def test_a_setting_write_publishes_a_projection_the_hooks_can_read(self, canonical: tuple[Path, Path]) -> None:
         _, data_dir = canonical
         assert not (data_dir / "host-projection.json").exists(), "control: nothing published before the write"
@@ -97,6 +134,20 @@ class TestTheColdWriteSeamRepublishes:
 
 
 class TestTheOrmSeamIsWiredAndScoped:
+    def test_review_alias_lookup_does_not_apply_write_policy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db = tmp_path / "canonical.sqlite3"
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setenv("T3_CONFIG_WRITE_PHASE", "reviewing")
+        with (
+            override_settings(DATABASE_ROUTERS=["teatree.config.db_router.ConfigSettingRouter"]),
+            patch.dict(connections["default"].settings_dict, {"NAME": str(db)}),
+            patch("teatree.config.write_authority.canonical_config_db", return_value=db),
+        ):
+            assert projection_signals.control_db_path() == db
+            assert projection_signals.projects_to_a_host()
+
     def test_the_receivers_are_registered_on_every_projected_model(self) -> None:
         for signal in (post_save, post_delete):
             for model in (ConfigSetting, LoopState, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot):
@@ -115,3 +166,23 @@ class TestTheOrmSeamIsWiredAndScoped:
         monkeypatch.setattr(projection_signals, "control_db_path", lambda: db)
 
         assert projection_signals.projects_to_a_host()
+
+
+class TestReviewProjectionWrite(TestCase):
+    def test_review_phase_projected_save_ratchets_without_refusal(self) -> None:
+        with TemporaryDirectory() as directory:
+            db = Path(directory) / "canonical.sqlite3"
+            with (
+                override_settings(DATABASE_ROUTERS=["teatree.config.db_router.ConfigSettingRouter"]),
+                patch.dict("os.environ", {"T3_CONFIG_DB": str(db), "T3_CONFIG_WRITE_PHASE": "reviewing"}),
+                patch.dict(connections["default"].settings_dict, {"NAME": str(db)}),
+                patch("teatree.config.write_authority.canonical_config_db", return_value=db),
+            ):
+                LoopState.objects.create(name="review-projection", status="enabled")
+                assert (
+                    ConfigSetting.objects.using("default")
+                    .filter(key=GENERATION_KEY)
+                    .values_list("value", flat=True)
+                    .get()
+                    == 1
+                )

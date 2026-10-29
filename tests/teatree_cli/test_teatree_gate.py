@@ -40,6 +40,9 @@ _REAL_SCHEMA = (
     '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
     '"created_at" datetime NOT NULL, '
     '"updated_at" datetime NOT NULL, '
+    '"seeded_by" varchar(255) NOT NULL, '
+    '"written_by" varchar(255) NOT NULL, '
+    '"seed_value" text, '
     'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
 )
 
@@ -91,6 +94,15 @@ class TestGateStatus:
 
 
 class TestGateDisableEnable:
+    def test_review_refusal_is_an_error_line(
+        self, app: typer.Typer, canonical_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_CONFIG_WRITE_PHASE", "reviewing")
+        result = CliRunner().invoke(app, ["gate", "disable"])
+        assert result.exit_code == 1
+        assert "ERROR:" in result.output
+        assert "review or critic" in result.output
+
     def test_disable_fails_loudly_when_the_canonical_db_is_missing(
         self, app: typer.Typer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -131,8 +143,9 @@ class TestGateDisableEnable:
     ) -> None:
         with closing(sqlite3.connect(canonical_db)) as conn, conn:
             conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
-                "VALUES ('', ?, 'true', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
+                "INSERT INTO teatree_config_setting "
+                "(scope, key, value, created_at, updated_at, seeded_by, written_by) "
+                "VALUES ('', ?, 'true', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0', '', '')",
                 (GATE_KEY,),
             )
         monkeypatch.setattr(
@@ -186,8 +199,9 @@ class TestGateIsEnabledFailsOpen:
     def test_enabled_on_non_bool_value(self, canonical_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         conn = sqlite3.connect(canonical_db)
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
-            "VALUES ('', ?, '\"oops\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
+            "INSERT INTO teatree_config_setting "
+            "(scope, key, value, created_at, updated_at, seeded_by, written_by) "
+            "VALUES ('', ?, '\"oops\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0', '', '')",
             (GATE_KEY,),
         )
         conn.commit()
@@ -301,8 +315,9 @@ class TestDbRowIsolation:
     def test_disable_preserves_other_db_rows(self, app: typer.Typer, canonical_db: Path) -> None:
         conn = sqlite3.connect(canonical_db)
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
-            "VALUES ('', 'mode', '\"auto\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')"
+            "INSERT INTO teatree_config_setting "
+            "(scope, key, value, created_at, updated_at, seeded_by, written_by) "
+            "VALUES ('', 'mode', '\"auto\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0', '', '')"
         )
         conn.commit()
         conn.close()

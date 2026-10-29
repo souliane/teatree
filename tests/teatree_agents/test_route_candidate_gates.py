@@ -75,6 +75,17 @@ class TestRouteCandidateGates(TestCase):
         assert dispatch.model == "opus"
         assert dispatch.route_candidate_index == 1
 
+    def test_an_overlay_task_without_an_overlay_row_resolves_the_global_route(self) -> None:
+        self._raw_routes(overlay_row=False)
+        self.task.ticket.overlay = "t3-teatree"
+        self.task.ticket.save(update_fields=["overlay"])
+
+        dispatch = resolve_dispatch_harness(self.task, phase="coding", skills=["route-skill", "floor-skill"])
+
+        assert dispatch.model == "opus"
+        assert dispatch.route_candidate_index == 1
+        assert dispatch.rejected[0].reason == "model is below a loaded skill's scalar floor"
+
     def test_a_candidate_below_a_loaded_skills_model_floor_is_skipped(self) -> None:
         config = AgentConfig(
             skill_models={

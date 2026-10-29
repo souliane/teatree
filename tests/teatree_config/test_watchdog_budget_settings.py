@@ -29,7 +29,7 @@ class TestFieldsAreRegistered:
     def test_defaults_preserve_the_shipped_watchdog_posture(self) -> None:
         # The runtime ceiling is armed; turn and cost caps ship disabled.
         defaults = UserSettings()
-        assert defaults.watchdog_max_runtime_seconds == 3 * 60 * 60
+        assert defaults.watchdog_max_runtime_seconds == 24 * 60 * 60
         assert defaults.watchdog_max_turns == 0
         assert defaults.watchdog_max_cost_usd == pytest.approx(0.0)
         assert defaults.ticket_budget_max_cost_usd == pytest.approx(0.0)
@@ -37,9 +37,9 @@ class TestFieldsAreRegistered:
 
 class TestResolvesThroughConfigTier(TestCase):
     def test_db_row_is_visible_to_get_effective(self) -> None:
-        ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
-        assert ConfigSetting.objects.get_effective("watchdog_max_turns", scope="") == 250
+        ConfigSetting.objects.set_value("watchdog_max_turns", 1000, scope="")
+        assert ConfigSetting.objects.get_effective("watchdog_max_turns", scope="") == 1000
 
     def test_ticket_budget_cap_resolves_from_the_store(self) -> None:
-        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 7.5, scope="")
-        assert ConfigSetting.objects.get_effective("ticket_budget_max_cost_usd", scope="") == pytest.approx(7.5)
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 75, scope="")
+        assert ConfigSetting.objects.get_effective("ticket_budget_max_cost_usd", scope="") == pytest.approx(75)

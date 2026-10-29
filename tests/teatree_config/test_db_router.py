@@ -32,7 +32,7 @@ from teatree.config.db_router import CONFIG_DB_ALIAS, CONFIG_MODEL_LABEL, Config
 from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
 from teatree.core.factory.operational_health import collect_signals
 from teatree.core.factory.secret_key_health import secret_key_signals
-from teatree.core.models import ConfigSetting, SealedSecret, SecretCutover, Ticket
+from teatree.core.models import ConfigSetting, ConfigSettingChange, SealedSecret, SecretCutover, Ticket
 from teatree.core.models.sealed_secret import SEALED_MIGRATION
 from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
@@ -60,6 +60,7 @@ def canonical_db(
     try:
         with django_db_blocker.unblock(), connections[CONFIG_DB_ALIAS].schema_editor() as editor:
             editor.create_model(ConfigSetting)
+            editor.create_model(ConfigSettingChange)
         yield db_file
     finally:
         teardown_sqlite_alias(CONFIG_DB_ALIAS)
@@ -124,6 +125,8 @@ class TestConfigSettingRouter:
         router = ConfigSettingRouter()
         assert router.db_for_write(ConfigSetting) == CONFIG_DB_ALIAS
         assert router.db_for_read(ConfigSetting) == CONFIG_DB_ALIAS
+        assert router.db_for_write(ConfigSettingChange) == CONFIG_DB_ALIAS
+        assert router.db_for_read(ConfigSettingChange) == CONFIG_DB_ALIAS
         assert router.db_for_write(SealedSecret) == CONFIG_DB_ALIAS
         assert router.db_for_read(SealedSecret) == CONFIG_DB_ALIAS
         assert router.db_for_write(SecretCutover) == CONFIG_DB_ALIAS
@@ -172,6 +175,7 @@ class TestConfigWritesReachCanonicalFromAWorktree:
             # must land in the SAME file — a counter written anywhere else would label
             # a projection built from a database it does not describe.
             assert sorted(_stored_rows(canonical_db)) == sorted([(_SCOPE, _KEY), (GLOBAL_SCOPE, GENERATION_KEY)])
+            assert ConfigSettingChange.objects.using(CONFIG_DB_ALIAS).filter(key=_KEY, scope=_SCOPE).exists()
 
     def test_missing_sealed_table_is_no_rows(
         self, canonical_db: Path, django_db_blocker: pytest.FixtureRequest, tmp_path: Path

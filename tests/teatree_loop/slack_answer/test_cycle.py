@@ -265,6 +265,7 @@ class TestAckOnly:
         row.refresh_from_db()
         assert row.answer_kind == "ack"
         assert row.loop_replied_at is not None
+        assert row.loop_response_confirmed_at is None
         assert report.acked == 1
 
 

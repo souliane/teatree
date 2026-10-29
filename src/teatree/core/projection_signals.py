@@ -44,7 +44,7 @@ def control_db_path() -> Path:
     reading the alias back is the only way the projection can be built from the
     database the rows actually landed in.
     """
-    alias = router.db_for_write(ConfigSetting) or "default"
+    alias = router.db_for_read(ConfigSetting) or "default"
     return Path(str(connections[alias].settings_dict["NAME"]))
 
 
@@ -75,8 +75,13 @@ def publish_projection_now() -> None:
 
 
 def _ratchet_and_republish() -> None:
-    stored = ConfigSetting.objects.filter(scope=GLOBAL_SCOPE, key=GENERATION_KEY).values_list("value", flat=True)
-    ConfigSetting.objects.update_or_create(
+    alias = router.db_for_read(ConfigSetting) or "default"
+    stored = (
+        ConfigSetting.objects.using(alias)
+        .filter(scope=GLOBAL_SCOPE, key=GENERATION_KEY)
+        .values_list("value", flat=True)
+    )
+    ConfigSetting.objects.using(alias).update_or_create(
         scope=GLOBAL_SCOPE,
         key=GENERATION_KEY,
         defaults={"value": next_generation(next(iter(stored), None))},

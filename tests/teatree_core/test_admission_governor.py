@@ -894,7 +894,7 @@ class TestTheWriteConcurrencyFactorIsAnOperatorSetting(TestCase):
     """The per-core factor widens the WRITE ceiling; the weekly pace and the brakes keep their say."""
 
     def _ceiling(self, configured: object, *, weekly_utilization: float = 0.5) -> int:
-        ConfigSetting.objects.set_value(_PER_CORE_SETTING, configured)
+        ConfigSetting.objects.update_or_create(key=_PER_CORE_SETTING, scope="", defaults={"value": configured})
         quota = _quota(weekly_utilization=weekly_utilization, seconds_to_weekly_reset=_WEEK * 0.5)
         return decide_admission(quota=quota, machine=_machine(cores=8)).ceiling
 

@@ -7,7 +7,7 @@ from typing import IO, Annotated, Any, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.config import UserSettings, cadence_seconds, get_effective_settings
+from teatree.config import cadence_seconds
 from teatree.core.machine_output import emit
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
@@ -22,6 +22,7 @@ from teatree.loop.dispatch_gates import spawn_display_name
 from teatree.loop.statusline import default_path
 
 logger = logging.getLogger(__name__)
+IN_SESSION_CLAIM_LEASE_SECONDS = 10800
 
 
 def _subagent_for(task: Task) -> str:
@@ -117,15 +118,11 @@ def _interactive_claim_lease_seconds() -> int:
     The ``/loop`` slot's ``Agent``-tool sub-agent runs inside the owner's own
     single-threaded session, so nothing can renew the lease while it works —
     ``renew_lease``'s only production caller is the detached headless heartbeat.
-    The initial lease is therefore the WHOLE budget, and ``Task.claim``'s 300s
-    default reclaims and re-offers every dispatch slower than five minutes, which
-    is most of them. The instant a unit is genuinely presumed runaway is already
-    named once, by the watchdog runtime ceiling, so the lease is that same instant
-    rather than a second number to keep in sync; a disabled (``0``) ceiling means
-    the watchdog will not judge a run, never that a lease may not expire, so the
-    shipped ceiling stands in.
+    The initial lease is therefore the in-session budget, and ``Task.claim``'s 300s
+    default reclaims and re-offers every dispatch slower than five minutes. This
+    three-hour lease stays independent of the headless watchdog's 24-hour default.
     """
-    return get_effective_settings().watchdog_max_runtime_seconds or UserSettings().watchdog_max_runtime_seconds
+    return IN_SESSION_CLAIM_LEASE_SECONDS
 
 
 def _resolve_fanout_directive(task: Task) -> str:
