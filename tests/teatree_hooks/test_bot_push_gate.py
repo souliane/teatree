@@ -147,12 +147,19 @@ def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monk
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
     assert (
-        bot_push_gate._credential_login("github", "github.com", "https://oauth2@github.com/build-bot/engine.git")  # privacy-scan:allow synthetic URL userinfo
+        bot_push_gate._credential_login(
+            "github",
+            "github.com",
+            "https://oauth2@github.com/build-bot/engine.git",  # privacy-scan:allow synthetic URL userinfo
+        )
         == "build-bot"
     )
     assert (
         bot_push_gate._credential_login(
-            "github", "github.com", "https://person:person-key@github.com/build-bot/engine.git", "bot-key"  # privacy-scan:allow synthetic URL userinfo
+            "github",
+            "github.com",
+            "https://person:person-key@github.com/build-bot/engine.git",  # privacy-scan:allow synthetic URL userinfo
+            "bot-key",
         )
         == ""
     )
