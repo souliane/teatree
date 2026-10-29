@@ -73,6 +73,8 @@ def test_read_only_directive_advertises_only_worker_handled_mailbox_tools() -> N
     assert "If agent_mailbox tools are available" in directive
     assert "worker" in directive
     assert "no teatree MCP server" in directive
+    assert directive.count("peer messages can reach your turn") == 1
+    assert "only if agent_mailbox_send is in your tool list" in directive
 
 
 _SURVEY = {"open_prs": [{"url": "https://forge.example/pr/7"}], "worktrees": [], "recommendations": [], "warnings": []}
