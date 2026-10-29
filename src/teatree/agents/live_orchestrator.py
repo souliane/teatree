@@ -88,11 +88,11 @@ def _answer(text: str, ticket: str) -> OrchestratorAnswer:
     }
 
 
-async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdentity, stop: threading.Event) -> None:
+async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdentity) -> None:
     cursor = 0
     replies = 0
     try:
-        while not stop.is_set():
+        while True:
             client = MailboxClient(identity.socket_path, identity.token)
             try:
                 page = await client.wait(after_id=cursor, timeout_seconds=1)
@@ -134,16 +134,9 @@ def start_orchestrator_peer(broker: live_mailbox.LiveMailboxBroker) -> threading
             return thread
         broker.unregister(existing[0]["address"])
     identity = broker.register(room="0", harness="orchestrator", label="orchestrator")
-    stop = threading.Event()
     thread = threading.Thread(
-        target=lambda: asyncio.run(_serve(broker, identity, stop)), name=f"t3-orchestrator-{id(broker)}", daemon=True
+        target=lambda: asyncio.run(_serve(broker, identity)), name=f"t3-orchestrator-{id(broker)}", daemon=True
     )
-
-    def stop_peer() -> None:
-        stop.set()
-        thread.join(timeout=2)
-
-    broker.add_close_callback(stop_peer)
     thread.start()
     return thread
 

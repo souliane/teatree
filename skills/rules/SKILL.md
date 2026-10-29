@@ -193,7 +193,7 @@ An orchestrator never blocks its foreground over ~15s: use a `Monitor` (`gh run 
 
 ## Always Use AskUserQuestion for Questions
 
-Decide from the standing answers and verified facts first; if unresolved, a headless agent asks its orchestrator through the direct mailbox; only then ask the owner for credentials, money or plan, a public post, irreversible work, or a costly architecture choice (state intent, size, alternatives and a recommendation). Agent-to-agent questions stay on the direct mailbox. Ask the owner via `AskUserQuestion` when attended or `t3 <overlay> questions record` when headless, one decision per call, then stop; never narrate, re-ask or ask for a standing grant (`t3 <overlay> gate standing-grant-ask disable`). Full text and settled cases: `skills/rules/references/asking-questions.md`.
+Decide from the standing answers and verified facts first; if not, a headless agent asks its orchestrator through the direct mailbox; then the owner for the four limits or a costly design, dependency or large-mechanism choice (intent, size, alternatives, recommendation). No standing-grant asks (`t3 <overlay> gate standing-grant-ask`). Full text: `skills/rules/references/asking-questions.md`.
 
 ## The User Asked a Question — Answer It (Non-Negotiable)
 

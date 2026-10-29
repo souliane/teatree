@@ -90,11 +90,6 @@ class LiveMailboxBroker:
         self._delivery: dict[int, PeerDelivery] = {}
         self._joined_writers: set[asyncio.StreamWriter] = set()
         self._relay = PeerRelay(self)
-        self._close_callbacks: list[Callable[[], None]] = []
-
-    def add_close_callback(self, callback: Callable[[], None]) -> None:
-        with self._lock:
-            self._close_callbacks.append(callback)
 
     @property
     def socket_path(self) -> Path:
@@ -129,10 +124,6 @@ class LiveMailboxBroker:
             raise RuntimeError(msg) from self._startup_error
 
     def close(self) -> None:
-        with self._lock:
-            callbacks, self._close_callbacks = self._close_callbacks, []
-        for callback in callbacks:
-            callback()
         loop, stop, thread = self._loop, self._stop, self._thread
         if loop is not None and not loop.is_closed() and stop is not None and thread is not None and thread.is_alive():
             loop.call_soon_threadsafe(stop.set)

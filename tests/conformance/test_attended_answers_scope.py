@@ -18,8 +18,10 @@ def _answer_policy() -> str:
 
 
 def test_attended_answer_scope_names_headless_mailbox_and_owner_limit() -> None:
-    assert "A headless orchestrator may answer its own agents' scope and architecture questions" in _answer_policy()
-    assert "it does not dismiss live owner cards" in _answer_policy()
+    policy = _answer_policy()
+    assert "A headless orchestrator may answer its own agents' architecture questions" in policy
+    assert "scope and architecture questions" not in policy
+    assert "it does not dismiss live owner cards" in policy
 
 
 def test_layer_rule_is_once_in_rules_and_standing_answers_cover_recurring_cases() -> None:
