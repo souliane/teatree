@@ -19,9 +19,9 @@ _CHANNEL = "D-user"
 _SOMEONE_ELSE = "U2"
 
 
-def _reply(text: str, *, author: str, thread_ts: str = "") -> PendingChatInjection:
+def _reply(text: str, *, author: str, thread_ts: str = "", channel: str = _CHANNEL) -> PendingChatInjection:
     row = PendingChatInjection.record(
-        channel=_CHANNEL, slack_ts="400.0", text=text, context=DmContext(user_id=author, thread_ts=thread_ts)
+        channel=channel, slack_ts="400.0", text=text, context=DmContext(user_id=author, thread_ts=thread_ts)
     )
     assert row is not None
     return row
@@ -33,21 +33,22 @@ def _scan(backend: FakeMessaging) -> FakeMessaging:
 
 
 class TestOnlyTheOwnersReplyBinds(TestCase):
-    def _operator_question(self) -> DeferredQuestion:
+    def _operator_question(self, *, channel: str = _CHANNEL) -> DeferredQuestion:
         user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
         OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
         OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
         ticket = Ticket.objects.create(requested_by="github:alice")
         question = _question("Ship it?", slack_ts="100.0")
+        question.slack_channel = channel
         question.task_session = Session.objects.create(ticket=ticket)
-        question.save(update_fields=["task_session"])
+        question.save(update_fields=["slack_channel", "task_session"])
         return question
 
     def test_registered_requester_can_bind_own_question_but_owner_cannot(self) -> None:
-        question = self._operator_question()
-        operator_reply = _reply(f"#{question.pk} yes", author="U-OP")
+        question = self._operator_question(channel="D-other")
+        operator_reply = _reply(f"#{question.pk} yes", author="U-OP", channel="D-other")
         owner_reply = PendingChatInjection.record(
-            channel=_CHANNEL,
+            channel="D-other",
             slack_ts="401.0",
             text=f"#{question.pk} yes",
             context=DmContext(user_id=OWNER_SLACK_ID),
@@ -56,6 +57,13 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
         assert bind_reply(operator_reply, reader=_statement, backend=FakeMessaging()) is not None
         assert owner_reply is not None
         assert bind_reply(owner_reply, reader=_statement, backend=FakeMessaging()) is None
+
+    def test_owner_can_answer_card_delivered_before_requester_was_recorded(self) -> None:
+        question = self._operator_question()
+        reply = _reply(f"#{question.pk} yes", author=OWNER_SLACK_ID)
+        backend = FakeMessaging()
+
+        assert bind_reply(reply, reader=_statement, backend=backend) is not None
 
     def test_a_registered_operator_cannot_bind_another_operators_question(self) -> None:
         question = self._operator_question()

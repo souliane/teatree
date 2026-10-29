@@ -70,6 +70,9 @@ class FakeMessaging:
     route_token: str = "self"
     user_id: str = OWNER_SLACK_ID
 
+    def open_dm(self, user_id: str) -> str:
+        return _CHANNEL if user_id == self.user_id else "D-other"
+
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
         return True

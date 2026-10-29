@@ -84,6 +84,43 @@ class TestNotifyUser(TestCase):
         assert outcome.sent
         backend.open_dm.assert_called_once_with("U-OP")
 
+    def test_ticket_root_moves_to_requesters_dm_without_reusing_owner_thread(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/app/issues/47")
+        backend = _backend()
+        backend.open_dm.side_effect = lambda user_id: {"U_ME": "D-OWNER", "U-OP": "D-OP"}[user_id]
+        backend.post_message.side_effect = [
+            {"ok": True, "ts": "1700000000.000001"},
+            {"ok": True, "ts": "1700000000.000002"},
+        ]
+
+        first = notify_user_outcome(
+            "owner card",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="owner-card",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+        ticket.requested_by = "github:alice"
+        ticket.save(update_fields=["requested_by"])
+        second = notify_user_outcome(
+            "requester card",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="requester-card",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert first.sent
+        assert second.sent
+        assert backend.post_message.call_args_list[1].kwargs["channel"] == "D-OP"
+        assert not backend.post_message.call_args_list[1].kwargs.get("thread_ts")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.channel, thread.root_ts, thread.generation) == ("D-OP", "1700000000.000002", 1)
+        assert TicketDmPost.objects.filter(channel="D-OWNER", slack_ts="1700000000.000001").exists()
+
     def test_failed_requester_delivery_does_not_retry_to_owner(self) -> None:
         user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
         OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")

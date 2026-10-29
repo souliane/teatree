@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core.models import PendingChatInjection, TicketDmPost, TicketDmThread
+from teatree.core.models import OperatorIdentity, PendingChatInjection, TicketDmPost, TicketDmThread
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
@@ -97,7 +97,21 @@ class UnmatchedCardThread:
 
 def is_question_addressee(question: DeferredQuestion, user_id: str, backend: "MessagingBackend") -> bool:
     target = question_addressee(question, owner_id=configured_owner_id(backend)).user_id
-    return bool(target) and user_id == target
+    if not user_id:
+        return False
+    if user_id == target:
+        return True
+    if not question.slack_channel or not question.slack_ts:
+        return False
+    owner_id = configured_owner_id(backend)
+    if (
+        user_id != owner_id
+        and not OperatorIdentity.objects.filter(
+            platform="slack", handle=user_id, user__is_active=True, user__is_superuser=True
+        ).exists()
+    ):
+        return False
+    return backend.open_dm(user_id) == question.slack_channel
 
 
 def bind_reply(
