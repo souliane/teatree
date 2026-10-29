@@ -77,6 +77,7 @@ class TestOperatorApproval(TestCase):
         api = ApprovalAPI(username)
 
         def api_for(service: ReviewService) -> ApprovalAPI:
+            assert service.oauth
             observed.append(service.token)
             return api
 

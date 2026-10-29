@@ -83,7 +83,7 @@ def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewS
     except OperatorOAuthUnavailableError as error:
         typer.echo(str(error))
         raise typer.Exit(code=1) from error
-    return ReviewService(token, repo=repo), requester
+    return ReviewService(token, repo=repo, oauth=True), requester
 
 
 _EVIDENCE_JSON_HELP = (

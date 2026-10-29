@@ -90,8 +90,11 @@ class ReviewService:
     :mod:`teatree.cli.review.forge_target`.
     """
 
-    def __init__(self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "") -> None:
+    def __init__(
+        self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "", oauth: bool = False
+    ) -> None:
         self.token = token
+        self.oauth = oauth
         self.repo = repo
         # Injected forge handle. ``None`` (every production caller) keeps the lazy
         # build in :meth:`_get_api`; a test passes its own double here instead of
@@ -114,9 +117,13 @@ class ReviewService:
     def _get_api(self) -> "GitLabAPI":
         if self._api is not None:
             return self._api
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.backends.gitlab.api import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            GitLabAPI,
+            GitLabOAuthAPI,
+        )
 
-        return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
+        api_type = GitLabOAuthAPI if self.oauth else GitLabAPI
+        return api_type(token=self.token, base_url=self._resolve_base_url())
 
     def _resolve_base_url(self) -> str:
         """The GitLab API base URL this service's posts are addressed to."""
