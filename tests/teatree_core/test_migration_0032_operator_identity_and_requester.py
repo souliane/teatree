@@ -2,6 +2,8 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
+from teatree.core.notify_targets import addressee_for
+
 _BEFORE = ("core", "0031_review_hold_disposition_and_merge_attribution")
 _AFTER = ("core", "0032_operator_identity_and_requester")
 
@@ -23,4 +25,6 @@ class OperatorRequesterMigrationTestCase(TransactionTestCase):
         MigrationExecutor(connection).migrate([_AFTER])
 
         after = MigrationExecutor(connection).loader.project_state([_AFTER]).apps.get_model("core", "Ticket")
-        assert after.objects.get(pk=ticket.pk).requested_by == ""
+        migrated = after.objects.get(pk=ticket.pk)
+        assert migrated.requested_by == ""
+        assert addressee_for(migrated, owner_id="U-OWNER").user_id == "U-OWNER"

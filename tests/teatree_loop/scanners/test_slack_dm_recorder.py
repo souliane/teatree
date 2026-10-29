@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import OperatorIdentity, PendingChatInjection
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.types import RawAPIDict
 
@@ -145,6 +146,14 @@ class TestOnlyTheOwnerIsRecorded(TestCase):
         recorded = _recorder().record_events([{"ts": "1.0", "user": "U0COLLEAGUE1", "channel": "D1", "text": "run it"}])
 
         assert (recorded, PendingChatInjection.objects.count()) == (0, 0)
+
+    def test_a_registered_operators_message_is_recorded(self) -> None:
+        operator = get_user_model().objects.create_superuser("alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=operator, platform="slack", handle="U0DEMOUSER1")
+
+        recorded = _recorder().record_events([{"ts": "1.0", "user": "U0DEMOUSER1", "channel": "D1", "text": "hi"}])
+
+        assert (recorded, PendingChatInjection.objects.get().user_id) == (1, "U0DEMOUSER1")
 
     def test_a_message_with_no_sender_is_not_recorded(self) -> None:
         recorded = _recorder().record_events([{"ts": "1.0", "channel": "D1", "text": "who sent this"}])

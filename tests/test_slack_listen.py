@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.contrib.auth import get_user_model
 from typer.testing import CliRunner
 
 from teatree.cli.slack.listen import (
@@ -17,6 +18,7 @@ from teatree.cli.slack.listen import (
     _resolve_overlays,
     slack_app,
 )
+from teatree.core.models import OperatorIdentity
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
@@ -260,6 +262,24 @@ class TestCheckCommand:
         assert result.exit_code == 0
         assert [json.loads(line)["ts"] for line in result.stdout.strip().splitlines()] == ["2.0"]
         assert fake.react_routed_calls == [(_DM_CHANNEL, "2.0", "eyes")]
+
+    def test_a_registered_operators_dm_is_emitted_and_acknowledged(self) -> None:
+        operator = get_user_model().objects.create_superuser("alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=operator, platform="slack", handle="U_SECOND_OPERATOR")
+        event = {"type": "message", "channel_type": "im", "user": "U_SECOND_OPERATOR", "text": "hi", "ts": "1.0"}
+        fake = _RouteAwareFake()
+        with (
+            patch(
+                "teatree.backends.slack.receiver.drain_event_queue",
+                return_value=[{"overlay": "ov", "event": {**event, "channel": _DM_CHANNEL}}],
+            ),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake),
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        assert [json.loads(line)["ts"] for line in result.stdout.strip().splitlines()] == ["1.0"]
+        assert fake.react_routed_calls == [(_DM_CHANNEL, "1.0", "eyes")]
 
     def test_a_dm_with_no_resolvable_owner_is_not_emitted(self) -> None:
         event = {"type": "message", "channel_type": "im", "user": _USER_ID, "text": "hi", "ts": "1.0"}

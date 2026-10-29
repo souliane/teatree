@@ -4,10 +4,18 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from teatree.core.models import DmContext, PendingChatInjection
-from teatree.loop.owner_identity import configured_owner_id, is_the_owner, owner_rows, sent_by_owner
+from teatree.core.models import DmContext, OperatorIdentity, PendingChatInjection
+from teatree.loop.owner_identity import (
+    configured_owner_id,
+    is_the_owner,
+    operator_rows,
+    owner_rows,
+    sent_by_operator,
+    sent_by_owner,
+)
 
 
 def _owners(**by_overlay: str) -> Callable[[str], object]:
@@ -68,3 +76,26 @@ def test_a_backend_without_an_owner_id_has_no_configured_owner() -> None:
     assert configured_owner_id(SimpleNamespace()) == ""
     assert configured_owner_id(None) == ""
     assert configured_owner_id(SimpleNamespace(user_id="U1")) == "U1"
+
+
+class TestOperatorSenders(TestCase):
+    def setUp(self) -> None:
+        operator = get_user_model().objects.create_superuser("alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=operator, platform="slack", handle="U-OP")
+        viewer = get_user_model().objects.create_user("viewer", password="unused")
+        OperatorIdentity.objects.create(user=viewer, platform="slack", handle="U-VIEWER")
+
+    def test_the_owner_and_a_registered_superuser_are_operators_and_nobody_else_is(self) -> None:
+        assert sent_by_operator({"user": "U-OWNER"}, "U-OWNER")
+        assert sent_by_operator({"user": "U-OP"}, "U-OWNER")
+        assert not sent_by_operator({"user": "U-VIEWER"}, "U-OWNER")
+        assert not sent_by_operator({"user": "U-STRANGER"}, "U-OWNER")
+        assert not sent_by_operator({"text": "no sender"}, "U-OWNER")
+
+    def test_operator_rows_keep_the_owners_and_registered_operators_rows(self) -> None:
+        for ts, user in (("1.0", "U-OWNER"), ("2.0", "U-OP"), ("3.0", "U-VIEWER"), ("4.0", "U-STRANGER")):
+            _record("a", ts, user)
+
+        kept = operator_rows(PendingChatInjection.loop_unreplied(), _owners(a="U-OWNER"))
+
+        assert sorted(kept.values_list("slack_ts", flat=True)) == ["1.0", "2.0"]

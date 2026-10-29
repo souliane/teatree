@@ -57,6 +57,16 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
         assert owner_reply is not None
         assert bind_reply(owner_reply, reader=_statement, backend=FakeMessaging()) is None
 
+    def test_a_registered_operator_cannot_bind_another_operators_question(self) -> None:
+        question = self._operator_question()
+        bob = get_user_model().objects.create_superuser(username="bob", email="", password="unused")
+        OperatorIdentity.objects.create(user=bob, platform="github", handle="bob", external_id="456")
+        OperatorIdentity.objects.create(user=bob, platform="slack", handle="U-BOB")
+
+        reply = _reply(f"#{question.pk} yes", author="U-BOB")
+
+        assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None
+
     def test_reactive_cycle_applies_registered_requesters_answer(self) -> None:
         question = self._operator_question()
         _reply("yes", author="U-OP", thread_ts="100.0")
