@@ -19,7 +19,7 @@ from django.utils.module_loading import import_string
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands._workspace import ticket_intake as ticket_intake_mod
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Finding, ReviewHoldDisposition, ReviewVerdict, Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
 from tests._git_repo import make_git_repo, run_git
 from tests.teatree_core.conftest import CommandOverlay
@@ -159,3 +159,39 @@ class TestTheSummaryReportsTheCheckout(TestCase):
         (reported,) = errs
         assert reported.startswith("  Provisioning failed:")
         assert "has no origin remote" in reported
+
+
+class TestDiscardingATicketThatHoldsADispositionedHold(TestCase):
+    def test_the_failed_provision_discard_takes_the_verdicts_and_their_dispositions_with_it(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/5452", repos=["repo-a"], extra={"branch": "5452-x"}
+        )
+        verdicts = {
+            "slug": "souliane/teatree",
+            "pr_id": 7,
+            "reviewed_sha": "a" * 40,
+            "ticket": ticket,
+        }
+        hold = ReviewVerdict.record(
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[Finding(severity="major", summary="behaviour no test pins", file="a.py", line=3)],
+            **verdicts,
+        )
+        clearing = ReviewVerdict.record(verdict="merge_safe", reviewer_identity="independent-reviewer", **verdicts)
+        ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[{"index": 0, "classification": "disproved_premise", "citation": "pinned by test_x at this head"}],
+        )
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=False, detail="no origin remote")
+        pk = int(ticket.pk)
+
+        with patch.object(ticket_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = ticket_intake_mod.finalize_ticket_provision(lambda _s: None, lambda _s: None, ticket, None)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(pk=pk).exists()
+        assert not ReviewVerdict.objects.filter(pr_id=7).exists()
+        assert not ReviewHoldDisposition.objects.exists()

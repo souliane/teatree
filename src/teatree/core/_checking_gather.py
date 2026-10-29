@@ -48,22 +48,27 @@ def _latest_failed_tasks(now: datetime, task_scope: Q) -> dict[int, str]:
 
 def _merge_safe_prs(prs: list[PullRequest]) -> set[tuple[str, int]]:
     heads: dict[tuple[str, int], str] = {}
-    holds: set[tuple[str, int]] = set()
+    verdicts: dict[tuple[str, int], list[ReviewVerdict]] = {}
     passes: set[tuple[str, int]] = set()
     for verdict in (
         ReviewVerdict.objects.filter(pr_id__in=[int(pr.iid) for pr in prs if pr.iid.isdigit()])
         .order_by("-recorded_at", "-pk")
-        .only("slug", "pr_id", "reviewed_sha", "verdict")
+        .only("slug", "pr_id", "reviewed_sha", "verdict", "findings")
     ):
         key = verdict.slug.casefold(), verdict.pr_id
         head = verdict.reviewed_sha.strip().lower()
         if heads.setdefault(key, head) != head:
             continue
+        verdicts.setdefault(key, []).append(verdict)
         if verdict.is_merge_safe():
             passes.add(key)
-        if verdict.stands_as_hold():
-            holds.add(key)
-    return passes - holds
+    return {
+        key
+        for key in passes
+        if not ReviewVerdict.objects.unreconciled_holds_at(
+            slug=key[0], pr_id=key[1], head_sha=heads[key], at_head=verdicts[key]
+        )
+    }
 
 
 @dataclass(frozen=True, slots=True)

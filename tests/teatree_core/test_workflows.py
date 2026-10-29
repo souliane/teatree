@@ -494,7 +494,9 @@ class TestTaskWorkflow(TestCase):
 
         record_review_context_for_test(ticket)
         record_maker_review_for_test(ticket, "a" * 40)
-        review_task.complete_with_attempt(artifact_path="/tmp/review.md", exit_code=0)
+        review_task.complete_with_attempt(
+            artifact_path="/tmp/review.md", exit_code=0, result={"review_verdict": {"verdict": "merge_safe"}}
+        )
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED

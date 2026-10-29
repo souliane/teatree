@@ -81,8 +81,11 @@ class TestPrivateGateDatabase(TransactionTestCase):
                 _snapshot_control_db(checkout, env)
 
             program = (
-                "from pathlib import Path; from teatree.cli.push_gate_tools import _brief_for_worktree; "
-                "import sys; print(_brief_for_worktree(Path(sys.argv[1])))"
+                "from pathlib import Path; from teatree.cli.push_gate_tools import _ticket_for_worktree; "
+                "from teatree.utils.django_bootstrap import ensure_django; ensure_django(); "
+                "from teatree.core.models import PlanArtifact; import sys; "
+                "ticket = _ticket_for_worktree(Path(sys.argv[1])); "
+                "print(PlanArtifact.objects.get(ticket=ticket).plan_text)"
             )
             result = subprocess.run(
                 [

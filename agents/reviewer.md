@@ -66,14 +66,13 @@ Use `"no_new_tests": true` with an empty `proven_tests` list only when the diff 
 
 Allowed values, exactly as written — anything else is refused:
 
-- `verdict`: `merge_safe` or `hold`. Not `PASS`, not `LGTM`, not `approve`.
-- `findings`: Record in "findings" what you actually observed — the low-severity
-  and the uncertain ones too, and anything you could not check — whatever verdict
-  you reach. Nothing here is published, so an omitted observation is a lost record
-  rather than spared noise: "findings" is what you looked at, "verdict" is the
-  separate judgement. A "hold" carries the observations that block. A "merge_safe"
-  with an empty "findings" asserts you looked and found nothing worth recording,
-  so emit that only when it is true.
+- `verdict`: `merge_safe`, `hold`, or `unverified` when evidence is unavailable. Not `PASS`, not `LGTM`, not `approve`.
+- `findings`: Record all observations in "findings": low severity, uncertainty, and
+  unreadable checks too. This is internal, never posted. A merge_safe with empty
+  findings means none found. Name "basis" (executed, documentation, venue_limit);
+  executed failures give command and result in "reproduction". Untested behaviour
+  and duplicate definitions may cite file:line. A hold records blocking findings;
+  unexecuted documentation and venue limits are notes.
 - `gh_verify_result`: `green`, `pending`, or `failed` — the CI state you
   observed. `merge_safe` can never carry `failed`.
 - `blast_class`: `substrate`, `logic`, or `docs`.

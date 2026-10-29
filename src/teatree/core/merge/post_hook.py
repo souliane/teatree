@@ -16,7 +16,7 @@ from django_fsm import TransitionNotAllowed
 
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolved_repo_slug
-from teatree.core.models import MergeClear
+from teatree.core.models import MergeClear, Ticket
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class MergeAuditStamps:
     expedited_by: str = ""
     standing_delegation_by: str = ""
     merged_without_squash: bool = False
+    forge_account: str = ""
 
 
 def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
@@ -77,6 +78,16 @@ def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
         return
     if superseded:
         MergeClear.objects.filter(pk__in=superseded).update(consumed_at=locked.consumed_at)
+
+
+def _consume_head_evidence(ticket: Ticket, reviewed_sha: str) -> None:
+    ticket.refresh_from_db(fields=["extra"])
+    extra = ticket.extra or {}
+    for key in ("anti_vacuity_attestations", "rubric_grades_by_head"):
+        evidence = extra.get(key)
+        if isinstance(evidence, dict) and reviewed_sha in evidence:
+            remaining = {sha: item for sha, item in evidence.items() if sha != reviewed_sha}
+            ticket.merge_extra(set_keys={key: remaining})
 
 
 def record_merge_and_advance(
@@ -154,7 +165,9 @@ def record_merge_and_advance(
                 raise MergeReplayError(msg)
             locked.consumed_at = timezone.now()
             locked.merged_without_squash = stamps.merged_without_squash
-            locked.save(update_fields=["consumed_at", "merged_without_squash"])
+            if stamps.standing_delegation_by:
+                locked.delegation = "standing:substrate_auto_merge_authorized_by"
+            locked.save(update_fields=["consumed_at", "merged_without_squash", "delegation"])
             merge_audit_model.objects.create(
                 clear=locked,
                 merged_sha=merged_sha,
@@ -162,6 +175,7 @@ def record_merge_and_advance(
                 expedited_by=stamps.expedited_by,
                 repo_slug=repo_slug,
                 standing_delegation_by=stamps.standing_delegation_by,
+                forge_account=stamps.forge_account,
             )
             _supersede_siblings(locked, repo_slug=repo_slug)
             # The forge merge already landed, so the PR row is MERGED and a ticketless
@@ -175,16 +189,7 @@ def record_merge_and_advance(
                 # `t3 <overlay> ticket backfill-clears` links the row once the PR is attributable.
                 logger.warning("merge keystone: %s#%s merged but resolved no owning ticket", locked.slug, locked.pr_id)
                 return ""
-            ticket.refresh_from_db(fields=["extra"])
-            extra = ticket.extra or {}
-            attestations = extra.get("anti_vacuity_attestations")
-            if isinstance(attestations, dict) and locked.reviewed_sha in attestations:
-                remaining = {sha: item for sha, item in attestations.items() if sha != locked.reviewed_sha}
-                ticket.merge_extra(set_keys={"anti_vacuity_attestations": remaining})
-            grades = extra.get("rubric_grades_by_head")
-            if isinstance(grades, dict) and locked.reviewed_sha in grades:
-                remaining_grades = {sha: item for sha, item in grades.items() if sha != locked.reviewed_sha}
-                ticket.merge_extra(set_keys={"rubric_grades_by_head": remaining_grades})
+            _consume_head_evidence(ticket, locked.reviewed_sha)
             if reading.leaves_remainder and hold_for_remainder(
                 ticket, reading, merged_pr=f"{repo_slug or locked.slug}#{locked.pr_id}"
             ):

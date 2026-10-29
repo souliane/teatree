@@ -18,7 +18,7 @@ from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.models import AutoReviewDispatch, MergeClear, PullRequest, ReviewVerdict, Ticket
 from teatree.loop.scanners.pr_sweep_adapters import AutoReviewTaskDispatcher
 from teatree.utils.pr_ref import PrRef
-from tests.factories import MergeClearFactory, PullRequestFactory, TicketFactory
+from tests.factories import MergeClearFactory, PullRequestFactory, TicketFactory, waive_rubric
 
 _SHA = "a" * 40
 _REPO = "souliane/teatree"
@@ -176,6 +176,30 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
         with (
             pytest.raises(MergePreconditionError, match="anti-vacuity attestation"),
         ):
+            assert_ticket_scoped_gates(slug=_REPO, pr_id=9003, head_sha=_SHA)
+
+    def test_attestation_on_clear_ticket_covers_the_pr_ledger_ticket(self) -> None:
+        ledger_ticket = TicketFactory()
+        waive_rubric(ledger_ticket)
+        clear_ticket = TicketFactory()
+        PullRequestFactory(ticket=ledger_ticket, repo=_REPO, iid="9003")
+        MergeClearFactory(slug=_REPO, pr_id=9003, ticket=clear_ticket)
+        clear_ticket.record_anti_vacuity_attestation(
+            _SHA, "Every acceptance criterion maps to the changed code", ["tests/test_bug.py::test_bug"]
+        )
+
+        assert_ticket_scoped_gates(slug=_REPO, pr_id=9003, head_sha=_SHA)
+
+    def test_attestation_on_another_pr_does_not_cover_this_one(self) -> None:
+        ledger_ticket = TicketFactory()
+        other_ticket = TicketFactory()
+        PullRequestFactory(ticket=ledger_ticket, repo=_REPO, iid="9003")
+        PullRequestFactory(ticket=other_ticket, repo=_REPO, iid="9004")
+        other_ticket.record_anti_vacuity_attestation(
+            _SHA, "Every acceptance criterion maps to the changed code", ["tests/test_bug.py::test_bug"]
+        )
+
+        with pytest.raises(MergePreconditionError, match="anti-vacuity attestation"):
             assert_ticket_scoped_gates(slug=_REPO, pr_id=9003, head_sha=_SHA)
 
     def test_bound_merge_runs_the_ticket_scoped_gates(self) -> None:

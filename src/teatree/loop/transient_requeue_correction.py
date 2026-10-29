@@ -1,7 +1,7 @@
 """Bounded corrective instructions for failed phase attempts."""
 
+from teatree.agents.envelope_contract import corrective_instruction, refused_envelope_instruction
 from teatree.agents.envelope_refusal import (
-    corrective_instruction,
     is_comment_check_refusal,
     is_no_envelope_refusal,
     is_owner_stop_refusal,
@@ -9,7 +9,6 @@ from teatree.agents.envelope_refusal import (
     is_review_shape_refusal,
     is_rubric_grades_refusal,
     is_unparseable_envelope_refusal,
-    refused_envelope_instruction,
 )
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 from django.db import transaction
 from django_fsm import can_proceed
 
-from teatree.core.models.errors import LeaseLostError
+from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.review.author_trust import classify_author
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.loop.dispatch import ActionPayload
@@ -301,7 +301,11 @@ def task_completion(payload: ActionPayload) -> None:
     if not _artifact_still_terminal(task):
         logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)
         return
-    task.complete()
+    try:
+        task.complete()
+    except InvalidTransitionError as exc:
+        logger.warning("task_completion: task %s cannot complete: %s", task_id, exc)
+        return
     logger.info("Auto-completed task %s (artifact confirmed terminal: %s)", task_id, payload.get("issue_url", "?"))
 
 

@@ -34,6 +34,35 @@ from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 CONTRACT_HEADING = "# Result Envelope — REQUIRED OUTPUT CONTRACT"
 
+_FIX_RECORD_FIELD_LINES: tuple[str, ...] = (
+    "",
+    "THIS IS A FIX TICKET — RETURN ITS FixRecord IN THE ENVELOPE (the Definition-of-Done gate",
+    "refuses DELIVERED without one, and nothing but this envelope writes it):",
+    '  "fix_record": {"root_cause": "<the DEEPEST cause, not the symptom you patched>",',
+    '                 "evidence": "<why that is the cause — what you read/ran that shows it>",',
+    '                 "regression_test": "<path::node of the RED-first test that pins it>",',
+    '                 "observed_red": "<attestation you saw that test FAIL against the pre-fix code>",',
+    '                 "recurrence_fingerprint": "<stable signature, e.g. module:condition>"}',
+    "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
+    "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
+    "A merged manifestation patch with no stated root cause is not done.",
+)
+FIX_RECORD_NO_RED_FIELD_LINES: tuple[str, ...] = tuple(
+    line.replace("RED-first ", "") for line in _FIX_RECORD_FIELD_LINES if '"observed_red"' not in line
+)
+FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
+    (
+        "Before editing, run `repro record-red` on the pre-fix HEAD; coding completion requires it "
+        "and testing records GREEN automatically."
+    ),
+)
+FIX_RECORD_REVIEW_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
+    "Return it only with merge_safe; observed_red is your own revert-to-RED proof.",
+)
+FIX_RECORD_REVIEW_NO_RED_LINES: tuple[str, ...] = (*FIX_RECORD_NO_RED_FIELD_LINES, "Return it only with merge_safe.")
+
 #: One minimal, schema-valid envelope fragment per evidence field, so the example
 #: the brief shows is the exact shape the recorder accepts rather than a paraphrase
 #: of it. Keyed on every field named in ``PHASE_REQUIRED_EVIDENCE``; a phase whose
@@ -109,6 +138,34 @@ def allowed_keys() -> tuple[str, ...]:
     """Every key the envelope schema permits — ``additionalProperties`` is false."""
     properties = RESULT_JSON_SCHEMA.get("properties")
     return tuple(str(key) for key in properties) if isinstance(properties, Mapping) else ()
+
+
+def required_keys_phrase(phase: str) -> str:
+    """The phase's required envelope keys, rendered for an instruction line."""
+    required = required_evidence_for_phase(phase)
+    if not required:
+        return "`summary`"
+    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        phrase += f" (plus {also} when the request implies work)"
+    return phrase
+
+
+def corrective_instruction(phase: str) -> str:
+    return (
+        f"your last run omitted the required trailing JSON result envelope "
+        f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
+        "plain JSON, nothing after it."
+    )
+
+
+def refused_envelope_instruction(refusal: str) -> str:
+    return (
+        f"your last run's result envelope was refused ({refusal}) — re-emit the complete envelope "
+        "with exactly those keys corrected, as the last thing you write, plain JSON, nothing after it."
+    )
 
 
 def _taught_keys(*, read_only_venue: bool) -> tuple[str, ...]:

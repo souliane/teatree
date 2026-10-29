@@ -293,7 +293,10 @@ class MidRunCheckoutTests(TestCase):
     def test_read_only_exit_records_no_deferred_proof(self) -> None:
         self.task.phase = "reviewing"
         self.task.save(update_fields=["phase"])
-        self.run_to(lambda task: task.complete(), held_at_exit=True)
+        self.run_to(
+            lambda task: task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}}),
+            held_at_exit=True,
+        )
         row = Worktree.objects.get(pk=self.worktree.pk)
         assert "deferred_exit" not in row.get_extra()
 
