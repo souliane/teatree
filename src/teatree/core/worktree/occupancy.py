@@ -224,7 +224,10 @@ def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str, namesp
         try:
             yield
         finally:
-            renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
+            pk = _task_pk_from_holder(holder)
+            terminal = pk is not None and Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists()
+            if not terminal or held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session) is not None:
+                renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
             _finish_task_checkout(
                 ticket, holder=holder, holder_session=holder_session, scope=scope, namespace=namespace
             )

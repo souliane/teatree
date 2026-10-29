@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,8 @@ from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -42,14 +45,17 @@ class GlabCodexPrApi:
             message = f"GitLab current user is unreadable for {slug!r}"
             raise ValueError(message)
         raw_mrs = host.list_prs(repo=slug, state="open", author=author)
-        return [
-            self._summary(host, slug=slug, author=author, raw=raw)
-            for raw in raw_mrs
-            if _author(raw) == author.casefold()
-        ]
+        summaries: list[PrSummary] = []
+        for raw in raw_mrs:
+            if _author(raw) != author.casefold():
+                continue
+            summary = self._summary(host, slug=slug, author=author, raw=raw)
+            if summary is not None:
+                summaries.append(summary)
+        return summaries
 
     @staticmethod
-    def _summary(host: "CodeHostBackend", *, slug: str, author: str, raw: RawAPIDict) -> PrSummary:
+    def _summary(host: "CodeHostBackend", *, slug: str, author: str, raw: RawAPIDict) -> PrSummary | None:
         iid = raw.get("iid")
         head = raw.get("sha")
         url = raw.get("web_url")
@@ -66,8 +72,8 @@ class GlabCodexPrApi:
             )
         )
         if not paths:
-            message = f"GitLab MR !{iid} in {slug!r} has no readable changed paths"
-            raise ValueError(message)
+            logger.warning("GitLab MR !%s in %s has no readable changed paths; skipping review", iid, slug)
+            return None
         draft = raw.get("draft") is True
         unsettled = False
         if not draft:

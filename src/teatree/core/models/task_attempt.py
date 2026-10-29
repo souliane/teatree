@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 from django.db import models, transaction
 from django.db.models.functions import Coalesce
 
+from teatree.core.modelkit import task_failure_taxonomy
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, FailureKind, classify_failure
 from teatree.core.models.task import Task
@@ -36,8 +37,7 @@ CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
-# Stamped in no-op recovery summaries; read by doctor duplicate-execution and skill-gap checks.
-NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
+NOOP_OVER_COMPLETED_MARKER = task_failure_taxonomy.NOOP_OVER_COMPLETED_MARKER
 
 
 PARK_ERROR_Q = reduce(or_, (models.Q(error__startswith=prefix) for prefix in PARK_ERROR_PREFIXES))

@@ -216,6 +216,14 @@ class TestHumanNoteActivityClaims(TestCase):
         assert claim_red_mr_fix(self._payload("a" * 40, 42)) is True
         assert claim_red_mr_fix(self._payload("b" * 40, 42)) is False
 
+    def test_head_finding_dispatches_on_new_head_with_old_note(self) -> None:
+        first = self._payload("a" * 40, 42)
+        second = {**self._payload("b" * 40, 42), "head_finding": True}
+        assert claim_red_mr_fix(first) is True
+        assert claim_red_mr_fix(first) is False
+        assert claim_red_mr_fix(second) is True
+        assert claim_red_mr_fix(second) is False
+
     def test_new_person_note_claims_again_on_same_head(self) -> None:
         assert claim_red_mr_fix(self._payload("a" * 40, 42)) is True
         assert claim_red_mr_fix(self._payload("a" * 40, 43)) is True

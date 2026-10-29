@@ -82,7 +82,7 @@ class TestT3TeatreeSkillDispatch(TestCase):
     def test_coding_stack_load_block_lists_internals_once(self) -> None:
         prompt = self._prepare("coding", _TEATREE_CHECKOUT).prompt
 
-        assert prompt.splitlines().count("  - /internals") == 1
+        assert prompt.splitlines().count("  - /t3:internals") == 1
 
     def test_coding_dispatch_records_the_round_start_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

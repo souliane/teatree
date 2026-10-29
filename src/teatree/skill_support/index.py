@@ -33,6 +33,7 @@ def _default_skills_dir() -> Path:
 
 
 DEFAULT_SKILLS_DIR = _default_skills_dir()
+PROJECT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 
 def install_roots() -> list[Path]:
@@ -55,10 +56,11 @@ def bare_skill_name(name: str) -> str:
 
 
 def skill_tool_load_name(name: str) -> str:
-    if ":" in name and not name.startswith("t3:"):
+    if ":" in name:
         return name
     bare = bare_skill_name(name)
-    return f"t3:{bare}" if (DEFAULT_SKILLS_DIR / bare / _SKILL_FILE).is_file() else bare
+    core_root = PROJECT_SKILLS_DIR if PROJECT_SKILLS_DIR.is_dir() else DEFAULT_SKILLS_DIR
+    return f"t3:{bare}" if (core_root / bare / _SKILL_FILE).is_file() else bare
 
 
 def locate_skill_md(name: str, skills_dirs: Sequence[Path]) -> tuple[Path, Path] | None:

@@ -82,6 +82,8 @@ from django.db import models
 
 from teatree.failure_signatures import HARNESS_CRASH_MARKERS, outage_signature_in_text
 
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
+
 STALE_ERROR_AFTER = timedelta(days=2)
 
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.

@@ -249,6 +249,16 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: task.complete())
         self.assert_released_and_attested()
 
+    def test_terminal_release_does_not_retake_a_successors_checkout(self) -> None:
+        def finish(task: Task) -> None:
+            task.complete()
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+
+        self.run_to(finish)
+        holder = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
+        assert holder is not None
+        assert (holder.holder, holder.holder_session) == ("task:999", "rival")
+
     def test_short_run_claims_its_new_checkout_before_completion(self) -> None:
         self.run_to(lambda task: task.complete(), heartbeat=False)
         self.assert_released_and_attested()

@@ -146,7 +146,7 @@ def test_unreadable_gitlab_discussions_do_not_trigger_note_run(caplog) -> None:
             "author": {"username": "alice"},
         }
     ]
-    host.list_pr_discussions.side_effect = RuntimeError("unavailable")
+    host.list_pr_discussions.side_effect = Exception("unavailable")
 
     assert [signal.kind for signal in MyPrsScanner(host=host).scan()] == ["my_pr.open"]
     assert any(url in record.message for record in caplog.records)

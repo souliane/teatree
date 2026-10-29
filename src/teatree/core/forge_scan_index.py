@@ -2,8 +2,9 @@
 
 import logging
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
+from importlib import import_module
 from threading import Lock
 
 from teatree.git_sha import is_full_git_sha
@@ -33,12 +34,8 @@ class BranchScanIndex:
 
     @staticmethod
     def _read_open_prs(repo: str) -> dict[str, str] | None:
-        try:
-            from teatree.core.backend_factory import (  # noqa: PLC0415 — Django loads at call time.
-                code_host_for_repo_from_overlay,
-            )
-
-            host = code_host_for_repo_from_overlay(repo)
+        with suppress(Exception):
+            host = import_module("teatree.core.backend_factory").code_host_for_repo_from_overlay(repo)
             if host is None or not isinstance(host.get_repo(repo=repo).get("id"), int):
                 logger.warning("forge scan: could not resolve project for %s — unknown", repo)
                 return None
@@ -57,11 +54,9 @@ class BranchScanIndex:
                     logger.warning("forge scan: open PR list for %s was malformed — unknown", repo)
                     return None
                 found[branch] = url
-        except Exception:  # noqa: BLE001 — an untrusted forge read must degrade to unknown.
-            logger.warning("forge scan: could not read complete open PR list for %s — unknown", repo)
-            return None
-        else:
             return found
+        logger.warning("forge scan: could not read complete open PR list for %s — unknown", repo)
+        return None
 
     def origin_has_branch(self, repo: str, branch: str, *, timeout: float) -> bool | None:
         with self._lock(repo):

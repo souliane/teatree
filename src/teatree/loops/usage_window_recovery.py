@@ -29,6 +29,7 @@ from django.db.models import F, OuterRef, Q, Subquery
 from django.tasks import task
 from django.utils import timezone
 
+from teatree.agents.credential_policy import clear_stale_exhaustion_window
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,6 @@ def recover_windows(now: dt.datetime) -> RecoveryOutcome:
     (``not_before`` nulled → immediately claimable), the loops are pumped so they re-claim,
     and ONE Slack line is posted.
     """
-    from teatree.agents.credential_policy import clear_stale_exhaustion_window  # noqa: PLC0415 — deferred import
     from teatree.core.models import UsageWindowState  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     active = list(UsageWindowState.objects.active())

@@ -86,7 +86,10 @@ def clear_stale_exhaustion_window(window: UsageWindowState, *, scope: str | None
         | Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted")
         | (
             Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}admission:")
-            & Q(latest_error__contains="window on lane 'subscription' active")
+            & (
+                Q(latest_error__contains="window on lane 'subscription' active")
+                | Q(latest_error__contains="window on lane TaskAttempt.Lane.SUBSCRIPTION active")
+            )
         )
     )
     with transaction.atomic():

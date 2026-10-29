@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Protocol
@@ -270,14 +271,17 @@ class MyPrsScanner:
                 notes_count = 0
         sha = str(base_payload.get("head_sha") or "")
         critic_unmet = self.critic_reader.unmet_for(url=url, head_sha=sha) if self.critic_reader is not None else False
+        verdict_state = self._verdict_state(url=url, head_sha=sha)
         if not unaddressed_review_findings(
-            verdict_state=self._verdict_state(url=url, head_sha=sha),
+            verdict_state=verdict_state,
             notes_count=notes_count,
             critic_unmet=critic_unmet,
         ):
             return None
         author = author_username(pr)
         payload: SignalPayload = {**base_payload, "draft_count": notes_count, "author": author}
+        if critic_unmet or verdict_state is HeadVerdictState.HOLD:
+            payload["head_finding"] = True
         if activity_key:
             payload["activity_key"] = activity_key
         if disposition_for_author(author, self_identities=identities) is FindingDisposition.POST:
@@ -301,14 +305,16 @@ class MyPrsScanner:
         if ref is None:
             logger.warning("my_prs could not parse GitLab MR %s; no note-driven run", url)
             return None
-        try:
+        unreadable = object()
+        discussions: object = unreadable
+        with suppress(Exception):
             project = self.host.get_repo(repo=ref.slug)
             if not isinstance(project.get("id"), int):
                 logger.warning("my_prs could not resolve GitLab MR %s; no note-driven run", url)
                 return None
             discussions = self.host.list_pr_discussions(repo=ref.slug, pr_iid=ref.pr_id)
-        except Exception as exc:  # noqa: BLE001 — an unreadable forge must not trigger note-driven work.
-            logger.warning("my_prs could not read review discussions for %s; no note-driven run: %s", url, exc)
+        if discussions is unreadable:
+            logger.warning("my_prs could not read review discussions for %s; no note-driven run", url)
             return None
         activity = (
             human_open_thread_activity(discussions, ForgeActors.for_url(url)) if isinstance(discussions, list) else None

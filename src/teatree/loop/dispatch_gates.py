@@ -225,7 +225,12 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
 
         kind = fix_kind_of(payload)
         activity_key = payload.get("activity_key")
-        if kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and isinstance(activity_key, int) and activity_key > 0:
+        if (
+            kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS
+            and payload.get("head_finding") is not True
+            and isinstance(activity_key, int)
+            and activity_key > 0
+        ):
             row = RedMrFixAttempt.claim_activity(
                 pr_url=pr_url,
                 head_sha=sha,

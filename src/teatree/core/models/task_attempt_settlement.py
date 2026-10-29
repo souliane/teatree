@@ -5,7 +5,7 @@ from django.apps import apps
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
-from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, NOOP_OVER_COMPLETED_MARKER, FailureKind
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_claim import _refuse_lost_lease
 from teatree.core.models.types import JSONObject
@@ -30,6 +30,7 @@ class AttemptInput:
     error: str
     result: JSONObject | None
     usage_unknown: bool
+    strict_lease: bool = False
 
 
 def _late_fields(
@@ -39,7 +40,9 @@ def _late_fields(
         lambda: type(task).objects.filter(pk=task.pk).values("status", "failure_kind", "failure_reason").first()
     )
     if current is not None and current["status"] == task.Status.COMPLETED:
-        return LateAttemptFields(0, "", {**result, "summary": "Run interrupted: task row already completed"})
+        return LateAttemptFields(
+            0, "", {**result, "summary": f"Run interrupted: {NOOP_OVER_COMPLETED_MARKER}task row already completed"}
+        )
     if current is not None and current["failure_kind"] == FailureKind.CANCELLED:
         return LateAttemptFields(
             exit_code, error, {**result, "summary": f"Run interrupted: {current['failure_reason']}"}
@@ -60,6 +63,8 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
     try:
         retry_on_locked(lambda: _refuse_lost_lease(task))
     except LeaseLostError as exc:
+        if details.strict_lease:
+            raise
         lost = exc
         fields = _late_fields(task, loss=exc, exit_code=exit_code, error=error, result=recorded_result)
         exit_code, error, recorded_result = fields.exit_code, fields.error, fields.result
@@ -88,8 +93,17 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
                 )
             )
     except LeaseLostError as exc:
+        if details.strict_lease:
+            raise
         fields = _late_fields(task, loss=exc, exit_code=exit_code, error=error, result=recorded_result)
         attempt.exit_code, attempt.error, attempt.result = fields.exit_code, fields.error, fields.result
         attempt.error_fingerprint = terminal_reason_fingerprint(attempt.error)
         retry_on_locked(attempt.save)
     return attempt
+
+
+def complete_with_strict_lease(task: "Task", result: JSONObject) -> "TaskAttempt":
+    return complete_with_attempt(
+        task,
+        AttemptInput(artifact_path="", exit_code=0, error="", result=result, usage_unknown=False, strict_lease=True),
+    )

@@ -39,6 +39,14 @@ def test_incomplete_mr_list_is_unknown_and_warns_once(caplog: pytest.LogCaptureF
     assert len(warnings) == 1
 
 
+def test_unexpected_forge_error_is_unknown() -> None:
+    host = MagicMock()
+    host.get_repo.return_value = {"id": 42}
+    host.list_prs.side_effect = Exception("provider unavailable")
+    with patch("teatree.core.backend_factory.code_host_for_repo_from_overlay", return_value=host), branch_scan_scope():
+        assert probe_gitlab_open_pr(_REPO, "feature-1").is_unknown
+
+
 def test_fifty_origin_probes_share_one_complete_ref_list() -> None:
     result = MagicMock(returncode=0, stdout="a" * 40 + "\trefs/heads/feature-2\n")
     with (

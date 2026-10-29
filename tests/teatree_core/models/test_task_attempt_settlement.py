@@ -1,10 +1,13 @@
 from unittest import mock
 
-from django.db import OperationalError
+import pytest
+from django.db import OperationalError, transaction
 from django.test import TestCase
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.errors import LeaseLostError
+from teatree.core.models.task_attempt_settlement import complete_with_strict_lease
 
 
 class TestTaskAttemptSettlement(TestCase):
@@ -21,6 +24,7 @@ class TestTaskAttemptSettlement(TestCase):
         assert attempt.exit_code == 0
         assert attempt.error == ""
         assert "already completed" in str(attempt.result["summary"])
+        assert NOOP_OVER_COMPLETED_MARKER in str(attempt.result["summary"])
         assert attempt.result["detail"] == "kept"
         assert task.attempts.count() == 1
 
@@ -80,6 +84,19 @@ class TestTaskAttemptSettlement(TestCase):
         assert attempt.error == ""
         assert attempt.error_fingerprint == ""
         assert task.attempts.count() == 1
+
+    def test_strict_lease_rolls_back_attempt_when_completion_loses_lease(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+
+        with (
+            pytest.raises(LeaseLostError),
+            transaction.atomic(),
+            mock.patch.object(Task, "complete", side_effect=LeaseLostError("rival claimed task")),
+        ):
+            complete_with_strict_lease(task, {"summary": "review skipped"})
+
+        assert task.attempts.count() == 0
 
     def test_complete_with_attempt_retries_a_locked_attempt_write(self) -> None:
         ticket = Ticket.objects.create()

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 
@@ -18,6 +19,7 @@ from teatree.agents._runner_env import _provider_child_env, system_child_env
 from teatree.agents.credential_policy import (
     ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     EXHAUSTION_CAUSES,
+    clear_stale_exhaustion_window,
     resolve_credential_provider,
     spend_metered_key,
     subscription_lane_exhausted,
@@ -193,6 +195,56 @@ class TestExhaustionRule(CredentialPolicyCase):
         task.refresh_from_db()
         assert window.cleared_at is None
         assert task.not_before == window.resets_at
+
+    def test_healthy_account_releases_an_admission_park_before_reset(self) -> None:
+        window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/plan/oauth"])
+        task = _claimed_task()
+        reset = window.resets_at
+        assert reset is not None
+        spent = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.99,
+            utilization_7d=0.2,
+            status_5h="rejected",
+            status_7d="allowed",
+            reset_5h=reset,
+            reset_7d=None,
+        )
+        healthy = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=0.2,
+            status_5h="allowed",
+            status_7d="allowed",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=spent):
+            attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        assert attempt is not None
+        assert "window on lane 'subscription' active" in attempt.error
+        legacy = Task.objects.create(
+            ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
+        )
+        record_park(
+            legacy,
+            reason=(
+                f"{LIMIT_PARKED_PREFIX}admission: all_accounts_exhausted "
+                "window on lane TaskAttempt.Lane.SUBSCRIPTION active"
+            ),
+            not_before=reset,
+        )
+        cache.clear()
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=healthy):
+            released = clear_stale_exhaustion_window(window, scope=None, now=timezone.now())
+        task.refresh_from_db()
+        legacy.refresh_from_db()
+        window.refresh_from_db()
+        assert released == 2
+        assert task.not_before is None
+        assert legacy.not_before is None
+        assert window.cleared_at is not None
 
     def test_partial_reading_does_not_replace_known_exhaustion(self) -> None:
         window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)

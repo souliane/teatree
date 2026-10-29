@@ -52,3 +52,16 @@ def test_forge_adapter_refuses_a_repository_without_declared_host() -> None:
         pytest.raises(ScannerError, match="no forge"),
     ):
         adapter.list_open_self_prs(slug=SLUG)
+
+
+def test_gitlab_adapter_keeps_other_mrs_when_one_has_empty_diff() -> None:
+    host = MagicMock(spec=CodeHostBackend)
+    host.get_repo.return_value = {"id": 77}
+    host.current_user.return_value = "operator"
+    host.list_prs.return_value = [_mr(7, "operator"), _mr(9, "operator", draft=True)]
+    host.get_pr_diff.side_effect = [[], [{"new_path": "src/changed.py"}]]
+
+    with patch.object(GlabCodexPrApi, "_backend", return_value=host):
+        listed = GlabCodexPrApi().list_open_self_prs(slug=SLUG)
+
+    assert [pr.number for pr in listed] == [9]
