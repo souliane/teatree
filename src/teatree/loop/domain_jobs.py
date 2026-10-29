@@ -55,6 +55,7 @@ from teatree.loop.scanners import (
     PendingTasksScanner,
     PrApprovalScanner,
     QuestionBacklogNagScanner,
+    QueuedTaskFreshnessScanner,
     RedCardScanner,
     ReviewDoneAckScanner,
     ReviewedPrHeadScanner,
@@ -67,6 +68,7 @@ from teatree.loop.scanners import (
     SlackMentionsScanner,
     SlackReviewIntentScanner,
     StaleTicketsScanner,
+    StuckCheckoutRecheckScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
     UndeliveredNotifyScanner,
@@ -102,6 +104,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=DeadWorktreeRowScanner(), overlay=""),
+        _ScannerJob(scanner=StuckCheckoutRecheckScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(
             scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id, settle=sweep_owner_questions),
@@ -145,6 +148,10 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     )
     if task_sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=task_sweep_scanner, overlay=tag))
+    if backend.overlay is not None:
+        jobs.append(
+            _ScannerJob(scanner=QueuedTaskFreshnessScanner(overlay=backend.overlay, overlay_name=tag), overlay=tag)
+        )
     return jobs
 
 

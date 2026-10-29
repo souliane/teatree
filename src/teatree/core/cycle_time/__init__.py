@@ -18,6 +18,7 @@ from teatree.core.cycle_time.pull_request_flow import (
     OpenPullRequestAge,
     merged_pull_request_seconds,
     open_pull_requests,
+    phase_gap_seconds,
 )
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets, spans_since
 from teatree.core.cycle_time.timeline import PhaseSegment, TicketTimeline, build_ticket_timeline, build_ticket_timelines
@@ -49,6 +50,7 @@ __all__ = [
     "merged_pull_request_seconds",
     "open_pull_requests",
     "percentile",
+    "phase_gap_seconds",
     "spans_for_tickets",
     "spans_since",
     "transition_distribution",

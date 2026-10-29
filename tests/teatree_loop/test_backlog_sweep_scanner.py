@@ -29,6 +29,7 @@ from django.utils import timezone
 
 from teatree.config import UserSettings
 from teatree.core.models import PullRequest
+from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -79,6 +80,17 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class BacklogSweepScannerTests(TestCase):
+    def test_failed_due_queue_emits_hold_and_health_until_a_task_lands(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            signals = _scanner().scan()
+        assert [signal.kind for signal in signals] == ["backlog_sweep.held"]
+        issue = KnownIssue.objects.get(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}")
+        assert issue.resolved_at is None
+
+        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.queued"]
+        issue.refresh_from_db()
+        assert issue.resolved_at is not None
+
     def test_twenty_live_pull_requests_allow_a_new_sweep(self) -> None:
         for index in range(20):
             PullRequest.objects.record_opened(

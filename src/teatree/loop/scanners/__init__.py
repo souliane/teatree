@@ -50,6 +50,7 @@ from teatree.loop.scanners.pr_sweep_gitlab import ForgePrApiClient, GlabPrApiCli
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
+from teatree.loop.scanners.queued_task_freshness import QueuedTaskFreshnessScanner
 from teatree.loop.scanners.ratchet_staleness import RatchetStalenessScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
@@ -69,6 +70,7 @@ from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.snapshot_warmer import SnapshotWarmerScanner
 from teatree.loop.scanners.stale_tickets import StaleTicketsScanner
+from teatree.loop.scanners.stuck_checkout_recheck import StuckCheckoutRecheckScanner
 from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
@@ -120,6 +122,7 @@ __all__ = [
     "ProvisionSmokeScanner",
     "PullMainCloneScanner",
     "QuestionBacklogNagScanner",
+    "QueuedTaskFreshnessScanner",
     "RatchetStalenessScanner",
     "RedCardScanner",
     "ResourcePressureScanner",
@@ -140,6 +143,7 @@ __all__ = [
     "SlackReviewIntentScanner",
     "SnapshotWarmerScanner",
     "StaleTicketsScanner",
+    "StuckCheckoutRecheckScanner",
     "TaskSweepScanner",
     "TicketCompletionScanner",
     "TicketDispositionScanner",
