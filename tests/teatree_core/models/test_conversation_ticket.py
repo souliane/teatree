@@ -53,6 +53,16 @@ class TestConversationInUse(TestCase):
 
         assert ticket.conversation_in_use() is True
 
+    def test_a_live_mailbox_task_keeps_its_conversation_alive(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+        )
+        session = Session.objects.create(ticket=ticket, overlay="t3-teatree", agent_id="answering")
+        Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        assert ticket.conversation_in_use() is True
+
     def test_a_young_binding_keeps_the_conversation_alive(self) -> None:
         ticket = _conversation()
         ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")

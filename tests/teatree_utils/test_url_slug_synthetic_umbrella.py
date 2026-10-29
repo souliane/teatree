@@ -6,6 +6,8 @@ recognises that anchor (any fragment, or none) so the artifact-terminal task swe
 skip these FSM-owned tasks regardless of their phase.
 """
 
+import pytest
+
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.utils.url_slug import (
     SYNTHETIC_LOOP_UMBRELLA_URL,
@@ -83,3 +85,13 @@ class TestConversationAnchor:
     def test_other_synthetic_fragments_are_not_conversations(self) -> None:
         assert not is_conversation_anchor(f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=5")
         assert not is_conversation_anchor(f"{SYNTHETIC_LOOP_UMBRELLA_URL}#conversation=mailbox/")
+
+    @pytest.mark.parametrize(("kind", "key"), [("", "agent/1"), ("mailbox", "")])
+    def test_empty_identity_is_refused(self, kind: str, key: str) -> None:
+        with pytest.raises(ValueError, match="kind and key must be nonempty"):
+            conversation_anchor(kind=kind, key=key)
+
+    @pytest.mark.parametrize("key", ["D-owner", "/1.0", "D-owner/", "D-owner/1.0/extra"])
+    def test_slack_identity_requires_channel_and_timestamp(self, key: str) -> None:
+        with pytest.raises(ValueError, match="channel/timestamp"):
+            conversation_anchor(kind="slack", key=key)
