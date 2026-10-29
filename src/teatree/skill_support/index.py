@@ -54,6 +54,13 @@ def bare_skill_name(name: str) -> str:
     return Path(tail).name
 
 
+def skill_tool_load_name(name: str) -> str:
+    if ":" in name and not name.startswith("t3:"):
+        return name
+    bare = bare_skill_name(name)
+    return f"t3:{bare}" if (DEFAULT_SKILLS_DIR / bare / _SKILL_FILE).is_file() else bare
+
+
 def locate_skill_md(name: str, skills_dirs: Sequence[Path]) -> tuple[Path, Path] | None:
     """``(root, SKILL.md)`` for the first root holding *name* — the precedence every reader shares."""
     bare = bare_skill_name(name)
@@ -141,4 +148,5 @@ __all__ = [
     "locate_skill_md",
     "resolve_skill_md",
     "skill_mtimes",
+    "skill_tool_load_name",
 ]
