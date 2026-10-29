@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from hooks.scripts import hook_router
-from hooks.scripts.bot_push_pretooluse import handle_block_bot_push
+from hooks.scripts.bot_push_pretooluse import bot_push_refusal
 from hooks.scripts.foreign_branch_push_gate import handle_block_foreign_branch_push
 from teatree.hooks.bot_push_gate import BotRepo
 
@@ -39,7 +39,7 @@ def test_interactive_hook_allows_non_bot_repo(tmp_path: Path) -> None:
     data = {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(tmp_path)}
 
     with patch("teatree.hooks.bot_push_gate.bot_repo_for", return_value=None):
-        assert not handle_block_bot_push(data)
+        assert bot_push_refusal(data) is None
 
 
 def test_interactive_hook_refuses_direct_bot_url(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -49,6 +49,6 @@ def test_interactive_hook_refuses_direct_bot_url(tmp_path: Path, capsys: pytest.
     bot = BotRepo("github.com/build-bot/engine", "github.com", "github", "build-bot/engine", "build-bot")
 
     with patch("teatree.hooks.bot_push_gate.bot_repo_for", return_value=bot):
-        assert handle_block_bot_push(data)
+        assert handle_block_foreign_branch_push(data)
 
     assert "t3 push" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
