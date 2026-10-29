@@ -52,3 +52,18 @@ class TestArchitecturalReviewNotice(TestCase):
 
         keys = list(BotPing.objects.order_by("idempotency_key").values_list("idempotency_key", flat=True))
         assert keys == [f"architectural-review:failed:{task.pk}", f"architectural-review:held:{task.pk}:admission"]
+
+    def test_failed_notice_is_capped_and_keeps_its_opening(self) -> None:
+        ticket = Ticket.objects.create(issue_url="architectural-review://test", overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="architectural_review",
+            status=Task.Status.FAILED,
+        )
+
+        announce_failed(task, "Unclassified: " + "word " * 600)
+
+        notice = BotPing.objects.get(idempotency_key=f"architectural-review:failed:{task.pk}").text
+        assert len(notice) <= 400
+        assert notice.startswith("Architectural review for test failed: Unclassified: word")

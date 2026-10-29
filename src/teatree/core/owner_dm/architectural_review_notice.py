@@ -5,6 +5,8 @@ from teatree.core.models.task import Task
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.url_classify import first_pr_url
 
+FAILED_NOTICE_LIMIT = 400
+
 
 def announce_completed(task: Task, summary: str) -> None:
     url = first_pr_url(summary)
@@ -18,8 +20,9 @@ def announce_completed(task: Task, summary: str) -> None:
 
 
 def announce_failed(task: Task, reason: str) -> None:
+    text = f"Architectural review for {task.ticket.overlay} failed: {reason.rstrip('.')}."
     notify_user(
-        f"Architectural review for {task.ticket.overlay} failed: {reason.rstrip('.')}.",
+        text if len(text) <= FAILED_NOTICE_LIMIT else f"{text[: FAILED_NOTICE_LIMIT - 1]}…",
         kind=NotifyKind.INFO,
         audience=NotifyAudience.OWNER_ESCALATION,
         idempotency_key=f"architectural-review:failed:{task.pk}",

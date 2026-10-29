@@ -45,11 +45,12 @@ def escalation_marker(task: Task) -> str:
 
 def _escalate_once(task: Task, *, reason: str) -> None:
     """Stamp a failed task for health reporting and announce terminal reviews."""
-    logger.warning("Task %s stopped automatic retry: %s", task.pk, reason)
+    error = _latest_error(task)
+    logger.warning("Task %s stopped automatic retry: %s (latest error: %s)", task.pk, reason, error)
     with transaction.atomic():
         _stamp_halt(task)
         task.ticket.pop_task_thread(int(task.pk))
         if _is_review_anchor(task):
-            error = _latest_error(task)
+            # The owner DM is never redacted: only the kind label and the plain halt reason go in, never the error.
             failure = f"{FailureKind(classify_failure(error)).label}: {reason}" if error else reason
             transaction.on_commit(partial(announce_failed, task, failure), robust=True)

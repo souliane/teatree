@@ -247,7 +247,7 @@ def _handle_deterministic(task: Task, strategy: RecoveryStrategy) -> int:
         note = _corrective_note(task)
         if note is not None:
             return _corrective_reopen(task, note)
-    _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
+    _escalate_once(task, reason="deterministic failure")
     return 0
 
 
