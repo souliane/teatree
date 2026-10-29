@@ -80,10 +80,8 @@ _TACH = _REPO / "tach.toml"
 # Lowered 23 -> 22 (#3734): the agent-teams pane layer is retired, so the
 # teatree.teams node and its core fan-in entry are gone. The reduction is banked
 # rather than left as headroom, so a future fan-in still needs its own review.
-# Bumped 22 -> 23: disk_consumers is a separate domain node because its
-# registered-worktree-root probe needs core ORM state; utils stays foundation.
-# Bumped 23 -> 24: loop.self_improve reads core's process-table and pid-namespace helpers for the memory snapshot.
-_CORE_FANIN_BASELINE = 24
+# Bumped 22 -> 23: loop.self_improve reads core's process-table and pid-namespace helpers for the memory snapshot.
+_CORE_FANIN_BASELINE = 23
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

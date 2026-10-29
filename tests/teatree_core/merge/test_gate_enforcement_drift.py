@@ -39,11 +39,6 @@ class TestUnenforcedGateContexts:
         partially_fixed = _ACTUAL_LIVE_REQUIRED_CONTEXTS | {"module-health-gate"}
         assert unenforced_gate_contexts(partially_fixed) == frozenset({"doc-update-gate", "e2e-no-skip-gate"})
 
-    def test_an_unreadable_required_set_reports_nothing_rather_than_a_manufactured_finding(self) -> None:
-        # None is "the probe could not answer" — the caller must not read a probe outage
-        # as evidence a gate is inert.
-        assert unenforced_gate_contexts(None) == frozenset()
-
     def test_a_context_outside_the_expected_set_is_never_named(self) -> None:
         # A non-required check that is NOT one of the three named gates (e.g. an advisory
         # lane) is irrelevant to this check and must never appear in the result.

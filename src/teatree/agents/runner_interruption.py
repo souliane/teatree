@@ -8,7 +8,7 @@ judgements can fall through to; the runner imports it back for its own pre-turn 
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -47,6 +47,7 @@ class CeilingSalvage:
     phase: str
     lane: str
     provenance: DispatchProvenance
+    account: str = ""
 
     def kept(self, task: Task, outcome: "HarnessOutcome") -> TaskAttempt | None:
         """Record the envelope a cut-short run finished; ``None`` leaves the outcome to the ordinary recording."""
@@ -73,6 +74,7 @@ class CeilingSalvage:
                 model_fell_back=outcome.model_fell_back,
             ),
         )
+        usage = replace(usage, account=self.account)
         return record_result_envelope(task, produced, phase=self.phase, usage=usage)
 
 

@@ -358,6 +358,56 @@ class TestSelectionNeverProbes(TestCase):
             PassPathSelector().select(TokenKind.OAUTH)
 
 
+class TestDispatchRefreshesOAuthHealth(TestCase):
+    def test_stale_readings_are_refreshed_before_account_ranking(self) -> None:
+        first = "anthropic/a/oauth"
+        second = "anthropic/b/oauth"
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [first, second])
+        stale = timezone.now() - dt.timedelta(hours=6)
+        for path in (first, second):
+            AnthropicTokenUsage.objects.record(path, reading_from(_snapshot()), now=stale)
+        reader = _FakeReader({first: _snapshot(u5=0.8), second: _snapshot(u5=0.1)})
+
+        with (
+            _pass_echoes_path(),
+            patch("teatree.credential_config.read_pass", side_effect=lambda path: path),
+            patch("teatree.credential_config.read_rate_limits", reader),
+        ):
+            token = resolve_subscription_credential().resolve()
+
+        assert token == second
+        assert AnthropicTokenUsage.objects.get(pass_path=second).checked_at > stale
+
+    def test_missing_readings_are_probed_before_account_ranking(self) -> None:
+        first = "anthropic/a/oauth"
+        second = "anthropic/b/oauth"
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [first, second])
+        reader = _FakeReader({first: _snapshot(u5=0.99), second: _snapshot(u5=0.1)})
+
+        with (
+            _pass_echoes_path(),
+            patch("teatree.credential_config.read_pass", side_effect=lambda path: path),
+            patch("teatree.credential_config.read_rate_limits", reader),
+        ):
+            token = resolve_subscription_credential().resolve()
+
+        assert token == second
+
+    def test_failed_probe_still_offers_the_account(self) -> None:
+        path = "anthropic/a/oauth"
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [path])
+
+        with (
+            _pass_echoes_path(),
+            patch("teatree.credential_config.read_pass", return_value=path),
+            patch("teatree.credential_config.read_rate_limits", side_effect=RateLimitProbeError("down")) as probe,
+        ):
+            token = resolve_subscription_credential().resolve()
+
+        assert token == path
+        probe.assert_called_once()
+
+
 class TestSelectorCrossScopeFallback(TestCase):
     """A requested scope with no routing falls back to the cross-scope union.
 

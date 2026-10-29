@@ -624,6 +624,35 @@ _cap_line_widths() {
 }
 
 
+# The owner badge is also rendered after a dropped tail, so a slow unrelated
+# source cannot hide who owns the loop.
+_read_loop_owner_badge() {
+    _loop_owner_badge=""
+    if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
+        local _reg _owner_raw _owner_sid _owner_pid
+        _reg="${T3_LOOP_REGISTRY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree}/loop-registry.json"
+        if [ -r "$_reg" ]; then
+            _owner_raw=$(jq -r '."t3-loop-tick-owner" | "\(.session_id // "")\t\(.pid // "")"' "$_reg" 2>/dev/null || true)
+            IFS=$'\t' read -r _owner_sid _owner_pid <<< "${_owner_raw:-	}"
+            _owner_sid="${_owner_sid:-}"
+            _owner_pid="${_owner_pid:-}"
+            if [ "$_owner_sid" = "$session_id" ]; then
+                _loop_owner_badge="${_LBL}t3-master:${_RST} ${_GRN}you ✓${_RST}"
+            elif [ -n "$_owner_sid" ]; then
+                _loop_owner_badge="${_LBL}t3-master:${_RST} ${_YLW}${_owner_sid:0:8}·pid${_owner_pid}${_RST}"
+            else
+                _loop_owner_badge="${_LBL}t3-master: unclaimed${_RST}"
+            fi
+        fi
+    fi
+}
+
+_render_loop_owner_badge() {
+    _read_loop_owner_badge
+    [ -z "$_loop_owner_badge" ] || printf '%s\n' "$_loop_owner_badge"
+    return 0
+}
+
 # ─── The enriched tail ─────────────────────────────────────────────────────
 # Everything below reads a file, a git repo, the control DB or somebody else's
 # script — the parts that can be slow, stale or hung. It runs as ONE bounded
@@ -778,23 +807,7 @@ fi
 # terminal shows its own ownership context, not the shared t3-master chunk
 # that live_loops_anchor() intentionally omits. Gated on jq + session_id;
 # fails open (no badge) on any read error or missing registry.
-_loop_owner_badge=""
-if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
-    _reg="${T3_LOOP_REGISTRY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree}/loop-registry.json"
-    if [ -r "$_reg" ]; then
-        _owner_raw=$(jq -r '."t3-loop-tick-owner" | "\(.session_id // "")\t\(.pid // "")"' "$_reg" 2>/dev/null || true)
-        IFS=$'\t' read -r _owner_sid _owner_pid <<< "${_owner_raw:-	}"
-        _owner_sid="${_owner_sid:-}"
-        _owner_pid="${_owner_pid:-}"
-        if [ "$_owner_sid" = "$session_id" ]; then
-            _loop_owner_badge="${_LBL}t3-master:${_RST} ${_GRN}you ✓${_RST}"
-        elif [ -n "$_owner_sid" ]; then
-            _loop_owner_badge="${_LBL}t3-master:${_RST} ${_YLW}${_owner_sid:0:8}·pid${_owner_pid}${_RST}"
-        else
-            _loop_owner_badge="${_LBL}t3-master: unclaimed${_RST}"
-        fi
-    fi
-fi
+_read_loop_owner_badge
 
 if [ -n "$_seg_usage" ]; then
     [ -n "$g_usage" ] && g_usage="${g_usage}${isep}"
@@ -1191,6 +1204,12 @@ elif [ -n "$_cheap_header" ]; then
     # loop line, freshness and mates would read as "nothing is happening"
     # rather than "this was not read in time".
     printf '%s\n' "${_cheap_header}${gsep}${_YLW}⏳ details dropped (>${_tail_budget}s)${_RST}"
+    if [ -n "${session_id:-}" ] && _run_bounded 0.3 "${_tmp_prefix}.owner" _render_loop_owner_badge; then
+        _owner_line=""
+        while IFS= read -r _owner_line || [ -n "$_owner_line" ]; do
+            printf '%s\n' "$_owner_line"
+        done < "${_tmp_prefix}.owner"
+    fi
 else
     # No model, no RAM, no disk and no tail: emit something rather than the
     # zero bytes Claude Code discards into a blank bar (#3233).
@@ -1198,5 +1217,5 @@ else
 fi
 } | _cap_line_widths
 
-rm -f "${_tmp_prefix}.tail" "${_tmp_prefix}.git" 2>/dev/null
+rm -f "${_tmp_prefix}.tail" "${_tmp_prefix}.git" "${_tmp_prefix}.owner" 2>/dev/null
 exit 0

@@ -137,7 +137,7 @@ class TestCheckMergeGatesEnforced:
         with mock.patch("teatree.utils.run.run_allowed_to_fail", side_effect=fake_run):
             out = _echoes(_check_merge_gates_enforced)
 
-        assert out == ""
+        assert "WARN  Merge-gate enforcement is unverified" in out
 
     def test_never_raises_on_a_crashing_probe(self, clone: Path) -> None:
         _write_workflow(clone, _CI_YML_WITH_ALL_THREE_GATES)

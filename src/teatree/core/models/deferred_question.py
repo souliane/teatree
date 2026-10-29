@@ -22,7 +22,7 @@ from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max
+from django.db.models import F, Max
 from django.utils import timezone
 
 from teatree import answer_handback
@@ -363,8 +363,10 @@ class DeferredQuestion(models.Model):
         """
         if not channel or not after_ts:
             return None
-        nested_question_ids = TicketDmPost.objects.filter(channel=channel, question_id__isnull=False).values_list(
-            "question_id", flat=True
+        nested_question_ids = (
+            TicketDmPost.objects.filter(channel=channel, question_id__isnull=False)
+            .exclude(slack_ts=F("thread__root_ts"))
+            .values_list("question_id", flat=True)
         )
         candidates = list(
             cls._reply_candidates(channel=channel, after_ts=after_ts).exclude(pk__in=nested_question_ids)[:2]

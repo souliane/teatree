@@ -25,7 +25,7 @@ class TestRecordQuotaExhaustion(TestCase):
         preflight = SimpleNamespace(
             dispatch=SimpleNamespace(name="codex_app_server", route_candidate_index=None, rejected=()), skills=()
         )
-        retry = SimpleNamespace(phase="codex_reviewing")
+        retry = SimpleNamespace(phase="codex_reviewing", account="")
         error = HarnessFallbackError(
             "Codex provider reported a retryable quota failure during turn/completed.",
             kind=HarnessFallbackKind.QUOTA_EXHAUSTED,
@@ -48,7 +48,7 @@ class TestRecordQuotaExhaustion(TestCase):
         preflight = SimpleNamespace(
             dispatch=SimpleNamespace(name="codex_app_server", route_candidate_index=None, rejected=()), skills=()
         )
-        retry = SimpleNamespace(phase="coding")
+        retry = SimpleNamespace(phase="coding", account="")
         error = HarnessFallbackError("quota failure", kind=HarnessFallbackKind.QUOTA)
 
         _retry_route_exception(
@@ -65,7 +65,7 @@ class TestRecordQuotaExhaustion(TestCase):
         preflight = SimpleNamespace(
             dispatch=SimpleNamespace(name="codex_app_server", route_candidate_index=None, rejected=()), skills=()
         )
-        retry = SimpleNamespace(phase="codex_reviewing")
+        retry = SimpleNamespace(phase="codex_reviewing", account="")
         for message in ("session budget quota exhausted", "rate limit quota exceeded"):
             error = HarnessFallbackError(message, kind=HarnessFallbackKind.QUOTA)
             _retry_route_exception(
@@ -91,7 +91,7 @@ class TestRecordQuotaExhaustion(TestCase):
         preflight = SimpleNamespace(
             dispatch=SimpleNamespace(name="claude_sdk", route_candidate_index=None, rejected=()), skills=()
         )
-        retry = SimpleNamespace(phase="codex_reviewing")
+        retry = SimpleNamespace(phase="codex_reviewing", account="")
         error = HarnessFallbackError("quota failure", kind=HarnessFallbackKind.QUOTA)
 
         _retry_route_exception(

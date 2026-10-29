@@ -17,10 +17,13 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.management.commands.loops_tick import Command
-from teatree.core.models import Loop, LoopLease, Worktree
+from teatree.core.management.commands.loops_tick import Command, _ScopedJobsBuilder
+from teatree.core.models import Loop, LoopLease, Prompt, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
+from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickReport
+from teatree.loops.base import MiniLoop
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 
@@ -50,6 +53,74 @@ class TestHardExitGuard:
         Command._hard_exit_if_subprocess()
 
         assert calls == [0]  # the deadlined subprocess exits immediately after render
+
+
+class TestHeldCadenceRelease:
+    def test_diagnostic_signals_leave_the_tick_idle(self) -> None:
+        command = Command()
+        for kind in ("architectural_review.not_due", "triage_assessor.held", "eval_local.held"):
+            report = TickReport(
+                started_at=dt.datetime.now(dt.UTC),
+                signals=[ScanSignal(kind=kind, summary="nothing to run")],
+            )
+            assert command._emit_report(report, "arch_review", json_output=False, blocked_reason="") is False
+
+    def test_queued_review_counts_as_work(self) -> None:
+        report = TickReport(
+            started_at=dt.datetime.now(dt.UTC),
+            signals=[ScanSignal(kind="architectural_review.queued", summary="review queued")],
+        )
+        assert Command()._emit_report(report, "arch_review", json_output=False, blocked_reason="") is True
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "triage_assessor.queued",
+            "backlog_sweep.queued",
+            "scanning_news.queued",
+            "dogfood_smoke.queued",
+            "review_done_ack.queued",
+        ],
+    )
+    def test_queued_statusline_dropped_signal_counts_as_work(self, kind: str) -> None:
+        report = TickReport(
+            started_at=dt.datetime.now(dt.UTC),
+            signals=[ScanSignal(kind=kind, summary="task queued")],
+        )
+        assert Command()._emit_report(report, "arch_review", json_output=False, blocked_reason="") is True
+
+    def test_architectural_review_hold_releases_the_claimed_anchor(self) -> None:
+        claimed = dt.datetime.now(dt.UTC)
+        builder = _ScopedJobsBuilder(loop="arch_review", claimed_at=claimed)
+        report = TickReport(
+            started_at=claimed,
+            signals=[ScanSignal(kind="architectural_review.held", summary="review lane held")],
+        )
+
+        with patch.object(Loop.objects, "release_held_run_if_unchanged") as release:
+            builder.release_held_cadence(report)
+
+        release.assert_called_once_with("arch_review", claimed_at=claimed, previous_last_run_at=None)
+
+    def test_only_retryable_hold_releases_the_claimed_anchor(self) -> None:
+        claimed = dt.datetime.now(dt.UTC)
+        builder = _ScopedJobsBuilder(loop="triage_assessor", claimed_at=claimed)
+        with patch.object(Loop.objects, "release_held_run_if_unchanged") as release:
+            builder.release_held_cadence(
+                TickReport(
+                    started_at=claimed,
+                    signals=[ScanSignal(kind="triage_assessor.held", summary="empty")],
+                )
+            )
+            release.assert_not_called()
+            eval_builder = _ScopedJobsBuilder(loop="eval_local", claimed_at=claimed)
+            eval_builder.release_held_cadence(
+                TickReport(
+                    started_at=claimed,
+                    signals=[ScanSignal(kind="eval_local.held", summary="reserve held")],
+                )
+            )
+            release.assert_called_once_with("eval_local", claimed_at=claimed, previous_last_run_at=None)
 
 
 def _run(**kwargs: object) -> str:
@@ -191,6 +262,74 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         with patch("teatree.loops.loop_table.dispatch_loop_table", return_value=[]) as build:
             jobs_builder(TickRequest(), dt.datetime.now(dt.UTC))
         assert build.call_args.kwargs["only"] == "inbox"
+
+    def test_held_scanner_rechecks_on_the_next_tick(self) -> None:
+        class _Scanner:
+            name = "eval_local"
+            scans = 0
+
+            def scan(self) -> list[ScanSignal]:
+                self.scans += 1
+                kind = "eval_local.held" if self.scans == 1 else "eval_local.queued"
+                return [ScanSignal(kind=kind, summary=kind)]
+
+        scanner = _Scanner()
+        prompt = Prompt.objects.create(name="eval-local-retry-prompt", body="test")
+        Loop.objects.get_or_create(name="eval_local", defaults={"delay_seconds": 3600, "prompt": prompt})
+        Loop.objects.filter(name="eval_local").update(delay_seconds=3600, last_run_at=None)
+        mini = MiniLoop(
+            name="eval_local",
+            default_cadence_seconds=3600,
+            build_jobs=lambda **_: [_ScannerJob(scanner=scanner, overlay="")],
+        )
+        with (
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+            patch.object(LoopLease.objects, "acquire", return_value=True),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
+            patch("teatree.loop.tick.render_phase"),
+        ):
+            _run(loop="eval_local")
+            assert Loop.objects.get(name="eval_local").last_run_at is None
+            _run(loop="eval_local")
+
+        assert scanner.scans == 2
+        assert Loop.objects.get(name="eval_local").last_run_at is not None
+
+    def test_empty_triage_does_not_recheck_before_its_cadence(self) -> None:
+        class _Scanner:
+            name = "triage_assessor"
+            scans = 0
+
+            def scan(self) -> list[ScanSignal]:
+                self.scans += 1
+                return [ScanSignal(kind="triage_assessor.held", summary="no issues")]
+
+        scanner = _Scanner()
+        prompt = Prompt.objects.create(name="triage-cadence-prompt", body="test")
+        Loop.objects.get_or_create(name="triage_assessor", defaults={"delay_seconds": 3600, "prompt": prompt})
+        Loop.objects.filter(name="triage_assessor").update(delay_seconds=3600, last_run_at=None)
+        mini = MiniLoop(
+            name="triage_assessor",
+            default_cadence_seconds=3600,
+            build_jobs=lambda **_: [_ScannerJob(scanner=scanner, overlay="")],
+        )
+        with (
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+            patch.object(LoopLease.objects, "acquire", return_value=True),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
+            patch("teatree.loop.tick.render_phase"),
+        ):
+            _run(loop="triage_assessor")
+            assert Loop.objects.get(name="triage_assessor").last_run_at is not None
+            _run(loop="triage_assessor")
+
+        assert scanner.scans == 1
 
 
 class TestPerLoopRehomedMasterSteps(django.test.TestCase):

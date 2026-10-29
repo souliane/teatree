@@ -339,7 +339,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # subpackage owns the DeferredQuestion lifecycle, and its checks span provision/ today.
 # 128: -mcp_connectivity.py / -connector_manifest.py (#5116) — the third-party MCP connector layer, retired.
 # 129: +owner_question_message.py (#4990) — the owner-question card as plain text and Slack blocks,
-# its closed forms, the re-ping and the digest. Shared by the flat notify_question_drains.py, the
+# its closed forms and the re-ping. Shared by the flat notify_question_drains.py, the
 # flat question_heal.py and loop/question_binding; it reads the DeferredQuestion model, so the
 # dependency-free modelkit cannot own it, and no subpackage owns the DeferredQuestion lifecycle.
 # 131: +checking_types.py / checking_remaining.py (#5505) — carve-outs of the flat checking.py report

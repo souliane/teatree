@@ -457,6 +457,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("send", "Raise an alarm/status signal; the push/pull registry decides whether it interrupts."),
             ("dm", "Deliver a directly requested owner DM without applying the recurring-signal registry."),
             ("digest", "Read the status signals the push/pull classifier kept off the DM channel."),
+            ("census", "Count owner DM bot messages per UTC day and class from Slack history."),
             ("post", "Post, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
             ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
         ],
