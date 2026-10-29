@@ -1649,6 +1649,15 @@ def test_resolve_project_returns_none_on_404() -> None:
         assert api.resolve_project("org/repo") is None
 
 
+def test_resolve_project_rejects_malformed_success_payload() -> None:
+    api = _api()
+    with (
+        patch("httpx.Client.get", return_value=_response(200, json_body=[])),
+        pytest.raises(TypeError, match="project response"),
+    ):
+        api.resolve_project("org/repo")
+
+
 def test_resolve_project_does_not_cache_none_from_404() -> None:
     # F4.5: a 404 seen once (possibly during an outage) must not pin the slug
     # unresolvable for the process life — the next call re-resolves.

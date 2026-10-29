@@ -19,6 +19,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.scanner_factories import _self_pr_review_scanner_for
 from teatree.loop.scanners.codex_review import CodexReviewScanner
+from teatree.loop.scanners.codex_review_gitlab import ForgeCodexPrApi, GlabCodexPrApi
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 
 
@@ -47,6 +48,15 @@ def _resolved_backend(backend: PrReviewBackend) -> Generator[None]:
 
 
 class TestSelfPrReviewScannerBuilder(TestCase):
+    def test_review_exempt_repository_is_not_scanned(self) -> None:
+        with (
+            _resolved_backend(PrReviewBackend.CODEX),
+            patch("teatree.core.review.repo_exemption.review_exempt_patterns", return_value=("acme/exempt",)),
+        ):
+            scanner = _self_pr_review_scanner_for(_backend(repos=("acme/exempt", "acme/reviewed")))
+        assert isinstance(scanner, CodexReviewScanner)
+        assert scanner.repos == ("acme/reviewed",)
+
     def test_claude_backend_builds_the_claude_scanner(self) -> None:
         with _resolved_backend(PrReviewBackend.CLAUDE):
             scanner = _self_pr_review_scanner_for(_backend())
@@ -60,6 +70,8 @@ class TestSelfPrReviewScannerBuilder(TestCase):
         assert isinstance(scanner, CodexReviewScanner)
         assert scanner.repos == ("souliane/teatree",)
         assert scanner.overlay == "t3-teatree"
+        assert isinstance(scanner.api, ForgeCodexPrApi)
+        assert isinstance(scanner.api.gitlab, GlabCodexPrApi)
 
     def test_overlay_without_python_class_returns_none(self) -> None:
         backend = OverlayBackends(

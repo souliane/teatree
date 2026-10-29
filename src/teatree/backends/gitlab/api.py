@@ -89,7 +89,8 @@ class GitLabAPI(GitLabHTTPClient):
                 return None
             raise
         if not isinstance(data, dict):
-            return None
+            msg = f"Invalid project response for {repo_path}"
+            raise TypeError(msg)
 
         skipped_merges = data.get("allow_merge_on_skipped_pipeline")
         info = ProjectInfo(
