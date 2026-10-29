@@ -1,5 +1,6 @@
 """DB-backed tests for ``ActiveTicketsScanner``."""
 
+from django.db import connection
 from django.test import TestCase
 
 from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE
@@ -113,3 +114,44 @@ class TestShortDescribeAttemptCeiling(TestCase):
 
         assert _short_describe_tasks(ticket) == 0
         assert signals[0].payload["title"] == "Cached tracker title"
+
+
+class TestSweepWithNothingToDoTakesNoWriteLock(TestCase):
+    def _scan_statements(self) -> list[str]:
+        statements: list[str] = []
+
+        def record(execute, sql, params, many, context):
+            statements.append(sql.lstrip().upper())
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(record):
+            ActiveTicketsScanner(overlay_name="acme").scan()
+        return statements
+
+    def test_in_flight_task_takes_no_write_lock(self) -> None:
+        ticket = _describable_ticket()
+        _short_describe_task(ticket, Task.Status.PENDING)
+        described = _describable_ticket("2", short_description="Done")
+        untitled = _describable_ticket("3")
+        untitled.merge_extra(set_keys={"issue_title": ""})
+
+        statements = self._scan_statements()
+
+        assert not any(sql.startswith(("SAVEPOINT", "BEGIN")) for sql in statements)
+        assert _short_describe_tasks(ticket) == 1
+        assert _short_describe_tasks(described) == 0
+        assert _short_describe_tasks(untitled) == 0
+
+    def test_spent_budget_takes_no_write_lock(self) -> None:
+        ticket = _describable_ticket()
+        ticket.merge_extra(set_keys={"phase_attempts": {SHORT_DESCRIBE_PHASE: SHORT_DESCRIBE_MAX_ATTEMPTS}})
+
+        statements = self._scan_statements()
+
+        assert not any(sql.startswith(("SAVEPOINT", "BEGIN")) for sql in statements)
+        assert _short_describe_tasks(ticket) == 0
+
+        ready = _describable_ticket("2")
+        statements = self._scan_statements()
+        assert any(sql.startswith("SAVEPOINT") for sql in statements)
+        assert _short_describe_tasks(ready) == 1

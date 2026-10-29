@@ -52,8 +52,10 @@ from teatree.loop.transient_requeue_disposal import (
     LIVE_SUCCESSOR_STAMP,
     MOVED_TARGET_KINDS,
     SUPERSEDED_HEAD_STAMP,
+    DeadArtifactReads,
     park_if_live_successor,
     park_moved_target,
+    read_dead_artifact,
     retire_if_dead_artifact,
     stale_plan_halt_reason,
 )
@@ -80,10 +82,11 @@ def requeue_transient_failed() -> int:
         # classifier blow-up, a scheduling error) must NOT abort the sweep and strand
         # every OTHER loop's FAILED tasks. Record the failure loudly and move on.
         try:
+            reads = read_dead_artifact(task)
             with redispatch_window() as refusal:
                 if refusal:
                     continue
-                reopened += _route_failed_task(task, now=now)
+                reopened += _route_failed_task(task, now=now, reads=reads)
         except Exception:
             logger.exception(
                 "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
@@ -93,7 +96,7 @@ def requeue_transient_failed() -> int:
     return reopened
 
 
-def _route_failed_task(task: Task, *, now: datetime) -> int:
+def _route_failed_task(task: Task, *, now: datetime, reads: DeadArtifactReads) -> int:
     """Route one failed task to recovery or a recorded halt; return the reopen count.
 
     Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
@@ -103,7 +106,7 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     """
     error = _latest_error(task)
     if (
-        retire_if_dead_artifact(task)
+        retire_if_dead_artifact(task, reads)
         or _answer_moved_target(task, error=error)
         or park_if_live_successor(task)
         or park_if_critic_settled(task, error=error)

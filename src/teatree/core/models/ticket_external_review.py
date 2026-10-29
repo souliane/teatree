@@ -44,7 +44,9 @@ class ReviewDeclined(StrEnum):
     RETIRED = "retired"
 
 
-def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None) -> Task | ReviewDeclined:
+def schedule_external_review(
+    ticket: Ticket, *, parent_task: Task | None = None, pr_state: str | None = None
+) -> Task | ReviewDeclined:
     """Mint (or reuse) the reviewing Task for a reviewer-role *ticket*, or say why none is owed.
 
     Idempotent in its side effects, the same contract
@@ -61,7 +63,7 @@ def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None)
     in_flight = _in_flight_review(ticket)
     if in_flight is not None:
         return in_flight
-    decline = reviewer_dispatch_decline(ticket)
+    decline = reviewer_dispatch_decline(ticket, pr_state=pr_state)
     if decline is not None:
         return decline
     with transaction.atomic():
@@ -78,7 +80,11 @@ def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None)
         )
 
 
-def reviewer_dispatch_decline(ticket: Ticket) -> ReviewDeclined | None:
+def read_review_pr_state(ticket: Ticket) -> str | None:
+    return str(get_resolver("pr_open_state")(ticket)) if ticket.admits_review() else None
+
+
+def reviewer_dispatch_decline(ticket: Ticket, *, pr_state: str | None = None) -> ReviewDeclined | None:
     """Why no review task may be minted for reviewer *ticket* now, or ``None`` when one is owed.
 
     Cheapest first: a state a finished review cannot advance never reaches the forge, and
@@ -88,7 +94,7 @@ def reviewer_dispatch_decline(ticket: Ticket) -> ReviewDeclined | None:
         if ticket.state not in Ticket.State.values:
             logger.warning("Reviewer ticket %s is in unknown state %r — no review minted", ticket.pk, ticket.state)
         return ReviewDeclined.NOTHING_OWED
-    pr_state = str(get_resolver("pr_open_state")(ticket))
+    pr_state = pr_state if pr_state is not None else read_review_pr_state(ticket)
     if pr_state in _SETTLED_PR_STATES:
         return ReviewDeclined.RETIRED if _retire(ticket, pr_state) else ReviewDeclined.NOTHING_OWED
     if pr_state != _PR_OPEN:
