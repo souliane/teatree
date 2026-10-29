@@ -107,12 +107,12 @@ def coordinate_answer(row: DeferredQuestion, basis: DeferredQuestion, answer: st
             note=f"Owner answer on question {basis.pk}",
             resolver_id="coordinator",
         )
-    parked_task = resolved.parked_task
-    if parked_task is not None and finished_subject_reason(resolved) is None:
-        try:
-            schedule_resume(parked_task, answer=answer, question=resolved.question)
-        except NoPlanArtifactError:
-            logger.warning("Coordinated answer to question %s kept; task was not resumed", resolved.pk)
+        parked_task = resolved.parked_task
+        if parked_task is not None and finished_subject_reason(resolved) is None:
+            try:
+                schedule_resume(parked_task, answer=answer, question=resolved.question)
+            except NoPlanArtifactError:
+                logger.warning("Coordinated answer to question %s kept; task was not resumed", resolved.pk)
     return resolved
 
 

@@ -205,12 +205,12 @@ def apply_bound_answer(
                 resolver_id=f"slack:{bound.answered_by}",
                 note="button" if bound.from_click else "",
             )
+        if applied is not None and resume_task:
+            from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
+
+            resume_on_answer(applied, applied.parked_task)
     if applied is None:
         return False
-    if resume_task:
-        from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
-
-        resume_on_answer(applied, applied.parked_task)
     if on_answer is not None:
         on_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:

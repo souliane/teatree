@@ -7,6 +7,7 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.checking import owner_wait_items
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -31,6 +32,22 @@ class TestGatherWaiting:
         WaitingItem.objects.add("Review the queue")
 
         assert [entry.row_id for entry in gather_owner_waiting()] == [owner.pk]
+
+    def test_owner_list_excludes_legacy_scope_and_marks_a_held_pr_owner_only(self) -> None:
+        legacy = DeferredQuestion.objects.create(
+            question="Which product scope?",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            evidence=owner_card(OwnerDecision.PRODUCT_SCOPE).to_evidence(),
+            options_json=owner_card(OwnerDecision.PRODUCT_SCOPE).options_json(),
+        )
+        held = DeferredQuestion.record(
+            "May I release this held pull request?",
+            card=owner_card(),
+            dedupe_marker=f"{HELD_PR_MARKER_PREFIX}one",
+        )
+
+        assert [(entry.row_id, entry.owner_only) for entry in gather_owner_waiting()] == [(held.pk, True)]
+        assert legacy.pk not in [entry.row_id for entry in gather_owner_waiting()]
 
     def test_empty_when_nothing_pending(self) -> None:
         assert gather_waiting("") == []

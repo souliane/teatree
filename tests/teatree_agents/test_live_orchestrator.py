@@ -12,7 +12,7 @@ from django.db import DatabaseError, connections
 from django.test import TransactionTestCase
 from django.utils import timezone
 
-from teatree.agents import live_orchestrator
+from teatree.agents import live_delivery, live_orchestrator
 from teatree.agents.live_delivery import InboxPage
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
@@ -198,6 +198,7 @@ class TestLiveOrchestrator(TransactionTestCase):
             json.dumps({"type": "ask", "nonce": "", "kind": "architecture"}),
             json.dumps({"type": "ask", "nonce": "n" * 65, "kind": "architecture"}),
             json.dumps({"type": "note", "nonce": "valid", "kind": "architecture"}),
+            json.dumps({"type": "ask", "nonce": "unknown-kind", "kind": "unlisted"}),
         )
         ticket = planned_ticket()
         before = DeferredQuestion.objects.count()
@@ -256,6 +257,7 @@ class TestLiveOrchestrator(TransactionTestCase):
             tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
             LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
             patch.object(live_orchestrator, "MAX_SENT_KEYS", 4),
+            patch.object(live_delivery, "MAX_SENT_KEYS", 4),
         ):
             peer = start_orchestrator_peer(broker)
             asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
@@ -264,6 +266,10 @@ class TestLiveOrchestrator(TransactionTestCase):
             self._ask(client, first, "one", "architecture")
             self._ask(client, first, "two", "architecture")
             assert self._ask(client, first, "three", "architecture")["answer_to"] == "three"
+            second_asker = broker.register(room=str(ticket.pk), harness="codex_app_server", label="second asker")
+            second_client = MailboxClient(second_asker.socket_path, second_asker.token)
+            self._ask(second_client, first, "four", "architecture")
+            assert self._ask(second_client, first, "five", "architecture")["answer_to"] == "five"
             assert [p["address"] for p in broker.identities() if p["harness"] == "orchestrator"] == [first]
             broker.unregister(first)
             peer.join(timeout=3)

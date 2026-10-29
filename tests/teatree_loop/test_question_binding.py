@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -624,6 +625,20 @@ class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):
             f"{RESUME_ANSWER_PREFIX} use postgres-1."
         ]
         assert parked.child_tasks.count() == 1
+
+    def test_failed_resume_rolls_back_the_slack_answer(self) -> None:
+        parked = self._parked()
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked, **OWNER_DECISION)
+
+        with (
+            patch("teatree.core.models.task_handoff.schedule_resume", side_effect=DatabaseError("resume failed")),
+            pytest.raises(DatabaseError, match="resume failed"),
+        ):
+            apply_bound_answer(BoundAnswer(question=question, answer="use postgres-1"))
+
+        question.refresh_from_db()
+        assert question.is_pending
+        assert not parked.child_tasks.exists()
 
     def test_slack_answer_to_internal_row_mints_no_task(self) -> None:
         parked = self._parked()

@@ -190,6 +190,20 @@ class TestQuestionCoordinator(TestCase):
         assert total == 1
         assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
 
+    def test_record_does_not_reuse_an_answer_from_a_different_producer_on_the_same_subject(self) -> None:
+        question = "May I lift the override?"
+        card = dataclasses.replace(owner_card(), subject="https://github.com/o/r/issues/10")
+        basis = DeferredQuestion.record(question, card=card, dedupe_marker="override-lift:first")
+        assert basis.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        pending = DeferredQuestion.record(question, card=card, dedupe_marker="override-lift:second")
+        assert pending.pk != basis.pk
+        assert pending.is_pending
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+
     def test_database_read_failure_leaves_card_pending_and_logs(self) -> None:
         pending = DeferredQuestion.record("Should we adopt the new dependency?", card=owner_card())
 
@@ -236,3 +250,26 @@ class TestQuestionCoordinator(TestCase):
         assert pending.status == DeferredQuestion.STATUS_ANSWERED
         child = task.child_tasks.get()
         assert child.execution_reason.startswith("The user answered your earlier question: Yes.")
+
+    def test_failed_resume_keeps_the_owner_question_pending(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        pending = DeferredQuestion.record(question, card=owner_card(), parked_task=task)
+
+        with (
+            patch(
+                "teatree.core.answering.question_coordinator.schedule_resume",
+                side_effect=DatabaseError("resume failed"),
+            ),
+            self.assertLogs("teatree.core.answering.question_coordinator", "WARNING"),
+        ):
+            _mirrored, total = drain_unmirrored_deferred_questions()
+
+        pending.refresh_from_db()
+        assert total == 1
+        assert pending.is_pending
+        assert not pending.audits.filter(action="coordinated").exists()
+        assert not task.child_tasks.exists()

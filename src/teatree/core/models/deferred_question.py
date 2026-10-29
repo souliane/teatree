@@ -28,13 +28,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.models.question_actions import (
-    DeferredQuestionAuditQuerySet,
-    DeferredQuestionQuerySet,
-    decision_subject,
-    held_question,
-    reuse_recent_owner_answer,
-)
+from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
@@ -234,10 +228,6 @@ class DeferredQuestion(models.Model):
                     held.parked_task = parked_task
                     held.save(update_fields=["parked_task"])
                 return held
-            subject = decision_subject(card, parked_task=parked_task, task_session=task_session) if card else ""
-            basis = reuse_recent_owner_answer(cls, clean_question, card, options_hash, subject)
-            if basis is not None:
-                return basis
             row = cls.objects.create(
                 question=clean_question,
                 options_json=options_json or "",

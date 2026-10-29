@@ -9,7 +9,6 @@ import dataclasses
 import json
 import os
 import tempfile
-from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +16,6 @@ import pytest
 from django.core.management import call_command
 from django.db import OperationalError
 from django.test import TestCase
-from django.utils import timezone
 
 from teatree import answer_handback
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
@@ -66,7 +64,7 @@ class TestDedupeMarker:
 
 
 class TestDeferredQuestionRecord:
-    def test_record_reuses_recent_owner_answer_for_the_same_credential_decision(self) -> None:
+    def test_record_keeps_a_new_credential_decision_with_a_distinct_marker_pending(self) -> None:
         card = dataclasses.replace(
             owner_card(OwnerDecision.CREDENTIALS), subject="https://github.com/acme/widgets/issues/42"
         )
@@ -74,46 +72,14 @@ class TestDeferredQuestionRecord:
             "May I use the approved test route?", card=card, dedupe_marker="test-route:first"
         )
         assert first.apply_answer("Use the approved route.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
-
-        repeated = DeferredQuestion.record(
-            "May I use the approved test route?", card=card, dedupe_marker="test-route:second"
-        )
-
-        assert repeated.pk == first.pk
-        assert DeferredQuestion.objects.count() == 1
-
-    def test_changed_credential_facts_still_require_the_owner(self) -> None:
-        card = dataclasses.replace(
-            owner_card(OwnerDecision.CREDENTIALS), subject="https://github.com/acme/widgets/issues/42"
-        )
-        first = DeferredQuestion.record(
-            "May I use the approved test route?", card=card, dedupe_marker="test-route:first"
-        )
-        assert first.apply_answer("Use the approved route.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
-        changed = dataclasses.replace(card, checked=("The route now reaches production data.",))
-
-        repeated = DeferredQuestion.record(
-            "May I use the approved test route?", card=changed, dedupe_marker="test-route:second"
-        )
-
-        assert repeated.pk != first.pk
-        assert repeated.is_pending
-
-    def test_credential_answer_older_than_a_day_is_not_reused(self) -> None:
-        card = dataclasses.replace(
-            owner_card(OwnerDecision.CREDENTIALS), subject="https://github.com/acme/widgets/issues/42"
-        )
-        first = DeferredQuestion.record(
-            "May I use the approved test route?", card=card, dedupe_marker="test-route:first"
-        )
-        assert first.apply_answer("Use the approved route.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
-        DeferredQuestion.objects.filter(pk=first.pk).update(answered_at=timezone.now() - timedelta(days=2))
 
         repeated = DeferredQuestion.record(
             "May I use the approved test route?", card=card, dedupe_marker="test-route:second"
         )
 
         assert repeated.pk != first.pk
+        assert repeated.is_pending
+        assert DeferredQuestion.objects.count() == 2
 
     def test_record_creates_a_pending_row(self) -> None:
         row = DeferredQuestion.record(
