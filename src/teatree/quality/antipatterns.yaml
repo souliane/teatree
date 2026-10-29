@@ -633,7 +633,8 @@
   preferred_pattern: >-
     Record each candidate as one PENDING row, idempotent on its source key
     (PendingArticleSuggestion, PendingTriageRecommendation), surface the news
-    batch as a digest and the triage batch in checking's Needs you list, and file
+    batch as a digest and the triage batch in checking's Triage suggestions
+    group, and file
     only after explicit approval — no answer files nothing. A shell-denied
     agent returns its candidates in the result
     envelope and the server-side recorder writes the rows. The boundary is a

@@ -592,6 +592,7 @@ class TestJsonShape(CheckingTestBase):
             "merged",
             "in_flight",
             "needs_you",
+            "triage_suggestions",
             "metered",
             "internal_escalations",
             "remaining",
@@ -631,6 +632,7 @@ class TestPureRenderers:
             merged=CheckGroup(title="Merged"),
             in_flight=CheckGroup(title="In-flight"),
             needs_you=CheckGroup(title="Needs you"),
+            triage_suggestions=CheckGroup(title="Triage suggestions"),
             metered=CheckGroup(title="Metered"),
         )
         assert report.to_terse().startswith("Nothing since ")

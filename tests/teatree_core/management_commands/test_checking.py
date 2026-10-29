@@ -247,6 +247,7 @@ class TestCheckingShow:
             "merged",
             "in_flight",
             "needs_you",
+            "triage_suggestions",
             "metered",
             "internal_escalations",
             "remaining",
@@ -1535,7 +1536,7 @@ class TestMachineOutputChannel:
         assert "since" in json.loads(out)
         assert err == ""
 
-    def test_pending_triage_recommendation_appears_in_needs_you(self, checkpoint_file: Path) -> None:
+    def test_pending_triage_recommendation_is_a_suggestion_not_a_need(self, checkpoint_file: Path) -> None:
         PendingTriageRecommendation.record_candidate(
             issue_url="https://github.com/acme/widgets/issues/21",
             verdict="close",
@@ -1543,9 +1544,15 @@ class TestMachineOutputChannel:
             overlay="acme",
         )
 
-        out, _err = self._channels("--this-overlay", "--json")
+        per_overlay, _err = self._channels("--this-overlay", "--json")
+        with _two_overlay_patch():
+            all_overlays, _err = self._channels("--json")
 
-        needs_you = json.loads(out)["needs_you"]
-        assert needs_you["total"] == 1
-        assert needs_you["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
-        assert needs_you["items"][0]["title"] == "Duplicate widget report"
+        for out in (per_overlay, all_overlays):
+            payload = json.loads(out)
+            assert payload["needs_you"]["total"] == 0
+            suggestions = payload["triage_suggestions"]
+            assert suggestions["total"] == 1
+            assert suggestions["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
+            assert suggestions["items"][0]["title"] == "Duplicate widget report"
+            assert "Triage suggestions" in payload["terse"]

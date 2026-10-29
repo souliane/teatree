@@ -5,7 +5,7 @@ from existing rows, with ``to_dict()`` (JSON) and ``to_terse()`` (human)
 renderers. Every query here is read-only — the gatherer never transitions a
 :class:`Ticket` nor writes any row.
 
-Four delta groups scoped to the window ``[since, now)`` and one live group:
+Six report groups with these scopes:
 
 * **Merged** — a :class:`MergeAudit` joined to its :class:`MergeClear`, merged
     inside the window. The clickable reference prefers an exact stored PR URL on
@@ -19,6 +19,8 @@ Four delta groups scoped to the window ``[since, now)`` and one live group:
     ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
     proxy for "blocked" — core makes no live forge calls; an overlay opts into
     richer signals via :meth:`OverlayBase.get_checking_sources`.
+* **Triage suggestions** — pending assessor recommendations, listed for review
+    without counting them as owner decisions.
 * **Metered** — one row per ticket with metered attempts inside the window,
     showing the attempt count and estimated total cost.
 * **Remaining** — live work, queue, holds, and measured ETA ranges; independent
@@ -115,6 +117,11 @@ def pending_triage_items(*, overlay: str = "") -> list[CheckItem]:
     ]
 
 
+def _triage_suggestions_group(*, overlay_name: str, cap: int) -> CheckGroup:
+    items = pending_triage_items(overlay=overlay_name)
+    return CheckGroup(title="Triage suggestions", items=items[:cap], total=len(items))
+
+
 def internal_escalation_count() -> int:
     return DeferredQuestion.internal_pending().count()
 
@@ -124,6 +131,7 @@ class CheckingReportDict(TypedDict):
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    triage_suggestions: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
@@ -136,6 +144,7 @@ class AllOverlaysReportDict(TypedDict):
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    triage_suggestions: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
@@ -150,6 +159,7 @@ class CheckingReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    triage_suggestions: CheckGroup
     metered: CheckGroup
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
@@ -160,7 +170,7 @@ class CheckingReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.triage_suggestions, self.metered]
 
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
@@ -168,6 +178,7 @@ class CheckingReport:
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            triage_suggestions=self.triage_suggestions.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
@@ -214,6 +225,7 @@ class AllOverlaysReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    triage_suggestions: CheckGroup
     metered: CheckGroup
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
@@ -224,7 +236,7 @@ class AllOverlaysReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.triage_suggestions, self.metered]
 
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
@@ -233,6 +245,7 @@ class AllOverlaysReport:
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            triage_suggestions=self.triage_suggestions.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
@@ -309,7 +322,7 @@ def gather_all_overlays_report(
         reverse=True,
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
-    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug), *pending_triage_items()]
+    needs_you_items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug))
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
@@ -328,6 +341,7 @@ def gather_all_overlays_report(
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        triage_suggestions=_triage_suggestions_group(overlay_name="", cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=CheckGroup(
             title="Metered",
@@ -409,6 +423,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        triage_suggestions=_triage_suggestions_group(overlay_name=overlay_name, cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         remaining=gather_remaining(
@@ -492,10 +507,7 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
-    items: list[CheckItem] = [
-        *owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name),
-        *pending_triage_items(overlay=overlay_name),
-    ]
+    items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name))
 
     failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()
