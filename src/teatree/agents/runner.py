@@ -433,7 +433,7 @@ def _run_agent(
         _restore_unconsumed_resume_thread(harness)
         if preflight.dispatch.route_candidate_index is None:
             raise
-        return _fail_routed_crash(task, preflight.dispatch, preflight.skills)
+        return _fail_routed_crash(task, preflight.dispatch, preflight.skills, route_retry.account)
 
     # Retained before any outcome write, since the requeue sweep can see the row from that write on.
     retain_run_thread(task, outcome.thread)
