@@ -28,7 +28,7 @@ class TestSlackMentionsScanner:
         return backend
 
     def test_surfaces_api_mentions(self) -> None:
-        backend = self._make_backend(mentions=[{"ts": "1.0", "text": "hey @bot"}])
+        backend = self._make_backend(mentions=[{"ts": "1.0", "user": _OWNER, "text": "hey @bot"}])
         scanner = SlackMentionsScanner(backend=backend)
 
         signals = scanner.scan()
@@ -41,7 +41,7 @@ class TestSlackMentionsScanner:
         backend = self._make_backend()
         scanner = SlackMentionsScanner(backend=backend)
         queued_events = [
-            {"event": {"type": "app_mention", "ts": "3.0", "text": "queued mention"}},
+            {"event": {"type": "app_mention", "ts": "3.0", "user": _OWNER, "text": "queued mention"}},
             _queued_dm(ts="4.0", text="queued dm"),
         ]
 

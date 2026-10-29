@@ -65,10 +65,11 @@ class SlackMentionsScanner:
     _recorder: SlackDmRecorder | None = field(default=None, init=False, repr=False)
 
     def scan(self) -> list[ScanSignal]:
-        mentions = self.backend.fetch_mentions()
+        owner = configured_owner_id(self.backend)
+        mentions = [event for event in self.backend.fetch_mentions() if sent_by_owner(event, owner)]
         dms: list[RawAPIDict] = []
 
-        drained_any, foreign, dm_records = self._drain_queue_into(mentions, dms)
+        drained_any, foreign, dm_records = self._drain_queue_into(mentions, dms, owner)
         retry_events = self._record_dms(dms) if dms else []
         retry_ids = {id(event) for event in retry_events}
 
@@ -109,22 +110,23 @@ class SlackMentionsScanner:
         self,
         mentions: list[RawAPIDict],
         dms: list[RawAPIDict],
+        owner: str,
     ) -> tuple[bool, list[dict], list[dict]]:
         """Fold this overlay's queued Socket Mode events into the mention/DM lists.
 
         Returns whether the JSONL queue yielded anything (so :meth:`scan`
         commits the backing file only after persisting) plus the records
         belonging to a SIBLING overlay, which :meth:`scan` hands back to the
-        queue for that overlay's own scanner. ``reaction_added`` events land in
-        ``slack-reactions.jsonl`` (drained by ``SlackReviewIntentScanner``,
-        #1047) and never reach here.
+        queue for that overlay's own scanner. An event the owner did not send is
+        dropped, so no colleague's mention or DM reaches a signal or a row.
+        ``reaction_added`` events land in ``slack-reactions.jsonl`` (drained by
+        ``SlackReviewIntentScanner``, #1047) and never reach here.
         """
         from teatree.backends.slack.receiver import (  # noqa: PLC0415 — deferred: loaded at tick time
             drain_event_queue,
             record_is_owned_by,
         )
 
-        owner = configured_owner_id(self.backend)
         drained_any = False
         foreign: list[dict] = []
         dm_records: list[dict] = []
@@ -135,9 +137,11 @@ class SlackMentionsScanner:
                 continue
             event = queued.get("event", {})
             event_type = event.get("type", "")
+            if not sent_by_owner(event, owner):
+                continue
             if event_type == "app_mention":
                 mentions.append(event)
-            elif event_type == "message" and event.get("channel_type", "") == "im" and sent_by_owner(event, owner):
+            elif event_type == "message" and event.get("channel_type", "") == "im":
                 dms.append(event)
                 dm_records.append(queued)
         return drained_any, foreign, dm_records
