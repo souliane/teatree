@@ -429,6 +429,8 @@ t3 mutation run                 # scoped mutation testing — mutate only the hi
 t3 hook run <name> [args...]    # run a packaged portable repo-quality gate by name (module-health, no-silent-skip, broad-except, test-shape, test-path-mirror, refuse-main-clone-commit) — no teatree.__file__ shim; `t3 hook list` names them. A consuming repo wires them via `entry: t3 hook run <name>` or pins `repo: <teatree-url>` against the root .pre-commit-hooks.yaml
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
+t3 login github|gitlab           # open the operator OAuth sign-in through the running admin; an administrator must first invite the forge account
+t3 logout github|gitlab [--user NAME]  # revoke an operator's forge grant and remove its stored tokens
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 browser open|act|inspect|close  # drive one headless Playwright browser held open per worktree: each step prints the page's console messages, page errors, failed requests and HTTP errors; `inspect` also saves the accessibility snapshot, HTML and a screenshot (`--json` on every step)
@@ -541,6 +543,12 @@ non-interactively when absent and printing its generated password (override via
 (`--no-browser` to skip; `--host` / `--port` to override). The admin binds to the
 same teatree database every other `t3` command reads, so no overlay context is
 needed.
+
+For forge sign-in, an existing administrator first adds the operator's GitHub or
+GitLab account to their user record in the admin. `t3 login github` or
+`t3 login gitlab` then opens OAuth sign-in; an uninvited account is refused.
+The grant is stored encrypted for that operator, and `t3 logout <forge>` revokes
+and removes it (`--user` selects a grant when several operators are registered).
 
 ### 2. Loop & Statusline
 
