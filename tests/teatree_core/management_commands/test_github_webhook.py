@@ -190,7 +190,6 @@ class GitHubWebhookCommandTests(TestCase):
             "pull_request",
             "issues",
             "check_suite",
-            "check_run",
             "workflow_run",
             "push",
         ]
@@ -223,6 +222,29 @@ class GitHubWebhookCommandTests(TestCase):
         assert (before, after) == (1, 1)
         assert self.store.entries[KEY] == CANARY
         assert not any(key.startswith(KEY + ".bak-") for key in self.store.entries)
+
+    def test_connect_reconciles_old_check_run_subscription(self) -> None:
+        self.connect()
+        events = cast("list[str]", self.fake.hooks[0]["events"])
+        events.append("check_run")
+        before = sum("PATCH" in argv for argv, _ in self.fake.calls)
+
+        result = self.connect()
+
+        assert result["status"] == "updated"
+        assert sum("PATCH" in argv for argv, _ in self.fake.calls) == before + 1
+        assert self.fake.hooks[0]["events"] == [
+            "pull_request_review",
+            "pull_request_review_comment",
+            "issue_comment",
+            "commit_comment",
+            "pull_request",
+            "issues",
+            "check_suite",
+            "workflow_run",
+            "push",
+        ]
+        assert self.store.entries[KEY] == CANARY
 
     def test_secret_only_reaches_stdin_and_store(self) -> None:
         self.caplog.set_level(logging.DEBUG)
