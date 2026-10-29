@@ -13,6 +13,8 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
+Use only teatree's own MCP server. For any job unavailable there, use the `t3` CLI; do not call tools from another MCP server, including hosted connectors.
+
 ## Resolve settled owner cards and agent asks
 
 This attended session may act on settled architecture cards below Rules 0-5. A headless orchestrator may answer its own agents' architecture questions with recorded decisions from the same ticket over the direct mailbox; it does not dismiss live owner cards or write an owner answer. Before a new architecture card is mirrored, the deterministic coordinator reuses an exact owner-channel answer with the same question, options, checked facts, subject, proposed text and producer marker, excluding owner actions; a rules-file card always reaches the owner; an attended session can cite that basis with `t3 <overlay> questions coordinate <id> --basis <id> '<exact answer>'`. Both apply the four owner limits below. The judging coordinator agent, a structured ask tool with a durable request and routing lease, and cross-ticket semantic matching remain specified in [#5063 R5](https://github.com/souliane/teatree/issues/5063), not implemented by this exact-match pass.
