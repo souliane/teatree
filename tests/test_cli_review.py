@@ -779,7 +779,9 @@ class TestApprove:
         OperatorGrant.objects.store(
             user=user,
             forge="gitlab",
-            tokens=OperatorGrantTokens("oauth-access", "oauth-refresh", timezone.now() + timedelta(hours=1)),
+            tokens=OperatorGrantTokens(
+                "oauth-access", "oauth-refresh", timezone.now() + timedelta(hours=1), scope="api"
+            ),
             key=key,
         )
         monkeypatch.setattr(
