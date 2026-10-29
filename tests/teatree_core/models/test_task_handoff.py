@@ -36,7 +36,7 @@ from teatree.core.models.task_handoff import (
     schedule_card_discussion,
     schedule_resume,
 )
-from tests._owner_channel import OWNER_CARD, owner_stop
+from tests._owner_channel import OWNER_CARD, answer_on_slack, owner_stop
 from tests.factories import planned_ticket
 
 
@@ -319,18 +319,36 @@ class TestResumeNeedsAPlan(TestCase):
 
 
 class TestCardDiscussionContinuation(TestCase):
-    def test_claimed_discussion_blocks_a_second_resume_child(self) -> None:
+    def test_claimed_discussion_keeps_its_prompt_and_a_new_resume_child_carries_the_answer(self) -> None:
         ticket = planned_ticket()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         discussion = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
         discussion.status = Task.Status.CLAIMED
         discussion.save(update_fields=["status"])
+        prompt = discussion.execution_reason
 
         resumed = schedule_resume(parked, answer="Approve", question="Change the rule?")
 
-        assert resumed.pk == discussion.pk
-        assert parked.child_tasks.count() == 1
-        assert "Approve" in Task.objects.get(pk=discussion.pk).execution_reason
+        assert resumed.pk != discussion.pk
+        assert resumed.parent_task == parked
+        assert resumed.status == Task.Status.PENDING
+        assert resumed.execution_reason.startswith(f"{RESUME_ANSWER_PREFIX} Approve.")
+        assert Task.objects.get(pk=discussion.pk).execution_reason == prompt
+        assert schedule_resume(parked, answer="Approve", question="Change the rule?").pk == resumed.pk
+        assert parked.child_tasks.count() == 2
+
+    def test_owner_answer_behind_a_running_discussion_resumes_the_task(self) -> None:
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        card = DeferredQuestion.record("Should we adopt the new dependency?", card=OWNER_CARD, parked_task=task)
+        discussion = schedule_card_discussion(task, event_id="one", message="Show me the rule")
+        Task.objects.filter(pk=discussion.pk).update(status=Task.Status.CLAIMED)
+
+        answer_on_slack(card, "Yes")
+
+        resume = task.child_tasks.exclude(pk=discussion.pk).get()
+        assert resume.execution_reason.startswith(f"{RESUME_ANSWER_PREFIX} Yes.")
+        assert RESUME_ANSWER_PREFIX not in Task.objects.get(pk=discussion.pk).execution_reason
 
     def test_multiple_messages_and_later_answer_reach_one_pending_child(self) -> None:
         ticket = planned_ticket()

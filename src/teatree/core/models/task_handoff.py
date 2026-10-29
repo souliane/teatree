@@ -141,6 +141,8 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     continue-where-you-left-off instruction for as long as the retry really does.
     A parent whose conversation cannot be continued (:meth:`TaskAttempt.cannot_continue_its_conversation`)
     gets a FRESH child instead, whose reason also carries *question* so the new run knows what was answered.
+    A pending card-discussion child absorbs the answer; a claimed one has already built its prompt, so a new
+    resume child is created behind it.
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
@@ -154,15 +156,16 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     if existing is not None:
         return existing
     discussion = task.child_tasks.filter(
-        status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
-        execution_reason__startswith=CARD_DISCUSSION_PREFIX,
+        status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
     ).first()
     if discussion is not None:
-        discussion.execution_reason = (
-            f"{RESUME_ANSWER_PREFIX} {answer}. The question was: {question}. {discussion.execution_reason}"
+        absorbed = f"{RESUME_ANSWER_PREFIX} {answer}. The question was: {question}. {discussion.execution_reason}"
+        still_pending = Task.objects.filter(
+            pk=discussion.pk, status=Task.Status.PENDING, execution_reason=discussion.execution_reason
         )
-        discussion.save(update_fields=["execution_reason"])
-        return discussion
+        if still_pending.update(execution_reason=absorbed):
+            discussion.execution_reason = absorbed
+            return discussion
     refuse_unplanned_mint(task.ticket, phase=task.phase)
     last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
