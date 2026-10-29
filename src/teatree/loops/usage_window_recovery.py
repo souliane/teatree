@@ -4,12 +4,12 @@ When a Claude usage window empties, ``teatree.agents.usage_window`` PARKS the af
 tasks (a :class:`~teatree.core.models.UsageWindowState` row per lane + a ``not_before`` on
 each task) instead of failing them and going idle forever. This module is the re-arm arm:
 a single self-rescheduling ``usage_window_recovery`` loop-timer job on the existing
-``LOOPS_QUEUE`` (the existing loop-timer machinery, NO OS cron) that, once the reset instant passes,
+``LOOPS_QUEUE`` (the existing loop-timer machinery, NO OS cron) that, at reset or on verified health,
 CLEARS the window, RELEASES the parked tasks, PUMPS the loop so they get re-claimed, and
 posts ONE Slack line. It is the deterministic, zero-inference twin of the loop-timer /
 maintenance chains (``reconcile_timers`` / ``prune_task_results``): the re-arm decision is
-purely time-based (``resets_at`` has passed), so a released task that re-hits the limit
-simply re-parks — no fragile "is the model reachable yet" inference probe is needed.
+time-based for ordinary windows (``resets_at`` has passed), with an early clear when a
+routed account has a verified healthy reading. A released task that re-hits the limit re-parks.
 
 Seeded by ``ensure_maintenance_chains`` at worker startup and self-perpetuating after
 that.
@@ -49,24 +49,28 @@ class RecoveryOutcome:
 
 
 def recover_windows(now: dt.datetime) -> RecoveryOutcome:
-    """Clear every window whose reset has passed; release + pump + notify if any cleared.
+    """Clear due windows and stale exhaustion windows; release + pump + notify if any cleared.
 
-    Deterministic and idempotent: a window clears exactly once ``now`` reaches its
-    ``resets_at`` (a null-reset API-credit window never clears here — it has no time-based
-    recovery). A still-parked window's ``probe_count`` is bumped for diagnostics. When at
+    A window clears at its reset or after a routed account reads healthy; a null-reset
+    API-credit window never clears here. A still-parked window's ``probe_count`` is bumped. When at
     least one window cleared, the parked tasks whose gate has elapsed are released
     (``not_before`` nulled → immediately claimable), the loops are pumped so they re-claim,
     and ONE Slack line is posted.
     """
+    from teatree.agents.credential_policy import clear_stale_exhaustion_window  # noqa: PLC0415 — deferred import
     from teatree.core.models import UsageWindowState  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     active = list(UsageWindowState.objects.active())
     cleared: list[int] = []
+    early_released = 0
     still_down: list[int] = []
     for window in active:
         if window.should_clear(now):
             window.clear(now)
             cleared.append(window.pk)
+        elif (released := clear_stale_exhaustion_window(window, scope=None, now=now)) is not None:
+            cleared.append(window.pk)
+            early_released += released
         else:
             still_down.append(window.pk)
     if still_down:
@@ -74,7 +78,7 @@ def recover_windows(now: dt.datetime) -> RecoveryOutcome:
     if not cleared:
         return RecoveryOutcome()
 
-    released = _release_parked_tasks(now)
+    released = early_released + _release_parked_tasks(now)
     _clear_auto_engaged_token_outage()
     _wake_loops(now)
     _notify_recovered(cleared_pks=cleared, released=released, now=now)

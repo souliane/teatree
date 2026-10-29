@@ -1,7 +1,7 @@
 """The dream SDK turns take their credential child-env as an injected seam (#3512).
 
 Both turn functions used to resolve the credential env themselves, which reaches
-``PassPathSelector._configured_paths`` → ``ConfigSetting.objects.get_effective`` —
+``PassPathSelector.configured_paths`` → ``ConfigSetting.objects.get_effective`` —
 an uncaught DB read. Django forbids that from a ``SimpleTestCase``, so the parse and
 watchdog unit tests failed nondeterministically, and in the threaded watchdog case the
 ``DatabaseOperationForbidden`` REPLACED the ``TimeoutError`` under assertion, pointing

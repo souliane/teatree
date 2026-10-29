@@ -18,19 +18,25 @@ the next dispatch rotates to another key, and with none left the task waits for 
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from hashlib import sha256
 
+from django.core.cache import cache
+from django.db import transaction
+from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 
 from teatree.config import AgentHarnessProvider, get_effective_settings
-from teatree.core.models import TaskAttempt, UsageWindowState
-from teatree.credential_config import api_key_lane_available, oauth_lane_available, record_api_key_exhausted
+from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
+from teatree.credential_config import (
+    api_key_lane_available,
+    oauth_lane_available,
+    record_api_key_exhausted,
+    routed_oauth_health,
+    routed_oauth_paths,
+)
 from teatree.llm.anthropic_limits import LimitCause
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from teatree.core.models import Task
 
 PLANS_ONLY_MARKER = "[plans-only-retry]"
 
@@ -55,6 +61,47 @@ EXHAUSTION_CAUSES: frozenset[str] = frozenset(
         ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     },
 )
+
+
+def clear_stale_exhaustion_window(window: UsageWindowState, *, scope: str | None, now: datetime) -> int | None:
+    if window.cause not in EXHAUSTION_CAUSES or window.resets_at is None or window.should_clear(now):
+        return None
+    paths = routed_oauth_paths(scope)
+    if not paths:
+        return None
+    route_key = sha256("\x00".join(paths).encode()).hexdigest()[:16]
+    cache_key = f"usage-window-health:{window.pk}:{route_key}"
+    if cache.get(cache_key) == "unhealthy":
+        return None
+    health = routed_oauth_health(paths, now=now)
+    if health is not True:
+        if health is None:
+            logger.warning("Account health unreadable for usage window %s", window.pk)
+        cache.set(cache_key, "unhealthy", timeout=300)
+        return None
+    latest_error = TaskAttempt.objects.filter(task_id=OuterRef("pk")).order_by("-pk").values("error")[:1]
+    subscription_park = (
+        Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}subscription_session:")
+        | Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}subscription_weekly:")
+        | Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted")
+        | (
+            Q(latest_error__startswith=f"{LIMIT_PARKED_PREFIX}admission:")
+            & Q(latest_error__contains="window on lane 'subscription' active")
+        )
+    )
+    with transaction.atomic():
+        window.clear(now)
+        released = (
+            Task.objects.filter(status=Task.Status.PENDING, not_before=window.resets_at)
+            .annotate(latest_error=Subquery(latest_error))
+            .filter(subscription_park)
+            .update(not_before=None)
+        )
+    try:
+        ModeOverride.objects.clear_auto_engaged_token_outage()
+    except Exception:
+        logger.warning("Could not clear token-outage override for usage window %s", window.pk, exc_info=True)
+    return released
 
 
 def open_plan_window(now: datetime | None = None) -> UsageWindowState | None:
