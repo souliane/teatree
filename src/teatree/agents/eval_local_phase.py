@@ -76,7 +76,11 @@ def _record_unmeasured(selected: list[str], *, reason: str) -> EvalRunRecord:
 def run_eval_local(task: Task) -> str:
     env = _subscription_env()
     shard = _shard()
-    selected = _selected_scenarios(shard, env)
+    try:
+        selected = _selected_scenarios(shard, env)
+    except RuntimeError:
+        _record_unmeasured([], reason="scenario catalog unavailable")
+        raise
     pinned = run_allowed_to_fail(
         _command("pinned-regressions"),
         env=env,

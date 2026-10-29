@@ -75,7 +75,6 @@ autonomy = "full" # str, one of: babysit | notify | full — how far the factory
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
 dogfood_smoke_skill = "dogfooding" # str — skill the dogfood smoke loop runs
 envelope_stop_gate_refusals = 2 # int — envelope-less turn-ends one run may have refused; 0 disables
-eval_local_skill = "running-evals" # str — skill the local eval loop runs
 harness_skill_exclusions = [] # list — box-wide Claude Code or Codex skills removed from that harness until explicitly installed again
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
@@ -389,9 +388,9 @@ colleague_facing = false
 description = "Runs the overlay provisioning smoke test once a day to catch broken worktree setup."
 
 [loops.eval_local]
-delay_seconds = 604800
+delay_seconds = 86400
 colleague_facing = false
-description = "Runs the local behavioral eval suite weekly; this row IS the cadence."
+description = "Runs one shard of behavioral evals daily on the factory subscription account."
 
 [loops.db_backup]
 delay_seconds = 86400
