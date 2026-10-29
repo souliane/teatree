@@ -64,15 +64,33 @@ class TestQuestionCoordinator(TestCase):
         assert audit.resolver_id == "coordinator"
 
     def test_hard_limit_question_stays_pending_despite_matching_owner_answer(self) -> None:
-        question = "May I use the production credential?"
-        basis = DeferredQuestion.record(question, card=owner_card(OwnerDecision.CREDENTIALS))
-        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
-        pending = DeferredQuestion.record(question, card=owner_card(OwnerDecision.CREDENTIALS))
+        for kind, question in (
+            (OwnerDecision.CREDENTIALS, "May I use the production credential?"),
+            (OwnerDecision.MONEY_OR_PLAN, "May I buy the additional service plan?"),
+            (OwnerDecision.PUBLIC_POST, "May I post this statement to a colleague?"),
+            (OwnerDecision.IRREVERSIBLE, "May I delete the only copy of this work?"),
+        ):
+            with self.subTest(kind=kind):
+                basis = DeferredQuestion.record(question, card=owner_card(kind))
+                assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+                pending = DeferredQuestion.record(question, card=owner_card(kind))
 
-        drain_unmirrored_deferred_questions()
+                drain_unmirrored_deferred_questions()
 
-        pending.refresh_from_db()
-        assert pending.is_pending
+                pending.refresh_from_db()
+                assert pending.is_pending
+                assert not pending.audits.filter(action="coordinated").exists()
+
+    def test_agent_answer_is_not_an_owner_basis(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.AGENT)
+        pending = DeferredQuestion.record(question, card=owner_card())
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
         assert not pending.audits.filter(action="coordinated").exists()
 
     def test_different_options_stay_pending(self) -> None:
