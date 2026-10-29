@@ -186,3 +186,40 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
             out = _run()
         assert "loop_cadence_seconds" in out
         assert "ignored by every reader" in out
+        assert out.count("loop_cadence_seconds [demo]") == 1
+
+    def test_a_stray_overlay_row_of_a_key_with_no_shipped_default_is_listed_as_ignored(self) -> None:
+        ConfigSetting.objects.create(
+            key="agent_skill_models", scope="demo", value={"code": [{"floor": "opus"}]}, written_by="skill-route-fixer"
+        )
+        ConfigSetting.objects.create(
+            key="agent_tier_models", scope="demo", value={"frontier": "stray-model"}, written_by="tier-fixer"
+        )
+        ConfigSettingChange.objects.create(
+            key="agent_tier_models",
+            scope="demo",
+            action="set",
+            old_value=None,
+            new_value={"frontier": "stray-model"},
+            written_by="tier-audit-writer",
+        )
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={}):
+            out = _run()
+        assert "crashed" not in out
+        skill_line = next(line for line in out.splitlines() if "agent_skill_models [demo]" in line)
+        tier_line = next(line for line in out.splitlines() if "agent_tier_models [demo]" in line)
+        assert skill_line.startswith("WARN")
+        assert "no shipped default" in skill_line
+        assert "set 0h ago by skill-route-fixer" in skill_line
+        assert "ignored by every reader" in skill_line
+        assert "set 0h ago by tier-audit-writer" in tier_line
+        assert "ignored by every reader" in tier_line
+
+    def test_an_ignored_overlay_row_equal_to_its_shipped_default_is_still_listed(self) -> None:
+        ConfigSetting.objects.create(key="loop_cadence_seconds", scope="demo", value=720)
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"loop_cadence_seconds": 720}
+        ):
+            out = _run()
+        assert out.count("loop_cadence_seconds [demo]") == 1
+        assert "ignored by every reader" in out

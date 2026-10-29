@@ -16,11 +16,15 @@ stay exactly as they are — this check has no idea which, and guessing would ma
 It changes no exit code and gates nothing. What it removes is the indistinguishability: a
 drifted row and an intended one look identical today, and after this they are at least both
 NAMED, with the shipped value beside the stored one so the reader can judge in one line.
+
+A second pass lists the rows no reader can reach at their overlay scope whether or not their key
+ships a default: ``agent_skill_models`` and ``agent_tier_models`` have none, so a stray
+overlay-scoped row of either was invisible to the first pass.
 """
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import typer
 from django.db import DatabaseError
@@ -33,6 +37,9 @@ from teatree.core.config_display import masked_display
 
 if TYPE_CHECKING:
     from teatree.core.models import ConfigSetting, ConfigSettingChange
+
+
+NO_SHIPPED_DEFAULT: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,25 @@ def drifted_settings(
     )
 
 
+def unreadable_overlay_rows(
+    *,
+    stored: Iterable[tuple[str, str, object]],
+    shipped: Mapping[str, object],
+    listed: Iterable[DriftedSetting],
+) -> tuple[DriftedSetting, ...]:
+    """The rows in *stored* at an overlay scope no reader honours, minus those already in *listed*.
+
+    Independent of whether the key ships a default — that is the point: the drift pass cannot
+    name a key it has nothing to compare against, yet such a row is ignored all the same.
+    """
+    seen = {(drift.key, drift.scope) for drift in listed}
+    return tuple(
+        DriftedSetting(key, scope, value, shipped.get(key, NO_SHIPPED_DEFAULT))
+        for key, scope, value in stored
+        if (key, scope) not in seen and unhonourable_overlay_scope_reason(key, scope)
+    )
+
+
 def _stored_rows() -> tuple[list["ConfigSetting"], type["ConfigSettingChange"]]:
     from teatree.core.models import ConfigSetting, ConfigSettingChange  # noqa: PLC0415 — ORM needs the app registry
 
@@ -91,7 +117,11 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
     value reaching the output.
     """
     stored = masked_display(drift.key, drift.stored)
-    shipped = masked_display(drift.key, drift.shipped)
+    shipped = (
+        "no shipped default"
+        if drift.shipped is NO_SHIPPED_DEFAULT
+        else f"shipped default is {masked_display(drift.key, drift.shipped)}"
+    )
     hours = max(0, int((timezone.now() - row.updated_at).total_seconds() // 3600))
     writer = (change.written_by if change else None) or row.written_by or row.seeded_by or "unknown writer"
     previous = masked_display(drift.key, change.old_value) if change else "unknown (written before audit)"
@@ -114,13 +144,38 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
     ceiling = f"; above maximum {bounds.maximum:g}" if above_maximum and bounds and bounds.maximum else ""
     ignored_note = "; ignored by every reader" if ignored else ""
     return (
-        f"{status}  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}; "
+        f"{status}  {drift.key} [{drift.where}] is {stored}; {shipped}; "
         f"set {hours}h ago by {writer}; was {previous}{floor}{ceiling}{ignored_note}"
     )
 
 
+_DRIFT_HEADER = (
+    "INFO  {count} stored config row(s) differ from the shipped default. "
+    "Most are deliberate; a stale one is the same shape as #4074. "
+    "Clear one with `t3 <overlay> config_setting clear <key>`."
+)
+_UNREADABLE_HEADER = (
+    "INFO  {count} stored config row(s) are scoped to an overlay that no reader honours for that key, "
+    "so they are ignored. Clear one with `t3 <overlay> config_setting clear <key> --overlay <scope>`."
+)
+
+
+def _section(
+    header: str,
+    findings: tuple[DriftedSetting, ...],
+    coordinates: Mapping[tuple[str, str], "ConfigSetting"],
+    latest: Mapping[tuple[str, str], "ConfigSettingChange"],
+) -> list[str]:
+    if not findings:
+        return []
+    return [
+        header.format(count=len(findings)),
+        *(_finding_line(f, coordinates[f.key, f.scope], latest.get((f.key, f.scope))) for f in findings),
+    ]
+
+
 def _check_config_rows_shadowing_shipped_defaults() -> None:
-    """List every stored config row that differs from its shipped default (#4074).
+    """List every stored config row that differs from its shipped default (#4074), then every ignored overlay row.
 
     Surfacing-only — it never gates the exit code, like the sibling ORM-reading advisories,
     because a divergent row is usually intent. Crash-proof: any error degrades to one WARN
@@ -129,31 +184,27 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
     """
     try:
         rows, change_model = _stored_rows()
-        drifted = drifted_settings(
-            stored=((row.key, row.scope, row.value) for row in rows), shipped=declared_defaults()
-        )
-        if not drifted:
+        stored = [(row.key, row.scope, row.value) for row in rows]
+        shipped = declared_defaults()
+        drifted = drifted_settings(stored=stored, shipped=shipped)
+        unreadable = unreadable_overlay_rows(stored=stored, shipped=shipped, listed=drifted)
+        if not (drifted or unreadable):
             return
         coordinates = {(row.key, row.scope): row for row in rows}
         latest: dict[tuple[str, str], ConfigSettingChange] = {}
         try:
-            for change in change_model.objects.filter(key__in={drift.key for drift in drifted}).order_by(
-                "-changed_at", "-pk"
-            ):
+            for change in change_model.objects.filter(
+                key__in={finding.key for finding in (*drifted, *unreadable)}
+            ).order_by("-changed_at", "-pk"):
                 latest.setdefault((change.key, change.scope), change)
         except DatabaseError as exc:
             typer.echo(f"WARN  Config audit unavailable: {exc.__class__.__name__}: {exc}")
-        lines = [
-            _finding_line(drift, coordinates[drift.key, drift.scope], latest.get((drift.key, drift.scope)))
-            for drift in drifted
+        report = [
+            *_section(_DRIFT_HEADER, drifted, coordinates, latest),
+            *_section(_UNREADABLE_HEADER, unreadable, coordinates, latest),
         ]
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Config-drift check crashed: {exc.__class__.__name__}: {exc}")
         return
-    typer.echo(
-        f"INFO  {len(drifted)} stored config row(s) differ from the shipped default. "
-        "Most are deliberate; a stale one is the same shape as #4074. "
-        "Clear one with `t3 <overlay> config_setting clear <key>`."
-    )
-    for line in lines:
+    for line in report:
         typer.echo(line)
