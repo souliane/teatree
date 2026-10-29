@@ -166,13 +166,12 @@ class TestDrainHeadlessQueue(TestCase):
     def test_enqueues_every_pending_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
-        # One free-form phase and one with a registered agent: with a single lane
-        # the drain safety-net owns both.
+        # The drain safety net enqueues both free-form and registered work.
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
             status=Task.Status.PENDING,
-            phase="architectural_review",
+            phase="unregistered_phase",
         )
         registered_phase = Task.objects.create(
             ticket=ticket,
@@ -1507,11 +1506,9 @@ class TestExecuteHeadlessTask(TestCase):
 
         self.monkeypatch.setattr("teatree.core.agent_runner._runner", _raise)
 
-        # ``architectural_review`` has no registered phase agent, so it is NOT
-        # loop-dispatched — it rides the auto-enqueue path the executor owns.
-        # ImmediateBackend runs the enqueued job synchronously.
+        # An unregistered phase rides auto-enqueue; ImmediateBackend executes it synchronously.
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+            task = Task.objects.create(ticket=ticket, session=session, phase="unregistered_phase")
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -1543,7 +1540,7 @@ class TestExecuteHeadlessTask(TestCase):
         beta_metadata = beta_overlay.metadata.get_skill_metadata()
         registry = {"alpha": CommandOverlay(), "beta": beta_overlay}
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=registry):
-            Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+            Task.objects.create(ticket=ticket, session=session, phase="unregistered_phase")
 
         assert captured["metadata"] == beta_metadata
 
@@ -1841,6 +1838,26 @@ class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
         self.task.refresh_from_db()
         assert result.get("exit_code") == 0
         assert self.task.status == Task.Status.COMPLETED
+
+    def test_seated_periodic_work_waits_if_the_machine_brake_lands_before_claim(self) -> None:
+        for phase in ("architectural_review", "backlog_sweep"):
+            with self.subTest(phase=phase):
+                Task.objects.filter(pk=self.task.pk).update(
+                    status=Task.Status.PENDING, phase=phase, admitted_at=timezone.now()
+                )
+                self.task.refresh_from_db()
+                attempts_before = TaskAttempt.objects.filter(task=self.task).count()
+                with (
+                    patch("teatree.core.task_claim_gate.agent_admission_verdict") as verdict,
+                    patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                ):
+                    verdict.return_value.claim_denied_reason.return_value = "machine load HALT"
+                    result = execute_task.func(self.task.pk, self.task.phase)
+
+                self.task.refresh_from_db()
+                assert "machine load HALT" in result.get("skipped", "")
+                assert self.task.status == Task.Status.PENDING
+                assert TaskAttempt.objects.filter(task=self.task).count() == attempts_before
 
     def test_the_off_posture_leaves_the_task_pending_with_no_attempt(self) -> None:
         ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")

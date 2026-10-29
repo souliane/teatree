@@ -121,6 +121,11 @@ class LoopManager(models.Manager["Loop"]):
         won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now, last_attempt_at=now)
         return won == 1
 
+    def release_held_run_if_unchanged(
+        self, name: str, *, claimed_at: dt.datetime, previous_last_run_at: dt.datetime | None
+    ) -> bool:
+        return self.filter(name=name, last_run_at=claimed_at).update(last_run_at=previous_last_run_at) == 1
+
     def set_manual_override(
         self,
         name: str,

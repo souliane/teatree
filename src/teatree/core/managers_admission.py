@@ -14,7 +14,14 @@ from django.db.models.functions import Cast, Coalesce, Concat
 from django.db.models.lookups import LessThan
 
 from teatree.core.managers_task_claim import _claimable_now_q
-from teatree.core.modelkit.phases import ANSWERING_PHASES, CheapClass, PhaseCost, cheap_phase_spellings
+from teatree.core.modelkit.phases import (
+    ANSWERING_PHASES,
+    ARCHITECTURAL_REVIEW_PHASE,
+    MAINTENANCE_PHASES,
+    CheapClass,
+    PhaseCost,
+    cheap_phase_spellings,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -50,10 +57,8 @@ def _lane_occupancy_q(now: datetime, *, lane: PhaseCost | CheapClass) -> Q:
     One predicate rather than two: :meth:`TaskQuerySet.cheap_class_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. The cheap classes and the answering class partition work from the expensive class, which is
-    their exact complement; an unregistered phase therefore lands in the braked class,
-    matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
-    The answering class sits outside the cheap lane's total, so it never takes a review or retiring seat.
+    bound at all. Cheap and reserved classes have explicit membership; expensive is their
+    complement, so an unregistered phase remains braked (#4374).
     ``PhaseCost.CHEAP`` is the one definition of the whole cheap lane (both classes) that the
     total-occupancy read and the conditional write's total bound share.
     """
@@ -63,8 +68,17 @@ def _lane_occupancy_q(now: datetime, *, lane: PhaseCost | CheapClass) -> Q:
         membership = _cheap_phase_q()
     elif lane is PhaseCost.ANSWERING:
         membership = _answering_phase_q()
+    elif lane is PhaseCost.ARCHITECTURAL_REVIEW:
+        membership = Q(phase=ARCHITECTURAL_REVIEW_PHASE)
+    elif lane is PhaseCost.MAINTENANCE:
+        membership = Q(phase__in=MAINTENANCE_PHASES)
     elif lane is PhaseCost.EXPENSIVE:
-        membership = ~(_cheap_phase_q() | _answering_phase_q())
+        membership = ~(
+            _cheap_phase_q()
+            | _answering_phase_q()
+            | Q(phase=ARCHITECTURAL_REVIEW_PHASE)
+            | Q(phase__in=MAINTENANCE_PHASES)
+        )
     else:
         membership = _cheap_phase_q(lane)
     return membership & (

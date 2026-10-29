@@ -29,7 +29,10 @@ from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.plan_artifact_recorder import record_returned_plan
-from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.agents.reactive_envelope_recorders import (
+    announce_completed_architectural_review,
+    record_reactive_envelopes,
+)
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
 from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
@@ -254,6 +257,7 @@ def record_result_envelope(
     except NoCurrentPlanError as exc:
         task.refresh_from_db()
         return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
+    announce_completed_architectural_review(task, result, phase=phase)
     return attempt
 
 

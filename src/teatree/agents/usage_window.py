@@ -31,6 +31,7 @@ from django.utils import timezone
 from teatree.agents.credential_policy import (
     ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     EXHAUSTION_CAUSES,
+    plans_only,
     resolve_credential_provider,
     spend_metered_key,
 )
@@ -128,7 +129,7 @@ def _park_instant(task: Task, *, lane: str, cause: str, reset: datetime, moment:
         return reset
     scope = task.ticket.overlay or ""
     configured = get_effective_settings(scope or None).agent_harness_provider
-    failed_over = resolve_credential_provider(configured, scope=scope, now=moment)
+    failed_over = resolve_credential_provider(configured, scope=scope, now=moment, plans_only=plans_only(task))
     return moment if failed_over is AgentHarnessProvider.API_KEY else reset
 
 

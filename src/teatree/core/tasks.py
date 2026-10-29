@@ -24,6 +24,7 @@ from teatree.core.models.task_phase_disposition import record_stuck_transition_q
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.task_claim_gate import pending_lane_denial
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 from teatree.types import RawAPIDict
 
@@ -97,6 +98,8 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         return _not_admitted(task_id, f"admission blocked: {blocked}")
 
     task_obj = Task.objects.get(pk=task_id)
+    if denied := pending_lane_denial(task_obj):
+        return _not_admitted(task_id, denied)
 
     # The atomic claim is the sole PER-ROW admission decision (F4). Win the compare-and-swap
     # BEFORE any work runs — including the poison-pill and routing failure paths — so a
@@ -113,7 +116,7 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         )
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
-        return {"skipped": f"not claimable: {exc}"}
+        refusal = f"not claimable: {exc}"
 
     if refusal:
         return _not_admitted(task_id, refusal)

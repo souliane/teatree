@@ -120,6 +120,32 @@ class TestExhaustionRule(CredentialPolicyCase):
 
 
 class TestResolvedProvider(CredentialPolicyCase):
+    def test_non_claude_review_retry_keeps_unset_provider(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        task = _claimed_task()
+        Task.objects.filter(pk=task.pk).update(phase="architectural_review", execution_reason="[plans-only-retry]")
+        task.refresh_from_db()
+
+        assert resolve_dispatch_harness(task).provider is None
+
+    def test_unset_provider_review_retry_explicitly_selects_plans(self) -> None:
+        assert resolve_credential_provider(None, scope="", plans_only=True) is AgentHarnessProvider.SUBSCRIPTION_OAUTH
+
+    def test_architectural_review_retry_stays_on_plans_after_credit_refusal(self) -> None:
+        _pin(_COMPOSITE.value)
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        task = _claimed_task()
+        Task.objects.filter(pk=task.pk).update(phase="architectural_review", execution_reason="[plans-only-retry]")
+        task.refresh_from_db()
+
+        provider = resolve_dispatch_harness(task, phase=task.phase).provider
+        assert provider is AgentHarnessProvider.SUBSCRIPTION_OAUTH
+        assert _resolve_dispatch_lane(resolve_harness(), provider) == TaskAttempt.Lane.SUBSCRIPTION
+        child = _provider_child_env(provider).env
+        assert child is not None
+        assert _OAUTH_VAR in child
+        assert _API_KEY_VAR not in child
+
     def test_plans_only_never_reaches_the_api_even_when_exhausted(self) -> None:
         _pin(AgentHarnessProvider.SUBSCRIPTION_OAUTH.value)
         _plan_window(LimitCause.SUBSCRIPTION_WEEKLY.value)

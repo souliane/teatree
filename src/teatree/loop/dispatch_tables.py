@@ -75,6 +75,9 @@ AGENT_BY_KIND: dict[str, str] = {
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
+    "architectural_review.queued": "in_flight",
+    "architectural_review.held": "action_needed",
+    "eval_local.held": "in_flight",
     "merge.unaudited": "action_needed",
     "owner_action.result": "in_flight",
     "review_nag.mention_held": "action_needed",
@@ -245,7 +248,14 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 # real signal (#1372). The signal is still emitted so internal counts work;
 # only the statusline rendering is suppressed.
 STATUSLINE_DROP_KINDS: frozenset[str] = frozenset(
-    {"outbound.audit_skipped", "ci_oauth_pool.reconciled", "ci_oauth_pool.disabled"}
+    {
+        "outbound.audit_skipped",
+        "ci_oauth_pool.reconciled",
+        "ci_oauth_pool.disabled",
+        "triage_assessor.queued",
+        "triage_assessor.held",
+        "architectural_review.not_due",
+    }
 )
 
 # Signal-kind *prefixes* of pure scanner bookkeeping, kept off the statusline.
@@ -261,10 +271,8 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     # Re-rendering it as a statusline row would duplicate a signal the user
     # already sees in Slack, once per tick until the window closes.
     "review_done_ack.",
-    "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
-    "triage_assessor.",
     "backlog_sweep.",
     # #2190 the idle reaper + queue drainer route to mechanical handlers; their
     # bookkeeping signals must not flood the statusline (a slow drain emits a

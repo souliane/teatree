@@ -74,13 +74,13 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
-from teatree.core.models import MergeAudit
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
+from teatree.loop.scanners.board_reconcile_pr_rows import settle_live_pr_rows
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
 from teatree.url_classify import Forge, forge_of
 
@@ -94,14 +94,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROBE_BUDGET = 150
 
 
-def _unaudited_flag(transition: BoardTransition) -> str:
-    unaudited = (
-        transition.action is BoardAction.ADVANCED_MERGED
-        and not MergeAudit.objects.filter(clear__ticket_id=transition.ticket_id).exists()
-    )
-    return " (no merge audit)" if unaudited else ""
-
-
 @dataclass(slots=True)
 class BoardReconcileScanner:
     """Reconcile the ticket FSM against forge truth, reporting each transition."""
@@ -110,13 +102,14 @@ class BoardReconcileScanner:
     name: str = "board_reconcile"
 
     def scan(self) -> list[ScanSignal]:
+        settle_live_pr_rows(overlay=self.overlay_name, read_state=pr_open_state, budget=DEFAULT_PROBE_BUDGET)
         report = reconcile_board(overlay=self.overlay_name)
         for line in report.lines():
             logger.info("board_reconcile: %s", line)
         return [
             ScanSignal(
                 kind="board.reconciled",
-                summary=f"Ticket #{t.ticket_id} {t.from_state} → {t.to_state} ({t.reason}){_unaudited_flag(t)}",
+                summary=f"Ticket #{t.ticket_id} {t.from_state} → {t.to_state} ({t.reason}){t.unaudited_flag()}",
                 payload={
                     "ticket_id": t.ticket_id,
                     "issue_url": t.issue_url,

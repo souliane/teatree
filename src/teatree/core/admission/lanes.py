@@ -30,6 +30,8 @@ class LaneOccupancy:
     review: int
     retiring: int
     answering: int = 0
+    architectural_review: int = 0
+    maintenance: int = 0
 
     @property
     def cheap(self) -> int:
@@ -42,6 +44,11 @@ class LaneWidths:
 
     ceiling: AdmissionCeiling
     review: int
+    maintenance: int = 0
+
+    @property
+    def architectural_review(self) -> int:
+        return 1
 
     @property
     def expensive(self) -> int:

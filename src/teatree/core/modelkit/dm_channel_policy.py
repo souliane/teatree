@@ -75,6 +75,9 @@ PUSH_SIGNALS: frozenset[str] = frozenset(
         "unaudited-merge",
         # A reviewed ticket with no worktree row is held, not ignored; the owner learns the review saw no work.
         "shipping-hold",
+        "architectural-review:completed",
+        "architectural-review:failed",
+        "architectural-review:held",
     }
 )
 

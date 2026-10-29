@@ -67,7 +67,7 @@ class EvalLocalScannerTests(TestCase):
         assert _last_eval_task() is None
 
     def test_below_reserve_queues_no_eval_task(self) -> None:
-        assert _scanner(reserve_met=False).scan() == []
+        assert [signal.kind for signal in _scanner(reserve_met=False).scan()] == ["eval_local.held"]
         assert _last_eval_task() is None
 
     def test_the_default_gate_reads_the_factory_accounts_not_the_ci_allowlist(self) -> None:
@@ -87,7 +87,8 @@ class EvalLocalScannerTests(TestCase):
         assert len(EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan()) == 1
 
     def test_the_default_gate_fails_closed_with_no_measured_account(self) -> None:
-        assert EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan() == []
+        signals = EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan()
+        assert [signal.kind for signal in signals] == ["eval_local.held"]
 
     def test_no_prior_run_queues_task(self) -> None:
         signals = _scanner().scan()

@@ -41,9 +41,10 @@ only seam that returns a DENY reason, and every caller logs it at WARNING.
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
+from teatree.core.admission.headless_status_types import HeadlessAdmissionJson
 from teatree.core.admission.lanes import LaneBound, LaneOccupancy, LaneWidths
 from teatree.core.admission.write_ceiling import review_lane_width
 from teatree.core.admission_governor import (
@@ -65,7 +66,14 @@ from teatree.core.admission_pressure import (
     QuotaSignal,
 )
 from teatree.core.managers_task_claim import claim_admission_block_reason
-from teatree.core.modelkit.phases import RETIRING_PHASES, REVIEW_PHASES, CheapClass, PhaseCost, phase_cost
+from teatree.core.modelkit.phases import (
+    MAINTENANCE_PHASES,
+    RETIRING_PHASES,
+    REVIEW_PHASES,
+    CheapClass,
+    PhaseCost,
+    phase_cost,
+)
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
@@ -85,13 +93,19 @@ class AgentAdmission:
     retiring_denied: str | None
     cheap_denied: str | None
     answering_denied: str | None = None
+    architectural_review_denied: str | None = None
+    maintenance_denied: str | None = None
     cheap_lane: LaneBound = field(default_factory=LaneBound)
+    architectural_review_lane: LaneBound = field(default_factory=LaneBound)
+    maintenance_lane: LaneBound = field(default_factory=LaneBound)
     review_lane: LaneBound = field(default_factory=LaneBound)
     retiring_lane: LaneBound = field(default_factory=LaneBound)
     expensive_lane: LaneBound = field(default_factory=LaneBound)
     answering_lane: LaneBound = field(default_factory=LaneBound)
     expensive_guard_denied: str | None = None
     cheap_guard_denied: str | None = None
+    architectural_review_guard_denied: str | None = None
+    maintenance_guard_denied: str | None = None
     seats_released: int = 0
     _announced: set[str] = field(default_factory=set)
 
@@ -101,6 +115,10 @@ class AgentAdmission:
             return self.expensive_lane
         if cost is PhaseCost.ANSWERING:
             return self.answering_lane
+        if cost is PhaseCost.ARCHITECTURAL_REVIEW:
+            return self.architectural_review_lane
+        if cost is PhaseCost.MAINTENANCE:
+            return self.maintenance_lane
         return self.retiring_lane if cheap_class is CheapClass.RETIRING else self.review_lane
 
     def denied_for(self, cost: PhaseCost, *, cheap_class: CheapClass | None = None) -> str | None:
@@ -111,6 +129,12 @@ class AgentAdmission:
         elif cost is PhaseCost.ANSWERING:
             denied = self.answering_denied
             lane = self.answering_lane
+        elif cost is PhaseCost.ARCHITECTURAL_REVIEW:
+            denied = self.architectural_review_denied
+            lane = self.architectural_review_lane
+        elif cost is PhaseCost.MAINTENANCE:
+            denied = self.maintenance_denied
+            lane = self.maintenance_lane
         else:
             denied = self.cheap_denied
             lane = self.cheap_lane
@@ -139,7 +163,14 @@ class AgentAdmission:
         """A seated row has paid for its lane; independent brakes can still refuse its claim."""
         if not seated:
             return self.denied_reason(phase)
-        return self.expensive_guard_denied if phase_cost(phase) is PhaseCost.EXPENSIVE else self.cheap_guard_denied
+        cost = phase_cost(phase)
+        if cost is PhaseCost.ARCHITECTURAL_REVIEW:
+            return self.architectural_review_guard_denied
+        if cost is PhaseCost.MAINTENANCE:
+            return self.maintenance_guard_denied
+        return (
+            self.cheap_guard_denied if cost in {PhaseCost.CHEAP, PhaseCost.ANSWERING} else self.expensive_guard_denied
+        )
 
     def admit(self, task_pk: int, phase: str, *, at: str) -> bool:
         """True when *task_pk* now holds a seat and may be dispatched — else refuse, at *at*.
@@ -175,9 +206,9 @@ class AgentAdmission:
         if not _task_model().objects.record_admission(
             task_pk,
             cheap_class=cheap_class,
+            lane=cost,
             lane_ceiling=total_lane.ceiling,
             class_ceiling=lane.ceiling if cheap_class is not None else None,
-            lane=cost,
         ):
             if total_lane.ceiling is None:
                 return "already dispatched this window"
@@ -258,6 +289,10 @@ def _ceiling_denial(ceiling: int, occupied: int, *, lane: str) -> str | None:
     return f"{lane} lane occupancy {occupied} at/over the {lane} ceiling {ceiling}"
 
 
+def _lane_bound(width: int, occupied: int) -> LaneBound:
+    return LaneBound(ceiling=width, headroom=max(0, width - occupied))
+
+
 def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     """The budget this box's CONFIGURED lane would actually spend, and only that one.
 
@@ -271,31 +306,9 @@ def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
 
 
 def _lane_widths(quota: QuotaSignal, machine: MachineSignal) -> LaneWidths:
-    return LaneWidths(ceiling=admission_ceiling(quota, machine), review=review_lane_width())
-
-
-class HeadlessAdmissionJson(TypedDict):
-    ceiling: int
-    cores: int
-    per_core: float
-    machine_ceiling: int
-    weekly_pace: float | None
-    expensive_lane: int
-    cheap_lane: int
-    review_lane: int
-    retiring_lane: int
-    expensive_occupied: int
-    cheap_occupied: int
-    review_occupied: int
-    retiring_occupied: int
-    review_phases: list[str]
-    retiring_phases: list[str]
-    pressure: float
-    band: str
-    expensive_denied: str | None
-    cheap_denied: str | None
-    review_denied: str | None
-    retiring_denied: str | None
+    return LaneWidths(
+        ceiling=admission_ceiling(quota, machine), review=review_lane_width(), maintenance=len(MAINTENANCE_PHASES)
+    )
 
 
 @dataclass(frozen=True)
@@ -311,11 +324,13 @@ class HeadlessAdmissionStatus:
 
     def verdict(self) -> AgentAdmission:
         widths, occupied = self.widths, self.occupied
-        cheap_lane = LaneBound(ceiling=widths.cheap, headroom=max(0, widths.cheap - occupied.cheap))
-        review_lane = LaneBound(ceiling=widths.review, headroom=max(0, widths.review - occupied.review))
-        retiring_lane = LaneBound(ceiling=widths.retiring, headroom=max(0, widths.retiring - occupied.retiring))
-        expensive_lane = LaneBound(ceiling=widths.expensive, headroom=max(0, widths.expensive - occupied.expensive))
-        answering_lane = LaneBound(ceiling=widths.answering, headroom=max(0, widths.answering - occupied.answering))
+        cheap_lane = _lane_bound(widths.cheap, occupied.cheap)
+        review_lane = _lane_bound(widths.review, occupied.review)
+        retiring_lane = _lane_bound(widths.retiring, occupied.retiring)
+        expensive_lane = _lane_bound(widths.expensive, occupied.expensive)
+        answering_lane = _lane_bound(widths.answering, occupied.answering)
+        architectural_review_lane = _lane_bound(widths.architectural_review, occupied.architectural_review)
+        maintenance_lane = _lane_bound(widths.maintenance, occupied.maintenance)
         if self.blocked:
             return AgentAdmission(
                 expensive_denied=self.blocked,
@@ -323,13 +338,19 @@ class HeadlessAdmissionStatus:
                 review_denied=self.blocked,
                 retiring_denied=self.blocked,
                 answering_denied=self.blocked,
+                architectural_review_denied=self.blocked,
+                maintenance_denied=self.blocked,
                 cheap_lane=cheap_lane,
                 review_lane=review_lane,
                 retiring_lane=retiring_lane,
                 expensive_lane=expensive_lane,
                 answering_lane=answering_lane,
+                architectural_review_lane=architectural_review_lane,
+                maintenance_lane=maintenance_lane,
                 expensive_guard_denied=self.blocked,
                 cheap_guard_denied=self.blocked,
+                architectural_review_guard_denied=self.blocked,
+                maintenance_guard_denied=self.blocked,
             )
         expensive_guard = (
             self.pressure.reason if self.pressure.band is PressureBand.HALT else _shed_denial(self.pressure)
@@ -339,20 +360,27 @@ class HeadlessAdmissionStatus:
         cheap = cheap_guard or _ceiling_denial(widths.cheap, occupied.cheap, lane="cheap")
         review = cheap_guard or _ceiling_denial(widths.review, occupied.review, lane="review")
         retiring = cheap_guard or _ceiling_denial(widths.retiring, occupied.retiring, lane="retiring")
-        answering = cheap_guard or _ceiling_denial(widths.answering, occupied.answering, lane="answering")
         return AgentAdmission(
             expensive_denied=expensive,
             cheap_denied=cheap,
             review_denied=review,
             retiring_denied=retiring,
-            answering_denied=answering,
+            answering_denied=cheap_guard or _ceiling_denial(widths.answering, occupied.answering, lane="answering"),
+            architectural_review_denied=expensive_guard
+            or _ceiling_denial(widths.architectural_review, occupied.architectural_review, lane="architectural review"),
+            maintenance_denied=expensive_guard
+            or _ceiling_denial(widths.maintenance, occupied.maintenance, lane="maintenance"),
             cheap_lane=cheap_lane,
             review_lane=review_lane,
             retiring_lane=retiring_lane,
             expensive_lane=expensive_lane,
             answering_lane=answering_lane,
+            architectural_review_lane=architectural_review_lane,
+            maintenance_lane=maintenance_lane,
             expensive_guard_denied=expensive_guard,
             cheap_guard_denied=cheap_guard,
+            architectural_review_guard_denied=expensive_guard,
+            maintenance_guard_denied=expensive_guard,
             seats_released=self.seats_released,
         )
 
@@ -367,14 +395,18 @@ class HeadlessAdmissionStatus:
             ("cheap", verdict.cheap_denied),
             ("review", verdict.review_denied),
             ("retiring", verdict.retiring_denied),
+            ("architectural review", verdict.architectural_review_denied),
+            ("maintenance", verdict.maintenance_denied),
         )
         denials = "".join(f"; {name} denied: {reason}" for name, reason in denied if reason is not None)
         return (
             f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
             f"({ceiling.machine}) x {pace}; lanes {widths.expensive} expensive + {widths.cheap} cheap "
+            f"+ {widths.architectural_review} architectural review + {widths.maintenance} maintenance "
             f"(up to {widths.review} review ({', '.join(sorted(REVIEW_PHASES))}) + up to {widths.retiring} retiring "
             f"({', '.join(sorted(RETIRING_PHASES))})); occupied {self.occupied.expensive} expensive + "
-            f"{self.occupied.cheap} cheap ({self.occupied.review} review + {self.occupied.retiring} retiring); "
+            f"{self.occupied.cheap} cheap ({self.occupied.review} review + {self.occupied.retiring} retiring) "
+            f"+ {self.occupied.architectural_review} architectural review + {self.occupied.maintenance} maintenance; "
             f"pressure {self.pressure.value:.2f} {self.pressure.band}{denials}"
         )
 
@@ -402,6 +434,12 @@ class HeadlessAdmissionStatus:
             cheap_denied=verdict.cheap_denied,
             review_denied=verdict.review_denied,
             retiring_denied=verdict.retiring_denied,
+            architectural_review_lane=self.widths.architectural_review,
+            architectural_review_occupied=self.occupied.architectural_review,
+            architectural_review_denied=verdict.architectural_review_denied,
+            maintenance_lane=self.widths.maintenance,
+            maintenance_occupied=self.occupied.maintenance,
+            maintenance_denied=verdict.maintenance_denied,
         )
 
 
@@ -417,7 +455,9 @@ def _read_admission(
             expensive=task_model.objects.expensive_lane_occupancy(),
             review=task_model.objects.cheap_class_occupancy(CheapClass.REVIEW),
             retiring=task_model.objects.cheap_class_occupancy(CheapClass.RETIRING),
-            answering=task_model.objects.answering_lane_occupancy(),
+            answering=task_model.objects.lane_occupancy(PhaseCost.ANSWERING),
+            architectural_review=task_model.objects.lane_occupancy(PhaseCost.ARCHITECTURAL_REVIEW),
+            maintenance=task_model.objects.lane_occupancy(PhaseCost.MAINTENANCE),
         ),
         seats_released=task_model.objects.cheap_lane_seats_released(),
         blocked=blocked,
@@ -456,8 +496,12 @@ def agent_admission_verdict() -> AgentAdmission:
             review_denied=blocked,
             retiring_denied=blocked,
             answering_denied=blocked,
+            architectural_review_denied=blocked,
+            maintenance_denied=blocked,
             expensive_guard_denied=blocked,
             cheap_guard_denied=blocked,
+            architectural_review_guard_denied=blocked,
+            maintenance_guard_denied=blocked,
         )
     try:
         quota, metered = _lane_budget()

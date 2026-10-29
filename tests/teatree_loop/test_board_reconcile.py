@@ -91,6 +91,16 @@ def _audit_for(ticket: Ticket) -> None:
 class TestMergedPrRowRule(TestCase):
     """Rule A — a linked ``PullRequest`` row in MERGED, no forge call (#3540)."""
 
+    def test_scanner_settles_closed_live_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        row = PullRequest.objects.record_opened(
+            ticket=ticket, url="https://github.com/example-org/example-repo/pull/123"
+        )
+        with _forge({row.url: PrOpenState.CLOSED}):
+            board_reconcile.BoardReconcileScanner(overlay_name="test").scan()
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.CLOSED
+
     def test_author_not_started_with_merged_pr_reaches_merged(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
         _merged_pr(ticket)

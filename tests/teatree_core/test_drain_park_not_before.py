@@ -37,7 +37,7 @@ class TestDrainHonoursNotBefore(TestCase):
             ticket=self.ticket,
             session=self.session,
             status=Task.Status.PENDING,
-            phase="architectural_review",
+            phase="unregistered_phase",
             not_before=not_before,
         )
 

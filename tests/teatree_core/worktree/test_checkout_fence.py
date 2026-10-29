@@ -15,6 +15,7 @@ from teatree.agents.runner_route_recording import park_after_route_failure
 from teatree.agents.usage_window import record_park
 from teatree.core import task_dispatch
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
@@ -324,6 +325,25 @@ class CheckoutFenceTests(TestCase):
             park_task_checkout(self.task, reason="unattested checkout")
 
         assert Task.objects.expensive_lane_occupancy() == 1
+        sibling.refresh_from_db()
+        assert sibling.admitted_at is not None
+        enqueue.assert_called_once_with(sibling.pk, sibling.phase)
+
+    def test_parked_architectural_review_frees_its_reserved_seat_immediately(self) -> None:
+        sibling = TaskFactory(ticket=self.ticket, phase="architectural_review")
+        Task.objects.filter(pk=self.task.pk).update(phase="architectural_review")
+        self.task.refresh_from_db()
+        self.task.claim(claimed_by="worker", claimed_by_session="s1")
+        Task.objects.filter(pk=sibling.pk).update(admitted_at=None)
+        Task.objects.filter(pk=self.task.pk).update(admitted_at=timezone.now())
+        assert Task.objects.lane_occupancy(PhaseCost.ARCHITECTURAL_REVIEW) == 1
+
+        with (
+            patch.object(task_dispatch, "enqueue_execution") as enqueue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            park_task_checkout(self.task, reason="unattested checkout")
+
         sibling.refresh_from_db()
         assert sibling.admitted_at is not None
         enqueue.assert_called_once_with(sibling.pk, sibling.phase)
