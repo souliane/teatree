@@ -26,6 +26,16 @@ from tests.factories import planned_ticket
 
 
 class TestLiveOrchestrator(TransactionTestCase):
+    def test_broker_close_stops_orchestrator_before_socket_shutdown(self) -> None:
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
+            LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+        ):
+            peer = start_orchestrator_peer(broker)
+            assert peer.is_alive()
+
+        assert not peer.is_alive()
+
     def setUp(self) -> None:
         super().setUp()
         self.db_directory = tempfile.TemporaryDirectory(prefix="t3-orchestrator-db-")
