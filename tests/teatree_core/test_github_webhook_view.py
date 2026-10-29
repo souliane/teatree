@@ -230,6 +230,26 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
         assert statuses == [200, 200]
         assert IncomingEvent.objects.count() == 1
 
+    def test_legacy_check_run_delivery_remains_accepted_and_deduplicated(self) -> None:
+        body = _payload(
+            repository={"id": 101},
+            check_run={"id": 17, "name": "build", "status": "completed", "completed_at": "2026-10-20T09:00:00Z"},
+        )
+        headers = {"X-GitHub-Delivery": "old-check-run", "X-GitHub-Event": "check_run"}
+
+        assert [self.deliver(body, headers=headers).status_code for _ in range(2)] == [200, 200]
+        row = IncomingEvent.objects.get()
+        assert IncomingEvent.objects.count() == 1
+        assert (row.event_name, row.repo_key, row.thread_ref, row.body) == (
+            "check_run",
+            "github:101",
+            "17",
+            "",
+        )
+        assert row.occurred_at.isoformat() == "2026-10-20T09:00:00+00:00"
+        assert row.processed_at is not None
+        assert row.payload_json == {}
+
     @override_settings(TEATREE_WEBHOOK_RATE_CAPACITY=60, TEATREE_WEBHOOK_RATE_REFILL_PER_SECOND=0.0)
     def test_signed_burst_is_never_throttled(self) -> None:
         statuses = {self.deliver(headers={"X-GitHub-Delivery": f"burst-{n}"}).status_code for n in range(61)}
