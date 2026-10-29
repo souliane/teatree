@@ -141,9 +141,8 @@ def _in_meeting() -> bool:
 def _speak_local_closing_connections(text: str) -> None:
     """The daemon-thread entry point for :func:`_speak_local`.
 
-    The away gate resolves the active mode from the ``ConfigSetting`` store, so
-    a playback thread opens its OWN Django connection — close it here or the
-    thread strands the raw handle (see :mod:`teatree.utils.thread_db`).
+    A playback thread that touches the ORM opens its OWN Django connection —
+    close it here or the thread strands the raw handle (see :mod:`teatree.utils.thread_db`).
     """
     try:
         _speak_local(text)
@@ -322,7 +321,7 @@ def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
     The local-speakers leg of a bot→user DM, independent of the Slack-audio
     attach (Slack never auto-plays): run on a daemon thread so the caller's
     egress path is never delayed, and contained so a synthesis/play failure
-    never breaks the DM. The away gate is applied inside :func:`_speak_local`
+    never breaks the DM. The meeting gate is applied inside :func:`_speak_local`
     at actual playback time.
     """
     if not config.speaks_dms():
@@ -412,13 +411,12 @@ def _acquire_within_budget(lock_fh: IO[str]) -> bool:
 
 
 def _speak_local(text: str) -> None:
-    """Play ``text`` through the macOS speakers via ``say`` — no-op if absent, away, or in a meeting.
+    """Play ``text`` through the macOS speakers via ``say`` — no-op if absent or in a meeting.
 
-    Applies the away AND meeting gates at the playback call site (#2171): a
-    presence-reported meeting mutes local playback exactly as ``away`` does,
-    with the same Slack-arm exemption. Availability stays out of config
-    resolution — :func:`resolve_speak` returns the user's configured value
-    unchanged; only playback is gated.
+    Applies the meeting gate at the playback call site (#2171): a
+    presence-reported meeting mutes local playback, with the Slack arm exempt.
+    Presence stays out of config resolution — :func:`resolve_speak` returns the
+    user's configured value unchanged; only playback is gated.
 
     Mutually exclusive machine-wide: the actual ``say`` call runs under the
     cross-process :func:`_serial_speaker` lock so concurrent local reads (in

@@ -1,6 +1,7 @@
 """Seat counts and widths shared by admission decisions and status."""
 
 from dataclasses import dataclass
+from typing import Self
 
 from teatree.core.admission.write_ceiling import AdmissionCeiling
 
@@ -20,6 +21,10 @@ class LaneBound:
     headroom: int | None = None
     admitted: int = 0
 
+    @classmethod
+    def from_width(cls, width: int, occupied: int) -> Self:
+        return cls(ceiling=width, headroom=max(0, width - occupied))
+
     def spent(self) -> bool:
         return self.headroom is not None and self.admitted >= self.headroom
 
@@ -30,6 +35,8 @@ class LaneOccupancy:
     review: int
     retiring: int
     answering: int = 0
+    architectural_review: int = 0
+    maintenance: int = 0
 
     @property
     def cheap(self) -> int:
@@ -42,6 +49,11 @@ class LaneWidths:
 
     ceiling: AdmissionCeiling
     review: int
+    maintenance: int = 0
+
+    @property
+    def architectural_review(self) -> int:
+        return 1
 
     @property
     def expensive(self) -> int:

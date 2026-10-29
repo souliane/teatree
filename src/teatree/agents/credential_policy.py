@@ -18,6 +18,7 @@ the next dispatch rotates to another key, and with none left the task waits for 
 
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -27,6 +28,16 @@ from teatree.credential_config import api_key_lane_available, oauth_lane_availab
 from teatree.llm.anthropic_limits import LimitCause
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
+
+PLANS_ONLY_MARKER = "[plans-only-retry]"
+
+
+def plans_only(task: "Task | None") -> bool:
+    return task is not None and PLANS_ONLY_MARKER in task.execution_reason
+
 
 #: The ``UsageWindowState.cause`` recorded when the WHOLE subscription lane parked because
 #: every configured account drained — distinct from a single-account cause for audit and
@@ -88,11 +99,12 @@ def resolve_credential_provider(
     *,
     scope: str,
     now: datetime | None = None,
+    plans_only: bool = False,
 ) -> AgentHarnessProvider | None:
     """The CONCRETE provider a dispatch authenticates with, given the *configured* one.
 
-    Every value but the composite is returned unchanged, so an existing deployment resolves
-    byte-identically. The composite answers :attr:`~teatree.config.AgentHarnessProvider.API_KEY`
+    Every value but the composite is returned unchanged except an unset provider on an
+    explicit plans-only retry. The composite answers :attr:`~teatree.config.AgentHarnessProvider.API_KEY`
     only while BOTH halves hold — the plans are spent AND the metered lane is usable in
     *scope* — and :attr:`~teatree.config.AgentHarnessProvider.SUBSCRIPTION_OAUTH` otherwise.
 
@@ -102,6 +114,8 @@ def resolve_credential_provider(
     warned rather than silent, because a factory that believes it has a fallback and does
     not is worth saying out loud.
     """
+    if plans_only and configured in {None, AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY}:
+        return AgentHarnessProvider.SUBSCRIPTION_OAUTH
     if configured is not AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY:
         return configured
     if not subscription_lane_exhausted(scope=scope, now=now):

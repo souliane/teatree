@@ -3,7 +3,7 @@
 Regression-locks the dashboard contract the user kept hitting:
 
 1.  Scanner bookkeeping signals (``pr_sweep.*``, ``pull_main_clone.*``,
-    ``outbound.*``, ``review_nag.*``, ``architectural_review.*``,
+    ``outbound.*``, ``review_nag.*``,
     ``dogfood_smoke.*``, ``scanning_news.*``) are internal state, not
     user-facing rows — they must NOT produce a statusline action, and a
     leaked all-``?`` disposition must never render.
@@ -33,7 +33,6 @@ _LEAKING_SIGNALS: tuple[tuple[str, dict[str, str]], ...] = (
     ("review_nag.stale_no_dm", {"overlay": "acme", "reason": "stale_no_dm"}),
     ("review_request_merge_react.reacted", {"overlay": "acme", "mr_url": "https://x/pull/1"}),
     ("review_request_merge_react.react_failed", {"overlay": "acme", "error": "not_in_channel"}),
-    ("architectural_review.queued", {"overlay": "acme"}),
     ("dogfood_smoke.queued", {"overlay": "acme"}),
     ("scanning_news.queued", {}),
 )
@@ -59,7 +58,6 @@ class TestScannerBookkeepingDropped:
             "pr_sweep",
             "review_nag",
             "review_request_merge_react",
-            "architectural_review",
             "dogfood_smoke",
             "scanning_news",
             "outbound",
@@ -67,6 +65,28 @@ class TestScannerBookkeepingDropped:
         )
         for fragment in leaking_fragments:
             assert fragment not in body, (fragment, body)
+
+    def test_architectural_review_outcomes_are_visible(self) -> None:
+        signals = [
+            ScanSignal(kind="architectural_review.queued", summary="review queued", payload={"overlay": "acme"}),
+            ScanSignal(kind="architectural_review.held", summary="review held", payload={"overlay": "acme"}),
+        ]
+        actions = dispatch(signals)
+        assert [(action.zone, action.detail) for action in actions] == [
+            ("in_flight", "review queued"),
+            ("action_needed", "review held"),
+        ]
+
+    def test_routine_empty_and_not_due_signals_do_not_request_action(self) -> None:
+        signals = [
+            ScanSignal(kind="architectural_review.not_due", summary="review not due"),
+            ScanSignal(kind="triage_assessor.held", summary="no issues to assess"),
+        ]
+        assert dispatch(signals) == []
+
+    def test_eval_reserve_hold_is_waiting_work(self) -> None:
+        actions = dispatch([ScanSignal(kind="eval_local.held", summary="waiting for reserve")])
+        assert [(action.zone, action.detail) for action in actions] == [("in_flight", "waiting for reserve")]
 
 
 class TestMergeReactMissingScopeSurfaces:

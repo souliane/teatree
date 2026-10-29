@@ -45,7 +45,7 @@ from teatree.core.agent_admission import (
     review_lane_width,
 )
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
-from teatree.core.modelkit.phases import RETIRING_PHASES, REVIEW_PHASES, CheapClass, PhaseCost
+from teatree.core.modelkit.phases import MAINTENANCE_PHASES, RETIRING_PHASES, REVIEW_PHASES, CheapClass, PhaseCost
 from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.tasks import execute_task
 from tests.teatree_core.conftest import IMMEDIATE_BACKEND
@@ -132,6 +132,71 @@ class TestAgentAdmissionDeniedReason(TestCase):
         assert reason is not None
         assert "at/over the expensive ceiling" in reason
 
+    def test_architectural_review_gets_one_seat_beside_full_coding(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        with patch.object(task_dispatch_mod, "admit_waiting_tasks", return_value=[]):
+            first = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+            second = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=999),
+        ):
+            verdict = agent_admission_verdict()
+            assert verdict.denied_reason("architectural_review") is None
+            assert verdict.admit(first.pk, first.phase, at="test")
+            assert not verdict.admit(second.pk, second.phase, at="test")
+        assert Task.objects.lane_occupancy(PhaseCost.ARCHITECTURAL_REVIEW) == 1
+        assert Task.objects.expensive_lane_occupancy() == 0
+
+    def test_periodic_maintenance_gets_a_seat_beside_full_coding(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        with patch.object(task_dispatch_mod, "admit_waiting_tasks", return_value=[]):
+            task = Task.objects.create(ticket=ticket, session=session, phase="backlog_sweep")
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=999),
+        ):
+            verdict = agent_admission_verdict()
+            assert verdict.denied_reason("backlog_sweep") is None
+            assert verdict.admit(task.pk, task.phase, at="test")
+        assert Task.objects.lane_occupancy(PhaseCost.MAINTENANCE) == 1
+        assert Task.objects.expensive_lane_occupancy() == 0
+
+    def test_periodic_maintenance_lane_is_bounded(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        with patch.object(task_dispatch_mod, "admit_waiting_tasks", return_value=[]):
+            tasks = [
+                Task.objects.create(ticket=ticket, session=session, phase="backlog_sweep")
+                for _ in range(len(MAINTENANCE_PHASES) + 1)
+            ]
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            verdict = agent_admission_verdict()
+            assert all(verdict.admit(task.pk, task.phase, at="test") for task in tasks[:-1])
+            assert not verdict.admit(tasks[-1].pk, tasks[-1].phase, at="test")
+        assert Task.objects.lane_occupancy(PhaseCost.MAINTENANCE) == len(MAINTENANCE_PHASES)
+
+    def test_machine_halt_refuses_architectural_review(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=1000)),
+        ):
+            assert agent_admission_denied_reason("architectural_review") is not None
+
+    def test_machine_halt_refuses_periodic_maintenance(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=1000)),
+        ):
+            assert agent_admission_denied_reason("backlog_sweep") is not None
+
     def test_claim_block_also_denies_retiring_work(self) -> None:
         with patch.object(gate_mod, "claim_admission_block_reason", return_value="worker quiescing"):
             verdict = agent_admission_verdict()
@@ -157,7 +222,7 @@ class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
                 ticket=ticket,
                 session=Session.objects.create(ticket=ticket),
                 status=Task.Status.CLAIMED,
-                phase="architectural_review",
+                phase="coding",
                 lease_expires_at=timezone.now() + dt.timedelta(hours=1),
             )
 
@@ -298,6 +363,17 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
         assert "weekly window" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
         assert verdict.denied_for(PhaseCost.CHEAP) is None
 
+    def test_shed_denies_periodic_agents_but_keeps_the_cheap_drain_running(self) -> None:
+        verdict = self._verdict(weekly=0.92)
+        for cost, phase in (
+            (PhaseCost.ARCHITECTURAL_REVIEW, "architectural_review"),
+            (PhaseCost.MAINTENANCE, "triage_assessing"),
+        ):
+            with self.subTest(cost=cost):
+                assert "shed band" in (verdict.denied_for(cost) or "")
+                assert "shed band" in (verdict.claim_denied_reason(phase, seated=True) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
     def test_below_the_band_nothing_is_shed(self) -> None:
         verdict = self._verdict(weekly=0.5)
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
@@ -362,6 +438,12 @@ _CEILING_PARTS = (
     "cheap_occupied",
     "review_occupied",
     "retiring_occupied",
+    "architectural_review_lane",
+    "architectural_review_occupied",
+    "architectural_review_denied",
+    "maintenance_lane",
+    "maintenance_occupied",
+    "maintenance_denied",
 )
 
 
@@ -390,6 +472,8 @@ class TestHeadlessAdmissionStatus(TestCase):
         self._claimed("coding")
         self._claimed("coding")
         self._claimed("reviewing")
+        self._claimed("architectural_review")
+        self._claimed("backlog_sweep")
         paced = QuotaSignal(
             fresh=True,
             all_accounts_exhausted=False,
@@ -415,10 +499,18 @@ class TestHeadlessAdmissionStatus(TestCase):
             "cheap_occupied": 1,
             "review_occupied": 1,
             "retiring_occupied": 0,
+            "architectural_review_lane": 1,
+            "architectural_review_occupied": 1,
+            "architectural_review_denied": (
+                "architectural review lane occupancy 1 at/over the architectural review ceiling 1"
+            ),
+            "maintenance_lane": len(MAINTENANCE_PHASES),
+            "maintenance_occupied": 1,
+            "maintenance_denied": None,
         }
         assert parts["band"] == str(status.pressure.band)
         assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
-        assert "lanes 6 expensive + 3 cheap (up to 2 review" in status.line()
+        assert "lanes 6 expensive + 3 cheap + 1 architectural review + 5 maintenance (up to 2 review" in status.line()
         assert "+ up to 2 retiring (requesting_review, shipping)" in status.line()
         assert "occupied 2 expensive + 1 cheap (1 review + 0 retiring)" in status.line()
         assert parts["review_phases"] == sorted(REVIEW_PHASES)
@@ -533,7 +625,7 @@ class TestDrainConsultsTheGovernor(TestCase):
             ticket=ticket,
             session=session,
             status=Task.Status.PENDING,
-            phase="architectural_review",
+            phase="coding",
         )
 
     @override_settings(**IMMEDIATE_BACKEND)
@@ -916,7 +1008,7 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
                 ticket=ticket,
                 session=session,
                 status=Task.Status.PENDING,
-                phase="architectural_review",
+                phase="coding",
             )
             enqueue_task.enqueue.assert_not_called()
 
@@ -1377,9 +1469,7 @@ class TestAMeteredCeilingBreachAdmitsZeroTasks(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         return [
-            Task.objects.create(
-                ticket=ticket, session=session, status=Task.Status.PENDING, phase="architectural_review"
-            )
+            Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING, phase="coding")
             for _ in range(count)
         ]
 
@@ -1472,7 +1562,11 @@ class TestOwnerAnsweringVerdict(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
             patch.object(Task.objects, "expensive_lane_occupancy", return_value=coding),
-            patch.object(Task.objects, "answering_lane_occupancy", return_value=answering),
+            patch.object(
+                Task.objects,
+                "lane_occupancy",
+                side_effect=lambda lane: answering if lane is PhaseCost.ANSWERING else 0,
+            ),
         ):
             return agent_admission_verdict()
 

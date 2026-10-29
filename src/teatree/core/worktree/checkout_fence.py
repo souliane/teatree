@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
+from teatree.core.modelkit.phases import phase_cost
 from teatree.core.models import LocalStackQueueItem, Task, TaskAttempt, Worktree, WorktreeEnvOverride
 from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.checkout_exit import mark_verified_checkout_run
@@ -230,7 +231,7 @@ def park_task_checkout(
         TaskAttempt.objects.filter(pk=attempt.pk).update(result=result)
         attempt.result = result
     own_row = Task.objects.filter(pk=task.pk)
-    seat_freed = bool(own_row.cheap_lane_occupancy() or own_row.expensive_lane_occupancy())
+    seat_freed = bool(own_row.lane_occupancy(phase_cost(task.phase)))
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     own_row.update(admitted_at=None)
     task.admitted_at = None

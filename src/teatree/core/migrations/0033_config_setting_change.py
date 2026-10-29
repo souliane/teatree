@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0031_review_hold_disposition_and_merge_attribution"),
+        ("core", "0032_merge_attempt_account_and_review_hold"),
     ]
 
     operations = [

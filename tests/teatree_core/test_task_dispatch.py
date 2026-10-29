@@ -19,7 +19,7 @@ from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.models import ConfigSetting, ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
-from teatree.core.task_dispatch import admit_waiting_tasks
+from teatree.core.task_dispatch import admit_waiting_tasks, enqueue_execution
 from teatree.core.tasks import drain_queue_body
 from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SIGNAL
 
@@ -27,6 +27,20 @@ from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SI
 _CODING_CEILING = 4
 #: The shipped ``cheap_phase_admission_ceiling``.
 _REVIEW_WIDTH = 2
+
+
+def test_architectural_review_uses_the_cheap_executor() -> None:
+    with patch.object(task_dispatch_mod, "execute_task") as job:
+        enqueue_execution(42, "architectural_review")
+    job.using.assert_called_once_with(queue_name="cheap")
+    job.using.return_value.enqueue.assert_called_once_with(42, "architectural_review")
+
+
+def test_periodic_maintenance_uses_the_cheap_executor() -> None:
+    with patch.object(task_dispatch_mod, "execute_task") as job:
+        enqueue_execution(42, "backlog_sweep")
+    job.using.assert_called_once_with(queue_name="cheap")
+    job.using.return_value.enqueue.assert_called_once_with(42, "backlog_sweep")
 
 
 class _AdmissionCase(TestCase):
@@ -60,6 +74,18 @@ class _AdmissionCase(TestCase):
     def _admitted(task: Task) -> bool:
         task.refresh_from_db()
         return task.admitted_at is not None
+
+
+class TestPeriodicMaintenanceDispatch(_AdmissionCase):
+    def test_new_maintenance_task_is_seated_and_enqueued_beside_full_coding(self) -> None:
+        for _ in range(_CODING_CEILING):
+            self._task("coding", status=Task.Status.CLAIMED)
+
+        task = self._task("backlog_sweep")
+
+        assert self._admitted(task)
+        task_dispatch_mod.execute_task.using.assert_called_once_with(queue_name="cheap")
+        task_dispatch_mod.execute_task.using.return_value.enqueue.assert_called_once_with(task.pk, "backlog_sweep")
 
 
 class TestACreatedRowDoesNotOvertakeAnOlderWaiter(_AdmissionCase):

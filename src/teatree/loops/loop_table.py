@@ -118,6 +118,8 @@ class LoopDispatch:
     name: str
     jobs: tuple["_ScannerJob", ...] = ()
     blocked_reason: str = ""
+    claimed_at: dt.datetime | None = None
+    previous_last_run_at: dt.datetime | None = None
 
     @property
     def dispatched(self) -> bool:
@@ -316,7 +318,9 @@ def dispatch_loop_table(
                 LoopDispatch(name=loop.name, blocked_reason="its build_jobs raised — see the loop log"),
             )
             continue
-        outcomes.append(LoopDispatch(name=loop.name, jobs=tuple(built)))
+        outcomes.append(
+            LoopDispatch(name=loop.name, jobs=tuple(built), claimed_at=now, previous_last_run_at=row.last_run_at)
+        )
     return outcomes
 
 

@@ -86,8 +86,7 @@ def _effective_speak() -> SpeakConfig:
 
     :func:`current_presence` runs on the local-TTS daemon threads (each bot→user
     DM's local-play leg). A Django ORM read there opens a per-thread connection
-    that warns at cross-thread GC — the exact hazard the away gate avoids by
-    reading cold. So the meeting gate reads the same stored ``speak`` row via
+    that warns at cross-thread GC. So the meeting gate reads the stored ``speak`` row via
     :mod:`teatree.config.cold_reader` (one-shot sqlite, closed in-function),
     global scope — a machine-level "am I in a meeting" needs no per-overlay tier.
     """

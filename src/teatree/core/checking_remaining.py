@@ -14,7 +14,7 @@ from teatree.core.cycle_time.eta import format_minutes, queue_waves
 from teatree.core.cycle_time.step_history import StepEstimate, StepHistory
 from teatree.core.lifecycle_pipeline import PIPELINE, TicketSnapshot, resolve_plan
 from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
-from teatree.core.modelkit.phases import REVIEW_PHASES, CheapClass, normalize_phase
+from teatree.core.modelkit.phases import REVIEW_PHASES, CheapClass, PhaseCost, normalize_phase, phase_cost
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
@@ -85,7 +85,7 @@ def remaining_steps(state: str, active_phase: str, *, has_pr: bool, merge_safe: 
 
 def _lane(phase: str) -> str:
     cheap = CheapClass.of(phase)
-    return cheap.value if cheap is not None else "expensive"
+    return cheap.value if cheap is not None else phase_cost(phase).value
 
 
 def _duration_phase(step: str, task: Task | None, index: int) -> str:
@@ -187,9 +187,19 @@ class QueueState:
                     "expensive": Task.objects.expensive_lane_occupancy(),
                     "review": Task.objects.cheap_class_occupancy(CheapClass.REVIEW),
                     "retiring": Task.objects.cheap_class_occupancy(CheapClass.RETIRING),
+                    "answering": Task.objects.lane_occupancy(PhaseCost.ANSWERING),
+                    "architectural_review": Task.objects.lane_occupancy(PhaseCost.ARCHITECTURAL_REVIEW),
+                    "maintenance": Task.objects.lane_occupancy(PhaseCost.MAINTENANCE),
                 }
             ),
-            seats={"expensive": widths.expensive, "review": widths.review, "retiring": widths.retiring},
+            seats={
+                "expensive": widths.expensive,
+                "review": widths.review,
+                "retiring": widths.retiring,
+                "answering": widths.answering,
+                "architectural_review": widths.architectural_review,
+                "maintenance": widths.maintenance,
+            },
             oldest=oldest.created_at if oldest else None,
             oldest_phase=normalize_phase(oldest.phase) if oldest else None,
         )

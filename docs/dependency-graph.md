@@ -42,8 +42,6 @@ graph TD
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
     teatree.utils --> teatree.sqlite_integrity
-    teatree.utils.disk_consumers --> teatree.core
-    teatree.utils.disk_consumers --> teatree.config
     teatree.self_update --> teatree.utils
     teatree.hooks --> teatree.config
     teatree.hooks --> teatree.hooks._private_repo_entries
