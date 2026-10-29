@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from teatree.core.models import ThreadBinding, Ticket, TicketDmPost, TicketDmThr
 from teatree.types import RawAPIDict
 
 _DELETED_ROOT_CODES = frozenset({"thread_not_found", "message_not_found"})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,16 +120,25 @@ def deliver_ticket_dm(request: TicketDmRequest) -> tuple[str, str, str]:
             return channel, posted_ts, failure
         if thread is None:
             return channel, posted_ts, ""
-        if send.first_send:
-            thread.channel = channel
-            thread.root_ts = posted_ts
-            thread.save(update_fields=["channel", "root_ts"])
-            _record_root(thread, ticket, channel, request.question_id)
-        else:
-            TicketDmPost.objects.get_or_create(
-                channel=channel,
-                slack_ts=posted_ts,
-                defaults={"thread": thread, "generation": thread.generation, "question_id": request.question_id},
+        try:
+            if send.first_send:
+                thread.channel = channel
+                thread.root_ts = posted_ts
+                thread.save(update_fields=["channel", "root_ts"])
+                stack.close()
+                _record_root(thread, ticket, channel, request.question_id)
+            else:
+                TicketDmPost.objects.get_or_create(
+                    channel=channel,
+                    slack_ts=posted_ts,
+                    defaults={"thread": thread, "generation": thread.generation, "question_id": request.question_id},
+                )
+        except Exception:
+            logger.exception(
+                "ticket DM bookkeeping failed after delivery: ticket=%s channel=%s ts=%s",
+                ticket.pk,
+                channel,
+                posted_ts,
             )
         return channel, posted_ts, ""
 
@@ -142,3 +153,12 @@ def record_ticket_thread_post(channel: str, root_ts: str, post_ts: str) -> None:
             slack_ts=post_ts,
             defaults={"thread": thread, "generation": thread.generation},
         )
+
+
+def record_ticket_thread_post_after_delivery(
+    *, channel: str, thread_ts: str, posted_ts: str, idempotency_key: str
+) -> None:
+    try:
+        record_ticket_thread_post(channel, thread_ts, posted_ts)
+    except Exception:
+        logger.exception("ticket DM reply tracking failed after delivery: key=%s", idempotency_key)

@@ -136,7 +136,7 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
 
 
 class TestTicketQuestionThread(TestCase):
-    def test_untitled_ticket_still_records_its_first_card_as_root(self) -> None:
+    def test_untitled_ticket_card_stays_unthreaded(self) -> None:
         ticket = Ticket.objects.create()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
@@ -148,9 +148,10 @@ class TestTicketQuestionThread(TestCase):
         assert drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)[0] == 1
 
         row.refresh_from_db()
-        thread = TicketDmThread.objects.get(ticket=ticket)
-        assert thread.root_ts == row.slack_ts == "1700000000.000001"
-        assert TicketDmPost.objects.get(channel="D-OWNER", slack_ts=row.slack_ts).question_id == row.pk
+        assert row.slack_ts == "1700000000.000001"
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+        assert not TicketDmThread.objects.filter(ticket=ticket).exists()
+        assert not TicketDmPost.objects.filter(question=row).exists()
 
     def test_deleted_root_is_replaced_by_an_answerable_card(self) -> None:
         ticket = Ticket.objects.create(short_description="Fix retry")

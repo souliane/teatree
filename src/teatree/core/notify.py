@@ -185,7 +185,7 @@ def notify_user_outcome(
     from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
         TicketDmRequest,
         deliver_ticket_dm,
-        record_ticket_thread_post,
+        record_ticket_thread_post_after_delivery,
     )
 
     if options.ticket_id is not None and not options.thread_ts:
@@ -226,9 +226,12 @@ def notify_user_outcome(
         return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
     _deliver_speech_sidecar(resolved_backend, channel=channel, text=outgoing_text, posted_ts=posted_ts)
     if options.thread_ts:
-        record_ticket_thread_post(channel, options.thread_ts, posted_ts)
-    # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
-    # only returns no failure when both are set, so no defensive re-check.
+        record_ticket_thread_post_after_delivery(
+            channel=channel,
+            thread_ts=options.thread_ts,
+            posted_ts=posted_ts,
+            idempotency_key=idempotency_key,
+        )
     try:
         permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
     except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
@@ -430,6 +433,8 @@ def _deliver_dm(
 
 
 def _deliver_speech_sidecar(backend: MessagingBackend, *, channel: str, text: str, posted_ts: str) -> None:
+    if channel == "dry-run":
+        return
     from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:

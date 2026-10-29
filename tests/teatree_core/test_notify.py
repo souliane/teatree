@@ -24,6 +24,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent, ThreadBinding, Ticket, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
+from teatree.core.owner_dm import ticket_dm_delivery
 from teatree.types import RawAPIDict
 
 _DB_LOCKED = OperationalError("database is locked")
@@ -152,6 +153,24 @@ class TestNotifyUser(TestCase):
         assert backend.post_message.call_count == 1
         thread = TicketDmThread.objects.get(ticket=ticket)
         assert (thread.root_ts, thread.generation) == ("", 0)
+
+    def test_root_binding_failure_keeps_landed_card_delivered(self) -> None:
+        ticket = Ticket.objects.create(short_description="Bind failure")
+        backend = _backend()
+
+        with patch.object(ThreadBinding, "bind", side_effect=RuntimeError("binding unavailable")):
+            outcome = notify_user_outcome(
+                "first card",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="root-binding-failure",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+
+        assert outcome.sent
+        backend.post_message.assert_called_once()
+        assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000000"
+        assert BotPing.objects.get(idempotency_key="root-binding-failure").status == BotPing.Status.SENT
 
     def test_proven_deleted_root_reopens_on_next_message(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
@@ -372,6 +391,24 @@ class TestNotifyUser(TestCase):
         assert TicketDmPost.objects.filter(
             channel="D-USER", slack_ts="1700000000.000002", thread__ticket=ticket
         ).exists()
+
+    def test_explicit_thread_tracking_failure_keeps_landed_reply_delivered(self) -> None:
+        backend = _backend()
+
+        with patch.object(
+            ticket_dm_delivery, "record_ticket_thread_post", side_effect=RuntimeError("tracking unavailable")
+        ):
+            outcome = notify_user_outcome(
+                "thread reply",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="thread-tracking-failure",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", thread_ts="1700000000.000001"),
+            )
+
+        assert outcome.sent
+        backend.post_message.assert_called_once()
+        assert BotPing.objects.get(idempotency_key="thread-tracking-failure").status == BotPing.Status.SENT
 
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
         backend = _backend()
@@ -886,6 +923,25 @@ class TestNotifyUserUnderAnEgressSuppressor(TestCase):
         assert suppressed == [("U_ME", "owner_dm_post", EgressKind.POST)]
         backend.open_dm.assert_not_called()
         backend.post_message.assert_not_called()
+
+    def test_preview_does_not_run_speech_sidecar(self) -> None:
+        backend = _backend()
+
+        with (
+            suppress_on_behalf_egress(lambda *_args: {"ok": True, "ts": "dry-run"}),
+            patch("teatree.core.speak.deliver_user_dm_sidecar") as sidecar,
+        ):
+            outcome = notify_user_outcome(
+                "preview card",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="preview-no-audio",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME"),
+            )
+
+        assert outcome.sent
+        sidecar.assert_not_called()
+        backend.post_audio_dm.assert_not_called()
 
 
 class TestNotifyUserNeverRaises(TestCase):
