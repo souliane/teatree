@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.db import connection
 from django.test import TestCase
@@ -9,6 +9,8 @@ from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
+from teatree.utils.run import CommandFailedError
 
 
 class _SwitchingScanner:
@@ -22,6 +24,34 @@ class _SwitchingScanner:
 
 
 class ScannerFaultRecordingTests(TestCase):
+    def test_rate_limited_intake_fault_keeps_cause_after_truncation(self) -> None:
+        error = CommandFailedError(
+            ["gh", "api", "search/issues?q=" + "x" * 240],
+            1,
+            "",
+            "gh api: HTTP 403: You have exceeded a secondary rate limit",
+        )
+        host = Mock()
+        host.list_authored_issues.side_effect = error
+        host.list_labeled_issues.side_effect = error
+        scanner = IssueIntakeScanner(
+            host=host,
+            admit_label="t3-auto",
+            overlay_name="teatree",
+            trusted_authors=("owner",),
+            identities=("owner",),
+            readback_enabled=False,
+        )
+        job = _ScannerJob(scanner=scanner, overlay="")
+
+        with patch("teatree.loop.domain_jobs.notify_scanner_error"):
+            _run_job(job)
+
+        fault = ScannerFault.objects.get(scanner=job.label)
+        assert fault.error_class == "rate_limit"
+        assert len(fault.detail) <= 200
+        assert "rate limit" in fault.detail
+
     def test_failure_twice_records_one_fault_and_clean_run_heals(self) -> None:
         scanner = _SwitchingScanner()
         job = _ScannerJob(scanner=scanner, overlay="")

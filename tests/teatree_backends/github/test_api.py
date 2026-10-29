@@ -10,6 +10,8 @@ import pytest
 
 from teatree.backends.forge_pool import close_forge_clients
 from teatree.backends.github import api
+from teatree.loop.scanners.base import classify_gh_stderr
+from teatree.types import ScannerErrorClass
 from teatree.utils.run import CommandFailedError
 from tests._forge_server import ForgeServer, forge_server
 
@@ -123,3 +125,57 @@ def test_a_missing_resource_keeps_the_http_404_text_that_is_not_found_reads(pool
 
     assert "HTTP 404" in raised.value.stderr
     assert api.is_not_found(raised.value)
+
+
+def test_pooled_rate_limit_keeps_the_response_cause_and_retry_header(pooled_server: ForgeServer) -> None:
+    echoed_token = "a" * 20
+    pooled_server.statuses["/limited"] = 403
+    pooled_server.payloads["/limited"] = {
+        "message": f"You have exceeded a secondary rate limit. Authorization: Bearer {echoed_token}"
+    }
+    pooled_server.response_headers["/limited"] = {"Retry-After": "45", "X-RateLimit-Resource": "search"}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "limited", token="test-token")
+
+    stderr = raised.value.stderr
+    assert "HTTP 403" in stderr
+    assert "secondary rate limit" in stderr
+    assert "retry-after=45" in stderr
+    assert "resource=search" in stderr
+    assert echoed_token not in stderr
+    assert "Authorization: <redacted>" in stderr
+    assert classify_gh_stderr(stderr) == ScannerErrorClass.RATE_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("headers", "diagnostic"),
+    [
+        ({"Retry-After": "45"}, "retry-after=45"),
+        ({"X-RateLimit-Remaining": "0"}, "remaining=0"),
+    ],
+)
+def test_pooled_rate_limit_header_classifies_without_message(
+    pooled_server: ForgeServer, headers: dict[str, str], diagnostic: str
+) -> None:
+    pooled_server.statuses["/limited"] = 403
+    pooled_server.payloads["/limited"] = {"message": "Forbidden"}
+    pooled_server.response_headers["/limited"] = headers
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "limited", token="test-token")
+
+    assert diagnostic in raised.value.stderr
+    assert classify_gh_stderr(raised.value.stderr) == ScannerErrorClass.RATE_LIMIT
+
+
+@pytest.mark.parametrize("body", ["not JSON", "[]", '{"message": 17}'])
+def test_pooled_unreadable_error_body_keeps_the_status(body: str) -> None:
+    response = httpx.Response(403, text=body, request=httpx.Request("GET", "https://api.github.com/x"))
+    with (
+        patch.object(httpx.Client, "request", return_value=response),
+        pytest.raises(CommandFailedError) as raised,
+    ):
+        api._run_gh("gh", "api", "x", token="test-token")
+
+    assert raised.value.stderr == "gh api: HTTP 403"

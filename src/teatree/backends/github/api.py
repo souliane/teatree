@@ -21,7 +21,7 @@ import httpx
 
 from teatree.backends.forge_pool import client_for_url
 from teatree.types import RawAPIDict
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,22 @@ def _request_api(
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise CommandFailedError(list(args), 1, "", f"gh api: HTTP {exc.response.status_code}") from exc
+        details: list[str] = []
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
+            details.append(redact_secrets(" ".join(payload["message"].split())[:200]))
+        for header, label in (
+            ("x-ratelimit-resource", "resource"),
+            ("x-ratelimit-remaining", "remaining"),
+            ("retry-after", "retry-after"),
+        ):
+            if value := exc.response.headers.get(header):
+                details.append(f"{label}={redact_secrets(value[:50])}")
+        suffix = f": {' '.join(details)}" if details else ""
+        raise CommandFailedError(list(args), 1, "", f"gh api: HTTP {exc.response.status_code}{suffix}") from exc
     except httpx.RequestError as exc:
         raise CommandFailedError(list(args), 1, "", f"gh api: {type(exc).__name__}: {exc}") from exc
     return response
