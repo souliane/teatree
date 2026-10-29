@@ -973,6 +973,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     control_db_dir = tmp_path / "isolated-control-db"
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "isolated-data")
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)

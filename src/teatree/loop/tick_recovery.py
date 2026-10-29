@@ -7,8 +7,15 @@ orphaned ticket state), and the agent/mechanical helpers after dispatch
 produces actions.
 """
 
+import fcntl
 import logging
+import os
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+from teatree.paths import data_dir_root
+from teatree.utils.throttled_log import warn_throttled
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -16,6 +23,51 @@ if TYPE_CHECKING:
     from teatree.loop.tick import TickReport
 
 logger = logging.getLogger(__name__)
+
+RECOVERY_PRELUDE_INTERVAL_SECONDS = 60
+_RECOVERY_STAMP_NAME = "recovery-prelude.stamp"
+
+
+def _recovery_stamp_path() -> Path:
+    return data_dir_root() / _RECOVERY_STAMP_NAME
+
+
+def _recovery_prelude_due() -> bool:
+    stamp = _recovery_stamp_path()
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(stamp, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            previous = handle.read().strip()
+            now = time.time()
+            if previous and 0 <= now - float(previous) < RECOVERY_PRELUDE_INTERVAL_SECONDS:
+                logger.debug("Recovery prelude skipped inside interval: %s", stamp)
+                return False
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(now))
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.seek(0)
+            if handle.read().strip() != str(now):
+                warn_throttled(
+                    logger,
+                    f"recovery-prelude-stamp:{stamp}",
+                    "Recovery prelude stamp %s could not be verified; running recovery",
+                    stamp,
+                )
+            return True
+    except (OSError, ValueError) as exc:
+        warn_throttled(
+            logger,
+            f"recovery-prelude-stamp:{stamp}",
+            "Recovery prelude stamp %s unreadable or unwritable: %s; running recovery",
+            stamp,
+            exc,
+        )
+        return True
+
 
 #: The sweeps that mint or reopen work; the boot sweeps hold their own task half, so they run under any posture.
 _REDISPATCH_SWEEPS = frozenset(
@@ -43,7 +95,7 @@ def _redispatch_block_reason(errors: dict[str, str] | None) -> str:
 
 
 def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
-    """Run every recovery sweep INDEPENDENTLY, recording each failure — never silently.
+    """Run each due recovery sweep independently and record failures.
 
     Chains :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps` (the single
     SSOT, shared with ``t3 recover``), :func:`~teatree.loop.transient_requeue.requeue_transient_failed`
@@ -71,6 +123,8 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     The sweeps in :data:`_REDISPATCH_SWEEPS` are skipped while no claim is admitted (the
     ``off`` posture, a quiescing worker), so a stopped fleet re-creates no work.
     """
+    if not _recovery_prelude_due():
+        return
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
         question_drain,
