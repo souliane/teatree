@@ -370,7 +370,8 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
     ``extra``). The same gate runs by PR identity in
     :func:`assert_ticket_scoped_gates` at the shared merge chokepoint when an
     owning ticket resolves. A PR with no owning ticket remains outside this
-    ticket-scoped gate. The :class:`AntiVacuityAttestationError` raised on a block is
+    ticket-scoped gate; this keystone check itself stays single-ticket and reads only ``clear.ticket``.
+    The :class:`AntiVacuityAttestationError` raised on a block is
     re-wrapped as a :class:`MergePreconditionError` so the merge command's
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
@@ -430,8 +431,8 @@ def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
     ``is_stale_at`` give the head-SHA bind for free: a force-push moves the head,
     every prior verdict (PASS and HOLD) goes stale, and the gate fails closed.
 
-    A standing HOLD blocks any pass at the same head. A new reviewed head is
-    required to resolve it; a CLEAR cannot lift it.
+    A standing HOLD blocks any pass at the same head. A new reviewed head, or an
+    independent same-head ``ReviewHoldDisposition`` answering every point, lifts it; a CLEAR cannot.
     """
     head = head_sha.strip().lower()
     state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head)

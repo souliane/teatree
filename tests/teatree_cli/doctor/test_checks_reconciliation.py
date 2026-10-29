@@ -690,6 +690,76 @@ class TestReviewDispatchSaturation(TestCase):
 
         assert finding.is_alarm
         assert f"{self.SLUG}#3920" in finding.message
+        assert "no recorded attempt" in finding.message
+
+    def test_saturation_names_each_recorded_failure_cause(self) -> None:
+        reasons = {
+            3920: "turn ceiling reached after 20 turns",
+            3921: "read-only brief refused: review diff unavailable",
+            3922: "no credential available for reviewer",
+        }
+        for pr_id, reason in reasons.items():
+            row = AutoReviewDispatch.enqueue(
+                slug=self.SLUG,
+                pr_id=pr_id,
+                head_sha=self.HEAD,
+                pr_url=f"https://github.com/{self.SLUG}/pull/{pr_id}",
+            )
+            assert row is not None
+            assert row.task is not None
+            TaskAttempt.objects.create(task=row.task, exit_code=0, error=reason)
+            AutoReviewDispatch.objects.filter(pk=row.pk).update(
+                attempts=MAX_DISPATCH_ATTEMPTS, deadline=timezone.now() - dt.timedelta(minutes=1)
+            )
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        for label in ("turn ceiling", "refused brief", "credential"):
+            assert label in finding.message
+        for pr_id in reasons:
+            assert f"#{pr_id}" in finding.message
+
+    def test_traceback_saturation_names_the_exception(self) -> None:
+        row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        assert row.task is not None
+        TaskAttempt.objects.create(
+            task=row.task,
+            exit_code=1,
+            error='Traceback (most recent call last):\n  File "review.py", line 3\nValueError: evidence unavailable',
+        )
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert "ValueError: evidence unavailable" in finding.message
+        assert "Traceback (most recent call last)" not in finding.message
+
+    def test_successful_attempt_without_verdict_is_named(self) -> None:
+        row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        assert row.task is not None
+        TaskAttempt.objects.create(task=row.task, exit_code=0)
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert "attempt recorded without verdict" in finding.message
+
+    def test_unverified_saturation_names_the_evidence_gap(self) -> None:
+        row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        assert row.task is not None
+        TaskAttempt.objects.create(
+            task=row.task,
+            exit_code=0,
+            result={"review_verdict": {"verdict": "unverified", "evidence_gaps": ["ci_unreadable"]}},
+        )
+        AutoReviewDispatch.objects.filter(pk=row.pk).update(state=AutoReviewDispatch.State.UNVERIFIED)
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert "ci_unreadable" in finding.message
+        assert "without verdict" not in finding.message
 
     def test_a_resolved_claim_never_alarms(self) -> None:
         self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)

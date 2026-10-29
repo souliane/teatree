@@ -27,6 +27,14 @@ class ReviewGrading:
             Rubric.carry_grades(self.rubric.ticket, from_head=self.prior_head, to_head=head, only=pks)
 
 
+def _returned_grades_phrase(returned: object) -> str:
+    if returned is None:
+        return 'you returned no "rubric_grades" at all'
+    if isinstance(returned, list):
+        return f'your "rubric_grades" carried {len(returned)} grade(s)'
+    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
+
+
 def rubric_coverage_error(
     rubric: "Rubric | None",
     grades: "list[RubricGrade]",
@@ -63,19 +71,6 @@ def rubric_coverage_error(
         '"status": "pass"|"fail", "rationale": "<what proves it>"}] '
         f"— a PASS cites the test that proves it, a FAIL needs no citation"
     )
-
-
-def _returned_grades_phrase(returned: object) -> str:
-    """What the envelope actually carried under ``rubric_grades`` — the actionable half.
-
-    Naming only the criteria leaves a reviewer that returned ``{"0": "pass"}`` reading a
-    refusal about coverage when its payload was never a list of grades at all.
-    """
-    if returned is None:
-        return 'you returned no "rubric_grades" at all'
-    if isinstance(returned, list):
-        return f'your "rubric_grades" carried {len(returned)} grade(s)'
-    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
 
 
 def merge_safe_over_fail_error(

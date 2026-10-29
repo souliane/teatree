@@ -24,9 +24,12 @@ from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
 from teatree.core.modelkit.db_retry import wait_out_locked_writes
+from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
+from teatree.core.models.review_target import review_completion_refusal
 from teatree.generation import current_generation
 
 if TYPE_CHECKING:
@@ -319,6 +322,8 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     :func:`renew_lease` already names as the harm.
     """
     _refuse_lost_lease(task)
+    if normalize_phase(task.phase) in VERDICT_REVIEW_PHASES and (refusal := review_completion_refusal(task)):
+        raise InvalidTransitionError(refusal)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,

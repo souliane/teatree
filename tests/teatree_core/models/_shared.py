@@ -81,7 +81,10 @@ def _complete_phase_task(ticket: Ticket, phase: str) -> None:
     task = ticket.tasks.filter(phase=phase, status=Task.Status.PENDING).first()
     assert task is not None, f"No pending {phase} task found"
     task.claim(claimed_by="test-worker")
-    task.complete()
+    if phase == "reviewing":
+        task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
+    else:
+        task.complete()
 
 
 def _attach_shippable_worktree(ticket: Ticket, tmp_path: Path, *, commits_ahead: int = 1) -> Worktree:

@@ -10,37 +10,26 @@ human report) or executes the two scoped sweeps (``--run``, the driver
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.changed_set import ChangedSetError
-from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_constraints, run_push_gate, sweep_command
+from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate, sweep_command
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError
 
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
-def _brief_for_worktree(repo_root: Path) -> str:
+
+def _ticket_for_worktree(repo_root: Path) -> "Ticket | None":
     ensure_django()
-    from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
+    from teatree.core.models import Worktree  # noqa: PLC0415 — Django is set up at call time
 
     worktree = Worktree.objects.filter(extra__worktree_path=str(repo_root.resolve())).select_related("ticket").first()
-    if worktree is None:
-        return ""
-    ticket = worktree.ticket
-    plan = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
-    tasks = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"))
-    task = (
-        tasks.filter(status=Task.Status.CLAIMED).order_by("-created_at", "-pk").first()
-        or tasks.filter(status=Task.Status.COMPLETED).order_by("-created_at", "-pk").first()
-    )
-    return "\n".join(
-        part
-        for part in (
-            plan.plan_text if plan is not None else "",
-            task.execution_reason if task is not None else "",
-        )
-        if part
-    )
+    return worktree.ticket if worktree is not None else None
 
 
 def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
@@ -62,6 +51,17 @@ def _plan_as_dict(plan: PushGatePlan) -> dict:
         "doctest_targets": [str(t) for t in plan.doctest_targets],
         "astgrep_scope": None if plan.astgrep_scope is None else [str(p) for p in plan.astgrep_scope],
     }
+
+
+def _constraint_violations(repo_root: Path, base: str) -> tuple[ConstraintViolation, ...]:
+    ticket = _ticket_for_worktree(repo_root)
+    if ticket is None:
+        return ()
+    from teatree.core.gates.merge_quality_gate import (  # noqa: PLC0415 — Django is set up at call time
+        ticket_brief_constraint_violations,
+    )
+
+    return ticket_brief_constraint_violations(ticket, worktree=repo_root, base_ref=base, include_claimed=True)
 
 
 def push_gate_command(
@@ -87,7 +87,7 @@ def push_gate_command(
         return
     if run:
         try:
-            violations = run_brief_constraints(cwd, base_ref=base, brief=_brief_for_worktree(cwd))
+            violations = _constraint_violations(cwd, base)
         except (ChangedSetError, CommandFailedError, OSError) as exc:
             typer.echo(f"brief constraints could not be verified: {exc}", err=True)
             raise typer.Exit(code=1) from exc
