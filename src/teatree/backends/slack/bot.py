@@ -136,8 +136,20 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         self._app_token = app_token
         self._user_token = user_token
         self._user_id = user_id
+        # Pre-provisioned IM channel id (#1342). When a per-overlay bot is
+        # registered through ``t3 setup``, the setup-time provisioner calls
+        # ``conversations.open`` once and persists the resulting channel id
+        # in the DB ``overlays`` registry under the overlay's ``slack_dm_channel_id`` field.
+        # Threading it here short-circuits every subsequent ``open_dm(user_id)``
+        # for the configured user so DMs route through this bot's IM rather
+        # than failing ``channel_not_found`` (which previously caused silent
+        # fallback through whichever bot already had an IM with the user —
+        # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
+        # dm_only profile: refuse every outbound but the owner's own DM (enforced
+        # at the ``_channel_token`` / ``_route_token`` funnels and in ``_post``).
         self._owner_dm_only = owner_dm_only
+        # The owner IM ``conversations.open`` returned, so the guard accepts it where no DM channel id is configured.
         self._owner_im = ""
         self._operator_dms = OperatorDmRegistry()
         self._http = SlackHttpClient()
