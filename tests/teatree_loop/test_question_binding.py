@@ -3,7 +3,7 @@
 The owner's DM carries the whole pending backlog — 149 rows at the worst
 observed — so "the newest pending question on this channel" is the wrong answer
 almost every time. These pin the three rungs that replace it: the ``#<id>``
-prefix the backlog digest instructs and nothing used to parse, the reply's
+explicit question-id prefix, the reply's
 ``thread_ts``, and the sole-live-question fallback. With two candidates and
 neither an id nor a thread, nothing binds.
 
@@ -185,7 +185,7 @@ class TestExplicitIdPrefix:
 
         first.refresh_from_db()
         second.refresh_from_db()
-        assert first.answer_text == "use postgres-1", "the digest's own `#<id> <answer>` format did not bind"
+        assert first.answer_text == "use postgres-1", "the explicit `#<id> <answer>` format did not bind"
         assert second.is_pending
 
     def test_hash_id_binds_the_older_row_over_the_newer_one(self) -> None:
@@ -521,6 +521,32 @@ class TestReplyThreadedUnderANonQuestion:
 
 
 class TestTicketThreadReplyOrdering:
+    def test_top_level_reply_binds_the_only_root_ticket_card(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
+        question = _question("Which route?", slack_ts="100.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="100.0", question=question)
+        reply = _reply("Use the new route", slack_ts="130.0")
+
+        bound = bind_reply(reply, reader=_statement, backend=FakeMessaging())
+
+        assert isinstance(bound, BoundAnswer)
+        assert bound.question.pk == question.pk
+
+    def test_top_level_reply_with_root_card_and_sibling_refuses_to_guess(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
+        question = _question("Which route?", slack_ts="100.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="100.0", question=question)
+        sibling = DeferredQuestion.record(
+            "Which host?", session_id="other", slack_channel=_CHANNEL, slack_ts="110.0", card=_FREE_TEXT_CARD
+        )
+        reply = _reply("Use the new route", slack_ts="130.0")
+
+        assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None
+        assert question.is_pending
+        assert sibling.is_pending
+
     def test_card_as_latest_recorded_post_binds_thread_reply(self) -> None:
         ticket = Ticket.objects.create(overlay="")
         thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")

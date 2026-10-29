@@ -185,7 +185,7 @@ def notify_user_outcome(
     from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
         TicketDmRequest,
         deliver_ticket_dm,
-        record_ticket_thread_post,
+        record_ticket_thread_post_after_delivery,
     )
 
     if options.ticket_id is not None and not options.thread_ts:
@@ -197,7 +197,6 @@ def notify_user_outcome(
                 blocks=outgoing_blocks,
                 ticket_id=options.ticket_id,
                 deliver=_deliver_dm,
-                post_root=_post_ticket_root,
                 question_id=options.question_id,
                 fallback_thread_ts=options.fallback_thread_ts,
             )
@@ -225,10 +224,14 @@ def notify_user_outcome(
         )
         finalize_failed(idempotency_key=idempotency_key, error=failure)
         return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
+    _deliver_speech_sidecar(resolved_backend, channel=channel, text=outgoing_text, posted_ts=posted_ts)
     if options.thread_ts:
-        record_ticket_thread_post(channel, options.thread_ts, posted_ts)
-    # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
-    # only returns no failure when both are set, so no defensive re-check.
+        record_ticket_thread_post_after_delivery(
+            channel=channel,
+            thread_ts=options.thread_ts,
+            posted_ts=posted_ts,
+            idempotency_key=idempotency_key,
+        )
     try:
         permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
     except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
@@ -350,10 +353,6 @@ def _preflight_result(
     return None
 
 
-def _post_ticket_root(backend: MessagingBackend, channel: str, text: str) -> RawAPIDict:
-    return backend.post_message(channel=channel, text=text, thread_ts="")
-
-
 def _deliver_dm(
     backend: MessagingBackend,
     *,
@@ -392,13 +391,9 @@ def _deliver_dm(
 
     The fix: use ``backend.post_message`` (``chat.postMessage``) for the
     canonical text delivery — it always returns ``{"ok": true, "ts": "…"}``
-    — and fire the speak side-effects (audio attachment + local playback)
-    independently via ``deliver_user_dm_sidecar`` so the DM and its audio
-    enrichment are independent concerns. A failure on the speak side never
-    suppresses the text delivery.
+    — and let ``notify_user_outcome`` run ``deliver_user_dm_sidecar`` after
+    the delivery transaction closes. A speak failure never suppresses the text.
     """
-    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
     # A preview (`t3 loops tick --loop followup --dry-run`) installs a suppressor and must
     # not DM the owner either — a run that "posts nothing" still pinging them is a lie. The
     # action name pairs with `teatree.loop.followup_dry_run._OWNER_DM_ACTION`, which classes
@@ -434,20 +429,18 @@ def _deliver_dm(
         detail = f"Slack post failed: {slack_error}" if slack_error else "Slack post returned no message ts"
         return channel, posted_ts, detail
 
-    # Delivery is CONFIRMED (``ok:true`` + a real ``ts``): only NOW run the
-    # speak side-effects, threading the audio under the just-delivered message
-    # (``thread_ts=posted_ts``) with an EMPTY ``initial_comment`` so the text
-    # lands exactly ONCE (F4.4). Firing the sidecar before this check
-    # double-delivered the text — the ``post_message`` body plus the audio DM's
-    # identical ``initial_comment`` — and, on an ``ok:false`` post, attached
-    # audio to a DM that never landed; the FAILED finalize then drove a retry
-    # that re-attached, tripling the audio. The sidecar is best-effort and must
-    # never undo a DM that has already landed.
+    return channel, posted_ts, ""
+
+
+def _deliver_speech_sidecar(backend: MessagingBackend, *, channel: str, text: str, posted_ts: str) -> None:
+    if channel == "dry-run":
+        return
+    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
     try:
         deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
     except Exception as exc:  # noqa: BLE001 — sidecar is best-effort; a delivered DM must never be undone by it
         logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
-    return channel, posted_ts, ""
 
 
 def _route_through_send_proxy(text: str, *, destination: str) -> None:

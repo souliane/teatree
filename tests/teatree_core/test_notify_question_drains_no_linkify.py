@@ -1,4 +1,4 @@
-"""A card, a bump and the digest are sent as written: the link rewriter never touches an owner question (#4990)."""
+"""Cards and bumps are sent as written; the link rewriter never touches an owner question (#4990)."""
 
 import datetime as dt
 from contextlib import AbstractContextManager
@@ -9,11 +9,7 @@ from django.utils import timezone
 
 from teatree.core import notify as notify_module
 from teatree.core.models import DeferredQuestion
-from teatree.core.notify_question_drains import (
-    drain_unmirrored_deferred_questions,
-    reask_escalated_questions,
-    resurface_question_backlog,
-)
+from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
 from teatree.core.owner_question_message import render_text
 from tests._owner_channel import OWNER_DECISION
 
@@ -65,12 +61,3 @@ class TestNoSendIsRewritten(TestCase):
             reask_escalated_questions(user_id=_OWNER, backend=backend)
 
         assert _posted(backend).startswith(f"<@{_OWNER}> Still waiting for your decision")
-
-    def test_the_digest_is_not_rewritten(self) -> None:
-        self._three_hour_old_mirrored_row()
-        backend = _backend()
-
-        with _rewriter(), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            resurface_question_backlog(user_id=_OWNER, backend=backend)
-
-        assert _REWRITTEN not in _posted(backend)
