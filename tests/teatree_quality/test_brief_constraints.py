@@ -32,6 +32,11 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_conditional_migration_allowance_is_not_an_absolute_constraint() -> None:
+    constraints = extract_constraints("No new setting and no migration unless a member's own issue requires one.")
+    assert {item.kind for item in constraints} == {"no_setting"}
+
+
 def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
     text = (
         'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'
