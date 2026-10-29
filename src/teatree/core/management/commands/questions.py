@@ -34,6 +34,7 @@ from django.utils import timezone
 from django_typer.management import command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
+from teatree.core.answering.question_coordinator import coordinate_answer
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import (
@@ -48,7 +49,6 @@ from teatree.core.models.question_actions import dismiss_kept_for_owner
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
-from teatree.core.question_coordinator import coordinate_answer
 from teatree.core.table_output import print_table
 from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 

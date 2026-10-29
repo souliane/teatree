@@ -128,8 +128,11 @@ class TestQuestionCoordinator(TestCase):
         pending = DeferredQuestion.record("Should we adopt the new dependency?", card=owner_card())
 
         with (
-            patch("teatree.core.question_coordinator.matching_owner_basis", side_effect=DatabaseError("offline")),
-            self.assertLogs("teatree.core.question_coordinator", "WARNING") as captured,
+            patch(
+                "teatree.core.answering.question_coordinator.matching_owner_basis",
+                side_effect=DatabaseError("offline"),
+            ),
+            self.assertLogs("teatree.core.answering.question_coordinator", "WARNING") as captured,
         ):
             _mirrored, total = drain_unmirrored_deferred_questions()
 

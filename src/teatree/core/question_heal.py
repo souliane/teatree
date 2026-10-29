@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core.answering.question_coordinator import coordinate_pending
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import phase_wedges_healed
 from teatree.core.provision.failure_question import provision_failures_healed
-from teatree.core.question_coordinator import coordinate_pending
 
 if TYPE_CHECKING:
     from teatree.core.models.session import Session

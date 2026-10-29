@@ -25,6 +25,13 @@ _SENDER_LOCK = threading.Lock()
 _SENDERS: WeakKeyDictionary[live_mailbox.LiveMailboxBroker, tuple[MailboxIdentity, set[str]]] = WeakKeyDictionary()
 
 
+def reset_card_discussion_senders() -> None:
+    with _SENDER_LOCK:
+        for broker, (identity, _keys) in list(_SENDERS.items()):
+            broker.unregister(identity.address)
+        _SENDERS.clear()
+
+
 def _router_sender(broker: live_mailbox.LiveMailboxBroker, key: str) -> MailboxIdentity:
     state = _SENDERS.get(broker)
     if (

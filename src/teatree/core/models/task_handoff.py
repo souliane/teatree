@@ -154,7 +154,8 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     if existing is not None:
         return existing
     discussion = task.child_tasks.filter(
-        status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
+        status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+        execution_reason__startswith=CARD_DISCUSSION_PREFIX,
     ).first()
     if discussion is not None:
         discussion.execution_reason = (

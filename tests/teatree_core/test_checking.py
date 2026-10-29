@@ -29,7 +29,7 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -462,13 +462,13 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert [item.detail for item in report.needs_you.items] == ["waiting 3h"]
 
     def test_kept_decisions_are_owner_only(self) -> None:
-        for decision in OwnerDecision:
+        for decision in OWNER_RAISABLE_DECISIONS:
             DeferredQuestion.record("May I proceed?", card=owner_card(decision))
 
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, cap=10)
 
         assert {item.kind for item in report.needs_you.items} == {"question"}
-        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False, False]
+        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False]
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)

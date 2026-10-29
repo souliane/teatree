@@ -319,6 +319,19 @@ class TestResumeNeedsAPlan(TestCase):
 
 
 class TestCardDiscussionContinuation(TestCase):
+    def test_claimed_discussion_blocks_a_second_resume_child(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        discussion = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        discussion.status = Task.Status.CLAIMED
+        discussion.save(update_fields=["status"])
+
+        resumed = schedule_resume(parked, answer="Approve", question="Change the rule?")
+
+        assert resumed.pk == discussion.pk
+        assert parked.child_tasks.count() == 1
+        assert "Approve" in Task.objects.get(pk=discussion.pk).execution_reason
+
     def test_multiple_messages_and_later_answer_reach_one_pending_child(self) -> None:
         ticket = planned_ticket()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")

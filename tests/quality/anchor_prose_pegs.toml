@@ -17,7 +17,7 @@
 
 ["A headless orchestrator may answer"]
 radius = 180
-"BLUEPRINT.md" = ["6aba7561c3100e20"]
+"BLUEPRINT.md" = ["7edd1e39f0b3ea19"]
 
 ["A headless orchestrator may answer".coverage]
 "BLUEPRINT.md" = 394
