@@ -19,6 +19,7 @@ from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.modelkit.coordinator_action import CoordinatorActionKind, action_refusal
 from teatree.core.models import Task, ThreadBinding, Ticket
 from teatree.url_classify import find_forge_refs
+from teatree.utils.url_slug import is_slack_conversation_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def _owner_message(conversation: Ticket) -> str:
 
 def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
     conversation = task.ticket
-    if not conversation.is_conversation():
+    if not is_slack_conversation_anchor(conversation.issue_url):
         message = "the task's ticket is not a Slack conversation"
         raise ActionRefusedError(message)
     named = str(arguments.get("ticket") or "")

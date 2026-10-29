@@ -14,7 +14,7 @@ from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_slack_conversation_anchor, is_synthetic_loop_umbrella_url, pr_ref_from_url
+from teatree.utils.url_slug import is_conversation_anchor, is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
     from django.db.models import Manager
@@ -182,8 +182,8 @@ class TicketIntrospectionModel(TicketFacet):
         return bool(self.short_description) and not self.remote_missing
 
     def is_conversation(self) -> bool:
-        """Whether this is a Slack lane's bookkeeping row rather than a tracked work item (#5685)."""
-        return is_slack_conversation_anchor(self.issue_url)
+        """Whether this is a conversation's bookkeeping row rather than a tracked work item (#5685)."""
+        return is_conversation_anchor(self.issue_url)
 
     def owes_no_work(self) -> bool:
         """Whether this conversation row was opened by a message recorded as asking for nothing to be built."""

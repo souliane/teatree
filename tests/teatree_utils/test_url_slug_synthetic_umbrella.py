@@ -9,6 +9,8 @@ skip these FSM-owned tasks regardless of their phase.
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.utils.url_slug import (
     SYNTHETIC_LOOP_UMBRELLA_URL,
+    conversation_anchor,
+    is_conversation_anchor,
     is_synthetic_loop_umbrella_url,
     slack_conversation_anchor,
 )
@@ -60,3 +62,24 @@ class TestSlackConversationAnchor:
         anchor = slack_conversation_anchor(channel="D-owner", slack_ts="1730000000.123456")
 
         assert derive_issue_number(anchor) != "123456"
+
+
+class TestConversationAnchor:
+    def test_a_qualified_kind_and_key_distinguish_non_slack_conversations(self) -> None:
+        anchor = conversation_anchor(kind="mailbox", key="agent/a#question/1")
+
+        assert anchor == f"{SYNTHETIC_LOOP_UMBRELLA_URL}#conversation=mailbox/agent%2Fa%23question%2F1/conversation"
+        assert is_conversation_anchor(anchor)
+        assert anchor != conversation_anchor(kind="event", key="agent/a#question/1")
+        assert anchor != conversation_anchor(kind="mailbox", key="agent/a#question/2")
+        assert derive_issue_number(anchor) != "1"
+
+    def test_existing_slack_anchor_stays_recognised(self) -> None:
+        anchor = slack_conversation_anchor(channel="D-owner", slack_ts="1.0")
+
+        assert is_conversation_anchor(anchor)
+        assert conversation_anchor(kind="slack", key="D-owner/1.0") == anchor
+
+    def test_other_synthetic_fragments_are_not_conversations(self) -> None:
+        assert not is_conversation_anchor(f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=5")
+        assert not is_conversation_anchor(f"{SYNTHETIC_LOOP_UMBRELLA_URL}#conversation=mailbox/")

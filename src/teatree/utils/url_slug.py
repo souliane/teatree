@@ -9,7 +9,7 @@ the project path, so it lives in :mod:`teatree.utils` where both
 """
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from teatree.utils.pr_ref import PrRef
 
@@ -23,6 +23,7 @@ from teatree.utils.pr_ref import PrRef
 SYNTHETIC_LOOP_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
 
 _SLACK_CONVERSATION_ANCHOR_PREFIX = f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack="
+_CONVERSATION_ANCHOR_PREFIX = f"{SYNTHETIC_LOOP_UMBRELLA_URL}#conversation="
 
 
 def is_synthetic_loop_umbrella_url(issue_url: str) -> bool:
@@ -39,6 +40,32 @@ def slack_conversation_anchor(*, channel: str, slack_ts: str) -> str:
     would stamp the Slack timestamp as a forge issue number.
     """
     return f"{_SLACK_CONVERSATION_ANCHOR_PREFIX}{channel}/{slack_ts}/dm"
+
+
+def conversation_anchor(*, kind: str, key: str) -> str:
+    if not kind or not key:
+        msg = "conversation kind and key must be nonempty"
+        raise ValueError(msg)
+    if kind == "slack":
+        channel, separator, slack_ts = key.partition("/")
+        if not separator or not channel or not slack_ts or "/" in slack_ts:
+            msg = "Slack conversation keys must be channel/timestamp"
+            raise ValueError(msg)
+        return slack_conversation_anchor(channel=channel, slack_ts=slack_ts)
+    return f"{_CONVERSATION_ANCHOR_PREFIX}{quote(kind, safe='')}/{quote(key, safe='')}/conversation"
+
+
+def is_conversation_anchor(issue_url: str) -> bool:
+    if is_slack_conversation_anchor(issue_url):
+        return True
+    if not issue_url.startswith(_CONVERSATION_ANCHOR_PREFIX):
+        return False
+    parts = issue_url.removeprefix(_CONVERSATION_ANCHOR_PREFIX).split("/")
+    match parts:
+        case [kind, key, "conversation"]:
+            return bool(kind and key)
+        case _:
+            return False
 
 
 def is_slack_conversation_anchor(issue_url: str) -> bool:

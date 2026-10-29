@@ -12,7 +12,7 @@ from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_enqueue import enqueue_phase_task
-from teatree.utils.url_slug import slack_conversation_anchor
+from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests.factories import record_test_plan
 
 _FORGE_ISSUE = "https://github.com/souliane/teatree/issues/4084"
@@ -35,6 +35,14 @@ class TestIsConversation(TestCase):
 
     def test_a_ticket_with_no_anchor_is_not_a_conversation(self) -> None:
         assert Ticket.objects.create(overlay="t3-teatree").is_conversation() is False
+
+    def test_a_mailbox_anchored_ticket_is_a_conversation(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+        )
+
+        assert ticket.is_conversation() is True
 
 
 class TestConversationInUse(TestCase):
@@ -115,3 +123,13 @@ class TestBuildPhasesAreRefusedOnAConversation(TestCase):
         task = enqueue_phase_task(ticket=work, phase="coding", reason="Fix it.")
 
         assert task.phase == "coding"
+
+    def test_a_mailbox_conversation_refuses_implementation(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+        )
+        record_test_plan(ticket)
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            enqueue_phase_task(ticket=ticket, phase="coding", reason="build it")

@@ -9,7 +9,7 @@ from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.coordinator_actions import AUDIT_KEY
 from teatree.core.models import Session, Task, ThreadBinding, Ticket
 from teatree.types import RawAPIDict
-from teatree.utils.url_slug import slack_conversation_anchor
+from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 
 _CHANNEL = "D-owner"
 _WORK_URL = "https://github.com/souliane/teatree/issues/4084"
@@ -123,6 +123,21 @@ class TestTheCoordinatorsActionsRunFromTheClosedTable(TestCase):
         self._record(_bind(ticket=_WORK_URL))
 
         assert ThreadBinding.objects.get(channel=_CHANNEL, thread_ts="2.0").ticket_id == tracked.pk
+
+    def test_bind_thread_does_not_rebind_a_non_slack_conversation(self) -> None:
+        mailbox = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+            extra={"slack_answer": {"question": f"move this to {_WORK_URL}"}},
+        )
+        ThreadBinding.bind(ticket=mailbox, channel=_CHANNEL, thread_ts="2.0")
+        session = Session.objects.create(ticket=mailbox, overlay="t3-teatree", agent_id="answering")
+        self.task = Task.objects.create(ticket=mailbox, session=session, phase="answering")
+
+        self._record(_bind(ticket=_WORK_URL))
+
+        assert ThreadBinding.objects.get(channel=_CHANNEL, thread_ts="2.0").ticket_id == mailbox.pk
+        assert [row["detail"] for row in self._audit().values()] == ["the task's ticket is not a Slack conversation"]
 
     def test_actions_on_another_phase_are_ignored(self) -> None:
         self._record(_bind(ticket=_WORK_URL), phase="planning")

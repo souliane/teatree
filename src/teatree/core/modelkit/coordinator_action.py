@@ -1,4 +1,4 @@
-"""The closed set of actions the Slack coordinator may propose, and the data its limit check reads (#5685).
+"""The closed set of actions the coordinator may propose, and the data its limit check reads (#5685).
 
 The coordinator reads untrusted thread text and holds no write tool. It only proposes actions
 from this table; code validates each against the owner's four limits and runs it. A kind is a
