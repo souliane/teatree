@@ -45,6 +45,7 @@ _AUDITED = frozenset(
         "direct_command",
         "dispatch_admission",
         "foreign_branch_push",
+        "foreign_mcp",
         "general_purpose_agent_gate",
         "git_add_all",
         "glab_stale_base_remote",

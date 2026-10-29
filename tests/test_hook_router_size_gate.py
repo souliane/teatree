@@ -58,7 +58,7 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # per-agent consolidation registry.
 # Lowered by #5116: the SessionStart MCP notice retired, the self-DM gate and the src bootstrap moved out.
 # Lowered by #5240: the MR-metadata handler and its verdict moved into the mr_validator sibling.
-_CEILING_LOC = 2333
+_CEILING_LOC = 2268
 
 
 def _count_loc(text: str) -> int:
