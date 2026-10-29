@@ -75,6 +75,9 @@ AGENT_BY_KIND: dict[str, str] = {
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
+    "checkout_park.rearmed": "in_flight",
+    "dead_worktree_rows.released": "in_flight",
+    "task.premise_changed": "in_flight",
     "architectural_review.queued": "in_flight",
     "architectural_review.held": "action_needed",
     "eval_local.held": "in_flight",

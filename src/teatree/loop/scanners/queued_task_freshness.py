@@ -152,7 +152,9 @@ class QueuedTaskFreshnessScanner:
                 note = f"premise changed after claim: {reason}"
                 task.ticket.append_context(f"Queued task {task.pk} {note}")
                 return note
-            TaskAttempt.objects.create(task=locked, ended_at=timezone.now(), exit_code=1, error=cause)
+            TaskAttempt.objects.create(
+                task=locked, ended_at=timezone.now(), exit_code=1, error=cause
+            )  # no-usage: task never ran
             locked.fail(reason=cause, by_holder=False)
         task.ticket.append_context(f"Queued task {task.pk} superseded: {reason}")
         return cause
