@@ -17,7 +17,17 @@ _HARNESS = re.compile(
 )
 _ATTENDED = re.compile(
     r"(?i)(?<![a-z0-9])(?:un)?attended(?=$|[^a-z0-9])|"
-    r"(?<!non-)(?<![a-z0-9])interactive(?=$|[^a-z0-9])"
+    r"(?<!non-)(?<![a-z0-9_])interactive(?=$|[^a-z0-9_])"
+)
+_HARNESS_HOOKS = frozenset(
+    {
+        "hooks/codex.json",
+        "hooks/hooks.json",
+        "hooks/scripts/codex_hook_adapter.py",
+        "hooks/scripts/hook_router.py",
+        "hooks/scripts/session_lane.py",
+        "hooks/scripts/statusline.sh",
+    }
 )
 _ATTENDED_HOOKS = frozenset(
     {
@@ -41,7 +51,7 @@ def _count_references(path: str, text: str) -> dict[str, int]:
     interactive_home = path.startswith("skills/interactive/") or path == "skills/rules/RULES.md"
     harness_home = (
         interactive_home
-        or path.startswith("hooks/")
+        or path in _HARNESS_HOOKS
         or (path.startswith(("src/teatree/agents/claude_", "src/teatree/agents/codex_")) and path.endswith(".py"))
     )
     attended_home = interactive_home or path in _ATTENDED_HOOKS
@@ -98,10 +108,27 @@ def test_reference_vocabulary_counts(source: str, family: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "source", ["claude-sonnet-4-5", "claude-opus-4", "claude-haiku-4", "CLAUDE.md", "non-interactive", "codexology"]
+    "source",
+    [
+        "claude-sonnet-4-5",
+        "claude-opus-4",
+        "claude-haiku-4",
+        "CLAUDE.md",
+        "non-interactive",
+        "interactive_bash",
+        "codexology",
+    ],
 )
 def test_model_and_document_vocabulary_is_spared(source: str) -> None:
     assert _count_references("src/teatree/core/example.py", source) == {"harness": 0, "attended": 0}
+
+
+def test_generic_hook_does_not_exempt_harness_reference() -> None:
+    assert _count_references("hooks/scripts/managed_repo.py", "Claude Code")["harness"] == 1
+
+
+def test_coordinating_skill_does_not_exempt_attended_reference() -> None:
+    assert _count_references("skills/coordinating/SKILL.md", "attended")["attended"] == 1
 
 
 @pytest.mark.parametrize(
@@ -151,4 +178,8 @@ def test_no_reference_grows_outside_its_home() -> None:
     counts = _scan_references(_ROOT, minimum_files=2000)
     for family in ("harness", "attended"):
         drift = diff_pegs(counts[family], load_pegs(family, toml_path=_PEGS))
-        assert drift.over_peg == (), f"{family}: move or reword new references outside their home: {drift.over_peg}"
+        assert drift.over_peg == (), (
+            f"{family}: move or reword new references outside their home: {drift.over_peg}. "
+            "After a file rename, move its ledger entry to the new path without raising the count; "
+            "after rebasing onto main, rebuild the ledger against that base."
+        )

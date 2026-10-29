@@ -243,6 +243,23 @@
 [harness]
 "dev/Dockerfile.test" = 3
 "dev/ro_executor_proof.py" = 10
+"hooks/CLAUDE.md" = 13
+"hooks/scripts/additional_context.py" = 1
+"hooks/scripts/classifier_relax_gate.py" = 5
+"hooks/scripts/dispatch_ledger.py" = 1
+"hooks/scripts/engagement.py" = 1
+"hooks/scripts/foreign_branch_push_gate.py" = 3
+"hooks/scripts/git_add_all_guard.py" = 1
+"hooks/scripts/handlers/classifier_denial.py" = 1
+"hooks/scripts/managed_repo.py" = 1
+"hooks/scripts/orchestrator_delegation_gate.py" = 2
+"hooks/scripts/owner_question_gate.py" = 5
+"hooks/scripts/owner_turn_context.py" = 1
+"hooks/scripts/pretooluse_verdict.py" = 2
+"hooks/scripts/question_gates.py" = 1
+"hooks/scripts/session_start_hook_budget.py" = 1
+"hooks/scripts/skill_loader_input.py" = 1
+"hooks/scripts/standing_directives_delivery.py" = 1
 "scripts/eval/corpus_gen/catalog.py" = 5
 "scripts/eval/select_oauth.py" = 6
 "scripts/hooks/check_version_sync.py" = 2
