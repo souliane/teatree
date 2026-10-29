@@ -266,6 +266,7 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
             normalize_phase(phase) == "planning"
             and ticket.state not in Ticket.merged_states()
             and not ticket.tasks.filter(pk__gt=task.pk).exists()
+            and not ticket.tasks.exclude(pk=task.pk).filter(status__in=task.Status.active()).exists()
             and not task.recorded_by_hand()
         ):
             _queue_planned_work_or_refuse(task, ticket)
