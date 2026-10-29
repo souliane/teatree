@@ -15,8 +15,9 @@ from django.db import transaction
 
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import QuestionCard
+from teatree.core.models.conversation_ticket import refuse_conversation_mint
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
@@ -74,7 +75,7 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
         return None
     try:
         return schedule_resume(task, answer=row.answer_text, question=row.question)
-    except NoPlanArtifactError:
+    except TaskMintRefusedError:
         logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
         return None
 
@@ -149,6 +150,7 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     if existing is not None:
         return existing
     refuse_unplanned_mint(task.ticket, phase=task.phase)
+    refuse_conversation_mint(task.ticket, phase=task.phase)
     last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
     session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")

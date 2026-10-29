@@ -68,6 +68,8 @@ class TestStatusFacetCohesionSplit:
             "has_shippable_diff",
             "artifacts",
             "is_admissible",
+            "is_conversation",
+            "conversation_in_use",
             "recorded_request",
             "work_placed_elsewhere",
         }

@@ -22,6 +22,8 @@ from teatree.utils.pr_ref import PrRef
 #: task sweep must never complete a task anchored here (souliane/teatree#3706).
 SYNTHETIC_LOOP_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
 
+_SLACK_CONVERSATION_ANCHOR_PREFIX = f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack="
+
 
 def is_synthetic_loop_umbrella_url(issue_url: str) -> bool:
     """Whether *issue_url* anchors on the synthetic-loop umbrella, with or without a fragment."""
@@ -36,7 +38,11 @@ def slack_conversation_anchor(*, channel: str, slack_ts: str) -> str:
     ``derive_issue_number`` reads trailing digits, so a fragment ending in the ts
     would stamp the Slack timestamp as a forge issue number.
     """
-    return f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack={channel}/{slack_ts}/dm"
+    return f"{_SLACK_CONVERSATION_ANCHOR_PREFIX}{channel}/{slack_ts}/dm"
+
+
+def is_slack_conversation_anchor(issue_url: str) -> bool:
+    return issue_url.startswith(_SLACK_CONVERSATION_ANCHOR_PREFIX)
 
 
 _GITHUB_RE = re.compile(r"^/(?P<slug>[^/]+/[^/]+)/(?:issues|pull|pulls)/\d+/?$")

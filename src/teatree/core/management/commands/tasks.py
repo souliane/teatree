@@ -25,7 +25,7 @@ from teatree.core.managers_admission import seated_pending_rows
 from teatree.core.managers_task_claim import claim_when_admitted
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
@@ -93,7 +93,7 @@ class Command(TyperCommand):
 
         try:
             task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body)
-        except (TaskEnqueueError, NoPlanArtifactError) as exc:
+        except (TaskEnqueueError, TaskMintRefusedError) as exc:
             self.stderr.write(str(exc))
             raise SystemExit(1) from None
         payload: dict[str, int | str] = {

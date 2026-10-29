@@ -53,6 +53,9 @@ def closed_issue_transitions(
     never saturate the box. Reviewer tickets are excluded: their ``issue_url`` IS a PR,
     which rules B/C own.
 
+    A Slack conversation row anchors on the loop umbrella, whose forge state says nothing about the
+    talk, so one with a live task or a recent thread is skipped before it can spend a probe.
+
     *already_moved* holds the rows an earlier rule moved in THIS run. Rule F runs last
     and reads live state, so without it a ticket rule E had just revived to WORK_STARTED —
     a pre-ship state — would be re-probed and could be retired in the same tick that
@@ -71,6 +74,7 @@ def closed_issue_transitions(
         .exclude(pk__in=already_moved)
         .order_by("-pk")
     )
+    candidates = [ticket for ticket in candidates if not ticket.conversation_in_use()]
     probed = candidates[: max(probe_budget, 0)]
     if len(probed) < len(candidates):
         logger.warning(

@@ -3,21 +3,26 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db.models import Max
+from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.core.forge_url import is_forge_url
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
+from teatree.utils.url_slug import is_slack_conversation_anchor, is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
+    from django.db.models import Manager
+
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
     from teatree.core.models.task import Task
     from teatree.core.models.task_attempt import TaskAttempt
+    from teatree.core.models.thread_binding import ThreadBinding
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
     from teatree.core.models.transition import TicketTransition
@@ -36,6 +41,7 @@ class TicketIntrospectionModel(TicketFacet):
         # cannot appear in a type expression.
         tasks: "TaskQuerySet"
         sessions: "SessionQuerySet"
+        slack_threads: "Manager[ThreadBinding]"
 
     class Meta:
         abstract = True
@@ -174,6 +180,22 @@ class TicketIntrospectionModel(TicketFacet):
         if not url or url.startswith("auto:") or is_synthetic_loop_umbrella_url(url):
             return False
         return bool(self.short_description) and not self.remote_missing
+
+    def is_conversation(self) -> bool:
+        """Whether this is a Slack lane's bookkeeping row rather than a tracked work item (#5685)."""
+        return is_slack_conversation_anchor(self.issue_url)
+
+    def conversation_in_use(self) -> bool:
+        """Whether a conversation row still has a live task or a recent thread, so no sweep may retire it."""
+        if not self.is_conversation():
+            return False
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        since = timezone.now() - CONVERSATION_QUIET_LIMIT
+        return (
+            self.tasks.filter(status__in=task_model.Status.active()).exists()
+            or self.tasks.filter(created_at__gte=since).exists()
+            or self.slack_threads.filter(created_at__gte=since).exists()
+        )
 
     def recorded_request(self) -> str:
         """All an unfindable row still holds — the request text, else its card label (#4527).

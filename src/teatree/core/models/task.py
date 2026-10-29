@@ -13,6 +13,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
+from teatree.core.models.conversation_ticket import refuse_conversation_mint
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
@@ -623,6 +624,7 @@ class Task(models.Model):
         phase on a ticket with no plan decision raises ``NoPlanArtifactError`` and spawns nothing.
         """
         refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
+        refuse_conversation_mint(self.ticket, phase=phase or self.phase)
         children = []
         for repo in repos:
             child = Task.objects.create(
