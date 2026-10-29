@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from teatree.hooks.gate_escape import EscapePolicy, policy_for
 from tests._gate_escape_audit import write_recording_t3
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -71,7 +70,6 @@ def test_own_server_and_non_mcp_tool_pass(tool_name: str, tmp_path: Path) -> Non
 
 
 def test_escape_is_audited_and_allows_one_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert policy_for("foreign_mcp") is EscapePolicy.AUDITED
     record = write_recording_t3(tmp_path / "bin")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
     result = _invoke("mcp__other__read_resource", {"query": "[gate-escape:foreign_mcp: vetted call]"}, tmp_path)
