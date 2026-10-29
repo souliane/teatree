@@ -98,6 +98,7 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
                 reason="Plan this ticket from its recorded context.",
                 agent_id="coordinator",
             )
+    queued.refresh_from_db()
     return f"Planning is queued as TODO-{queued.pk}."
 
 
