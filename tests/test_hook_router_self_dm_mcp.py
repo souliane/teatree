@@ -438,10 +438,16 @@ def _run_router(payload: dict, settings: dict[str, object], tmp_path: Path) -> s
 
 _LIFTS_THE_WRITE_GUARD: dict[str, tuple[dict[str, object], str]] = {
     "fail-open switch stored true": ({"danger_gate_fail_open": True}, "status"),
-    "write guard switched off": ({"mcp_slack_write_gate_enabled": False}, "status"),
+    "write guard switched off": (
+        {"mcp_slack_write_gate_enabled": False},
+        "status [gate-escape:foreign_mcp: vetted one-off]",
+    ),
     "per-action tokens an agent can add": (
         {},
-        "status [gate-escape:mcp_slack_write: vetted one-off] [gate-escape:self_dm: vetted one-off]",
+        (
+            "status [gate-escape:mcp_slack_write: vetted one-off] "
+            "[gate-escape:foreign_mcp: vetted one-off] [gate-escape:self_dm: vetted one-off]"
+        ),
     ),
 }
 

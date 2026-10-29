@@ -63,7 +63,7 @@
         ]
       },
       {
-        "matcher": "mcp__glab__glab_mr_.*",
+        "matcher": "mcp__(?!teatree__(?!.*__))(?!plugin_t3_teatree__(?!.*__)).*",
         "hooks": [
           {
             "type": "command",

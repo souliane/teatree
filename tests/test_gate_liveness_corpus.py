@@ -760,6 +760,14 @@ def _mcp_slack_write_allow(ctx: GateContext) -> dict:
     }
 
 
+def _foreign_mcp_deny(ctx: GateContext) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": "mcp__other__read_resource", "tool_input": {"query": "sample"}}
+
+
+def _foreign_mcp_allow(ctx: GateContext) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": "mcp__teatree__ticket_get", "tool_input": {"query": "sample"}}
+
+
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
 # the `Agent` PreToolUse matcher in hooks.json, the only interception point a
@@ -1448,6 +1456,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__slack__slack_send_message",
         deny_input=_mcp_slack_write_deny,
         allow_input=_mcp_slack_write_allow,
+    ),
+    GateRow(
+        gate_id="block-foreign-mcp",
+        handler=router.handle_block_foreign_mcp_tool,
+        event="PreToolUse",
+        matched="mcp__other__read_resource",
+        deny_input=_foreign_mcp_deny,
+        allow_input=_foreign_mcp_allow,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",
