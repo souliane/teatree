@@ -10,6 +10,71 @@ from teatree.core.models import CriticDispatch, PullRequest, ReviewVerdict, Tick
 
 
 class TestRecordedReviewArming(TestCase):
+    def test_pass_beside_standing_hold_does_not_arm(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo="souliane/teatree",
+            iid="5689",
+            url="https://github.com/souliane/teatree/pull/5689",
+        )
+        ReviewVerdict.record(
+            pr_id=5689,
+            slug="souliane/teatree",
+            reviewed_sha="a" * 40,
+            verdict="hold",
+            reviewer_identity="reviewer-agent-1",
+            ticket=ticket,
+        )
+        passed = ReviewVerdict.record(
+            pr_id=5689,
+            slug="souliane/teatree",
+            reviewed_sha="a" * 40,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-agent-2",
+            ticket=ticket,
+        )
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            arm_for_recorded_review(passed)
+        assert not CriticDispatch.objects.filter(ticket=ticket, transition="merge", head_sha="a" * 40).exists()
+
+    def test_unverified_record_beside_pass_does_not_arm(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo="souliane/teatree",
+            iid="5689",
+            url="https://github.com/souliane/teatree/pull/5689",
+        )
+        ReviewVerdict.record(
+            pr_id=5689,
+            slug="souliane/teatree",
+            reviewed_sha="a" * 40,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-agent-1",
+            ticket=ticket,
+        )
+        unverified = ReviewVerdict.record(
+            pr_id=5689,
+            slug="souliane/teatree",
+            reviewed_sha="a" * 40,
+            verdict="unverified",
+            reviewer_identity="reviewer-agent-2",
+            evidence_gaps=["ci_unreadable"],
+            ticket=ticket,
+        )
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            arm_for_recorded_review(unverified)
+        assert not CriticDispatch.objects.filter(ticket=ticket, transition="merge", head_sha="a" * 40).exists()
+
     def test_pass_arms_once_and_hold_arms_none(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         for pr_id in (5689, 5690):

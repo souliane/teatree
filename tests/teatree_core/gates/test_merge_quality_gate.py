@@ -19,12 +19,14 @@ critic, so the gate is satisfiable.
 
 import contextlib
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.merge_quality_gate import (
@@ -315,6 +317,38 @@ class TestVerdictGate(TestCase):
             assert claim.task is not None
             claim.task.status = Task.Status.FAILED
             claim.task.save(update_fields=["status"])
+            with pytest.raises(MergeQualityVerdictError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_expired_claim_refuses_even_while_critic_task_is_queued(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=True),
+        ):
+            with pytest.raises(MergeAwaitingCriticError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+            assert claim.task is not None
+            assert claim.task.status in Task.Status.active()
+            claim.deadline = timezone.now() - timedelta(seconds=1)
+            claim.save(update_fields=["deadline"])
+            with pytest.raises(MergeQualityVerdictError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_resolved_claim_refuses_even_while_critic_task_is_queued(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=True),
+        ):
+            with pytest.raises(MergeAwaitingCriticError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+            assert claim.task is not None
+            assert claim.task.status in Task.Status.active()
+            claim.state = CriticDispatch.State.RESOLVED
+            claim.save(update_fields=["state"])
             with pytest.raises(MergeQualityVerdictError):
                 check_merge_quality_verdict(ticket, _FORTY_HEX)
 
