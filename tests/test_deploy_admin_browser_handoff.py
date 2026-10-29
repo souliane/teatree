@@ -64,6 +64,11 @@ class TestAnUnreachableUrlIsRefused:
         assert "curl" in hop
         assert "refuse_unreachable_admin" in hop
 
+    def test_reachability_probe_does_not_consume_single_use_login_link(self, wrapper: str) -> None:
+        hop = _body(wrapper, "dispatch_then_open_browser()")
+        assert 'curl --silent --output /dev/null --max-time 15 "$probe_url"' in hop
+        assert 'probe_url="${url%%/login/local/*}/admin/login/"' in hop
+
     def test_the_refusal_names_what_to_check(self, wrapper: str) -> None:
         refusal = _body(wrapper, "refuse_unreachable_admin()")
         assert "teatree-admin-forward" in refusal

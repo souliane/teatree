@@ -53,6 +53,14 @@ class OperatorOAuthTestCase(TestCase):
         assert response.status_code == 503
         assert b"operator_oauth_apps" in response.content
 
+    def test_non_ascii_state_is_refused_without_server_error(self) -> None:
+        self.client.get("/login/oauth/github/start/")
+
+        response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": "é"})
+
+        assert response.status_code == 403
+        assert not OperatorGrant.objects.exists()
+
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_oauth.httpx.post")
     def test_token_exchange_without_refresh_grant_reports_relogin_action(self, post: Mock, secret: Mock) -> None:

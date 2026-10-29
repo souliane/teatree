@@ -174,6 +174,7 @@ def _consume_pending(request: "HttpRequest", forge: str) -> _PendingLogin | None
     fresh = (
         pending.get("forge") == forge
         and state
+        and state.isascii()
         and hmac.compare_digest(state, str(pending.get("state", "")))
         and time.time() <= float(pending.get("expires", 0))
         and pending.get("initiator", "") == initiator

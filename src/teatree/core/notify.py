@@ -1,32 +1,4 @@
-"""Bot→user Slack notification helper (#963).
-
-The user does not read the Claude CLI: answers, questions, and important
-info the agent surfaces inside a CLI turn are invisible to them. This
-helper is the single, always-on egress for those directions — post as the
-**bot** to the user's DM so the
-message arrives in Slack outside the active session. It owns the whole
-path: BotPing audit + messaging backend lookup + Slack post.
-
-Living in ``teatree.core`` keeps the dependency direction one-way — the
-core modules that fire a bot→user DM (:mod:`teatree.core.on_behalf_gate_recorded`
-under the AUTO_DRAFT verdict #960, and :mod:`teatree.core.on_behalf_post_receipt`
-for the after-receipt visibility DM, the always-on receipt
-``UserSettings`` field #949) import it as a core sibling with no cycle.
-
-
-Out of scope of the on-behalf concerns (the posture gate,
-#949): those govern posts the agent makes
-*as the user* to a colleague/customer surface. ``notify_user`` itself is
-the **bot** talking to the ticket requester or owner — a different concern with a
-different doctrine.
-
-:func:`notify_user_outcome` is the egress; it returns a :class:`NotifyOutcome`
-naming the :class:`NotifyReason` for every non-delivery, because a silent
-notification failure is worse than a loud one — nobody is watching the CLI turn,
-which is the entire premise of this module, so an unexplained ``False`` reaches
-no one. :func:`notify_user` is the boolean face of it for call sites that only
-branch on delivered-or-not. Both are no-op-safe and never raise into the CLI turn.
-"""
+"""Bot-to-operator Slack notification egress with explicit delivery outcomes."""
 
 import logging
 import os

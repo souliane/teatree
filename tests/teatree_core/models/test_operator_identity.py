@@ -1,6 +1,7 @@
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError, transaction
+from django.forms import modelform_factory
 from django.test import TestCase
 
 from teatree.core.models import OperatorIdentity, Ticket
@@ -11,6 +12,14 @@ _FORCE_UPDATE_POSITIONALLY = (False, True)
 
 
 class OperatorIdentityTestCase(TestCase):
+    def test_unsupported_platform_is_form_error(self) -> None:
+        form = modelform_factory(OperatorIdentity, fields=("platform", "handle"))(
+            data={"platform": "unknown", "handle": "alice"}
+        )
+
+        assert not form.is_valid()
+        assert "platform" in form.errors
+
     def test_forge_handles_are_casefolded_but_slack_ids_keep_case(self) -> None:
         assert identity_key("github", "ALIce") == "github:alice"
         assert identity_key("gitlab", "BoB") == "gitlab:bob"

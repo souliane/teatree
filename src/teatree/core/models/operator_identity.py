@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import ClassVar, override
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -57,6 +58,12 @@ class OperatorIdentity(models.Model):
     ) -> None:
         self.platform, self.handle = identity_key(self.platform, self.handle).split(":", 1)
         super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields)
+
+    def clean(self) -> None:
+        try:
+            identity_key(self.platform, self.handle)
+        except ValueError as exc:
+            raise ValidationError({"platform": str(exc)}) from exc
 
     @property
     def key(self) -> str:
