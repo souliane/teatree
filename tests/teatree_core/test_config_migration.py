@@ -54,6 +54,9 @@ class TestExportDbToToml(TestCase):
     -> ``[overlays.<name>]``, each stored value rendered as its native TOML scalar.
     """
 
+    def setUp(self) -> None:
+        seed_default_loops_and_prompts()
+
     def test_global_rows_render_under_teatree_table(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
