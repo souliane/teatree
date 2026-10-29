@@ -30,6 +30,7 @@ from teatree.core.config_interchange.secret_guard import (
 )
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.placeholder_terms import TEST_TERM_REGISTRY
 
 _LEAK = TEST_TERM_REGISTRY["leak"][0]
@@ -564,6 +565,7 @@ class _SeedRowsTestCase(TestCase):
     """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
 
     def setUp(self) -> None:
+        seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
 
 

@@ -126,6 +126,13 @@ class SeedResult:
     prompts_created: int
 
 
+DM_SWEEP_PREVIOUS_DESCRIPTION = (
+    "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner "
+    "already replied, subject merged/closed, duplicate of an open thread); leaves anything "
+    "older than a day for the resurfacing side, and says nothing when it resolved nothing."
+)
+
+
 def seed_default_loops_and_prompts() -> SeedResult:
     """Idempotently seed the default loops + prompts; return the create counts.
 
@@ -145,7 +152,9 @@ def seed_default_loops_and_prompts() -> SeedResult:
     ``description`` on a fresh row; an earlier install's row predates the field and
     carries a blank one, so the seed also backfills any blank ``description`` from
     the spec. The backfill filters on ``description=""``, so it is idempotent and
-    never clobbers a description an operator rewrote.
+    never clobbers a description an operator rewrote. The shipped dm_sweep
+    wording is also reconciled from its previous value because that value
+    described a case the sweep no longer closes.
 
     ``colleague_facing`` is admin-editable, so the seed leaves it alone; a row that
     disagrees with the shipped table is surfaced by
@@ -178,4 +187,8 @@ def seed_default_loops_and_prompts() -> SeedResult:
         _, made = Loop.objects.get_or_create(name=spec.name, defaults=defaults)
         loops_created += int(made)
         Loop.objects.filter(name=spec.name, description="").update(description=spec.description)
+        if spec.name == "dm_sweep":
+            Loop.objects.filter(name=spec.name, description=DM_SWEEP_PREVIOUS_DESCRIPTION).update(
+                description=spec.description
+            )
     return SeedResult(loops_created=loops_created, prompts_created=prompts_created)
