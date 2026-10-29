@@ -25,6 +25,7 @@ def eligible_for_coordination(row: DeferredQuestion) -> bool:
         and card.decision == OwnerDecision.ARCHITECTURE
         and not is_action_question(row)
         and not card.problems(row.question)
+        and not card.names_rules_file(row.question)
         and finished_subject_reason(row) is None
     )
 
@@ -72,6 +73,7 @@ def _basis_matches(row: DeferredQuestion, basis: DeferredQuestion) -> bool:
         and row.dedupe_marker == basis.dedupe_marker
         and row_card.checked == basis_card.checked
         and row_card.subject == basis_card.subject
+        and row_card.quoted == basis_card.quoted
     )
 
 

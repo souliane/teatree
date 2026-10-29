@@ -337,6 +337,9 @@ class QuestionCard:
             question.strip(), self.why.strip(), self.options, self.quoted.strip(), ref, self.action is not None
         )
 
+    def names_rules_file(self, question: str) -> bool:
+        return bool(_RULES_FILE.search(question) or _RULES_FILE.search(self.subject))
+
     def problems(self, question: str) -> list[str]:
         """Every reason this card may not be sent as an owner question, all at once."""
         problems = shown_problems(self.view(question))
@@ -344,7 +347,7 @@ class QuestionCard:
             problems.append(
                 f"{self.decision} cannot be raised to the owner; choose from {', '.join(OWNER_RAISABLE_DECISIONS)}"
             )
-        if (_RULES_FILE.search(question) or _RULES_FILE.search(self.subject)) and not self.quoted.strip():
+        if self.names_rules_file(question) and not self.quoted.strip():
             problems.append("the proposed text of a rules-file change is required on the card")
         problems += _sentence_problems("the question", question, limit=MAX_QUESTION_CHARS, ends_with="?")
         problems += _sentence_problems("the why sentence", self.why, limit=MAX_SENTENCE_CHARS)

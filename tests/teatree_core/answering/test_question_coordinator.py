@@ -79,6 +79,47 @@ class TestQuestionCoordinator(TestCase):
         assert total == 1
         assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
 
+    def test_same_question_with_different_proposed_text_stays_pending(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(
+            question, card=dataclasses.replace(owner_card(), quoted="Use the first library for queues.")
+        )
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(
+            question, card=dataclasses.replace(owner_card(), quoted="Use the second library for queues.")
+        )
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+        assert not pending.audits.filter(action="coordinated").exists()
+
+    def test_same_question_with_the_same_proposed_text_still_uses_the_owner_answer(self) -> None:
+        question = "Should we adopt the new dependency?"
+        card = dataclasses.replace(owner_card(), quoted="Use the first library for queues.")
+        basis = DeferredQuestion.record(question, card=card)
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=card)
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 0
+        assert pending.audits.filter(action="coordinated").exists()
+
+    def test_rules_file_card_always_reaches_the_owner(self) -> None:
+        question = "Should the rules file let agents merge on green checks?"
+        card = dataclasses.replace(owner_card(), quoted="Agents merge when every check is green.")
+        basis = DeferredQuestion.record(question, card=card)
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=card)
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+        assert not pending.audits.filter(action="coordinated").exists()
+
     def test_same_question_on_different_subject_stays_pending(self) -> None:
         question = "Should we adopt the new dependency?"
         basis = DeferredQuestion.record(question, card=dataclasses.replace(owner_card(), subject="Widget scheduling"))

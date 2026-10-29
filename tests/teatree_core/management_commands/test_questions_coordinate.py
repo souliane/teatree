@@ -1,5 +1,6 @@
 """An attended coordinator can cite an exact owner answer without minting a new grant."""
 
+import dataclasses
 from io import StringIO
 from unittest.mock import patch
 
@@ -50,6 +51,26 @@ class TestQuestionsCoordinate(TestCase):
         code, _ = self._command(pending, local_basis, "Yes.")
         assert code == 2
         assert DeferredQuestion.objects.filter(pk__in=[hard.pk, pending.pk], answered_at__isnull=True).count() == 2
+
+    def test_rules_file_card_and_changed_proposed_text_are_refused(self) -> None:
+        rules_card = dataclasses.replace(owner_card(), quoted="Agents merge when every check is green.")
+        rules_basis = DeferredQuestion.record("Should the rules file let agents merge?", card=rules_card)
+        assert rules_basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        rules_pending = DeferredQuestion.record(rules_basis.question, card=rules_card)
+        basis = DeferredQuestion.record(
+            "Should we adopt the new dependency?", card=dataclasses.replace(owner_card(), quoted="Use the first one.")
+        )
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        reworded = DeferredQuestion.record(
+            basis.question, card=dataclasses.replace(owner_card(), quoted="Use the second one.")
+        )
+
+        assert self._command(rules_pending, rules_basis, "Yes.")[0] == 2
+        assert self._command(reworded, basis, "Yes.")[0] == 2
+        assert (
+            DeferredQuestion.objects.filter(pk__in=[rules_pending.pk, reworded.pk], answered_at__isnull=True).count()
+            == 2
+        )
 
     def test_dispatched_agent_cannot_coordinate(self) -> None:
         basis = DeferredQuestion.record("Should we adopt the new dependency?", card=owner_card())
