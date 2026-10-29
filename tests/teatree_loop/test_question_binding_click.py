@@ -75,9 +75,10 @@ class TestTheTapRoundTrip(TestCase):
             card=OWNER_CARD,
             task_session=Session.objects.create(ticket=ticket),
             slack_ts=_ROOT_TS,
-            slack_channel=_CHANNEL,
+            slack_channel="D-OP",
         )
         backend = _backend()
+        backend.open_dm.side_effect = lambda user_id: {_OWNER: _CHANNEL, "U-OP": "D-OP"}[user_id]
 
         assert not answer_from_click(_tap(row, user=_OWNER), backend=backend)
         assert answer_from_click(_tap(row, user="U-OP"), backend=backend)
