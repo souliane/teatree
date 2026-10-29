@@ -12,9 +12,12 @@ currently indistinguishable from an intended one — that is the whole finding.
 """
 
 import io
+import subprocess
+import sys
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_config_drift import (
@@ -22,7 +25,18 @@ from teatree.cli.doctor.checks_config_drift import (
     _check_config_rows_shadowing_shipped_defaults,
     drifted_settings,
 )
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, ConfigSettingChange
+
+
+def test_doctor_module_imports_before_django_setup() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "import teatree.cli.doctor.checks_config_drift"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _run() -> str:
@@ -77,6 +91,24 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "t3-batch" in out
         assert "t3-auto" in out
 
+    def test_latest_audit_writer_and_above_maximum_are_reported(self) -> None:
+        ConfigSetting.objects.create(key="admission_write_concurrency_per_core", value=3, written_by="old-writer")
+        ConfigSettingChange.objects.create(
+            key="admission_write_concurrency_per_core",
+            scope="",
+            action="set",
+            old_value=1,
+            new_value=3,
+            written_by="cold-writer",
+        )
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
+            return_value={"admission_write_concurrency_per_core": 1},
+        ):
+            out = _run()
+        assert "by cold-writer" in out
+        assert "above maximum 2" in out
+
     def test_it_returns_without_raising_so_the_exit_code_is_untouched(self) -> None:
         # The invariant that makes it safe to ship: most drifted rows are deliberate, so a
         # finding here must never turn a green doctor run red.
@@ -101,6 +133,24 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
             out = _run()
         assert "WARN" in out
 
+    def test_missing_audit_table_keeps_drift_findings(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "t3-batch")
+
+        def unavailable(*args: object, **kwargs: object) -> None:
+            message = "no audit table"
+            raise OperationalError(message)
+
+        with (
+            patch(
+                "teatree.cli.doctor.checks_config_drift.declared_defaults",
+                return_value={"issue_implementer_label": "t3-auto"},
+            ),
+            patch("teatree.core.models.ConfigSettingChange.objects.filter", side_effect=unavailable),
+        ):
+            out = _run()
+        assert "issue_implementer_label" in out
+        assert "no audit table" in out
+
     def test_a_drifted_secret_is_reported_with_its_value_masked(self) -> None:
         # The row still has to surface — a secret that drifted is exactly as misleading as any
         # other — but neither the stored nor the shipped value may reach the output.
@@ -113,3 +163,63 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "banned_term_registry" in out
         assert "leaked-term" not in out
         assert "shipped-term" not in out
+
+    def test_a_below_floor_override_shows_writer_age_and_previous_value(self) -> None:
+        ConfigSetting.objects.create(key="agent_max_turns", value=9, written_by="review-loop")
+        ConfigSettingChange.objects.create(
+            key="agent_max_turns", scope="", action="set", old_value=1000, new_value=9, written_by="review-loop"
+        )
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"agent_max_turns": 3000}):
+            out = _run()
+        assert "WARN" in out
+        assert "agent_max_turns" in out
+        assert "1000" in out
+        assert "review-loop" in out
+        assert "ago" in out
+        assert "below minimum" in out
+
+    def test_an_ignored_overlay_row_is_listed(self) -> None:
+        ConfigSetting.objects.create(key="loop_cadence_seconds", scope="demo", value=600)
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"loop_cadence_seconds": 720}
+        ):
+            out = _run()
+        assert "loop_cadence_seconds" in out
+        assert "ignored by every reader" in out
+        assert out.count("loop_cadence_seconds [demo]") == 1
+
+    def test_a_stray_overlay_row_of_a_key_with_no_shipped_default_is_listed_as_ignored(self) -> None:
+        ConfigSetting.objects.create(
+            key="agent_skill_models", scope="demo", value={"code": [{"floor": "opus"}]}, written_by="skill-route-fixer"
+        )
+        ConfigSetting.objects.create(
+            key="agent_tier_models", scope="demo", value={"frontier": "stray-model"}, written_by="tier-fixer"
+        )
+        ConfigSettingChange.objects.create(
+            key="agent_tier_models",
+            scope="demo",
+            action="set",
+            old_value=None,
+            new_value={"frontier": "stray-model"},
+            written_by="tier-audit-writer",
+        )
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={}):
+            out = _run()
+        assert "crashed" not in out
+        skill_line = next(line for line in out.splitlines() if "agent_skill_models [demo]" in line)
+        tier_line = next(line for line in out.splitlines() if "agent_tier_models [demo]" in line)
+        assert skill_line.startswith("WARN")
+        assert "no shipped default" in skill_line
+        assert "set 0h ago by skill-route-fixer" in skill_line
+        assert "ignored by every reader" in skill_line
+        assert "set 0h ago by tier-audit-writer" in tier_line
+        assert "ignored by every reader" in tier_line
+
+    def test_an_ignored_overlay_row_equal_to_its_shipped_default_is_still_listed(self) -> None:
+        ConfigSetting.objects.create(key="loop_cadence_seconds", scope="demo", value=720)
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"loop_cadence_seconds": 720}
+        ):
+            out = _run()
+        assert out.count("loop_cadence_seconds [demo]") == 1
+        assert "ignored by every reader" in out

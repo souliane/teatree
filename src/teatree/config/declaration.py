@@ -33,6 +33,14 @@ class SettingMeta:
 
 
 @dataclasses.dataclass(frozen=True)
+class Bounds:
+    minimum: float
+    maximum: float | None = None
+    zero_disables: bool = False
+    why: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class DeclaredSetting:
     annotation: object
     default: object
@@ -43,6 +51,7 @@ class DeclaredSetting:
     stored: object
     storage_parse: Callable[[Any], Any]
     storage_default: object
+    bounds: Bounds | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +63,7 @@ class SettingSpec:
     stored: object = _UNSET
     storage_parse: Callable[[Any], Any] | None = None
     storage_default: object = _UNSET
+    bounds: Bounds | None = None
 
 
 def stored_form(value: object) -> object:
@@ -91,6 +101,7 @@ def declared_fields(settings_type: type[Any]) -> dict[str, DeclaredSetting]:
             stored=hints[declared.name] if spec.stored is _UNSET else spec.stored,
             storage_parse=spec.parse if spec.storage_parse is None else spec.storage_parse,
             storage_default=stored_form(default) if spec.storage_default is _UNSET else spec.storage_default,
+            bounds=spec.bounds,
         )
     return rows
 

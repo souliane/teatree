@@ -25,7 +25,7 @@ class TestLaneBConfigScope(TestCase):
         ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         ConfigSetting.objects.set_value("openai_compatible_base_url", _GLOBAL_URL)
         ConfigSetting.objects.set_value("openai_compatible_base_url", _OVERLAY_URL, scope=_OVERLAY)
-        ConfigSetting.objects.set_value("pydantic_ai_request_limit", 99, scope=_OVERLAY)
+        ConfigSetting.objects.set_value("pydantic_ai_request_limit", 300, scope=_OVERLAY)
 
     def _task_on(self, overlay: str) -> Task:
         ticket = Ticket.objects.create(overlay=overlay)
@@ -40,7 +40,7 @@ class TestLaneBConfigScope(TestCase):
     def test_harness_resolves_the_task_overlays_request_limit(self) -> None:
         harness = resolve_harness(self._task_on(_OVERLAY))
         assert isinstance(harness, PydanticAiHarness)
-        assert harness._backend.request_limit == 99
+        assert harness._backend.request_limit == 300
 
     def test_a_different_overlay_still_reads_the_global_default(self) -> None:
         # An overlay with no per-overlay row falls back to the global endpoint —

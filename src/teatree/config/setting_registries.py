@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
-from teatree.config.declaration import declared_fields
+from teatree.config.declaration import Bounds, declared_fields
 from teatree.config.enums import Mode, Wip
 from teatree.config.setting_parsers import _parse_env_bool, _parse_env_str_list, _parse_strict_int
 from teatree.config.settings import UserSettings
@@ -38,6 +38,9 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 BOX_GLOBAL_SETTINGS: frozenset[str] = frozenset(
     key for key, row in declared_fields(UserSettings).items() if row.box_global
 )
+SETTING_BOUNDS: dict[str, Bounds] = {
+    key: row.bounds for key, row in declared_fields(UserSettings).items() if row.bounds is not None
+}
 
 
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {

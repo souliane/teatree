@@ -598,8 +598,7 @@ class _RetentionSettings:
     # ``max_concurrent_local_stacks`` slot, and ``workspace relocate`` — busy
     # forever. An open Session whose last recorded activity (its own
     # ``started_at``, its tasks' heartbeats, its attempts' start times) is older
-    # than this many hours is NOT live. 12h is 4x the ``watchdog_max_runtime_seconds``
-    # hard cap on a single agent run, so it cannot mask real in-flight work — and
+    # than this many hours is NOT live. A run can outlast this session bound, but
     # an active (PENDING/CLAIMED) task keeps a ticket busy with NO time bound at
     # all, independently of this. ``0`` disables the bound (every open Session is
     # live). Per-overlay overridable.

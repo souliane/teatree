@@ -15,8 +15,11 @@ from teatree import forge_credentials
 from teatree.agents._runner_env import XDIST_WORKERS_VAR, DispatchCredential
 from teatree.agents.codex_app_server import CodexAppServerHarness
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
-from teatree.agents.harness import ClaudeSdkHarness
+from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
+from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.runner import _resolve_child_env_or_failure
+from teatree.config.write_authority import CONFIG_WRITE_PHASE_ENV
 from teatree.core.models import Session, Task
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV, ForgeCredentialRequest, ForgeTokenResolution, ForgeTokenState
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
@@ -121,3 +124,13 @@ class TestClaudeDispatchMarker(TestCase):
         assert isinstance(credential, DispatchCredential)
         assert credential.env is not None
         assert credential.env[DISPATCHED_AGENT_ENV] == "1"
+
+    def test_review_phase_reaches_lane_b_shell(self) -> None:
+        ticket = planned_ticket(overlay="other")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        credential = _resolve_child_env_or_failure(task, PydanticAiHarness(phase="reviewing"), None)
+        assert isinstance(credential, DispatchCredential)
+        assert credential.env is not None
+        assert credential.env[CONFIG_WRITE_PHASE_ENV] == "reviewing"
+        options = HarnessOptions.from_sdk_options(ClaudeAgentOptions(cwd=str(Path.cwd()), env=credential.env))
+        assert LaneBToolConfig.from_options(options, phase="reviewing").shell_env[CONFIG_WRITE_PHASE_ENV] == "reviewing"

@@ -18,6 +18,9 @@ from pathlib import Path
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.cold_reader import canonical_config_db
 from teatree.config.host_projection import GENERATION_KEY, ProjectionPublisher, ProjectionPublishError, next_generation
+from teatree.config.value_visibility import MASKED, withholds_value
+from teatree.config.write_authority import review_write_refusal
+from teatree.config.write_validation import ConfigWriteValue, validate_config_bounds
 from teatree.db.boundary import ControlDbBoundary, DbBoundaryError
 
 _GLOBAL_SCOPE = ""
@@ -28,10 +31,18 @@ _BUSY_TIMEOUT_MS = 30000
 _DJANGO_SQLITE_DATETIME = "%Y-%m-%d %H:%M:%S.%f"
 
 _UPSERT = (
+    "INSERT INTO teatree_config_setting "
+    "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(scope, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, "
+    "seeded_by=excluded.seeded_by, written_by=excluded.written_by, seed_value=excluded.seed_value"
+)
+_LEGACY_UPSERT = (
     "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
     "VALUES (?, ?, ?, ?, ?) "
     "ON CONFLICT(scope, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
 )
+_PROVENANCE_COLUMNS = frozenset({"seeded_by", "written_by", "seed_value"})
 
 
 class WriteResult(Enum):
@@ -55,16 +66,26 @@ def _table_present(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _audit_table_present(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teatree_config_setting_change'"
+    ).fetchone()
+    return row is not None
+
+
 def write_setting(
     key: str,
-    value: object,
+    value: ConfigWriteValue,
     *,
     scope: str = _GLOBAL_SCOPE,
     env: Mapping[str, str] = os.environ,
     db_path: Path | None = None,
 ) -> WriteOutcome:
     """Write one setting and return the target DB plus the result; boundary violations raise."""
+    validate_config_bounds(key, value)
     db = db_path if db_path is not None else canonical_config_db(env=env)
+    if reason := review_write_refusal(db, env=env):
+        raise ValueError(reason)
     boundary = ControlDbBoundary(db)
     if not boundary.read_write_allowed:
         raise DbBoundaryError(boundary.refusal())
@@ -83,7 +104,7 @@ def write_setting(
     return WriteOutcome(result, db, detail)
 
 
-def _bump_generation(conn: sqlite3.Connection) -> None:
+def _bump_generation(conn: sqlite3.Connection, *, has_provenance: bool) -> None:
     """Ratchet the projection generation inside the caller's open transaction.
 
     Same connection AND same transaction as the value write, so a generation the
@@ -98,7 +119,7 @@ def _bump_generation(conn: sqlite3.Connection) -> None:
         current = json.loads(row[0]) if row is not None else None
     except (TypeError, ValueError):
         current = None
-    _upsert(conn, _GLOBAL_SCOPE, GENERATION_KEY, next_generation(current))
+    _upsert(conn, _GLOBAL_SCOPE, GENERATION_KEY, next_generation(current), has_provenance=has_provenance)
 
 
 def _publish_projection(db: Path, env: Mapping[str, str]) -> None:
@@ -127,15 +148,37 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
     try:
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         table_present = _table_present(conn)
+        columns = (
+            {row[1] for row in conn.execute("PRAGMA table_info(teatree_config_setting)")} if table_present else set()
+        )
     except sqlite3.Error as error:
         return WriteResult.NO_DB_TIER, str(error)
     if not table_present:
         return WriteResult.NO_DB_TIER, "no teatree_config_setting table"
+    has_provenance = columns >= _PROVENANCE_COLUMNS
+    if not has_provenance and _PROVENANCE_COLUMNS & columns:
+        return WriteResult.WRITE_FAILED, "incomplete config setting provenance columns"
     try:
-        _upsert(conn, scope, key, value)
+        conn.execute("BEGIN IMMEDIATE")
+        previous = conn.execute(
+            ("SELECT value, seeded_by, seed_value, written_by " if has_provenance else "SELECT value ")
+            + "FROM teatree_config_setting WHERE scope=? AND key=?",
+            (scope, key),
+        ).fetchone()
+        _upsert(conn, scope, key, value, has_provenance=has_provenance)
+        value_changed = previous is None or previous[0] != json.dumps(value)
+        provenance_changed = (
+            has_provenance
+            and previous is not None
+            and (previous[1] or previous[2] is not None or previous[3] != "cold-writer")
+        )
+        if value_changed or provenance_changed:
+            _write_audit_row(conn, scope, key, value, old_json=previous[0] if previous else None)
         if key != GENERATION_KEY:
-            _bump_generation(conn)
+            _bump_generation(conn, has_provenance=has_provenance)
         conn.commit()
+        if not has_provenance:
+            sys.stderr.write("WARNING: config setting table has no writer columns; rescue write has no provenance\n")
     except sqlite3.Error as error:
         with suppress(sqlite3.Error):
             conn.rollback()
@@ -143,6 +186,43 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
     return WriteResult.WROTE, ""
 
 
-def _upsert(conn: sqlite3.Connection, scope: str, key: str, value: object) -> None:
+def _audit_old_json(key: str, stored: str | None) -> str | None:
+    # A hand-edited row may hold non-JSON: take it as the raw string so the rescue still repairs it.
+    if stored is None:
+        return None
+    try:
+        old_value = json.loads(stored)
+    except (TypeError, ValueError):
+        old_value = str(stored)
+        stored = json.dumps(old_value)
+    return json.dumps(MASKED) if old_value is not None and withholds_value(key, old_value) else stored
+
+
+def _write_audit_row(conn: sqlite3.Connection, scope: str, key: str, value: object, *, old_json: str | None) -> None:
+    if not _audit_table_present(conn):
+        sys.stderr.write("WARNING: config audit table is absent; rescue write has no audit row\n")
+        return
     now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
-    conn.execute(_UPSERT, (scope, key, json.dumps(value), now, now))
+    new_json = json.dumps(MASKED if withholds_value(key, value) else value)
+    conn.execute("SAVEPOINT audit_row")
+    try:
+        conn.execute(
+            "INSERT INTO teatree_config_setting_change "
+            "(scope, key, action, old_value, new_value, written_by, changed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (scope, key, "set", _audit_old_json(key, old_json), new_json, "cold-writer", now),
+        )
+    except sqlite3.Error as error:
+        conn.execute("ROLLBACK TO audit_row")
+        sys.stderr.write(f"WARNING: config audit row could not be written: {error}\n")
+    finally:
+        conn.execute("RELEASE audit_row")
+
+
+def _upsert(conn: sqlite3.Connection, scope: str, key: str, value: object, *, has_provenance: bool) -> None:
+    now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
+    params = (scope, key, json.dumps(value), now, now)
+    if has_provenance:
+        conn.execute(_UPSERT, (*params, "", "cold-writer", None))
+    else:
+        conn.execute(_LEGACY_UPSERT, params)

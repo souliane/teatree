@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import ClassVar, Final
 
-from teatree.config.declaration import SettingSpec, setting
+from teatree.config.declaration import Bounds, SettingSpec, setting
 from teatree.config.setting_parsers import _parse_str_list, _parse_strict_float, _parse_strict_int
 
 WRITE_CONCURRENCY_PER_CORE: Final = 0.5
@@ -72,19 +72,28 @@ class _ProvisioningSettings:
     forge_pool_max_connections: int = setting(
         FORGE_POOL_MAX_CONNECTIONS,
         spec=SettingSpec(
-            help="connections each process keeps open per forge host", parse=_parse_strict_int, box_global=True
+            help="connections each process keeps open per forge host",
+            parse=_parse_strict_int,
+            box_global=True,
+            bounds=Bounds(FORGE_POOL_MAX_CONNECTIONS_MIN, FORGE_POOL_MAX_CONNECTIONS_MAX),
         ),
     )
     admission_load_brake_per_core: float = setting(
         ADMISSION_LOAD_BRAKE_PER_CORE,
         spec=SettingSpec(
-            help="box load per core at which new admissions halt", parse=_parse_strict_float, box_global=True
+            help="box load per core at which new admissions halt",
+            parse=_parse_strict_float,
+            box_global=True,
+            bounds=Bounds(ADMISSION_LOAD_FACTOR_MIN, ADMISSION_LOAD_FACTOR_MAX),
         ),
     )
     admission_load_resume_per_core: float = setting(
         ADMISSION_LOAD_RESUME_PER_CORE,
         spec=SettingSpec(
-            help="box load per core below which halted admissions resume", parse=_parse_strict_float, box_global=True
+            help="box load per core below which halted admissions resume",
+            parse=_parse_strict_float,
+            box_global=True,
+            bounds=Bounds(ADMISSION_LOAD_FACTOR_MIN, ADMISSION_LOAD_FACTOR_MAX),
         ),
     )
     # Box-global: the reader sizes this box's cores, so a per-overlay row cannot be honoured.
@@ -94,6 +103,7 @@ class _ProvisioningSettings:
             help=("agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane"),
             parse=_parse_strict_float,
             box_global=True,
+            bounds=Bounds(WRITE_CONCURRENCY_PER_CORE_MIN, WRITE_CONCURRENCY_PER_CORE_MAX),
         ),
     )
     # #4816 Whether the TOKEN brakes (the subscription quota family and the metered

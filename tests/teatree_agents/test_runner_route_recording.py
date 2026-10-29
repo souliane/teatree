@@ -247,7 +247,7 @@ class _HangsAfterItsMessages(FakeHarnessSession):
 
 class TestARoutedRunThatHitsItsRuntimeCeiling(TestCase):
     def setUp(self) -> None:
-        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 1, scope="")
+        ConfigSetting.objects.create(key="watchdog_max_runtime_seconds", value=1, scope="")
         ticket = planned_ticket()
         self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
 

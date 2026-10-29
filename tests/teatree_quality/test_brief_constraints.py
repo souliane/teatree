@@ -132,6 +132,15 @@ def test_blocks_added_public_name_and_setting_field() -> None:
     assert {item.kind for item in violations} == {"no_setting", "no_public_name"}
 
 
+def test_no_setting_does_not_count_declaration_metadata_as_a_runtime_setting() -> None:
+    path = "src/teatree/config/declaration.py"
+    changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
+    before = {path: "class SettingSpec:\n    help: str = ''\n"}
+    after = {path: "class SettingSpec:\n    help: str = ''\n    bounds: object = None\n"}
+
+    assert check_constraints(extract_constraints("No new setting."), changes, before=before, after=after) == ()
+
+
 def test_missing_source_is_a_failed_probe() -> None:
     changes = ChangedSet((ChangeEntry("M", "src/teatree/config/settings.py"),), "origin/main")
     violations = check_constraints(extract_constraints("No new setting."), changes, before={}, after={})

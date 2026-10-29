@@ -17,6 +17,7 @@ from teatree.core.models.compliance_snapshot import (
     RuleSource,
 )
 from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
+from teatree.core.models.config_setting_change import ConfigSettingChange
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
@@ -196,6 +197,7 @@ __all__ = [
     "ClearRequest",
     "CodexReviewMarker",
     "ConfigSetting",
+    "ConfigSettingChange",
     "ConfigSettingManager",
     "ConsolidatedMemory",
     "CostRegression",

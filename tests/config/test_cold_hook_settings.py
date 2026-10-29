@@ -177,6 +177,12 @@ def test_int_budget_defaults_match_the_registry(monkeypatch: pytest.MonkeyPatch)
         assert teatree_settings.teatree_int_setting(key) == COLD_HOOK_SETTINGS[key].default
 
 
+def test_orchestrator_turn_budget_help_describes_tool_calls() -> None:
+    help_text = COLD_HOOK_SETTINGS["orchestrator_turn_budget"].help
+    assert "tool-call budget" in help_text
+    assert "output-token" not in help_text
+
+
 def test_cold_hook_settings_disjoint_from_overridable_registry() -> None:
     # A key cannot have two homes: the cold-hook keys are exactly the ones the
     # overridable (DB-home) registry does NOT carry.
