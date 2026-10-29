@@ -75,6 +75,7 @@ from teatree.loop.scanners.pr_sweep_review_gate import (
     ReviewArmContext,
     held_head_attempt,
     no_review_attempt,
+    notify_review_rounds_exhausted,
     review_rounds_exhausted,
 )
 from teatree.loop.scanners.pr_sweep_ticket_gate import precondition_skip_reason, unowned_pr_refusal
@@ -483,7 +484,9 @@ class PrSweepScanner:
         refuses first (#4380). A reviewer who looked and said no is not "no independent
         review", and arming another over a held head is how the newer verdict came to be.
         """
-        exhausted = review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
+        exhausted = self.auto_review_dispatch and review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url)
+        if exhausted:
+            notify_review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
         self._flag(
             slug=pr.slug,
             pr_id=pr.number,
@@ -497,6 +500,7 @@ class PrSweepScanner:
             ctx=ReviewArmContext(
                 dispatcher=self.review_dispatcher,
                 enabled=self.auto_review_dispatch,
+                rounds_checked=True,
                 self_identities=self.self_identities,
                 overlay=self.overlay,
             ),

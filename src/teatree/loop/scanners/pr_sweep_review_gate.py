@@ -25,6 +25,7 @@ how a contested head accumulated the later verdict that merged it.
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from django.db.models import Q
 
@@ -39,17 +40,26 @@ from teatree.loop.scanners.pr_sweep_decision import own_or_same_repo, pr_ticket_
 from teatree.loop.scanners.pr_sweep_ports import ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON, HeadReview, MergeAttempt, PrSummary
 
-__all__ = ["ReviewArmContext", "arm_cold_review", "held_head_attempt", "review_in_flight_for_pr"]
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
+__all__ = [
+    "REVIEW_ROUNDS_EXHAUSTED",
+    "ReviewArmContext",
+    "arm_cold_review",
+    "held_head_attempt",
+    "no_review_attempt",
+    "notify_review_rounds_exhausted",
+    "review_in_flight_for_pr",
+    "review_rounds_exhausted",
+]
 
 logger = logging.getLogger(__name__)
 MAX_REVIEW_ROUNDS = 3
 REVIEW_ROUNDS_EXHAUSTED = "review_rounds_exhausted"
 
 
-def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> bool:
-    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
-    if ticket is None:
-        return False
+def _counted_review_heads(ticket: "Ticket", *, slug: str, pr_id: int) -> tuple[str, ...]:
     verdicts = list(
         ReviewVerdict.objects.filter(Q(ticket=ticket) | Q(ticket__isnull=True, slug__iexact=slug, pr_id=pr_id))
         .exclude(verdict=ReviewVerdict.Verdict.UNVERIFIED)
@@ -63,7 +73,7 @@ def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str
     }
     measured = (
         RoundMetric.objects.filter(ticket=ticket, kind=RoundMetric.Kind.REVIEW)
-        .exclude(outcome__in=("", "venue_limit"))
+        .exclude(outcome__in=("", "venue_limit", "unverified"))
         .values_list("subject", flat=True)
     )
     recorded_heads = tuple(
@@ -71,9 +81,21 @@ def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str
         for record_slug, record_pr_id, head in verdicts
         if (record_slug.casefold(), record_pr_id, head) not in carried
     )
-    heads = (*recorded_heads, *(head for head in measured if head not in recorded_heads))
+    return (*recorded_heads, *(head for head in measured if head not in recorded_heads))
+
+
+def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str) -> bool:
+    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
+    return ticket is not None and len(_counted_review_heads(ticket, slug=slug, pr_id=pr_id)) >= MAX_REVIEW_ROUNDS
+
+
+def notify_review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> None:
+    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
+    if ticket is None:
+        return
+    heads = _counted_review_heads(ticket, slug=slug, pr_id=pr_id)
     if len(heads) < MAX_REVIEW_ROUNDS:
-        return False
+        return
     text = (
         f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url} at {head_sha[:8]}: "
         f"{MAX_REVIEW_ROUNDS} recorded passes ({', '.join(heads)}). Review the findings before another dispatch."
@@ -84,7 +106,6 @@ def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str
         idempotency_key=f"review_rounds_exhausted:{ticket.pk}:{pr_id}",
         audience=NotifyAudience.OWNER_ESCALATION,
     )
-    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +120,7 @@ class ReviewArmContext:
 
     dispatcher: ReviewDispatcher | None
     enabled: bool
+    rounds_checked: bool = False
     self_identities: tuple[str, ...] = ()
     overlay: str = ""
 
@@ -152,11 +174,12 @@ def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:
     """Enqueue the claimable review task for *pr*; return whether one was armed."""
     if not ctx.enabled or ctx.dispatcher is None:
         return False
-    if not own_or_same_repo(pr, self_identities=ctx.self_identities):
-        return False
-    if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url) or review_rounds_exhausted(
-        slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha
+    if not own_or_same_repo(pr, self_identities=ctx.self_identities) or pr_ticket_under_external_delivery(
+        slug=pr.slug, pr_id=pr.number, pr_url=pr.url
     ):
+        return False
+    if not ctx.rounds_checked and review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
+        notify_review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
         return False
     if review_in_flight_for_pr(pr_url=pr.url):
         return False

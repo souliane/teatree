@@ -1460,6 +1460,25 @@ class TestAutoReviewDispatch:
         assert signals[0].kind == "pr_sweep.flag_no_review"
         assert signals[0].payload["review_dispatched"] is True
 
+    def test_one_sweep_checks_the_review_limit_once(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=FakeReviewDispatcher(),
+        )
+        with (
+            patch("teatree.loop.scanners.pr_sweep.review_rounds_exhausted", return_value=False) as sweep_limit,
+            patch("teatree.loop.scanners.pr_sweep_review_gate.review_rounds_exhausted") as arm_limit,
+        ):
+            signals = scanner.scan()
+
+        assert signals[0].payload["review_dispatched"] is True
+        sweep_limit.assert_called_once()
+        arm_limit.assert_not_called()
+
     def test_no_dispatch_when_flag_disabled(self) -> None:
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
@@ -1472,6 +1491,22 @@ class TestAutoReviewDispatch:
         assert dispatcher.calls == []
         assert signals[0].kind == "pr_sweep.flag_no_review"
         assert signals[0].payload.get("review_dispatched") is False
+
+    def test_disabled_auto_review_does_not_surface_a_review_cap(self) -> None:
+        pr = _open_pr()
+        for digit in "abc":
+            _record_hold(sha=digit * 40)
+        scanner, _ = _scanner(
+            api=FakePrApiClient(prs_by_slug={SLUG: [pr]}),
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=False,
+        )
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        notify.assert_not_called()
 
     def test_flag_on_but_no_dispatcher_does_not_dispatch(self) -> None:
         # Defensive: armed but no dispatcher wired -> not dispatched, no crash.
@@ -2388,6 +2423,26 @@ class TestSubstrateHoldPing:
         assert notifier.calls == []
         assert signals[0].payload["reason"] == "fallback_uv_audit_gh_refused: some refusal"
         assert pinger.calls == []
+
+    def test_non_substrate_uv_audit_fallback_wait_is_not_blocked(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=False,
+            refusal_text="critic running",
+            waiting=True,
+        )
+        keystone = FakeKeystone(merged=False, error="uv-audit failing", escalation_kind="")
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert notifier.calls == []
+        assert signals[0].kind == "pr_sweep.waiting_on_critic"
+        assert signals[0].payload["reason"] == "critic running"
 
     def test_substrate_hold_sends_no_owner_dm_and_logs_once(self) -> None:
         # F3: a substrate hold is INTERNAL — logged, NEVER DM'd — so a held diff

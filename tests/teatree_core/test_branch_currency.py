@@ -204,7 +204,7 @@ class TestRequireCurrentBranch:
         error = result["error"]
         assert error is not None
         assert "conflict" in error.lower()
-        assert "a.txt" in error
+        assert error == "refusing to ship: merging origin/main into 'feat/x' would conflict in: a.txt."
         # Hint must mention manual resolution path.
         hint = result["hint"]
         assert hint is not None

@@ -147,7 +147,7 @@ def predict_merge_conflicts(repo: str, reviewed_sha: str, target: str = "origin/
     is inconclusive and returns ``None`` so the caller fails open — same
     posture as a failed fetch.
     """
-    rc, out = _git(repo, "merge-tree", "--write-tree", "--name-only", reviewed_sha, target)
+    rc, out = _git(repo, "merge-tree", "--write-tree", "--name-only", "--no-messages", reviewed_sha, target)
     if rc == 0:
         return ()
     if rc != 1:

@@ -759,7 +759,10 @@ class TestKeystoneWiring(TestCase):
         ticket = _ordinary_ticket()
         clear = _keystone_fixtures(ticket)
         review = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR, reviewed_sha=_FORTY_HEX)
-        with self.captureOnCommitCallbacks(execute=True):
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             arm_for_recorded_review(review)
         assert CriticDispatch.objects.filter(ticket=ticket, transition="merge", head_sha=_FORTY_HEX).exists()
         _record_merge_verdict(ticket, items=_clean_verdict_items())

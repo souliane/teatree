@@ -185,7 +185,10 @@ class TestClearCommandReconcilesTheVerdictSlug(TestCase):
             repo=_RECOVERED,
             iid=str(_PR_ID),
         )
-        with self.captureOnCommitCallbacks(execute=True):
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             result = self._issue_clear()
 
         assert result.get("issued") is True

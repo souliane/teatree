@@ -41,7 +41,6 @@ from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
 from teatree.core.modelkit.review_contract import CRITIC_REMEDY
-from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
@@ -283,9 +282,9 @@ def _live_merge_critic(ticket: "Ticket", head: str) -> bool:
     claim = CriticDispatch.objects.filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).first()
     if claim is None or claim.state != CriticDispatch.State.DISPATCHED or claim.deadline is None:
         return False
-    if claim.deadline <= timezone.now() or claim.attempts > MAX_DISPATCH_ATTEMPTS:
+    if claim.deadline <= timezone.now():
         return False
-    return Task.objects.filter(pk=claim.task_id, status__in=Task.Status.active()).exists()
+    return CriticDispatch.critic_is_active(claim)
 
 
 def check_merge_quality_verdict(

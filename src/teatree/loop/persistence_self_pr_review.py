@@ -25,7 +25,7 @@ from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import _get_or_create_ticket, _owning_overlay
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 from teatree.loop.scanners.head_lineage import review_head_is_carried
-from teatree.loop.scanners.pr_sweep_review_gate import review_rounds_exhausted
+from teatree.loop.scanners.pr_sweep_review_gate import notify_review_rounds_exhausted, review_rounds_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,8 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
     variant = str(payload.get("variant") or "claude:review")
     if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, variant=variant):
         return None
-    if review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url, head_sha=head_sha):
+    if review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url):
+        notify_review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url, head_sha=head_sha)
         return None
     overlay = str(payload.get("overlay") or "")
     with transaction.atomic():

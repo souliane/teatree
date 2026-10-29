@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.gates import privacy_gate
+from teatree.core.modelkit.review_contract import CRITIC_REMEDY
 from teatree.core.models import CriticVerdict, PullRequest, Ticket
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.review.nit_lane import NitPoint, NitReceipt
@@ -16,6 +17,7 @@ from teatree.core.review.nit_publish import has_nit_receipts
 
 class TestCriticRecordCommand(TestCase):
     def test_hand_critic_uses_the_factory_recording_path(self) -> None:
+        assert "`manage.py ticket critic-record`" in CRITIC_REMEDY
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         head = "a" * 40
         dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=head, contract="c")

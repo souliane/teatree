@@ -20,7 +20,12 @@ from teatree.core.models import HeadCarryOver, PullRequest, ReviewHoldDispositio
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
-from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
+from teatree.loop.scanners.pr_sweep_review_gate import (
+    ReviewArmContext,
+    arm_cold_review,
+    held_head_attempt,
+    review_rounds_exhausted,
+)
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON, HOLD_AT_HEAD_REASON, PrSummary
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -141,6 +146,15 @@ class TestArmColdReview:
         assert notify.call_count == 1
         assert all(digit * 40 in notify.call_args.args[0] for digit in "abc")
 
+    def test_round_limit_query_does_not_send_a_notice(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4808")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "abc":
+            _record(verdict="hold", reviewer=f"reviewer-agent-{digit}", sha=digit * 40)
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert review_rounds_exhausted(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL) is True
+        notify.assert_not_called()
+
     def test_carried_verdict_does_not_spend_a_review_round(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4805")
         PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
@@ -183,6 +197,28 @@ class TestArmColdReview:
         dispatcher = _FakeDispatcher()
         assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
         assert len(dispatcher.calls) == 1
+
+    def test_unverified_metric_does_not_spend_a_round(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4807")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="unverified",
+                reviewer_identity=f"reviewer-agent-{digit}",
+                ticket=ticket,
+                evidence_gaps=["ci_unreadable"],
+            )
+            RoundMetric.objects.open(kind="review", ticket=ticket, subject=digit * 40, size=1, detail={})
+            RoundMetric.objects.settle(kind="review", ticket=ticket, subject=digit * 40, outcome="unverified")
+
+        dispatcher = _FakeDispatcher()
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
+        notify.assert_not_called()
 
     def test_arms_one_task_for_an_own_pr(self) -> None:
         dispatcher = _FakeDispatcher()

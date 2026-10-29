@@ -107,12 +107,16 @@ def my_pr_next_task(kind: str, ci: str) -> str:
     return tasks.get(kind, "Review or merge PR" if ci in _GREEN_CI else "Inspect CI and advance PR")
 
 
-def ci_label(reason: str, *, failing_required: bool) -> str:
+def ci_label(reason: str, *, failing_required: bool, decision: str = "") -> str:
     if failing_required or reason == "ci_red":
         return "red"
     if reason == "ci_pending":
         return "pending"
-    return "green" if reason in _PAST_CI_GATE_REASONS else UNKNOWN
+    return (
+        "green"
+        if reason in _PAST_CI_GATE_REASONS or reason == "review_rounds_exhausted" or decision == "waiting_on_critic"
+        else UNKNOWN
+    )
 
 
 def entry_blocker(entry: "PrInventoryEntry") -> str:
@@ -234,6 +238,10 @@ def _unreadable_threads(facts: PrActionFacts) -> PrNextAction | None:
 def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
     if facts.entry is None or not facts.entry.next_task:
         return None
+    if facts.entry.decision == "waiting_on_critic":
+        return PrNextAction("Factory working", "Factory", facts.entry.next_task)
+    if facts.entry.reason == "review_rounds_exhausted":
+        return PrNextAction("Needs you", "You", facts.entry.next_task)
     group = "Factory working" if facts.ci.lower() in _PENDING_CI else "Blocked"
     return PrNextAction(group, "Factory", facts.entry.next_task)
 

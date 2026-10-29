@@ -502,6 +502,7 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
             patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
             patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
             patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(

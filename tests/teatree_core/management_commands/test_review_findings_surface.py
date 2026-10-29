@@ -244,6 +244,7 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=_URL, repo=_SLUG, iid="4476")
         with (
             patch("teatree.loop.sweep_on_demand.trigger_sweep_for_verdict", return_value=None),
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
             self.captureOnCommitCallbacks(execute=True),
         ):
             result = self._record(verdict="merge_safe", findings_json="[]", ticket_id=ticket.pk)

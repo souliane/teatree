@@ -183,9 +183,7 @@ class TicketExtra(TicketRepoExtra, total=False):
     tracker_404: bool
     more_prs_coming: bool
     e2e_recipe: "E2ERecipeSerialized"
-    # #940 branch-currency gate state: post-merge SHA the cold reviewer
-    # must attest, and a durable refusal entry when the ship-time
-    # defense-in-depth re-check rejects the push.
+    # Durable refusal when the ship-time branch-currency check rejects the push.
     # Stacked-delivery override keyed by canonical owner/repo slug. The string
     # shape is retained only for tickets written before repo scoping.
     target_branch: dict[str, str] | str
