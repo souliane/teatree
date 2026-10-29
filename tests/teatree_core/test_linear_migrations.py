@@ -163,7 +163,7 @@ def test_review_and_checkout_migrations_share_the_live_head() -> None:
     applied = set(loader.graph.forwards_plan(("core", core_head_migration())))
 
     assert {
-        ("core", "0026_merge_review_verdict_ticket_dm"),
+        ("core", "0031_review_hold_disposition_and_merge_attribution"),
         ("core", "0026_retire_checkout_questions"),
     } <= applied
 
