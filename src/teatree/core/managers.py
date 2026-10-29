@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, Unpack, cast
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
@@ -31,7 +31,7 @@ from teatree.core.managers_admission import (
     waiting_for_admission_rows,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
-from teatree.core.managers_issue_match import matching_issue_q
+from teatree.core.managers_issue_match import TicketCreateFields, matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
@@ -85,13 +85,6 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
-
-
-class TicketCreateFields(TypedDict, total=False):
-    overlay: str
-    variant: str
-    repos: list[str]
-    kind: "Ticket.Kind"
 
 
 class TicketQuerySet(models.QuerySet):
