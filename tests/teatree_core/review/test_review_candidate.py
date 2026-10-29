@@ -99,6 +99,13 @@ class TestForgeAuthorshipProof:
 
         assert _is_self_authored("https://forge.example/group/repo/pull/1", host, ()) is False
 
+    def test_undeclared_bot_is_not_classified_as_a_colleague(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+        assert (
+            _is_self_authored("https://github.com/group/repo/pull/1", _Host(author="Dependabot[bot]"), ("owner",))
+            is None
+        )
+
     def test_unreadable_author_or_host_stays_unresolved(self, monkeypatch) -> None:
         monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
 
@@ -375,6 +382,14 @@ class TestSkipSelfAuthorAcrossIdentities:
             "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "present"}],
         }
         assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    def test_bot_self_note_does_not_claim_human_review(self) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": "project_42_bot_abc"}, "system": False, "body": "status"}],
+        }
+        assert should_review_candidate(mr, current_user="owner", self_identities=("project_42_bot_abc",)) is True
 
     def test_colleague_mr_still_candidate_with_multiple_identities(self) -> None:
         mr = {"author": {"username": "bob"}, "state": "opened", "notes": []}

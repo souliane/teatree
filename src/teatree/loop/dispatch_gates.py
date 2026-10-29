@@ -223,13 +223,24 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
     try:
         from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        row = RedMrFixAttempt.claim(
-            pr_url=pr_url,
-            head_sha=sha,
-            kind=fix_kind_of(payload),
-            overlay=str(payload.get("overlay", "")),
-            worktree_hint=str(payload.get("worktree_hint", "")),
-        )
+        kind = fix_kind_of(payload)
+        activity_key = payload.get("activity_key")
+        if kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and isinstance(activity_key, int) and activity_key > 0:
+            row = RedMrFixAttempt.claim_activity(
+                pr_url=pr_url,
+                head_sha=sha,
+                note_id=activity_key,
+                overlay=str(payload.get("overlay", "")),
+                worktree_hint=str(payload.get("worktree_hint", "")),
+            )
+        else:
+            row = RedMrFixAttempt.claim(
+                pr_url=pr_url,
+                head_sha=sha,
+                kind=kind,
+                overlay=str(payload.get("overlay", "")),
+                worktree_hint=str(payload.get("worktree_hint", "")),
+            )
     except DatabaseError:
         logger.warning("claim_red_mr_fix: DB error claiming %s — failing open (bounded)", pr_url)
         return True

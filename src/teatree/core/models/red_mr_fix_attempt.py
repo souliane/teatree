@@ -9,8 +9,10 @@ action.
 
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+_MAX_REVIEW_HEAD_LENGTH = 46
 
 
 class RedMrFixAttempt(models.Model):
@@ -55,6 +57,12 @@ class RedMrFixAttempt(models.Model):
     def __str__(self) -> str:
         return f"red-mr-fix<{self.pk}:{self.kind}:{self.pr_url}@{self.head_sha[:8]}>"
 
+    @property
+    def review_head_sha(self) -> str:
+        if self.head_sha == "<review-activity>":
+            return ""
+        return self.head_sha[18:] if self.head_sha.startswith("~") else self.head_sha
+
     @classmethod
     def claim(
         cls,
@@ -79,3 +87,37 @@ class RedMrFixAttempt(models.Model):
             defaults={"overlay": overlay, "worktree_hint": worktree_hint},
         )
         return row if created else None
+
+    @classmethod
+    def claim_activity(
+        cls,
+        *,
+        pr_url: str,
+        head_sha: str,
+        note_id: int,
+        overlay: str = "",
+        worktree_hint: str = "",
+    ) -> "RedMrFixAttempt | None":
+        if not pr_url or not head_sha or note_id <= 0 or note_id >= 1 << 63 or len(head_sha) > _MAX_REVIEW_HEAD_LENGTH:
+            return None
+        with transaction.atomic():
+            cursor, _ = cls.objects.get_or_create(
+                pr_url=pr_url,
+                head_sha="<review-activity>",
+                kind=cls.Kind.REVIEW_FINDINGS,
+            )
+            cls.objects.select_for_update().get(pk=cursor.pk)
+            latest = (
+                cls.objects.filter(pr_url=pr_url, kind=cls.Kind.REVIEW_FINDINGS, head_sha__startswith="~")
+                .order_by("-head_sha")
+                .first()
+            )
+            if latest is not None and note_id <= int(latest.head_sha[1:17], 16):
+                return None
+            return cls.objects.create(
+                pr_url=pr_url,
+                head_sha=f"~{note_id:016x}:{head_sha}",
+                kind=cls.Kind.REVIEW_FINDINGS,
+                overlay=overlay,
+                worktree_hint=worktree_hint,
+            )

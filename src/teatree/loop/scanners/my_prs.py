@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
 from teatree.core.review.pr_inventory import PrInventoryEntry
 from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, approvals_text, my_pr_next_task, threads_label
@@ -20,6 +21,7 @@ from teatree.loop.scanners.pr_findings import (
     FindingDisposition,
     ReviewVerdictReader,
     disposition_for_author,
+    human_open_thread_activity,
     unaddressed_review_findings,
 )
 from teatree.loop.scanners.pr_payload import head_sha
@@ -259,6 +261,13 @@ class MyPrsScanner:
         """
         notes_count = _int_field(pr, "user_notes_count", "review_comments")
         url = str(base_payload.get("url") or "")
+        activity_key = 0
+        if getattr(self.host, "forge", "") == "gitlab":
+            activity = self._gitlab_review_activity(url)
+            if activity is not None:
+                notes_count, activity_key = activity
+            else:
+                notes_count = 0
         sha = str(base_payload.get("head_sha") or "")
         critic_unmet = self.critic_reader.unmet_for(url=url, head_sha=sha) if self.critic_reader is not None else False
         if not unaddressed_review_findings(
@@ -269,6 +278,8 @@ class MyPrsScanner:
             return None
         author = author_username(pr)
         payload: SignalPayload = {**base_payload, "draft_count": notes_count, "author": author}
+        if activity_key:
+            payload["activity_key"] = activity_key
         if disposition_for_author(author, self_identities=identities) is FindingDisposition.POST:
             return ScanSignal(
                 kind="my_pr.draft_notes",
@@ -284,6 +295,27 @@ class MyPrsScanner:
             summary=f"PR #{iid} has {notes_count} unresolved review findings to fix: {title}",
             payload=payload,
         )
+
+    def _gitlab_review_activity(self, url: str) -> tuple[int, int] | None:
+        ref = pr_ref_from_url(url)
+        if ref is None:
+            logger.warning("my_prs could not parse GitLab MR %s; no note-driven run", url)
+            return None
+        try:
+            project = self.host.get_repo(repo=ref.slug)
+            if not isinstance(project.get("id"), int):
+                logger.warning("my_prs could not resolve GitLab MR %s; no note-driven run", url)
+                return None
+            discussions = self.host.list_pr_discussions(repo=ref.slug, pr_iid=ref.pr_id)
+        except Exception as exc:  # noqa: BLE001 — an unreadable forge must not trigger note-driven work.
+            logger.warning("my_prs could not read review discussions for %s; no note-driven run: %s", url, exc)
+            return None
+        activity = (
+            human_open_thread_activity(discussions, ForgeActors.for_url(url)) if isinstance(discussions, list) else None
+        )
+        if activity is None:
+            logger.warning("my_prs received incomplete review discussions for %s; no note-driven run", url)
+        return activity
 
     def _verdict_state(self, *, url: str, head_sha: str) -> HeadVerdictState | None:
         if self.verdict_reader is None:

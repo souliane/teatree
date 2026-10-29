@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Protocol, cast
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.core.self_forge_identities import declared_identities_for_url
 from teatree.types import RawAPIDict
 
@@ -128,13 +129,14 @@ def _is_self_authored(
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     if not author:
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
-    # Forge logins are case-insensitive, so a case-only difference is still the same account.
-    self_identities = {name.casefold() for name in _resolve_self_identities(mr_url, identities)}
-    verdict = (
-        AuthorshipVerdict.SELF
-        if author_is_self(author.casefold(), current_user="", self_identities=self_identities)
-        else AuthorshipVerdict.FOREIGN
-    )
+    actors = ForgeActors.for_url(mr_url)
+    self_identities = {name.casefold() for name in identities if name} | actors.system_logins
+    if author_is_self(author.casefold(), current_user="", self_identities=self_identities):
+        verdict = AuthorshipVerdict.SELF
+    elif actors.is_automation(author):
+        verdict = AuthorshipVerdict.UNREADABLE
+    else:
+        verdict = AuthorshipVerdict.FOREIGN
     return _observed_authorship(mr_url, author, verdict)
 
 
@@ -174,21 +176,29 @@ def _approver_usernames(mr: RawAPIDict) -> list[str]:
     return names
 
 
-def _self_has_non_system_note(mr: RawAPIDict, identities: set[str]) -> bool:
+def _self_has_non_system_note(mr: RawAPIDict, identities: set[str], actors: ForgeActors) -> bool:
     notes = mr.get("notes")
     if not isinstance(notes, list):
         return False
+    own = {identity.casefold() for identity in identities}
     for note in notes:
         if not isinstance(note, dict):
             continue
         note_dict = cast("RawAPIDict", note)
-        if bool(note_dict.get("system")):
-            continue
         author = note_dict.get("author")
         if isinstance(author, dict):
             author_dict = cast("RawAPIDict", author)
             username = author_dict.get("username") or author_dict.get("login")
-            if isinstance(username, str) and username in identities:
+            kind = author_dict.get("type")
+            if (
+                isinstance(username, str)
+                and username.casefold() in own
+                and not actors.is_automation(
+                    username,
+                    user_type=kind if isinstance(kind, str) else "",
+                    system=note_dict.get("system") is True,
+                )
+            ):
                 return True
     return False
 
@@ -264,7 +274,9 @@ def should_review_candidate_reasons(
     approvers = _approver_usernames(mr)
     if identities and identities.intersection(approvers):
         reasons.append("already_approved_by_self")
-    if identities and _self_has_non_system_note(mr, identities):
+    url = mr.get("web_url") or mr.get("html_url")
+    actors = ForgeActors.for_url(url if isinstance(url, str) else "")
+    if identities and _self_has_non_system_note(mr, identities, actors):
         reasons.append("has_self_note")
     state = mr.get("state")
     if isinstance(state, str):

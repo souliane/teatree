@@ -299,10 +299,14 @@ def compute_s1(window: Window, overlay: str, now: datetime) -> Computation:  # n
     red_keys, red_heads = _red_pr_keys()
     green = sum(1 for key in matchable if key not in red_keys)
     rate = green / denom
-    fix_in_window = RedMrFixAttempt.objects.filter(
-        dispatched_at__gte=window.start,
-        dispatched_at__lt=window.end,
-    ).count()
+    fix_in_window = (
+        RedMrFixAttempt.objects.filter(
+            dispatched_at__gte=window.start,
+            dispatched_at__lt=window.end,
+        )
+        .exclude(kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS, head_sha="<review-activity>")
+        .count()
+    )
     reci_values = [len(red_heads[key]) for key in matchable if key in red_heads]
     evidence["first_try_green"] = green
     evidence["re_ci_count"] = round(mean(reci_values), 3) if reci_values else 0.0
