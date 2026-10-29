@@ -62,7 +62,33 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 
 **GitHub webhook receiver (`/hooks/github/`).** Each delivery is verified against the secret of the webhook that sent it: the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers name the `pass` entry `teatree/github-webhook/<type>-<id>` (an App webhook's id is the App id), and the HMAC-SHA256 of the raw body decides. The four GitHub headers must fully match their patterns (400), and `Content-Length` must be present (411), a non-negative integer (400) and within `DATA_UPLOAD_MAX_MEMORY_SIZE` (413, logged as a WARNING naming the delivery). An unlisted target answers 401 without decrypting anything; a listed entry that reads back empty, a store failure, or a read that fails any other way (a permission or decoding error) answers 503, and that outcome is remembered for a minute so repeated requests do not reach the store again. An empty key never verifies. The listing is cached for 30 s and a found secret for 10 minutes, after which the next request re-lists and re-reads it, so a deleted or emptied entry stops verifying. A signature mismatch re-reads the entry at most once per target per minute. A target whose secret is still fresh verifies without touching the store, even while the listing fails or a refresh read is in progress; any other request that finds a read of the same entry in progress waits at most 5 s before answering 503. Unauthenticated requests therefore cannot use up the reads a real delivery needs; a wedged keyring holds one thread for the read itself, and each other request for that target holds its thread for at most 5 s. A verified delivery is stored keyed `github:<X-GitHub-Delivery>` with its `event_name`, signer, origin, repository id key, action and event time, but no body or payload. A missing event time uses receipt time and is marked unknown; all GitHub deliveries are stored settled because no handler consumes them, including those older than the 7-day replay window. Signed deliveries are not rate-limited. The hourly retention pass deletes these settled rows once their `received_at` is more than 8 days old, in batches it shares with the other retention lanes, so retention bounds how long a row lives, not how many rows arrive.
 
-**Repository hook provisioning.** `t3 <overlay> github-webhook connect --repo <owner/name> --url <public HTTPS URL>/hooks/github/` stores the signing secret at `teatree/github-webhook/repository-<repository id>`, creates or reconciles the repository hook, and requires a verified `ping` row in the listener's control DB before reporting success. The command derives subscribed events from the receiver's supported event table; GitHub sends `ping` separately. A second run reuses the secret and hook, while `--replace-secret` backs up and rotates the secret. A failed hook write restores the previous store state, and a failed restore keeps the backup key, names it in the error and says to rerun with `--replace-secret` after fixing the store. `connect --disconnect` or `disconnect` removes the exact-URL hook before its secret; a URL with no hook changes nothing, and the running listener keeps accepting the removed secret until its cached copy expires. The URL must reach the isolated listener through valid TLS, and the command must share its control DB. Hook provisioning does not select webhook transport for the loop.
+**Repository hook provisioning.** `t3 <overlay> github-webhook connect --repo <owner/name> --url <public HTTPS URL>/hooks/github/` stores the signing secret at `teatree/github-webhook/repository-<repository id>`, creates or reconciles the repository hook, and requires a verified `ping` row in the listener's control DB before reporting success. The command derives subscribed events from `HOOK_EVENTS`; GitHub sends `ping` separately. A second run reuses the secret and hook, while `--replace-secret` backs up and rotates the secret. A failed hook write restores the previous store state, and a failed restore keeps the backup key, names it in the error and says to rerun with `--replace-secret` after fixing the store. `connect --disconnect` or `disconnect` removes the exact-URL hook before its secret; a URL with no hook changes nothing, and the running listener keeps accepting the removed secret until its cached copy expires. The URL must reach the isolated listener through valid TLS, and the command must share its control DB. Hook provisioning does not select webhook transport for the loop.
+
+**GitHub webhook event inventory.**
+
+`HOOK_EVENTS` is the repository hook subscription. Every GitHub delivery is currently stored settled with no payload, so none of these events drives a scanner or task yet. A `connect` rerun removes `check_run` from an old ten-event hook; the receiver still verifies and records an old hook's `check_run` delivery. The pollers below remain active until a handler and evidence-backed fallback replace each one.
+
+| Event | Polling behavior that may later consume it |
+| --- | --- |
+| `pull_request_review` | `PrApprovalScanner`, `ReviewerPrsScanner`, `ReviewedPrHeadScanner` |
+| `pull_request_review_comment` | No review-comment poller exists; the review-fix handler would add this capability. |
+| `issue_comment` | Issue and review intent intake. |
+| `commit_comment` | No current scanner consumes this event. |
+| `pull_request` | PR review, CI, conflict, merge, and ticket-completion scans. |
+| `issues` | Issue intake, disposition, and ticket-completion scans. |
+| `check_suite` | `MyPrsScanner` CI and `PrSweepScanner` merge readiness. |
+| `workflow_run` | `MyPrsScanner` CI. |
+| `push` | Base-branch conflict refresh; receipt is evidence only today. |
+
+| Polling path | Shipped cadence | Forge reads still in use |
+| --- | --- | --- |
+| `inbox` / `PrApprovalScanner` | 60 s | Approvals of PRs awaiting review. |
+| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | Review requests, review state, and live head. |
+| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | Authored PRs, CI, mergeability, and merge state. |
+| `tickets` / disposition and completion | 300 s | Issue state for tracked tickets. |
+| `followup` / issue intake and review nag | 1,800 s | Assigned issues and review-request state. |
+| `issue_implementer` / admitted backlog | 1,800 s | Open issues eligible for implementation. |
+| `housekeeping` / board reconciliation | 3,600 s | Forge truth for repair. |
 
 **Forge relay identity.** GitLab relay rows retain the event kind, `relay` origin, project-id repository key, action and Pub/Sub publish time after the body and payload are cleared. A `body-omitted` message can retain only its header-derived event kind and publish time. Successfully drained forge rows also clear prior error text; pending and dead-lettered rows keep their diagnostic content.
 

@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from teatree.core.intake.github_payload import GitHubPayloadFields
+from teatree.core.intake.github_payload import HOOK_EVENTS, GitHubPayloadFields
 from teatree.types import RawAPIDict
 
 
@@ -108,3 +110,11 @@ def test_identity_fields_respect_source_bounds(payload: RawAPIDict, action: str,
     assert fields.action == action
     assert fields.repo_key == repo_key
     assert fields.occurred_at is None
+
+
+def test_github_subscription_inventory_matches_provisioned_events() -> None:
+    document = (Path(__file__).resolve().parents[3] / "docs/blueprint/loop-topology.md").read_text()
+    section = document.split("**GitHub webhook event inventory.**\n", 1)[1].split("\n| Polling path", 1)[0]
+    documented = {row.split("|")[1].strip(" `") for row in section.splitlines() if row.startswith("| `")}
+
+    assert documented == set(HOOK_EVENTS)
