@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task, TaskAttempt
@@ -13,12 +14,15 @@ from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import (
     CLAUDE_LIKE,
+    CLAUDE_SDK,
     MANAGED,
     CrashingSession,
     register_stub_harnesses,
     route_config,
     routed_by,
+    two_healthy_oauth_accounts,
 )
+from tests.teatree_agents._sdk_fake import fake_sdk
 
 
 class TestRoutedCrash(TestCase):
@@ -53,3 +57,24 @@ class TestRoutedCrash(TestCase):
             self._run()
 
         assert not self.task.attempts.exists()
+
+
+class TestARoutedCrashKeepsItsSigningAccount(TestCase):
+    def test_the_failed_attempt_names_the_account_the_run_was_signed_with(self) -> None:
+        first, _second = two_healthy_oauth_accounts()
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with (
+            routed_by(route_config("ac-python", CLAUDE_SDK)),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=["ac-python"]),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: path),
+            patch.object(Task, "renew_lease", lambda self, **_kw: None),
+            fake_sdk([]),
+            patch.object(harness_mod, "ClaudeSDKClient", lambda **_: CrashingSession([])),
+        ):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata=SkillMetadata())
+
+        task.refresh_from_db()
+        assert (attempt.outcome, attempt.account) == (TaskAttempt.Outcome.CRASH, first)
+        assert task.status == Task.Status.FAILED

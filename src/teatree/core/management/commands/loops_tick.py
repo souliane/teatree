@@ -45,7 +45,7 @@ from teatree.config.resolution import get_effective_settings
 from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
-from teatree.core.models import LoopLease
+from teatree.core.models import Loop, LoopLease
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.review.pr_inventory import OpenPrRow, open_pr_rows
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
@@ -69,6 +69,11 @@ type ReportDict = dict[str, Any]
 #: CAS-as-throttle shape (claim-if-stale, never released).
 _REINSTALL_DRAIN_SLOT = "loop-reinstall"
 _REINSTALL_DRAIN_THROTTLE_SECONDS = 60
+
+_RETRYABLE_CADENCE_KINDS: dict[str, frozenset[str]] = {
+    "arch_review": frozenset({"architectural_review.held"}),
+    "eval_local": frozenset({"eval_local.held", "eval_local.parked"}),
+}
 
 
 def _scanner_context(request: "TickRequest") -> "BuildJobsContext":
@@ -122,6 +127,8 @@ class _ScopedJobsBuilder:
 
     loop: str
     blocked_reason: str = ""
+    claimed_at: dt.datetime | None = None
+    previous_last_run_at: dt.datetime | None = None
 
     def __call__(self, request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
         from teatree.loops.loop_table import dispatch_loop_table  # noqa: PLC0415 — deferred: lazy command import
@@ -132,7 +139,17 @@ class _ScopedJobsBuilder:
             self.blocked_reason = "no mini-loop of that name is registered"
             return []
         self.blocked_reason = outcome.blocked_reason
+        self.claimed_at = outcome.claimed_at
+        self.previous_last_run_at = outcome.previous_last_run_at
         return list(outcome.jobs)
+
+    def release_held_cadence(self, report: "TickReport") -> None:
+        retryable = _RETRYABLE_CADENCE_KINDS.get(self.loop, frozenset())
+        if self.claimed_at is None or not any(signal.kind in retryable for signal in report.signals):
+            return
+        Loop.objects.release_held_run_if_unchanged(
+            self.loop, claimed_at=self.claimed_at, previous_last_run_at=self.previous_last_run_at
+        )
 
 
 def _open_pr_rows(report: "TickReport") -> list[OpenPrRow]:
@@ -312,7 +329,11 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human="\n".join([verdict, *warnings, *listing, *stalls]),
         )
-        return bool(report.signals or any(action.kind != "statusline" for action in report.actions) or repairs)
+        return bool(
+            any(not signal.kind.endswith((".held", ".parked", ".not_due")) for signal in report.signals)
+            or any(action.kind != "statusline" for action in report.actions)
+            or repairs
+        )
 
     @staticmethod
     def _set_statusline_readers(*, active: bool) -> None:
@@ -495,6 +516,7 @@ class Command(TyperCommand):
                 with overlay_entry_points_scanned_once():
                     request = self._build_request(overlay)
                     report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
+                    builder.release_held_cadence(report)
             finally:
                 self._set_statusline_readers(active=False)
                 LoopLease.objects.release(tick_mutex, owner=owner)

@@ -75,7 +75,13 @@ class EvalLocalScanner:
                 )
             ]
         if not reserve.met:
-            return []
+            return [
+                ScanSignal(
+                    kind="eval_local.held",
+                    summary=f"local eval held for {self.overlay_name}: {reserve.reason or 'reserve unmet'}",
+                    payload={"overlay": self.overlay_name, "reason": reserve.reason or "reserve unmet"},
+                )
+            ]
 
         task = cadence.queue_task(
             placeholder_issue_url=f"eval-local://{self.overlay_name}",

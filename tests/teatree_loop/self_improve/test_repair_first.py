@@ -224,7 +224,7 @@ class RepairFirstTests(TestCase):
         assert "planning pending" in deliveries[0][0]
         assert deliveries[0][1].startswith("self-improve:still-open:")
 
-    def test_delayed_message_uses_real_push_egress_as_own_root(self) -> None:
+    def test_delayed_message_is_pulled_without_posting(self) -> None:
         backend = MagicMock()
         backend.open_dm.return_value = "D-OWNER"
         backend.post_message.return_value = {"ok": True, "ts": "1700000000.000001"}
@@ -256,9 +256,16 @@ class RepairFirstTests(TestCase):
             patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=60)),
         ):
             run_tier(Tier.CHEAP, detectors=[_Detector(_incident())], budget=BudgetVerdict.allow(), delivery=routes)
-        assert backend.post_message.call_count == 1
-        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
-        assert BotPing.objects.filter(status=BotPing.Status.SENT).count() == 1
+        backend.post_message.assert_not_called()
+        assert (
+            BotPing.objects.filter(
+                status=BotPing.Status.PULLED, idempotency_key__startswith="self-improve:still-open:"
+            ).count()
+            == 1
+        )
+        marker = RepairMarker.from_payload(SelfImproveFiring.objects.get().payload)
+        assert marker is not None
+        assert marker.notified_at is not None
 
     def test_existing_delivery_receipt_completes_wait_marker(self) -> None:
         start = timezone.now()

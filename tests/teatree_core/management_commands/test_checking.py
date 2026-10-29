@@ -563,7 +563,7 @@ class TestCheckingRemaining:
         for index in range(4):
             task = _task(ticket, "code")
             Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(minutes=80 - index))
-        widths = MagicMock(expensive=2, review=1, retiring=1)
+        widths = MagicMock(expensive=2, review=1, retiring=1, answering=2, architectural_review=1, maintenance=3)
         with _lane_width_patch(widths):
             payload = _show_json()
         queue = payload["remaining"]["queue"]
@@ -571,7 +571,14 @@ class TestCheckingRemaining:
         assert queue["claimed"] == {}
         assert queue["oldest_pending_minutes"] == pytest.approx(80, abs=1)
         assert queue["oldest_pending_phase"] == "coding"
-        assert queue["seats"] == {"expensive": 2, "review": 1, "retiring": 1}
+        assert queue["seats"] == {
+            "expensive": 2,
+            "review": 1,
+            "retiring": 1,
+            "answering": 2,
+            "architectural_review": 1,
+            "maintenance": 3,
+        }
         assert "queued, 0 ahead" in payload["remaining"]["items"][2]["detail"]
         _completed_history("coding", (30,) * 5)
         widths.expensive = 0

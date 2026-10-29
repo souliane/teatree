@@ -5,8 +5,9 @@ import json
 from claude_agent_sdk import AssistantMessage, SystemMessage, ToolResultBlock, ToolUseBlock
 from django.test import TestCase
 
+from teatree.agents.credential_policy import PLANS_ONLY_MARKER, plans_only
 from teatree.agents.runner import run_agent
-from teatree.agents.runner_outcomes import Transport, _failure_usage
+from teatree.agents.runner_outcomes import Transport, _failure_usage, record_round_handoff
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_usage import DispatchProvenance
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, exhausted_the_conversation
@@ -63,6 +64,22 @@ class _Drive(TestCase):
             assistant_text(json.dumps(_ENVELOPE)),
             result_message(model_usage=_SERVED_BY_SONNET, num_turns=4),
         ]
+
+
+class TestRoundHandoffPreservesCredentialRetry(_Drive):
+    def test_existing_round_note_does_not_erase_plans_only_retry(self) -> None:
+        self.task.claim(claimed_by="test")
+        self.task.execution_reason = f"Start\n[round-ceiling-continuation] Old round\n{PLANS_ONLY_MARKER}"
+        self.task.save(update_fields=["execution_reason"])
+        outcome = HarnessOutcome(
+            agent_text="Progress", result_message=None, stuck_reason=None, round_handoff="50 turns"
+        )
+
+        record_round_handoff(self.task, outcome, usage=_failure_usage(outcome, lane="", transport=Transport()))
+
+        self.task.refresh_from_db()
+        assert plans_only(self.task)
+        assert "Fresh round" in self.task.execution_reason
 
 
 class TestADowngradeForcedByAnOutdatedCliFailsLoud(_Drive):

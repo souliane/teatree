@@ -14,9 +14,17 @@ logger = logging.getLogger(__name__)
 CHEAP_TASK_QUEUE = "cheap"
 
 
+def pending_admission_reason(phase: str) -> str | None:
+    return headless_admission_block_reason() or agent_admission.agent_admission_verdict().denied_reason(phase)
+
+
 def enqueue_execution(task_id: int, phase: str) -> None:
-    """Route draining and owner-answering phases to the cheap executors; preserve one task body and claim CAS."""
-    job = execute_task if phase_cost(phase) is PhaseCost.EXPENSIVE else execute_task.using(queue_name=CHEAP_TASK_QUEUE)
+    """Route reserved and cheap phases to their executors; preserve one task body and claim CAS."""
+    job = (
+        execute_task.using(queue_name=CHEAP_TASK_QUEUE)
+        if phase_cost(phase) is not PhaseCost.EXPENSIVE
+        else execute_task
+    )
     job.enqueue(task_id, phase)
 
 

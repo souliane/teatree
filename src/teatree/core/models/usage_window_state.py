@@ -19,6 +19,8 @@ from datetime import datetime
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
+
 #: The marker prefix stamped on a parked ``TaskAttempt.error`` — a usage-window limit-park or a
 #: deploy-drain checkpoint — so a park reads distinctly from a real failure, the sibling of
 #: ``headless._STUCK_LOOP_PREFIX``. Kept here (a DOMAIN home) so the ``teatree.agents`` park
@@ -30,7 +32,13 @@ CHECKOUT_PARKED_PREFIX = "checkout_parked: "
 OPERATOR_PAUSED_PREFIX = "operator_paused: "
 #: An own-PR review held before its harness opened because its checkout and the forge disagree on the head.
 REVIEW_HELD_PREFIX = "review_held: "
-PARK_ERROR_PREFIXES = (LIMIT_PARKED_PREFIX, CHECKOUT_PARKED_PREFIX, OPERATOR_PAUSED_PREFIX, REVIEW_HELD_PREFIX)
+PARK_ERROR_PREFIXES = (
+    LIMIT_PARKED_PREFIX,
+    CHECKOUT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    REVIEW_HELD_PREFIX,
+    SUPERSEDED_PREFIX,
+)
 #: Attribution can claim complete park history only inside the park retention window.
 PARK_ATTEMPT_RETENTION_DAYS = 7
 

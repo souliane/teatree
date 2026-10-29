@@ -292,7 +292,7 @@ class TestL1ReviewCadenceIsTheOnlyClock(TestCase):
         """A COMPLETED review 13 h old still suppresses — the 168h cadence governs."""
         _seed_review_task(status=Task.Status.COMPLETED, hours_ago=13)
 
-        assert _scanner_l1().scan() == []
+        assert [signal.kind for signal in _scanner_l1().scan()] == ["architectural_review.not_due"]
 
     def test_completed_review_past_cadence_redispatches(self) -> None:
         """A COMPLETED review older than the 168h cadence re-fires (success clock intact)."""

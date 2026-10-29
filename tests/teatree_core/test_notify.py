@@ -21,9 +21,10 @@ from teatree.core import notify as notify_module
 from teatree.core.backend_protocols import MessagingReadRefusedError
 from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, IncomingEvent, Ticket, TicketDmPost, TicketDmThread
+from teatree.core.models import BotPing, IncomingEvent, ThreadBinding, Ticket, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
+from teatree.core.owner_dm import ticket_dm_delivery
 from teatree.types import RawAPIDict
 
 _DB_LOCKED = OperationalError("database is locked")
@@ -55,7 +56,7 @@ def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p170000
 
 
 class TestNotifyUser(TestCase):
-    def test_ticket_notes_share_one_header_per_ticket(self) -> None:
+    def test_ticket_notes_use_first_card_as_root(self) -> None:
         tickets = [
             Ticket.objects.create(
                 overlay="teatree",
@@ -89,16 +90,52 @@ class TestNotifyUser(TestCase):
 
         roots = [entry for entry in posted if not entry[1]]
         assert len(roots) == 2
-        assert roots[0][0] == "<https://github.com/example/project/issues/12|example/project#12> Issue 12"
-        assert roots[1][0] == "<https://github.com/example/project/issues/13|example/project#13> Issue 13"
-        assert [entry[1] for entry in posted if "note " in entry[0]] == [
-            roots[0][2],
-            roots[1][2],
-            roots[0][2],
-        ]
-        assert TicketDmPost.objects.count() == 5
+        assert len(posted) == 3
+        assert "note 0" in roots[0][0]
+        assert "note 1" in roots[1][0]
+        assert posted[2][1] == roots[0][2]
+        assert TicketDmThread.objects.get(ticket=tickets[0]).root_ts == roots[0][2]
+        assert TicketDmPost.objects.count() == 3
 
-    def test_failed_ticket_header_never_posts_body_at_root(self) -> None:
+    def test_existing_ticket_root_recovers_legacy_binding(self) -> None:
+        ticket = Ticket.objects.create(short_description="Legacy")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
+        backend = _backend()
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000002"}
+        backend.fetch_thread_replies.return_value = [{"ts": "1700000000.000001"}]
+
+        outcome = notify_user_outcome(
+            "later card",
+            kind=NotifyKind.INFO,
+            idempotency_key="legacy-ticket-card",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        assert TicketDmPost.objects.filter(channel="D-USER", slack_ts="1700000000.000001").exists()
+        assert ThreadBinding.objects.filter(ticket=ticket, channel="D-USER", thread_ts="1700000000.000001").exists()
+
+    def test_conflicting_ticket_root_binding_blocks_delivery(self) -> None:
+        ticket = Ticket.objects.create(short_description="Current")
+        other = Ticket.objects.create(short_description="Other")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
+        ThreadBinding.bind(ticket=other, channel="D-USER", thread_ts="1700000000.000001")
+        backend = _backend()
+        backend.fetch_thread_replies.return_value = [{"ts": "1700000000.000001"}]
+
+        outcome = notify_user_outcome(
+            "card",
+            kind=NotifyKind.INFO,
+            idempotency_key="conflicting-ticket-root",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert not outcome.sent
+        backend.post_message.assert_not_called()
+
+    def test_failed_first_card_leaves_no_root(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
         backend = _backend()
         backend.post_message.return_value = {"ok": False, "error": "ratelimited"}
@@ -112,10 +149,28 @@ class TestNotifyUser(TestCase):
         )
 
         assert not outcome.sent
-        assert "ticket header failed" in outcome.detail
+        assert "Slack post failed: ratelimited" in outcome.detail
         assert backend.post_message.call_count == 1
         thread = TicketDmThread.objects.get(ticket=ticket)
         assert (thread.root_ts, thread.generation) == ("", 0)
+
+    def test_root_binding_failure_keeps_landed_card_delivered(self) -> None:
+        ticket = Ticket.objects.create(short_description="Bind failure")
+        backend = _backend()
+
+        with patch.object(ThreadBinding, "bind", side_effect=RuntimeError("binding unavailable")):
+            outcome = notify_user_outcome(
+                "first card",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="root-binding-failure",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+
+        assert outcome.sent
+        backend.post_message.assert_called_once()
+        assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000000"
+        assert BotPing.objects.get(idempotency_key="root-binding-failure").status == BotPing.Status.SENT
 
     def test_proven_deleted_root_reopens_on_next_message(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
@@ -162,7 +217,7 @@ class TestNotifyUser(TestCase):
         assert thread.generation == 1
         assert len([entry for entry in posted if not entry[1]]) == 2
 
-    def test_tombstoned_root_reopens_after_refusing_the_current_message(self) -> None:
+    def test_tombstoned_root_reopens_with_the_current_message(self) -> None:
         ticket = Ticket.objects.create(short_description="Tombstone")
         backend = _backend()
         posts: list[tuple[str, str]] = []
@@ -189,9 +244,9 @@ class TestNotifyUser(TestCase):
 
         assert send("first")
         tombstoned = True
-        assert not send("second")
+        assert send("second")
         thread = TicketDmThread.objects.get(ticket=ticket)
-        assert (thread.root_ts, thread.generation) == ("", 1)
+        assert (thread.root_ts, thread.generation) == ("1700000000.000002", 1)
         tombstoned = False
         assert send("third")
         assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 2
@@ -218,8 +273,16 @@ class TestNotifyUser(TestCase):
         )
 
         assert outcome.sent
-        assert len(posts) == 2
+        assert len(posts) == 1
         assert posts[0][1] == ""
+        second = notify_user_outcome(
+            "again",
+            kind=NotifyKind.INFO,
+            idempotency_key="read-refusal-second",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+        assert second.sent
         assert posts[1][1] == "1700000000.000001"
         thread = TicketDmThread.objects.get(ticket=ticket)
         assert (thread.root_ts, thread.generation) == ("1700000000.000001", 0)
@@ -236,23 +299,24 @@ class TestNotifyUser(TestCase):
         backend.post_message.side_effect = post_message
         backend.fetch_thread_replies.side_effect = [OSError("read offline"), [{"ts": "1700000000.000001"}]]
 
-        def send() -> bool:
+        def send(index: int) -> bool:
             return notify_user_outcome(
                 "body",
                 kind=NotifyKind.INFO,
-                idempotency_key="root-read-retry",
+                idempotency_key=f"root-read-retry-{index}",
                 audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
             ).sent
 
-        assert send()
+        assert send(1)
         assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000001"
-        assert send()
+        assert send(2)
         assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 1
         assert len(posts) == 2
 
-    def test_header_read_releases_the_write_transaction(self) -> None:
+    def test_existing_root_read_releases_the_write_transaction(self) -> None:
         ticket = Ticket.objects.create(short_description="Read outside lock")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
         backend = _backend()
         atomic_depth = len(connection.atomic_blocks)
 
@@ -270,6 +334,7 @@ class TestNotifyUser(TestCase):
         )
 
         assert outcome.sent
+        backend.fetch_thread_replies.assert_called_once_with(channel="D-USER", thread_ts="1700000000.000001")
 
     def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
         ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
@@ -328,6 +393,24 @@ class TestNotifyUser(TestCase):
         assert TicketDmPost.objects.filter(
             channel="D-USER", slack_ts="1700000000.000002", thread__ticket=ticket
         ).exists()
+
+    def test_explicit_thread_tracking_failure_keeps_landed_reply_delivered(self) -> None:
+        backend = _backend()
+
+        with patch.object(
+            ticket_dm_delivery, "record_ticket_thread_post", side_effect=RuntimeError("tracking unavailable")
+        ):
+            outcome = notify_user_outcome(
+                "thread reply",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="thread-tracking-failure",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", thread_ts="1700000000.000001"),
+            )
+
+        assert outcome.sent
+        backend.post_message.assert_called_once()
+        assert BotPing.objects.get(idempotency_key="thread-tracking-failure").status == BotPing.Status.SENT
 
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
         backend = _backend()
@@ -842,6 +925,25 @@ class TestNotifyUserUnderAnEgressSuppressor(TestCase):
         assert suppressed == [("U_ME", "owner_dm_post", EgressKind.POST)]
         backend.open_dm.assert_not_called()
         backend.post_message.assert_not_called()
+
+    def test_preview_does_not_run_speech_sidecar(self) -> None:
+        backend = _backend()
+
+        with (
+            suppress_on_behalf_egress(lambda *_args: {"ok": True, "ts": "dry-run"}),
+            patch("teatree.core.speak.deliver_user_dm_sidecar") as sidecar,
+        ):
+            outcome = notify_user_outcome(
+                "preview card",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="preview-no-audio",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME"),
+            )
+
+        assert outcome.sent
+        sidecar.assert_not_called()
+        backend.post_audio_dm.assert_not_called()
 
 
 class TestNotifyUserNeverRaises(TestCase):

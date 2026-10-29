@@ -166,13 +166,12 @@ class TestDrainHeadlessQueue(TestCase):
     def test_enqueues_every_pending_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
-        # One free-form phase and one with a registered agent: with a single lane
-        # the drain safety-net owns both.
+        # The drain safety net enqueues both free-form and registered work.
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
             status=Task.Status.PENDING,
-            phase="architectural_review",
+            phase="unregistered_phase",
         )
         registered_phase = Task.objects.create(
             ticket=ticket,
@@ -1507,11 +1506,9 @@ class TestExecuteHeadlessTask(TestCase):
 
         self.monkeypatch.setattr("teatree.core.agent_runner._runner", _raise)
 
-        # ``architectural_review`` has no registered phase agent, so it is NOT
-        # loop-dispatched — it rides the auto-enqueue path the executor owns.
-        # ImmediateBackend runs the enqueued job synchronously.
+        # An unregistered phase rides auto-enqueue; ImmediateBackend executes it synchronously.
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+            task = Task.objects.create(ticket=ticket, session=session, phase="unregistered_phase")
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -1543,7 +1540,7 @@ class TestExecuteHeadlessTask(TestCase):
         beta_metadata = beta_overlay.metadata.get_skill_metadata()
         registry = {"alpha": CommandOverlay(), "beta": beta_overlay}
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=registry):
-            Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+            Task.objects.create(ticket=ticket, session=session, phase="unregistered_phase")
 
         assert captured["metadata"] == beta_metadata
 
@@ -1758,6 +1755,7 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
             f"short-verb 'review' PENDING task was not consumed (status={zombie.status}); "
             f"_consume_pending_phase_tasks compared raw phase"
         )
+        assert zombie.attempts.filter(error__startswith="superseded: ").exists()
 
     def test_canonical_pending_task_still_consumed(self) -> None:
         # Regression guard: the canonical spelling must keep being consumed.
@@ -1772,6 +1770,32 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+    def test_unpushed_coding_followup_is_kept_pending(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        followup = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            remote = Path(directory) / "remote.git"
+            _init_repo_with_branch(repo, branch="feature", commits_ahead=0)
+            run_strict(repo=str(directory), args=["init", "--bare", str(remote)])
+            run_strict(repo=str(repo), args=["remote", "add", "origin", str(remote)])
+            run_strict(repo=str(repo), args=["push", "origin", "main", "feature"])
+            run_strict(repo=str(repo), args=["fetch", "origin"])
+            (repo / "pending.txt").write_text("not pushed\n")
+            run_strict(repo=str(repo), args=["add", "pending.txt"])
+            run_strict(repo=str(repo), args=["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "pending"])
+            Worktree.objects.create(
+                ticket=ticket, repo_path=str(repo), branch="feature", extra={"worktree_path": str(repo)}
+            )
+
+            ticket._consume_pending_phase_tasks("coding")
+
+        followup.refresh_from_db()
+        assert followup.status == Task.Status.PENDING
+        assert not followup.attempts.exists()
 
 
 class TestHeadlessClaimLease(TestCase):
@@ -1841,6 +1865,38 @@ class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
         self.task.refresh_from_db()
         assert result.get("exit_code") == 0
         assert self.task.status == Task.Status.COMPLETED
+
+    def test_seated_periodic_work_waits_if_the_machine_brake_lands_before_claim(self) -> None:
+        for phase in ("architectural_review", "backlog_sweep"):
+            with self.subTest(phase=phase):
+                Task.objects.filter(pk=self.task.pk).update(
+                    status=Task.Status.PENDING, phase=phase, admitted_at=timezone.now()
+                )
+                self.task.refresh_from_db()
+                attempts_before = TaskAttempt.objects.filter(task=self.task).count()
+                with (
+                    patch("teatree.core.agent_admission.agent_admission_verdict") as verdict,
+                    patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                ):
+                    verdict.return_value.claim_denied_reason.return_value = "machine load HALT"
+                    result = execute_task.func(self.task.pk, self.task.phase)
+
+                self.task.refresh_from_db()
+                assert "machine load HALT" in result.get("skipped", "")
+                assert self.task.status == Task.Status.PENDING
+                assert TaskAttempt.objects.filter(task=self.task).count() == attempts_before
+
+    def test_finished_row_skips_the_lane_probe(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED)
+        with (
+            patch("teatree.core.agent_admission.agent_admission_verdict") as verdict,
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        verdict.assert_not_called()
+        assert "not claimable" in result.get("skipped", "")
+        assert not TaskAttempt.objects.filter(task=self.task).exists()
 
     def test_the_off_posture_leaves_the_task_pending_with_no_attempt(self) -> None:
         ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")

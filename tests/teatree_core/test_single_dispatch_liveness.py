@@ -34,7 +34,7 @@ class TestNonLoopDispatchedTaskStillAutoEnqueued(TestCase):
             task = Task.objects.create(
                 ticket=ticket,
                 session=session,
-                phase="architectural_review",
+                phase="unregistered_phase",
                 status=Task.Status.PENDING,
             )
-        headless.enqueue.assert_called_once_with(task.pk, "architectural_review")
+        headless.enqueue.assert_called_once_with(task.pk, "unregistered_phase")
