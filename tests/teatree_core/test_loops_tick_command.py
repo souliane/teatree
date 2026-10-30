@@ -505,7 +505,7 @@ def _periodic_scanner(loop: str) -> Scanner:
     if loop == "arch_review":
         return ArchitecturalReviewScanner(overlay_name=overlay)
     if loop == "eval_local":
-        return EvalLocalScanner(overlay_name=overlay, skill="eval", reserve_met=lambda: EvalReserveDecision(met=True))
+        return EvalLocalScanner(overlay_name=overlay, reserve_met=lambda: EvalReserveDecision(met=True))
     if loop == "news":
         return ScanningNewsScanner(overlay_name=overlay)
     if loop == "backlog_sweep":
