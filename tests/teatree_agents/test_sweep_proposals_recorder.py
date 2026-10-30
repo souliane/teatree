@@ -8,7 +8,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.sweep_proposals_recorder import _owner_citation, record_returned_sweep_proposals
-from teatree.core.modelkit.question_card import internal_shorthand
+from teatree.core.modelkit.question_card import CardOption, internal_shorthand
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket, TicketSweepRun
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.core.models.task_handoff import resume_on_answer
@@ -33,6 +33,7 @@ class TestSweepProposalRecording(TestCase):
         harness: str = "codex_app_server",
         expected_examined: list[str] | None = None,
         index_urls: list[str] | None = None,
+        window_task_id: int | None = None,
     ) -> object:
         provider = SimpleNamespace(get_code_host_for_url=lambda _overlay, _url: object())
         examined = proposals.get("examined", []) if isinstance(proposals, dict) else []
@@ -40,7 +41,7 @@ class TestSweepProposalRecording(TestCase):
         self.ticket.merge_extra(
             set_keys={
                 "sweep_dispatch_window": {
-                    "task_id": self.task.pk,
+                    "task_id": window_task_id if window_task_id is not None else self.task.pk,
                     "index": index_urls if index_urls is not None else expected,
                     "examined": expected,
                     "external_count": 0,
@@ -128,7 +129,7 @@ class TestSweepProposalRecording(TestCase):
         assert host in question.question or host in question.evidence.get("quoted", "")
         assert "same module" in question.evidence.get("quoted", "") or "same module" in question.evidence.get("why", "")
         assert question.parked_task_id is None
-        answered = question.apply_answer("Approve", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        answered = question.apply_answer("Approve all", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
         assert answered is not None
         assert resume_on_answer(answered, answered.parked_task) is None
         assert Task.objects.filter(parent_task=self.task).count() == 0
@@ -184,22 +185,33 @@ class TestSweepProposalRecording(TestCase):
         quoted = DeferredQuestion.objects.get().evidence["quoted"]
         assert all(url in quoted for url in (*members, host))
         assert quoted.count("same module") == 2
+        options = CardOption.parse_all(DeferredQuestion.objects.get().options_json)
+        assert [option.label for option in options] == ["Approve all", "Decline all"]
 
-    def test_a_full_window_of_long_folds_fits_one_owner_question(self) -> None:
+    def test_every_fold_count_up_to_a_full_window_fits_one_owner_question(self) -> None:
         host = "https://github.com/example-org/example-repo/issues/100"
-        members = [f"https://github.com/example-org/example-repo/issues/{number}" for number in range(1, 21)]
-        proposals = {
-            "examined": members,
-            "folds": [{"member_url": member, "host_url": host, "citation": "same module " * 30} for member in members],
-            "gaps": [],
-        }
-        with patch(
-            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
-        ):
-            attempt = self._record(proposals, index_urls=[*members, host])
+        all_members = [f"https://github.com/example-org/example-repo/issues/{number}" for number in range(1, 21)]
+        for count in range(1, 21):
+            with self.subTest(folds=count):
+                self.setUp()
+                members = all_members[:count]
+                proposals = {
+                    "examined": members,
+                    "folds": [
+                        {"member_url": member, "host_url": host, "citation": "same module follow-up " * 15}
+                        for member in members
+                    ],
+                    "gaps": [],
+                }
+                with patch(
+                    "teatree.agents.sweep_proposals_recorder.require_self_authored_issue",
+                    return_value={"state": "open"},
+                ):
+                    attempt = self._record(proposals, index_urls=[*members, host])
 
-        assert attempt.error == "", attempt.error
-        assert DeferredQuestion.objects.count() == 1
+                assert attempt.error == "", attempt.error
+                assert DeferredQuestion.objects.filter(dedupe_marker__endswith=f"-{self.task.pk}").count() == 1
+                assert TicketSweepRun.objects.incomplete().count() == 0
 
     def test_owner_citation_does_not_cut_an_html_entity(self) -> None:
         citation = _owner_citation("&" * 100)
@@ -254,6 +266,67 @@ class TestSweepProposalRecording(TestCase):
 
         assert "examined" in attempt.error
         assert TicketSweepRun.objects.count() == 0
+
+    def test_examined_must_be_the_dispatched_window_as_a_set(self) -> None:
+        window = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 2)]
+        other = "https://github.com/example-org/example-repo/issues/3"
+        attempt = self._record({"examined": [window[0], other], "folds": [], "gaps": []}, expected_examined=window)
+
+        assert "examined does not match" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_recorder_refuses_a_sweep_without_the_ask_gate(self) -> None:
+        self.task.execution_reason = "unguarded sweep"
+        attempt = self._record({"examined": [], "folds": [], "gaps": []})
+
+        assert "ASK-GATE" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_recorder_refuses_a_window_dispatched_to_another_task(self) -> None:
+        attempt = self._record({"examined": [], "folds": [], "gaps": []}, window_task_id=self.task.pk + 1)
+
+        assert "dispatched issue window could not be read" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_a_retried_run_asks_the_fold_question_once(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
+        member = "https://github.com/example-org/example-repo/issues/1"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {
+            "examined": [member],
+            "folds": [{"member_url": member, "host_url": host.issue_url, "citation": "same module"}],
+            "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}],
+        }
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed", side_effect=SystemExit(1)),
+        ):
+            first = self._record(proposals, index_urls=[member, host.issue_url])
+        assert first.error
+        assert DeferredQuestion.objects.count() == 1
+
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        self.task.claim(claimed_by="loop-slot")
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed"),
+        ):
+            second = self._record({"examined": [], "folds": [], "gaps": []})
+
+        assert second.error == "", second.error
+        assert DeferredQuestion.objects.count() == 1
 
     def test_conflicting_fold_graph_refuses_before_asking(self) -> None:
         urls = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 2, 3)]

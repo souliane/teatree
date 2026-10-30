@@ -27,7 +27,8 @@ from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 
 REFUSAL_PREFIX = SWEEP_PROPOSALS_REFUSAL_PREFIX
 QUESTION_CITATION_CHARS = 240
-BATCH_CITATION_WORDS = 36
+FOLD_QUESTION = "Should these proposed ticket folds be approved?"
+MAX_FOLD_CITATION_WORDS = 40
 logger = logging.getLogger(__name__)
 
 
@@ -147,28 +148,33 @@ def _first_words(text: str, limit: int) -> str:
     return text if len(words) <= limit else f"{' '.join(words[:limit])}..."
 
 
-def _record_fold_question(task: Task, folds: list[dict[str, str]]) -> None:
-    share = max(1, BATCH_CITATION_WORDS // len(folds))
+def _fold_card(folds: list[dict[str, str]], citations: list[str], citation_words: int) -> QuestionCard:
     proposals = "; ".join(
-        f"<{fold['member_url']}|member> into <{fold['host_url']}|host>: "
-        f"{_first_words(_owner_citation(fold['citation']), share)}"
-        for fold in folds
+        f"<{fold['member_url']}|member> into <{fold['host_url']}|host>: {_first_words(citation, citation_words)}"
+        for fold, citation in zip(folds, citations, strict=True)
     )
-    DeferredQuestion.record(
-        "Should these proposed ticket folds be approved?",
-        task_session=task.session,
-        dedupe_marker=f"backlog-sweep-folds-{task.pk}",
-        card=QuestionCard(
-            decision=OwnerDecision.ARCHITECTURE,
-            checked=("Every issue was open and self-authored when the proposals were recorded.",),
-            blocker="Only the owner decides whether these ticket folds should proceed.",
-            why="Your decision is recorded; this sweep changes no issue.",
-            quoted=proposals,
-            options=(
-                CardOption("Approve all", "Record approval of these proposals.", recommended=True),
-                CardOption("Decline all", "Record that these proposals are declined."),
-            ),
+    return QuestionCard(
+        decision=OwnerDecision.ARCHITECTURE,
+        checked=("Every issue was open and self-authored when the proposals were recorded.",),
+        blocker="Only the owner decides whether these ticket folds should proceed.",
+        why="Your decision is recorded; this sweep changes no issue.",
+        quoted=proposals,
+        options=(
+            CardOption("Approve all", "Record approval of these proposals.", recommended=True),
+            CardOption("Decline all", "Record that these proposals are declined."),
         ),
+    )
+
+
+def _record_fold_question(task: Task, folds: list[dict[str, str]]) -> None:
+    citations = [_owner_citation(fold["citation"]) for fold in folds]
+    citation_words = MAX_FOLD_CITATION_WORDS
+    card = _fold_card(folds, citations, citation_words)
+    while citation_words and card.problems(FOLD_QUESTION):
+        citation_words -= 1
+        card = _fold_card(folds, citations, citation_words)
+    DeferredQuestion.record(
+        FOLD_QUESTION, task_session=task.session, dedupe_marker=f"backlog-sweep-folds-{task.pk}", card=card
     )
 
 
@@ -224,7 +230,7 @@ def _validate(task: Task, raw: object) -> tuple[list[str], int, list[dict[str, s
     except Exception as exc:
         message = f"the dispatched issue window could not be read ({type(exc).__name__})"
         raise SweepProposalError(message) from exc
-    if len(examined) != len(expected) or len(set(examined)) != len(examined) or set(examined) != set(expected):
+    if len(examined) != len(expected) or set(examined) != set(expected):
         _invalid("examined does not match the dispatched issue window")
     context = _ValidationContext(overlay, repos, index_urls)
     folds = [_validate_fold(item, examined, context) for item in folds_raw]
