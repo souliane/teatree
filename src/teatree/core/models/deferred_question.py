@@ -18,8 +18,9 @@ question) as the same primitive.
 """
 
 import logging
+from collections.abc import Mapping
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar, TypedDict
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
 from django.db.models import F, Max
@@ -44,10 +45,6 @@ logger = logging.getLogger(__name__)
 
 class DeferredQuestionError(ValueError):
     """A :class:`DeferredQuestion` was rejected at record time — contract failed."""
-
-
-class PrivateQuestionContext(TypedDict, total=False):
-    task_pairs: list[list[int]]
 
 
 class DeferredQuestion(models.Model):
@@ -204,7 +201,7 @@ class DeferredQuestion(models.Model):
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
-        private_context: PrivateQuestionContext | None = None,
+        private_context: Mapping[str, object] | None = None,
     ) -> "DeferredQuestion":
         """Record a guarded question; matching action cards alone may use reserved action markers."""
         clean_question = question.strip()
@@ -458,10 +455,14 @@ class DeferredQuestion(models.Model):
             row.save(update_fields=["resolved_via"])
             return row
 
-    def mark_posted(self) -> bool:
-        """Stamp ``applied_at``: the answer was posted to the asking session's mailbox (not that it was read)."""
+    def mark_applied(self) -> bool:
+        """Stamp ``applied_at`` single-use: whoever owns this card has acted on its answer."""
         manager = type(self).objects.using(self._state.db)
         return bool(manager.filter(pk=self.pk, applied_at__isnull=True).update(applied_at=timezone.now()))
+
+    def mark_posted(self) -> bool:
+        """The answer was posted to the asking session's mailbox (not that it was read)."""
+        return self.mark_applied()
 
     def post_to_asking_session(self) -> None:
         try:

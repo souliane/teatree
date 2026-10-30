@@ -44,7 +44,7 @@ from teatree.core.factory.eval_measurement import eval_measurement_signal
 from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
-from teatree.core.factory.parked_tickets import parked_ticket_signals
+from teatree.core.factory.parked_ticket_decision import parked_ticket_signals
 from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.factory.stack_skill_coverage import stack_skill_coverage_signals
 from teatree.core.factory.stalled_backlog import _stalled_backlog_signals

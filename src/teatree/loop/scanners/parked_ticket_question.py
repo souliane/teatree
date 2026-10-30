@@ -3,18 +3,15 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from teatree.core.factory.parked_tickets import (
-    KEEP_ANSWER,
-    PARKED_MARKER_PREFIX,
-    RETIRE_ANSWER,
-    aged_parked_tasks,
+from teatree.core.factory.parked_ticket_decision import (
+    apply_retire_answers,
     ask_owner_about_parked,
-    owner_ruled_pairs,
-    retire_parked,
-    task_pair,
+    awaiting_decision,
+    release_undecided_answers,
+    settle_changed_parked_cards,
 )
+from teatree.core.factory.parked_tickets import aged_parked_tasks
 from teatree.core.models import Task
-from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -24,15 +21,11 @@ class ParkedTicketQuestionScanner:
     tasks: Callable[[], list[Task]] = aged_parked_tasks
 
     def scan(self) -> list[ScanSignal]:
+        release_undecided_answers()
         aged = self.tasks()
-        answered = list(
-            DeferredQuestion.objects.filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX, answered_at__isnull=False)
-        )
-        retire = {pair for question in answered for pair in owner_ruled_pairs(question, RETIRE_ANSWER)}
-        keep = {pair for question in answered for pair in owner_ruled_pairs(question, KEEP_ANSWER)}
-        retire_parked(retire, aged)
-        if DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX).exists():
-            return []
-        ruled = retire | keep
-        ask_owner_about_parked([task for task in aged if task_pair(task) not in ruled])
+        if apply_retire_answers(aged):
+            aged = self.tasks()
+        awaiting = awaiting_decision(aged)
+        settle_changed_parked_cards(awaiting)
+        ask_owner_about_parked(awaiting)
         return []

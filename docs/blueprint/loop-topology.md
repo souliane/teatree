@@ -2,7 +2,7 @@
 
 Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5.6. The umbrella retired/subsumed paragraphs stay top-level (they satisfy doc-alignment tests). The deep mechanics — scanners, dispatch, multi-overlay/multi-host scanning, statusline rendering, mode + training-wheel, the mode posture — live here. Cross-references `BLUEPRINT §5.6`, `§5.6.1`, `§5.6.2`, `§5.6.3` resolve here.
 
-`pending_pr_drain` asks the owner once when an obligation passes the overdue threshold, including obligations already thousands of attempts old; a Slack answer to stop reminders discharges the row and leaves the branch alone. The hourly housekeeping loop asks once about parked tickets (repair-halted or cancelled newest task, no open pull request, not in review) whose newest task was created more than fourteen days ago, remembers a Keep answer per ticket, and consumes the owner's retire answer. A retired ticket returns its issue to intake without rewriting branch work.
+`pending_pr_drain` asks the owner once when an obligation passes the overdue threshold, including obligations already thousands of attempts old; the card quotes the branch so obligations can be told apart, and a Slack answer to stop reminders discharges the row and leaves the branch alone. The hourly housekeeping loop asks once about parked tickets (repair-halted or cancelled newest task, no open pull request, not in review) whose newest task was created more than fourteen days ago, remembers a Keep answer per ticket, and applies the owner's retire answer once. A retired ticket returns its issue to intake without rewriting branch work, and unsaved work in its checkouts raises one question.
 
 Each tick runs three stages:
 

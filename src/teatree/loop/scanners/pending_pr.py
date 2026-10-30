@@ -40,9 +40,9 @@ class PendingPrDrainScanner:
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
         from teatree.core.worktree.stuck_pr_notice import (  # noqa: PLC0415 — owner cards use ORM at tick time
-            ask_owner_about_stuck_pr,
+            ask_owner_about_stuck_prs,
+            discharge_stopped,
             settle_discharged_stuck_pr_notices,
-            stop_reminding_if_answered,
         )
 
         try:
@@ -51,13 +51,11 @@ class PendingPrDrainScanner:
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
-        for row in PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit]:
-            stop_reminding_if_answered(row)
+        discharge_stopped(self._overdue())
         owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
         discharged = sum(1 for row in owed if self._drain_one(row))
         settle_discharged_stuck_pr_notices()
-        for row in PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit]:
-            ask_owner_about_stuck_pr(row)
+        ask_owner_about_stuck_prs(self._overdue())
         if discharged:
             signals.append(
                 ScanSignal(
@@ -67,6 +65,11 @@ class PendingPrDrainScanner:
                 ),
             )
         return signals
+
+    def _overdue(self) -> "list[PendingPullRequest]":
+        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
+
+        return list(PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit])
 
     @staticmethod
     def _retirement_signals(retired: list[tuple[int, str, str]]) -> list[ScanSignal]:

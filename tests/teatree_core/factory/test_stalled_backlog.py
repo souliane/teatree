@@ -8,7 +8,7 @@ from django.utils import timezone
 from teatree.core.factory.parked_tickets import AGED_PARK
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_WINDOW, stranded_ticket_count
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 
 
 class TestStrandedTicketCount(TestCase):
@@ -34,6 +34,13 @@ class TestStrandedTicketCount(TestCase):
         self._queued(2, age=AGED_PARK + timedelta(days=1))
         Task.objects.update(execution_reason=HALT_STAMP)
         assert stranded_ticket_count() == 0
+
+    def test_an_aged_halted_failure_the_owner_is_not_asked_about_keeps_counting(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        Task.objects.update(execution_reason=HALT_STAMP)
+        for ticket in Ticket.objects.all():
+            PullRequest.objects.create(ticket=ticket, url=f"https://example.com/pull/{ticket.pk}", repo="o/r", iid="1")
+        assert stranded_ticket_count() == 2
 
     def test_an_aged_failure_nobody_parked_keeps_counting(self) -> None:
         self._queued(2, age=AGED_PARK + timedelta(days=1))

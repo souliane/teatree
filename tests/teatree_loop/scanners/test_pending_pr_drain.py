@@ -10,13 +10,16 @@ from pathlib import Path
 
 import pytest
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.models import PendingPullRequest
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
+from teatree.core.owner_dm_sweep import run_sweep
 from teatree.loop.scanners import PendingPrDrainScanner
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -57,10 +60,35 @@ class PendingPrDrainScannerTestCase(TestCase):
         row = DeferredQuestion.objects.get()
         assert row.evidence["decision"] == "irreversible"
         assert "remote" in row.evidence["why"]
-        assert branch not in str(row.evidence)
         assert str(repo) not in str(row.evidence)
 
-    def test_owner_stop_reminding_discharges_but_local_answer_does_not(self) -> None:
+    def test_two_stuck_obligations_stay_two_cards_through_the_owner_dm_sweep(self) -> None:
+        self._overdue_obligation("first")
+        self._overdue_obligation("second")
+        PendingPrDrainScanner().scan()
+        assert run_sweep().resolved == 0
+        assert DeferredQuestion.owner_pending().count() == 2
+
+    def test_card_names_the_branch_so_the_owner_can_tell_obligations_apart(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+        PendingPrDrainScanner().scan()
+        assert branch in DeferredQuestion.objects.get().evidence["quoted"]
+
+    def test_owner_stop_reminding_discharges_the_obligation(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=4386)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        DeferredQuestion.objects.update(
+            answered_at=timezone.now(), answer_text="Stop reminding", resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        scanner.scan()
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
+    def test_local_answer_decides_nothing_and_the_card_is_asked_again(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)
         call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
         PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=4386)
@@ -71,9 +99,16 @@ class PendingPrDrainScannerTestCase(TestCase):
         )
         scanner.scan()
         assert PendingPullRequest.objects.filter(branch=branch).exists()
-        DeferredQuestion.objects.update(resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_steady_state_question_queries_do_not_grow_with_overdue_rows(self) -> None:
+        scanner = PendingPrDrainScanner()
+        self._overdue_obligation("first")
         scanner.scan()
-        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+        one_row = self._question_queries(scanner)
+        self._overdue_obligation("second")
+        scanner.scan()
+        assert self._question_queries(scanner) == one_row
 
     def test_card_is_settled_when_another_path_discharges_the_obligation(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)
@@ -112,6 +147,18 @@ class PendingPrDrainScannerTestCase(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
+
+    def _overdue_obligation(self, name: str) -> None:
+        (self._tmp_path / name).mkdir()
+        _origin, repo, branch = _first_push_repo(self._tmp_path / name)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch, repo_path=str(repo)).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+
+    @staticmethod
+    def _question_queries(scanner: PendingPrDrainScanner) -> int:
+        with CaptureQueriesContext(connection) as queries:
+            scanner.scan()
+        return sum("teatree_deferred_question" in query["sql"] for query in queries)
 
     def test_no_obligations_emits_nothing(self) -> None:
         assert PendingPrDrainScanner().scan() == []

@@ -1,6 +1,7 @@
 """Durable owner decision for a pull-request obligation that keeps failing to drain."""
 
 import logging
+from collections.abc import Sequence
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
@@ -8,6 +9,8 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.pending_pull_request import PendingPullRequest
 
 MARKER_PREFIX = "pending-pr-stuck:"
+KEEP_TRYING = "Keep trying"
+STOP_REMINDING = "Stop reminding"
 _QUESTION = "Should I keep trying to open this pull request?"
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,10 @@ def plain_failure_cause(error: str) -> str:
     return "The last attempt could not open the pull request."
 
 
+def _marker(row: PendingPullRequest) -> str:
+    return f"{MARKER_PREFIX}{row.pk}"
+
+
 def ask_owner_about_stuck_pr(row: PendingPullRequest) -> DeferredQuestion | None:
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
@@ -35,28 +42,42 @@ def ask_owner_about_stuck_pr(row: PendingPullRequest) -> DeferredQuestion | None
         blocker="Only you can stop reminders while a pull request is still owed.",
         why=plain_failure_cause(row.last_error or row.reason),
         options=(
-            CardOption("Keep trying", "I continue trying to open the pull request.", recommended=True),
-            CardOption("Stop reminding", "I retire this reminder and leave the branch untouched."),
+            CardOption(KEEP_TRYING, "I continue trying to open the pull request.", recommended=True),
+            CardOption(STOP_REMINDING, "I retire this reminder and leave the branch untouched."),
         ),
-    )
+        subject=f"pending-pr:{row.pk}",
+    ).with_quote(_QUESTION, row.branch)
     try:
-        return DeferredQuestion.record(_QUESTION, dedupe_marker=f"{MARKER_PREFIX}{row.pk}", card=card)
+        return DeferredQuestion.record(_QUESTION, dedupe_marker=_marker(row), card=card)
     except DeferredQuestionError:
         logger.exception("stuck pull-request owner card refused")
         return None
 
 
-def stop_reminding_if_answered(row: PendingPullRequest) -> bool:
-    answer = DeferredQuestion.objects.filter(
-        dedupe_marker=f"{MARKER_PREFIX}{row.pk}",
+def ask_owner_about_stuck_prs(rows: Sequence[PendingPullRequest]) -> None:
+    """Ask once per overdue obligation, leaving an answered or pending card alone without a write."""
+    cards = DeferredQuestion.objects.filter(dedupe_marker__startswith=MARKER_PREFIX)
+    cards.answered_without_deciding((KEEP_TRYING, STOP_REMINDING)).release_markers()
+    held = set(
+        DeferredQuestion.objects.filter(dedupe_marker__in=[_marker(row) for row in rows]).values_list(
+            "dedupe_marker", flat=True
+        )
+    )
+    for row in rows:
+        if _marker(row) not in held:
+            ask_owner_about_stuck_pr(row)
+
+
+def discharge_stopped(rows: Sequence[PendingPullRequest]) -> None:
+    by_marker = {_marker(row): row for row in rows}
+    stopped = DeferredQuestion.objects.filter(
+        dedupe_marker__in=list(by_marker),
         answered_at__isnull=False,
-        answer_text="Stop reminding",
+        answer_text=STOP_REMINDING,
         resolved_via=DeferredQuestion.ResolvedVia.SLACK,
-    ).first()
-    if answer is None or not answer.answered_on_owner_channel:
-        return False
-    PendingPullRequest.objects.discharge(repo_path=row.repo_path, branch=row.branch)
-    return True
+    ).values_list("dedupe_marker", flat=True)
+    for marker in stopped:
+        PendingPullRequest.objects.discharge(repo_path=by_marker[marker].repo_path, branch=by_marker[marker].branch)
 
 
 def settle_discharged_stuck_pr_notices() -> None:

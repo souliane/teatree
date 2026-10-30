@@ -4,9 +4,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.factory.operational_health import collect_signals
+from teatree.core.factory.parked_ticket_decision import KEEP_ANSWER, ask_owner_about_parked
 from teatree.core.factory.parked_tickets import aged_parked_tasks, silent_freeze_tasks
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import PullRequest, Session, Task, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
 
 
 class ParkedTicketSelectionTest(TestCase):
@@ -62,10 +64,24 @@ class ParkedTicketSelectionTest(TestCase):
         Ticket.objects.filter(pk=task.ticket_id).update(issue_url="loop://test")
         assert aged_parked_tasks() == []
 
+    def _parked_signals(self) -> list[str]:
+        return [row.summary for row in collect_signals().signals if row.kind == "parked_tickets"]
+
     def test_aged_parks_raise_one_owner_decision_signal(self) -> None:
         self._failed(reason=HALT_STAMP)
         self._failed(kind=FailureKind.CANCELLED)
-        (signal,) = [row for row in collect_signals().signals if row.fingerprint == "parked-tickets-await-owner"]
-        assert signal.fingerprint == "parked-tickets-await-owner"
-        assert "created over 14 days ago" in signal.summary
-        assert "await your decision" not in signal.summary
+        (summary,) = self._parked_signals()
+        assert summary.startswith("2 tickets")
+        assert "created over 14 days ago" in summary
+        assert "await your decision" not in summary
+
+    def test_a_keep_answer_clears_the_signal_for_the_tickets_it_ruled_on(self) -> None:
+        self._failed(reason=HALT_STAMP)
+        ask_owner_about_parked(aged_parked_tasks())
+        DeferredQuestion.objects.update(
+            answered_at=timezone.now(), answer_text=KEEP_ANSWER, resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        assert self._parked_signals() == []
+        self._failed(reason=HALT_STAMP)
+        (summary,) = self._parked_signals()
+        assert summary.startswith("1 tickets")
