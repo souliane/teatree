@@ -490,7 +490,7 @@ class TestDeliveriesStayPrivateAndLeaveNothingBehind(_Handoff):
     def test_a_delivery_that_cannot_be_removed_is_reported_loudly(self) -> None:
         with (
             self.assertLogs("teatree.agents.phase_handoff", level="ERROR") as logs,
-            patch("teatree.agents.phase_handoff.shutil.rmtree", side_effect=OSError("device busy")),
+            patch("teatree.utils.run_scratch.shutil.rmtree", side_effect=OSError("device busy")),
             self._delivered(self._child("planning", "coding")) as (handoff, _),
         ):
             pass

@@ -1088,7 +1088,9 @@ Usage: t3 review merge-tree [OPTIONS]
  Never a git worktree — resolve_data_dir auto-isolates one onto a per-worktree
  DB, which is its own wrong-answer generator. The extract is a primary checkout
  whose origin is the source clone's real remote URL, so code reading repository
- identity resolves it; --no-git opts out.
+ identity resolves it; --no-git opts out. A default temp extract survives a
+ successful run for review and becomes eligible for worker reclaim after three
+ idle hours.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --base          TEXT  Target-branch ref the PR would merge into.             │
@@ -4345,6 +4347,8 @@ Usage: t3 tool verify-gates [OPTIONS]
  green-proof — an exit code alone does not say which tree earned it. Exits 2
  without grading anything when the tree is not a git checkout, is not the
  ``--expect-sha`` target, or is a clean main clone on its default branch.
+ Its private control-DB snapshot is removed when the run ends; SIGTERM or
+ SIGHUP stops the running stage first.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
