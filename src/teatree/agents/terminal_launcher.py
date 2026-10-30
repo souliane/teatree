@@ -8,8 +8,7 @@ client disconnects — so a connected-and-debugged session cleans itself up.
 
 ``--once`` alone does NOT bound a ttyd nobody ever connects to (it only fires on
 DISCONNECT), so an unconnected ``--writable`` (== RCE-as-the-service-user)
-listener would otherwise sit on loopback forever, and repeated dashboard clicks
-would pile them up. ttyd has no native "exit if no client connects" flag, so a
+listener would otherwise sit on loopback forever. ttyd has no native "exit if no client connects" flag, so a
 per-spawn connect-grace reaper (:func:`_arm_connect_grace_reaper`) terminates an
 unconnected ttyd after :data:`_CONNECT_GRACE_SECONDS`. A live session is spared —
 the reaper checks for an ESTABLISHED client on the port first (fail-SAFE: an

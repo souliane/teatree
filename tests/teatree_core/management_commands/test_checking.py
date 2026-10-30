@@ -229,6 +229,8 @@ class TestCheckingShow:
         assert len(text.splitlines()) == 1
 
     def test_brief_keeps_failed_run_visible(self, checkpoint_file: Path) -> None:
+        for index in range(6):
+            DeferredQuestion.record(f"Can I publish change {index}?", card=owner_card())
         ticket = Ticket.objects.create(
             overlay="acme",
             issue_url="https://github.com/acme/widgets/issues/725",
@@ -244,6 +246,19 @@ class TestCheckingShow:
         assert "[restore delivery](https://github.com/acme/widgets/issues/725)" in text
 
     def test_brief_keeps_held_pull_request_visible(self, checkpoint_file: Path) -> None:
+        for index in range(6):
+            other = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{730 + index}",
+                state=Ticket.State.PR_OPENED,
+                short_description=f"routine work {index}",
+            )
+            PullRequest.objects.create(
+                ticket=other,
+                repo="acme/widgets",
+                iid=str(740 + index),
+                url=f"https://github.com/acme/widgets/pull/{740 + index}",
+            )
         ticket = Ticket.objects.create(
             overlay="acme",
             issue_url="https://github.com/acme/widgets/issues/726",

@@ -106,22 +106,23 @@ _AUTOMATIC_REVIEW_ASK = re.compile(
     re.IGNORECASE,
 )
 _AUTOMATIC_REVIEW_FACT = re.compile(
-    r"(?=.*\bautomatic approval review\b)(?=.*\b(?:refused|rejected|denied|blocked)\b)"
-    r"(?=.*\b(?:command|tests?|preamble|runs?|work)\b)",
+    r"The automatic approval review (?:refused|rejected|denied|blocked) the "
+    r"(?:required skill preamble command|focused regression tests|test command)"
+    r"(?: as foreground heavy work)?[.!]?",
     re.IGNORECASE,
 )
-_REAL_CREDENTIAL = _words(r"tokens?|credentials?|passwords?|secrets?|admin|sso|scopes?|roles?|keys?")
+_AUTOMATIC_REVIEW_FILLER = _closed(_FILLER)
 
 
 def _automatic_review_refusal(card: QuestionCard, question: str) -> bool:
     options = (text for option in card.options for text in (option.label, option.description))
-    readable = (question, card.why, card.blocker, *options)
+    readable = (card.why, card.blocker, *options)
     return (
         card.decision is OwnerDecision.CREDENTIALS
         and _AUTOMATIC_REVIEW_ASK.fullmatch(_squashed(question)) is not None
         and bool(card.checked)
-        and all(_AUTOMATIC_REVIEW_FACT.search(fact) and not _REAL_CREDENTIAL.search(fact) for fact in card.checked)
-        and not any(_REAL_CREDENTIAL.search(text) for text in readable)
+        and all(_AUTOMATIC_REVIEW_FACT.fullmatch(_squashed(fact)) for fact in card.checked)
+        and all(_AUTOMATIC_REVIEW_FILLER.fullmatch(_squashed(text)) for text in readable)
     )
 
 

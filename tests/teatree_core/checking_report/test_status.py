@@ -3,16 +3,21 @@
 import re
 import subprocess
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.checking import CheckingReport, gather_checking_report
+from teatree.core.checking_report.status import plain_title
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration
+from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.core.review.pr_next_action import UPDATE_BRANCH
 from teatree.paths import teatree_source_root
 from teatree.utils.git_run import run_strict
 from tests._owner_channel import owner_card
@@ -65,13 +70,13 @@ class CheckInFeatureStatusTestCase(TestCase):
         status = report.to_dict()["status_by_feature"]
         assert [feature["title"] for feature in status["features"]] == [
             "dashboard access",
-            "message delivery",
             "review workflow",
+            "message delivery",
             "Other maintenance",
         ]
         assert report.to_terse().startswith("Status by feature\n")
-        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[3]
-        assert status["features"][1]["left"][0]["url"] == "https://github.com/example/widgets/pull/202"
+        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[2]
+        assert status["features"][2]["left"][0]["url"] == "https://github.com/example/widgets/pull/202"
         assert status["features"][0]["owner_waits"][0]["url"].startswith("https://slack.com/archives/")
         assert status["not_yet_deployed"] == []
         for feature in status["features"]:
@@ -170,6 +175,100 @@ class CheckInFeatureStatusTestCase(TestCase):
         status = self._report().status_by_feature
 
         assert status.features[0].left[0].state == "tests failed"
+
+    def test_fresh_pr_inventory_supplies_github_ci_and_branch_state(self) -> None:
+        red_url = "https://github.com/example/widgets/pull/440"
+        behind_url = "https://github.com/example/widgets/pull/441"
+        pending_url = "https://github.com/example/widgets/pull/442"
+        for url in (red_url, behind_url, pending_url):
+            ticket = TicketFactory(issue_url=f"https://github.com/example/widgets/issues/{url.rsplit('/', 1)[1]}")
+            PullRequestFactory(ticket=ticket, url=url)
+        cached_url = "https://github.com/example/widgets/pull/443"
+        cached = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/443",
+            extra={"prs": {cached_url: {"pipeline_status": "failed"}}},
+        )
+        PullRequestFactory(ticket=cached, url=cached_url)
+
+        def entry(url: str, *, ci: str, decision: str, next_task: str) -> PrInventoryEntry:
+            return PrInventoryEntry(
+                url=url,
+                repo="example/widgets",
+                iid=int(url.rsplit("/", 1)[1]),
+                title="repair checks",
+                created_at="",
+                updated_at="",
+                next_task=next_task,
+                decision=decision,
+                ci=ci,
+                approvals="unknown",
+                threads="unknown",
+                draft=False,
+            )
+
+        with (
+            TemporaryDirectory() as directory,
+            patch("teatree.core.review.pr_inventory.data_dir_root", return_value=Path(directory)),
+        ):
+            write_inventory(
+                "t3-teatree",
+                [
+                    entry(red_url, ci="red", decision="my_pr.failed", next_task="Fix failing CI"),
+                    entry(behind_url, ci="green", decision="needs_branch_update", next_task=UPDATE_BRANCH),
+                    entry(pending_url, ci="pending", decision="my_pr.open", next_task="Inspect CI"),
+                    entry(cached_url, ci="unknown", decision="my_pr.open", next_task="Inspect CI"),
+                ],
+            )
+            status = self._report().status_by_feature
+
+        states = {item.url: item.state for block in status.features for item in block.left}
+        assert states[red_url] == "tests failed"
+        assert states[behind_url] == "needs a merge of main"
+        assert states[pending_url] == "waiting for the tests"
+        assert states[cached_url] == "tests failed"
+
+    def test_technical_words_survive_number_removal(self) -> None:
+        assert plain_title("Fix S3 bucket policy") == "Fix S3 bucket policy"
+        assert plain_title("IPv6 routing") == "IPv6 routing"
+
+    def test_red_pull_request_survives_feature_cap(self) -> None:
+        for number in range(8):
+            ticket = TicketFactory(
+                issue_url=f"https://github.com/example/widgets/issues/{100 + number}",
+                short_description=f"routine feature {chr(65 + number)}",
+            )
+            PullRequestFactory(ticket=ticket)
+        red_url = "https://github.com/example/widgets/pull/909"
+        red = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/900",
+            short_description="repair failing checks",
+            extra={"prs": {red_url: {"pipeline_status": "failed"}}},
+        )
+        PullRequestFactory(ticket=red, url=red_url)
+
+        status = self._report().status_by_feature
+
+        assert "repair failing checks" in [block.title for block in status.features]
+        assert status.more == 1
+
+    def test_undeployed_merge_survives_checkpoint_window(self) -> None:
+        serving_sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(
+            issue_url="https://github.com/souliane/teatree/issues/910",
+            short_description="delayed delivery",
+            state=Ticket.State.MERGED,
+        )
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=911, merged_sha="a" * 40
+        )
+        audit.merged_at = timezone.now() - timedelta(days=2)
+        audit.save(update_fields=["merged_at"])
+
+        status = self._report().status_by_feature
+
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/911"]
+        assert status.features[0].title == "delayed delivery"
 
     def test_related_features_share_a_named_lane_and_keep_problem_links(self) -> None:
         first = TicketFactory(

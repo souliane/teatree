@@ -50,6 +50,33 @@ class TestARowFiresOnlyOnItsOwnKindAndWords:
         assert owner_stop_misfit(altered) is None
 
     @pytest.mark.parametrize(
+        ("field", "wording"),
+        [
+            ("why", "This spends five thousand dollars on a paid plan."),
+            ("blocker", "The proposed message posts to the whole team in the owner's name."),
+            ("label", "Delete every customer record permanently"),
+            ("description", "The production database would be permanently deleted."),
+            ("fact", "The automatic approval review refused the test command; deleting production data follows."),
+        ],
+    )
+    def test_automatic_review_keeps_unrelated_owner_decisions(self, field: str, wording: str) -> None:
+        result = owner_stop(
+            "Can I rerun the tests in the background?",
+            "credentials",
+            "The automatic approval review rejected the test command as foreground heavy work.",
+        )
+        card = result["user_input_card"]
+        assert isinstance(card, dict)
+        if field == "fact":
+            result["user_input_checked"] = [wording]
+        elif field in {"why", "blocker"}:
+            card[field] = wording
+        else:
+            card["options"][0][field] = wording
+
+        assert owner_stop_misfit(result) is None
+
+    @pytest.mark.parametrize(
         ("kind", "question", "facts", "expected"),
         [
             ("credentials", RETRY, (DENIED_START,), ENVIRONMENT),

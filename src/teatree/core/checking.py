@@ -326,7 +326,9 @@ def gather_all_overlays_report(
             total=len(merged_entries),
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
-        needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        needs_you=CheckGroup(
+            title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items), critical_items=failed_items
+        ),
         internal_escalations=internal_escalation_count(),
         metered=CheckGroup(
             title="Metered",
@@ -515,4 +517,9 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
             ),
         )
 
-    return CheckGroup(title="Needs you", items=items[:cap], total=len(items))
+    return CheckGroup(
+        title="Needs you",
+        items=items[:cap],
+        total=len(items),
+        critical_items=[item for item in items if item.detail == "failed agent run"],
+    )

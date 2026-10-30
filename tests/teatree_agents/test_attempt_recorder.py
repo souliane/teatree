@@ -325,6 +325,22 @@ class TestRecordResultEnvelope(TestCase):
         assert "skill preamble command" in fault.detail
         assert DeferredQuestion.objects.filter(parked_task=task).count() == 0
 
+    def test_automatic_review_wording_with_a_spend_decision_records_owner_card(self) -> None:
+        task = self._claimed(phase="testing")
+        envelope = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        ) | {"summary": "Waiting for a decision."}
+        card = envelope["user_input_card"]
+        assert isinstance(card, dict)
+        card["why"] = "This would buy a new paid plan."
+
+        attempt = record_result_envelope(task, envelope, phase="testing")
+
+        assert attempt.error == ""
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 1
+
     def test_unrouted_credentials_denied_command_still_raises_the_card(self) -> None:
         task = self._claimed(phase="scoping")
         envelope = owner_stop("May I start the sub-agent again?", "credentials", DENIED_START)

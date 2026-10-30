@@ -3,7 +3,8 @@
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from datetime import timedelta
+from typing import Literal, TypedDict, cast
 
 from django.db.models import Q
 from django.utils import timezone
@@ -15,6 +16,8 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration, WorkerGenerationQuerySet
 from teatree.core.ref_render import short_title
+from teatree.core.review.pr_inventory import PrInventoryEntry, merged_entries, read_inventory
+from teatree.core.review.pr_next_action import UPDATE_BRANCH
 from teatree.paths import teatree_source_root
 from teatree.utils.git_remote_ops import remote_slug
 from teatree.utils.git_run import run_with_status
@@ -22,7 +25,7 @@ from teatree.utils.run import SUBPROCESS_UNREACHABLE
 from teatree.utils.slack_links import slack_permalink
 
 FEATURE_CAP = 8
-_NUMBERED_WORD = re.compile(r"\S*\d\S*")
+_NUMBERED_WORD = re.compile(r"(?<!\w)(?:#?\d+|v\d+)(?!\w)", re.IGNORECASE)
 _LANE_TITLE_PATTERNS = (
     ("Multi-user", re.compile(r"\b(?:multi[- ]user|tenant sharing)\b", re.IGNORECASE)),
     ("Agent communication", re.compile(r"\b(?:agent communication|mailbox|agent messages?)\b", re.IGNORECASE)),
@@ -76,7 +79,9 @@ class FeatureBlock:
     unlinked_owner_waits: int = 0
     live: bool | Literal["partly"] = False
     merge_shas: list[tuple[str, str]] = field(default_factory=list)
+    earlier_undeployed: list[FeatureLink] = field(default_factory=list)
     deployment_unknown: bool = False
+    recent_id: int = 0
 
     def to_dict(self) -> FeatureBlockDict:
         return {
@@ -96,6 +101,8 @@ class FeatureBlock:
                 if self.live is True
                 else f"{_render_links(self.merged, 2)} merged; deployment {block_deploy_state}"
             )
+        elif self.earlier_undeployed:
+            merged = f"{_render_links(self.earlier_undeployed, 2)} merged earlier; deployment {block_deploy_state}"
         else:
             merged = "no merge since the last check"
         if self.left:
@@ -103,7 +110,11 @@ class FeatureBlock:
             next_step = "the factory has the next step"
         else:
             left = "nothing left"
-            next_step = "the coordinator has the next step" if self.merged and self.live is not True else "done"
+            next_step = (
+                "the coordinator has the next step"
+                if (self.merged or self.earlier_undeployed) and self.live is not True
+                else "done"
+            )
         if self.owner_waits:
             waits = _render_links(self.owner_waits, 2)
             next_step = f"waiting for your Slack reply: {waits}"
@@ -190,19 +201,41 @@ def _pr_label(ticket: Ticket | None, url: str) -> str:
     return plain_title(title if isinstance(title, str) and title else ticket.short_description)
 
 
-def _pr_state(pr: PullRequest) -> str:
+def _pr_state(pr: PullRequest, observed: PrInventoryEntry | None) -> str:
     prs = (pr.ticket.extra or {}).get("prs")
     entry = prs.get(pr.url) if isinstance(prs, dict) else None
-    pipeline = entry.get("pipeline_status") if isinstance(entry, dict) else ""
-    if pipeline == "failed":
+    cached_pipeline = entry.get("pipeline_status") if isinstance(entry, dict) else ""
+    observed_pipeline = observed.ci.casefold() if observed is not None else ""
+    pipeline = observed_pipeline if observed_pipeline not in {"", "unknown"} else cached_pipeline
+    if pipeline in {"red", "failed", "failure", "error"}:
         return "tests failed"
     if pipeline in {"pending", "running"}:
         return "waiting for the tests"
+    if observed is not None and (
+        observed.decision in {"flag_conflict", "needs_branch_update"} or observed.next_task == UPDATE_BRANCH
+    ):
+        return "needs a merge of main"
     if pr.state == PullRequest.State.APPROVED:
         return "ready to merge"
     if pr.state == PullRequest.State.REVIEW_REQUESTED:
         return "waiting for review"
     return "being fixed"
+
+
+def _fresh_pr_inventory(overlay_names: list[str]) -> dict[str, PrInventoryEntry]:
+    now = timezone.now()
+    snapshots = (
+        snapshot
+        for snapshot in read_inventory()
+        if snapshot.verified
+        and now - snapshot.observed_at <= timedelta(minutes=30)
+        and (
+            not overlay_names
+            or (snapshot.overlay.split(":", 2)[1] if snapshot.overlay.startswith("own:") else snapshot.overlay)
+            in overlay_names
+        )
+    )
+    return merged_entries(snapshots)
 
 
 _ACTIVE_TICKET_STATES: dict[str, str] = {
@@ -260,6 +293,98 @@ def _add_active_tickets(
         )
 
 
+def _add_open_prs(block_for: Callable[[Ticket | None], FeatureBlock], overlay_names: list[str]) -> set[int]:
+    prs = (
+        PullRequest.objects.live()
+        .filter(ticket__role=Ticket.Role.AUTHOR)
+        .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
+        .select_related("ticket")
+        .order_by("-pk")
+    )
+    if overlay_names:
+        prs = prs.filter(ticket__overlay__in=overlay_names)
+    inventory = _fresh_pr_inventory(overlay_names)
+    represented: set[int] = set()
+    for pr in prs:
+        represented.add(pr.ticket_id)
+        block_for(pr.ticket).left.append(
+            FeatureLink(label=_pr_label(pr.ticket, pr.url), url=pr.url, state=_pr_state(pr, inventory.get(pr.url)))
+        )
+    return represented
+
+
+def _carryover_merges(
+    block_for: Callable[[Ticket | None], FeatureBlock],
+    *,
+    merged: list[tuple[MergeAudit, str, str]],
+    overlay_names: list[str],
+    local_slug: str,
+    serving_sha: str,
+) -> tuple[list[FeatureLink], bool]:
+    if not serving_sha or not local_slug:
+        return [], False
+    earlier = MergeAudit.objects.filter(clear__ticket__state__in=[Ticket.State.MERGED, Ticket.State.RETRO_RECORDED])
+    if overlay_names:
+        earlier = earlier.filter(clear__ticket__overlay__in=overlay_names)
+    recent_audit_ids = {audit.pk for audit, _slug, _host in merged}
+    undeployed: list[FeatureLink] = []
+    unknown = False
+    for audit in earlier.exclude(pk__in=recent_audit_ids).select_related("clear", "clear__ticket"):
+        slug = audit.repo_slug or audit.clear.slug
+        if slug.casefold() != local_slug.casefold():
+            continue
+        state = _live_state(audit.merged_sha, serving_sha)
+        if state is True:
+            continue
+        ticket = cast("Ticket", audit.clear.ticket)
+        code_host = "gitlab" if "gitlab.com" in ticket.issue_url else "github"
+        url = pr_url_for(ticket, repo_slug=slug, pr_id=audit.clear.pr_id, code_host=code_host)
+        link = FeatureLink(label=_pr_label(ticket, url), url=url)
+        block = block_for(ticket)
+        block.earlier_undeployed.append(link)
+        block.deployment_unknown = block.deployment_unknown or state is None
+        undeployed.append(link)
+        unknown = unknown or state is None
+    return undeployed, unknown
+
+
+def _recent_deployment(
+    blocks: dict[str, FeatureBlock], *, local_slug: str, serving_sha: str
+) -> tuple[list[FeatureLink], bool]:
+    undeployed: list[FeatureLink] = []
+    unknown = False
+    for block in blocks.values():
+        live = [
+            _live_state(sha, serving_sha) if local_slug and slug.casefold() == local_slug.casefold() else None
+            for slug, sha in block.merge_shas
+        ]
+        block.deployment_unknown = block.deployment_unknown or any(
+            slug.casefold() != local_slug.casefold() for slug, _sha in block.merge_shas
+        )
+        unknown = unknown or any(
+            state is None and slug.casefold() == local_slug.casefold()
+            for (slug, _sha), state in zip(block.merge_shas, live, strict=True)
+        )
+        block.live = (
+            True
+            if live and all(state is True for state in live) and not block.earlier_undeployed
+            else "partly"
+            if True in live
+            else False
+        )
+        undeployed.extend(
+            item
+            for item, (slug, _sha), state in zip(block.merged, block.merge_shas, live, strict=True)
+            if slug.casefold() == local_slug.casefold() and state is not True
+        )
+    return undeployed, unknown
+
+
+def _serving_sha() -> str:
+    serving = WorkerGeneration.objects.serving()
+    return serving.sha if serving is not None else ""
+
+
 def build_feature_status(
     *,
     merged: list[tuple[MergeAudit, str, str]],
@@ -276,6 +401,8 @@ def build_feature_status(
                 else "Other maintenance"
             )
             blocks[key] = FeatureBlock(title=title)
+        if ticket is not None:
+            blocks[key].recent_id = max(blocks[key].recent_id, ticket.pk)
         return blocks[key]
 
     for audit, repo_slug, code_host in merged:
@@ -287,50 +414,23 @@ def build_feature_status(
 
     represented_ticket_ids = {audit.clear.ticket_id for audit, _repo, _host in merged if audit.clear.ticket_id}
 
-    prs = (
-        PullRequest.objects.live()
-        .filter(ticket__role=Ticket.Role.AUTHOR)
-        .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
-        .select_related("ticket")
-        .order_by("-pk")
-    )
-    if overlay_names:
-        prs = prs.filter(ticket__overlay__in=overlay_names)
-    for pr in prs:
-        represented_ticket_ids.add(pr.ticket_id)
-        block_for(pr.ticket).left.append(
-            FeatureLink(label=_pr_label(pr.ticket, pr.url), url=pr.url, state=_pr_state(pr))
-        )
+    represented_ticket_ids.update(_add_open_prs(block_for, overlay_names))
 
     _add_active_tickets(block_for, overlay_names, represented_ticket_ids)
     _add_owner_waits(block_for, overlay_names)
 
-    serving = WorkerGeneration.objects.serving()
-    serving_sha = serving.sha if serving is not None else ""
-    starting = WorkerGeneration.objects.filter(
+    serving_sha = _serving_sha()
+    local_slug = remote_slug(repo=str(teatree_source_root()))
+    undeployed, unknown = _carryover_merges(
+        block_for, merged=merged, overlay_names=overlay_names, local_slug=local_slug, serving_sha=serving_sha
+    )
+    recent_undeployed, recent_unknown = _recent_deployment(blocks, local_slug=local_slug, serving_sha=serving_sha)
+    undeployed.extend(recent_undeployed)
+    unknown = unknown or recent_unknown
+    if WorkerGeneration.objects.filter(
         state=WorkerGeneration.State.STARTING,
         started_at__gte=timezone.now() - WorkerGenerationQuerySet.STARTING_LEASE_MARGIN,
-    ).exists()
-    local_slug = remote_slug(repo=str(teatree_source_root()))
-    undeployed: list[FeatureLink] = []
-    unknown = False
-    for block in blocks.values():
-        live = [
-            _live_state(sha, serving_sha) if local_slug and slug.casefold() == local_slug.casefold() else None
-            for slug, sha in block.merge_shas
-        ]
-        block.deployment_unknown = any(slug.casefold() != local_slug.casefold() for slug, _sha in block.merge_shas)
-        unknown = unknown or any(
-            state is None and slug.casefold() == local_slug.casefold()
-            for (slug, _sha), state in zip(block.merge_shas, live, strict=True)
-        )
-        block.live = True if live and all(state is True for state in live) else "partly" if True in live else False
-        undeployed.extend(
-            item
-            for item, (slug, _sha), state in zip(block.merged, block.merge_shas, live, strict=True)
-            if slug.casefold() == local_slug.casefold() and state is not True
-        )
-    if starting:
+    ).exists():
         deploy_state = "running"
     elif not serving_sha or not local_slug or unknown:
         deploy_state = "unknown"
@@ -340,7 +440,9 @@ def build_feature_status(
         blocks.items(),
         key=lambda item: (
             not bool(item[1].owner_waits or item[1].unlinked_owner_waits),
-            not bool(item[1].merged),
+            not any(link.state == "tests failed" for link in item[1].left),
+            not bool(item[1].merged or item[1].earlier_undeployed),
+            -item[1].recent_id,
             not item[0],
             item[0],
         ),

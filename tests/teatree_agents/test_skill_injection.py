@@ -372,7 +372,7 @@ def test_subagent_preamble_embeds_framework_skill_body(tmp_path: Path) -> None:
     _write_skill(framework, "rules", "# Rules\nNever edit the main clone.")
 
     preamble = build_subagent_skill_preamble(["rules"], skills_dirs=[framework])
-    assert "already carries the required skill text" in preamble.text
+    assert "The rules text is embedded below" in preamble.text
 
     assert "--- SKILL: rules ---" in preamble.text
     assert "Never edit the main clone." in preamble.text

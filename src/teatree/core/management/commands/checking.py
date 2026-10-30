@@ -91,16 +91,10 @@ def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
     for group in groups:
         if group.title == "Needs you":
             lines.extend(
-                f"Failed run: [{plain_title(item.title)}]({item.url})"
-                for item in group.items
-                if item.detail.startswith("failed agent run") and item.url
+                f"Failed run: [{plain_title(item.title)}]({item.url})" for item in group.critical_items if item.url
             )
         elif group.title == "Remaining":
-            lines.extend(
-                f"Held pull request: [{plain_title(item.title)}]({item.url})"
-                for item in group.items
-                if getattr(item, "kind", "") == "pr" and getattr(item, "hold", "") and item.url
-            )
+            lines.extend(f"Held pull request: [{plain_title(item.title)}]({item.url})" for item in group.critical_items)
     return lines
 
 
@@ -291,12 +285,7 @@ class Command(MachineOutputCommand):
     ) -> CheckingReportDict | AllOverlaysReportDict:
         """Print a terse, grouped, clickable report of changes since the last check."""
         flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify, brief=False)
-        overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
-        now = timezone.now()
-        _validate_since(flags.since)
-        if this_overlay:
-            return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
-        return self._show_all_overlays(now=now, flags=flags)
+        return self._dispatch_show(flags=flags, this_overlay=this_overlay)
 
     @command()
     def brief(
@@ -308,6 +297,9 @@ class Command(MachineOutputCommand):
     ) -> CheckingReportDict | AllOverlaysReportDict:
         """Print the one-screen status while keeping full groups in the returned payload."""
         flags = _ShowFlags(since=since, json_output=False, no_advance=no_advance, notify=False, brief=True)
+        return self._dispatch_show(flags=flags, this_overlay=this_overlay)
+
+    def _dispatch_show(self, *, flags: _ShowFlags, this_overlay: bool) -> CheckingReportDict | AllOverlaysReportDict:
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
         _validate_since(flags.since)

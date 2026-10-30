@@ -98,6 +98,7 @@ class CheckGroup:
     title: str
     items: list[CheckItem] = field(default_factory=list)
     total: int = 0
+    critical_items: list[CheckItem] = field(default_factory=list)
 
     def to_dict(self) -> CheckGroupDict:
         return CheckGroupDict(
