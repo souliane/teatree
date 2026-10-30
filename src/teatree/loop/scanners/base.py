@@ -76,7 +76,7 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     ):
         return ScannerErrorClass.RATE_LIMIT
     auth_text = re.sub(r"\b(?:remaining|retry-after)=\d+\b", "", lower)
-    if any(marker in auth_text for marker in auth_markers) or re.search(r"(?<![\w:])401(?![\w:])", auth_text):
+    if any(marker in auth_text for marker in auth_markers) or re.search(r"(?<![\w:])401(?!\w|:\w)", auth_text):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK

@@ -484,6 +484,7 @@ class TestClassifyGhStderr:
             ("Please run gh auth login", ScannerErrorClass.AUTH),
             ("Bad credentials", ScannerErrorClass.AUTH),
             ("HTTP 401", ScannerErrorClass.AUTH),
+            ("gh api: HTTP 401: Requires authentication", ScannerErrorClass.AUTH),
             ("HTTP 404: request identifier 1401", ScannerErrorClass.UNKNOWN),
             ("HTTP 404: request identifier 4012", ScannerErrorClass.UNKNOWN),
             ("HTTP 404: request-id AB12:401:CD34", ScannerErrorClass.UNKNOWN),
