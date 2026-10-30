@@ -27,7 +27,7 @@ def bot_push_refusal(data: dict[str, Any], *, parsed: ParsedPushes | None = None
         )
 
     for spec in parsed.specs:
-        if spec.unpinnable:
+        if not spec.repo_pinned:
             continue
         remote_url = _push_url(spec)
         if not remote_url:
