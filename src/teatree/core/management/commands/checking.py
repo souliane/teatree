@@ -12,13 +12,11 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-
 Before gathering, ``show`` and ``brief`` reconcile owner questions with recorded
 answers and may resume parked tasks. Only the default path writes a checkpoint
 marker. ``shoot`` posts Slack questions and records delivery state.
 The report is routed through the machine-output seam — JSON on stdout under
 ``--json``, the terse human view on stderr — and returned as the typed payload.
-
 """
 
 import hashlib
@@ -295,7 +293,7 @@ class Command(MachineOutputCommand):
             ),
         ] = False,
     ) -> CheckingReportDict | AllOverlaysReportDict:
-        """Print a terse, grouped, clickable report of changes since the last check."""
+        """Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check."""
         flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify, brief=False)
         return self._dispatch_show(flags=flags, this_overlay=this_overlay)
 

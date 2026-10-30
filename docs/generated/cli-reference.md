@@ -12207,7 +12207,8 @@ Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree checking show [OPTIONS]
 
- Print a terse, grouped, clickable report of changes since the last check.
+ Reconcile owner questions and print a terse, grouped, clickable report of
+ changes since the last check.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --since               TEXT  ISO timestamp override for the window start      │

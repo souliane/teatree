@@ -27,7 +27,7 @@
           "name": "shoot"
         },
         {
-          "help": "Print a terse, grouped, clickable report of changes since the last check",
+          "help": "Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check",
           "name": "show"
         },
         {

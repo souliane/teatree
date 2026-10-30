@@ -62,7 +62,6 @@ The default path aggregates **all configured overlays** into one report. Each ov
 - With `checking brief`, the human view contains active status plus linked held pull requests, or one line when no lane is active; `checking show --json` and the default detailed view retain all groups.
 - Groups in fixed order in the detailed view — `Merged`, `In-flight`, `Needs you`, `Triage suggestions`, `Metered`, `Remaining`.
 - Every linked PR / issue / ticket reference in the feature status uses a markdown link `[label](url)` with a label in words.
-
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
 - No preamble, no "Here is your report."
