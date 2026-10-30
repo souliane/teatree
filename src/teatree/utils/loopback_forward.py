@@ -334,10 +334,9 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     url = f"http://{_LOOPBACK}:{port}"
     if port == TERMINAL_PORT:
         return ForwardResult(error=f"dashboard port {port} is reserved for the terminal")
-    ports = (port, TERMINAL_PORT)
     # The bridge targets this admin id, which changes when the admin is recreated.
     label = f"{_FORWARDER_ADMIN_LABEL}={container}"
-    ports_label = f"{_FORWARDER_PORTS_LABEL}={','.join(map(str, ports))}"
+    ports_label = f"{_FORWARDER_PORTS_LABEL}={port},{TERMINAL_PORT}"
     if _docker(
         "ps",
         "--filter",
@@ -355,40 +354,47 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     image = _container_image(container)
     if not image:
         return ForwardResult(error=f"cannot resolve the {_ADMIN_SERVICE} container's image to run the forwarder from")
-    _docker("rm", "--force", name)
-    routes = tuple(
-        (host_port, _BRIDGE_SOURCE.format(host=_LOOPBACK, port=target_port, size=_RELAY_CHUNK))
-        for host_port, target_port in ((port, _ADMIN_CONTAINER_PORT), (TERMINAL_PORT, TERMINAL_PORT))
-    )
-    started = _docker(
-        "run",
-        "--detach",
-        "--rm",
-        "--label",
-        label,
-        "--label",
-        ports_label,
-        "--name",
-        name,
-        "--publish",
-        f"{_LOOPBACK}:{port}:{port}",
-        "--publish",
-        f"{_LOOPBACK}:{TERMINAL_PORT}:{TERMINAL_PORT}",
-        "--volume",
-        f"{_DOCKER_SOCKET}:{_DOCKER_SOCKET}",
-        "--group-add",
-        str(_docker_socket_gid()),
-        "--memory",
-        _FORWARDER_MEMORY,
-        "--entrypoint",
-        "python3",
-        image,
-        "-c",
-        _FORWARDER_SOURCE.format(container=container, routes=routes, size=_RELAY_CHUNK, bind=_ALL_INTERFACES),
-    )
-    if not started:
-        return ForwardResult(error=f"could not start the published forwarder container {name}")
-    return ForwardResult(url=url)
+    for ports in ((port, TERMINAL_PORT), (port,)):
+        _docker("rm", "--force", name)
+        routes = tuple(
+            (
+                host_port,
+                _BRIDGE_SOURCE.format(
+                    host=_LOOPBACK,
+                    port=_ADMIN_CONTAINER_PORT if host_port == port else TERMINAL_PORT,
+                    size=_RELAY_CHUNK,
+                ),
+            )
+            for host_port in ports
+        )
+        publish = [arg for host_port in ports for arg in ("--publish", f"{_LOOPBACK}:{host_port}:{host_port}")]
+        started = _docker(
+            "run",
+            "--detach",
+            "--rm",
+            "--label",
+            label,
+            "--label",
+            f"{_FORWARDER_PORTS_LABEL}={','.join(map(str, ports))}",
+            "--name",
+            name,
+            *publish,
+            "--volume",
+            f"{_DOCKER_SOCKET}:{_DOCKER_SOCKET}",
+            "--group-add",
+            str(_docker_socket_gid()),
+            "--memory",
+            _FORWARDER_MEMORY,
+            "--entrypoint",
+            "python3",
+            image,
+            "-c",
+            _FORWARDER_SOURCE.format(container=container, routes=routes, size=_RELAY_CHUNK, bind=_ALL_INTERFACES),
+        )
+        if started:
+            warning = f"terminal port {TERMINAL_PORT} could not be published" if len(ports) == 1 else ""
+            return ForwardResult(url=url, error=warning)
+    return ForwardResult(error=f"could not start the published forwarder container {name}")
 
 
 def ensure_admin_forward(*, port: int = FORWARD_PORT) -> ForwardResult:

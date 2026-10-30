@@ -396,6 +396,34 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert "8804" in source
         assert 'create_connection(("127.0.0.1", 8804))' in source
 
+    def test_failed_terminal_publish_keeps_the_dashboard_route(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def answer(*args: str) -> str:
+            calls.append(args)
+            if args[0] == "inspect":
+                return "admin-image"
+            if args[0] == "run":
+                return "" if sum(call[0] == "run" for call in calls) == 1 else "dashboard-forwarder"
+            return ""
+
+        with (
+            patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
+            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
+            patch("teatree.utils.loopback_forward._docker", side_effect=answer),
+            patch("teatree.utils.loopback_forward._docker_socket_gid", return_value=0),
+        ):
+            result = ensure_admin_forward(port=8803)
+
+        runs = [call for call in calls if call[0] == "run"]
+        assert result.url == "http://127.0.0.1:8803"
+        assert "terminal" in result.error
+        assert len(runs) == 2
+        assert "127.0.0.1:8804:8804" in runs[0]
+        assert "127.0.0.1:8804:8804" not in runs[1]
+        assert "127.0.0.1:8803:8803" in runs[1]
+        assert "teatree.forward-ports=8803" in runs[1]
+
     def test_the_published_mapping_is_pinned_to_the_host_loopback(
         self, containerized_stack_up: list[list[str]]
     ) -> None:
@@ -474,7 +502,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
             patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
-            patch("teatree.utils.loopback_forward._docker", side_effect=["", "an/image", "", ""]),
+            patch("teatree.utils.loopback_forward._docker", side_effect=["", "an/image", "", "", "", ""]),
         ):
             result = ensure_admin_forward(port=8803)
 
