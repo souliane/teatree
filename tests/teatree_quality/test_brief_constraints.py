@@ -41,6 +41,27 @@ def test_conditional_migration_allowance_is_not_an_absolute_constraint() -> None
     }
 
 
+def test_a_positive_migration_quota_after_no_setting_is_not_a_migration_ban() -> None:
+    constraints = extract_constraints("No new setting, exactly one migration 0034, no lint suppression.")
+    assert {item.kind for item in constraints} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("No new setting and no migration.")} == {
+        "no_setting",
+        "no_migration",
+    }
+
+
+def test_a_member_row_does_not_impose_its_limit_on_the_whole_umbrella() -> None:
+    plan = (
+        "M1 #5743: record a late attempt. No migration.\n"
+        "M13 #5698: activity key needs one migration.\n"
+        "6. ACCEPTANCE CRITERIA: no new setting, exactly one migration."
+    )
+    assert {item.kind for item in extract_constraints(plan, own_issue_number="5791")} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("M1 #5791: No migration.", own_issue_number="5791")} == {
+        "no_migration"
+    }
+
+
 def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
     text = (
         'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'
