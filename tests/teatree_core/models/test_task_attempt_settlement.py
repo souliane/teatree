@@ -1,11 +1,12 @@
 from unittest import mock
 
 import pytest
-from django.db import OperationalError, transaction
+from django.db import OperationalError, connection, transaction
 from django.test import TestCase
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.checkout_exit import CheckoutExit, checkout_exit_scope
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_attempt_settlement import complete_with_strict_lease
 from teatree.core.models.task_claim import _refuse_lost_lease
@@ -144,3 +145,20 @@ class TestTaskAttemptSettlement(TestCase):
         assert calls == 2
         assert attempt.pk is not None
         assert task.attempts.count() == 1
+
+
+    def test_checkout_exit_settles_before_the_write_transaction_opens(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        task.claim(claimed_by="worker", claimed_by_session="run-1")
+        outside_the_write = len(connection.savepoint_ids)
+        depths: list[int] = []
+
+        def prepare(_task: Task, _attest: bool, _wait: bool) -> CheckoutExit:
+            depths.append(len(connection.savepoint_ids))
+            return CheckoutExit(release=True)
+
+        with checkout_exit_scope(prepare):
+            task.complete_with_attempt(exit_code=0)
+
+        assert depths == [outside_the_write]

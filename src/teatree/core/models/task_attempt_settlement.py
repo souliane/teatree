@@ -2,13 +2,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
-from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, NOOP_OVER_COMPLETED_MARKER, FailureKind
 from teatree.core.models.errors import LeaseLostError
-from teatree.core.models.task_claim import _refuse_lost_lease
+from teatree.core.models.task_claim import _refuse_lost_lease, atomic_after_checkout_exit
 from teatree.core.models.types import JSONObject
 
 if TYPE_CHECKING:
@@ -85,7 +84,7 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
         return retry_on_locked(lambda: create_attempt(exit_code, error, recorded_result))
 
     def settle() -> "TaskAttempt":
-        with transaction.atomic():
+        with atomic_after_checkout_exit(task):
             attempt = create_attempt(exit_code, error, recorded_result)
             if exit_code == 0:
                 task.complete(result_artifact_path=artifact_path)
