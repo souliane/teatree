@@ -7,8 +7,9 @@ note, webhook trigger) or hand off to a phase agent.
 
 import datetime as dt
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import httpx
 
@@ -17,6 +18,9 @@ from teatree.backends.github.api import run_gh_unchecked
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.types import ScannerError, ScannerErrorClass
 from teatree.utils.run import CompletedProcess
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
 
 __all__ = [
     "PartialScanError",
@@ -28,6 +32,7 @@ __all__ = [
     "classify_gh_stderr",
     "classify_http_error",
     "hours_since",
+    "resolve_identities",
     "run_gh",
     "run_gh_for_slug",
 ]
@@ -49,6 +54,18 @@ def hours_since(earlier: dt.datetime, *, now: dt.datetime) -> float:
     ``object``-typed operand defeated the subtraction's type check.
     """
     return (now - earlier).total_seconds() / 3600.0
+
+
+def resolve_identities(host: "CodeHostBackend", identities: Sequence[str]) -> tuple[str, ...]:
+    """The forge handles a scan queries: the configured aliases verbatim, else the host's current user.
+
+    Explicit aliases win so a misconfigured ``current_user`` (wrong PAT scope, or a token whose
+    ``/user`` differs from the human's preferred handle) cannot silently collapse the query.
+    """
+    if identities:
+        return tuple(dict.fromkeys(identities))
+    user = host.current_user()
+    return (user,) if user else ()
 
 
 def classify_gh_stderr(stderr: str) -> ScannerErrorClass:

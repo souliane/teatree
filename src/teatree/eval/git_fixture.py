@@ -99,7 +99,6 @@ KNOWN_FIXTURES = frozenset(
 _E2E_ARTIFACT_TICKET = "4242"
 _E2E_ARTIFACT_RECORDING = "run.webm"
 _E2E_ARTIFACT_SCREENSHOTS = ("step1.png", "step2.png")
-_E2E_ARTIFACT_FILES = (_E2E_ARTIFACT_RECORDING, *_E2E_ARTIFACT_SCREENSHOTS)
 
 #: A fully-animated fractal source (every frame differs — no static region) so the clip
 #: trips NEITHER ``check_video_evidence``'s dead-lead gate NOR a diligent agent's stricter

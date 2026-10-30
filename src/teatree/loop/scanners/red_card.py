@@ -37,7 +37,6 @@ import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
-from typing import cast
 
 from django.utils import timezone
 
@@ -45,6 +44,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection, RedCardIntent, RedCardSignal
 from teatree.loop.owner_identity import configured_owner_id, owner_rows
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.slack_self_ack import reaction_item
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -91,19 +91,6 @@ def _event_ts(event: RawAPIDict) -> str:
 def _reaction_name(event: RawAPIDict) -> str:
     name = event.get("reaction")
     return name if isinstance(name, str) else ""
-
-
-def _reaction_item(event: RawAPIDict) -> tuple[str, str]:
-    raw = event.get("item")
-    if not isinstance(raw, dict):
-        return "", ""
-    item = cast("RawAPIDict", raw)
-    channel = item.get("channel")
-    ts = item.get("ts")
-    return (
-        channel if isinstance(channel, str) else "",
-        ts if isinstance(ts, str) else "",
-    )
 
 
 @dataclass(slots=True)
@@ -177,7 +164,7 @@ class RedCardScanner:
         signal_kind = _REACTION_KINDS.get(reaction)
         if signal_kind is None:
             return None
-        channel, agent_ts = _reaction_item(event)
+        channel, agent_ts = reaction_item(event)
         if not channel or not agent_ts:
             return None
         # The user's reaction has no Slack ``ts`` of its own — the event

@@ -1441,7 +1441,7 @@ class TestStaleStatuslineBanner:
         meta: dict = {"cadence": cadence, "next_epoch": int(time.time())}
         if rendered_at is not None:
             meta["rendered_at"] = int(rendered_at)
-        (tmp_path / "statusline-meta.json").write_text(json.dumps(meta) + "\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(json.dumps(meta) + "\n", encoding="utf-8")
         return sl
 
     def test_frozen_render_emits_banner_first(self, tmp_path: Path) -> None:
