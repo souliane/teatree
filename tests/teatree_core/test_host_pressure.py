@@ -70,6 +70,7 @@ def _quota() -> QuotaSignal:
 def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 10)
+    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: None)
     _write_feed(tmp_path, epoch=int(time.time()), swap_mib_per_s=12.5, vm_pressure_level=2)
     machine = read_machine_signal()
     assert machine.cores == 10
@@ -115,7 +116,10 @@ class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 1
 
     def test_cpu_affinity_caps_the_host_ceiling_without_changing_load_scope(self) -> None:
-        with patch.object(ram_probe, "available_cpu_count", return_value=2):
+        with (
+            patch.object(ram_probe, "available_cpu_count", return_value=2),
+            patch.object(ram_probe, "cgroup_cpu_quota", return_value=None),
+        ):
             machine = read_machine_signal()
         assert machine.cores == 2
         assert machine.load_cores == 10
