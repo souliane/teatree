@@ -22,6 +22,7 @@ from django.utils import timezone
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Task, Worktree
+from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_state import checkout_state
@@ -273,6 +274,17 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: acquire(self.worktree, holder="task:999", holder_session="rival"), heartbeat=False)
         row = Worktree.objects.get(pk=self.worktree.pk)
         assert (row.occupied_by, row.occupied_by_session) == ("task:999", "rival")
+
+    def test_exit_claims_a_checkout_created_after_the_last_heartbeat_and_attests_a_verified_run(self) -> None:
+        self.run_to(lambda task: mark_verified_checkout_run(), heartbeat=False)
+        self.assert_released_and_attested()
+
+    def test_a_read_only_run_never_takes_a_checkout_at_exit(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        self.run_to(lambda task: mark_verified_checkout_run(), heartbeat=False, held_at_exit=True)
+        assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 
     def test_short_run_claims_its_new_checkout_before_completion(self) -> None:
         self.run_to(lambda task: task.complete(), heartbeat=False)

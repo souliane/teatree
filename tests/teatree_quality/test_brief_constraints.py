@@ -67,6 +67,23 @@ def test_a_member_row_does_not_impose_its_limit_on_the_whole_umbrella() -> None:
     }
 
 
+def test_a_ban_after_unless_is_still_a_ban() -> None:
+    for text in (
+        "No migration unless required and no setting.",
+        "Do not add a migration unless required, and do not add a setting.",
+    ):
+        assert {item.kind for item in extract_constraints(text)} == {"no_setting"}, text
+
+
+def test_a_quota_word_in_the_object_of_the_negative_keyword_is_still_a_ban() -> None:
+    for text in ("No 2 migrations.", "Without one migration."):
+        assert {item.kind for item in extract_constraints(text)} == {"no_migration"}, text
+
+
+def test_member_rows_are_kept_when_the_ticket_has_no_own_issue_number() -> None:
+    assert {item.kind for item in extract_constraints("M1 #5791: No migration.")} == {"no_migration"}
+
+
 def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
     text = (
         'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'
