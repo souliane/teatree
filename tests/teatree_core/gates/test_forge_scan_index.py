@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.forge_pr_probe import PrProbeOutcome, probe_gitlab_open_pr
+from teatree.core.forge_pr_probe import PrProbe, PrProbeOutcome, probe_gitlab_open_pr
 from teatree.core.gates.forge_scan_index import active_branch_scan_index, branch_scan_scope
-from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, find_orphans_in_workspace
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 
 _REPO = "/tmp/teatree-index-test"
 
@@ -72,3 +72,19 @@ def test_orphan_workers_share_scan_scope() -> None:
     assert seen[0] is index
     assert all(item is index for item in seen)
     assert active_branch_scan_index() is None
+
+
+def test_unreadable_open_pr_state_inside_scope_warns_naming_the_repository(caplog: pytest.LogCaptureFixture) -> None:
+    ahead = SimpleNamespace(genuinely_ahead=["commit"], branch_missing=False)
+    with (
+        patch("teatree.core.gates.orphan_guard._origin_default_branch_target", return_value="origin/main"),
+        patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject", return_value=ahead),
+        patch("teatree.core.gates.orphan_guard._local_content_verdict", return_value=None),
+        patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash", return_value=False),
+        patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch", return_value=PrProbe.unknown()),
+        patch("teatree.core.gates.orphan_guard.branch_content_landed_on_base", return_value=False),
+        branch_scan_scope(),
+    ):
+        report = classify_branch(_REPO, "feature")
+    assert report.status is BranchStatus.PR_UNKNOWN
+    assert any(_REPO in record.message and record.levelname == "WARNING" for record in caplog.records)

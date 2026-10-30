@@ -194,8 +194,7 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=ahead)
 
     if probe.is_unknown:
-        if active_branch_scan_index() is None:
-            logger.warning("orphan scan: could not read %s's open-PR state in %s — reporting pr_unknown", branch, repo)
+        logger.warning("orphan scan: could not read %s's open-PR state in %s — reporting pr_unknown", branch, repo)
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.PR_UNKNOWN, ahead_count=ahead)
 
     return BranchReport(repo=repo, branch=branch, status=_orphan_status_on_origin(repo, branch), ahead_count=ahead)

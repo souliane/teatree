@@ -122,6 +122,15 @@ class ForgottenMergeDetectorTests(TestCase):
         question.save(update_fields=["answered_at"])
         assert len(_detector().detect()) == 1
 
+    def test_pending_debugging_fix_round_keeps_old_refusal_held(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(210)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        fix_round = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="debugging")
+        assert _detector().detect() == []
+        fix_round.status = Task.Status.FAILED
+        fix_round.save(update_fields=["status"])
+        assert len(_detector().detect()) == 1
+
     def test_completed_coding_without_new_clear_does_not_suppress_stalled_merge(self) -> None:
         _, ticket, verdict = self._critic_held_clear(209)
         CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))

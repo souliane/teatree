@@ -466,8 +466,10 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     window = UsageWindowState.objects.active_for_lane(lane)
     if window is None or window.resets_at is None or window.should_clear(moment):
         return None
-    if window.cause == ALL_ACCOUNTS_EXHAUSTED_CAUSE and not subscription_lane_exhausted(
-        scope=task.ticket.overlay, now=moment
+    if (
+        lane == TaskAttempt.Lane.SUBSCRIPTION
+        and window.cause == ALL_ACCOUNTS_EXHAUSTED_CAUSE
+        and not subscription_lane_exhausted(scope=task.ticket.overlay or "", now=moment)
     ):
         return None
     lane_name = str(lane.value) if isinstance(lane, TaskAttempt.Lane) else (lane or "ambient")
