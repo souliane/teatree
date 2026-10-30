@@ -363,8 +363,8 @@ class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
 
                 posted = " ".join(str(call.args[0]) for call in notify.call_args_list)
                 assert "Q0" not in posted, "a row the send stands down on must not hold a cap slot"
-                assert [q for q in ("Q1", "Q2", "Q3") if q in posted] == ["Q1", "Q2", "Q3"]
-                assert (delivered, total) == (3, 5)
+                assert [q for q in ("Q1", "Q2", "Q3", "Q4") if q in posted] == ["Q1", "Q2", "Q3", "Q4"]
+                assert (delivered, total) == (4, 5)
 
     def test_a_stale_sending_claim_stays_redeliverable(self) -> None:
         row = DeferredQuestion.record("Should I merge the widget change?", **OWNER_DECISION)

@@ -22,6 +22,7 @@ _NEVER = frozenset(
     {
         "ai_signature",
         "banned_terms",
+        "bot_push",
         "dispatch_quote_scanner",
         "foreign_branch_push_force_delete",
         "quote_scanner",
@@ -44,6 +45,7 @@ _AUDITED = frozenset(
         "direct_command",
         "dispatch_admission",
         "foreign_branch_push",
+        "foreign_mcp",
         "general_purpose_agent_gate",
         "git_add_all",
         "glab_stale_base_remote",

@@ -30,6 +30,7 @@ from teatree.core.config_interchange.secret_guard import (
 )
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.placeholder_terms import TEST_TERM_REGISTRY
 
 _LEAK = TEST_TERM_REGISTRY["leak"][0]
@@ -90,6 +91,7 @@ class TestExportDbToToml(TestCase):
         assert "other" not in doc["overlays"]
 
     def test_empty_store_exports_empty_document(self) -> None:
+        seed_default_loops_and_prompts()
         assert export_db_to_toml(scan_terms=()).toml.strip() == ""
 
 
@@ -463,13 +465,13 @@ class TestImportTomlToDb(TestCase):
         # skipping it and writing it resolve to the SAME value. (Before the TOML tier was
         # wired in, a shipped value diverging from the dataclass default had to be written
         # or it silently resolved to the dataclass value instead.)
-        toml_default = shipped_defaults().provision_ram_ceiling_percent
-        assert effective_default("provision_ram_ceiling_percent") == toml_default
-        result = import_toml_to_db(f"[teatree]\nprovision_ram_ceiling_percent = {toml_default}\n", scan_terms=())
+        toml_default = shipped_defaults().provision_slow_threshold_seconds
+        assert effective_default("provision_slow_threshold_seconds") == toml_default
+        result = import_toml_to_db(f"[teatree]\nprovision_slow_threshold_seconds = {toml_default}\n", scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
-        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "provision_ram_ceiling_percent")]
-        assert get_effective_settings().provision_ram_ceiling_percent == toml_default
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "provision_slow_threshold_seconds")]
+        assert get_effective_settings().provision_slow_threshold_seconds == toml_default
 
     def test_defaults_toml_imports_to_zero_rows(self) -> None:
         # The zero-row normalization invariant: every key in defaults.toml is by
@@ -481,8 +483,8 @@ class TestImportTomlToDb(TestCase):
         assert result.written == ()
         assert len(result.skipped_default) > 0
         assert ConfigSetting.objects.count() == 0
-        resolved = get_effective_settings().provision_ram_ceiling_percent
-        assert resolved == shipped_defaults().provision_ram_ceiling_percent
+        resolved = get_effective_settings().provision_slow_threshold_seconds
+        assert resolved == shipped_defaults().provision_slow_threshold_seconds
 
     def test_dry_run_classifies_without_writing(self) -> None:
         result = import_toml_to_db('[teatree]\nmode = "interactive"\n', scan_terms=(), dry_run=True)
@@ -561,9 +563,10 @@ def _mask_toml(mode: str, entries: dict[str, bool]) -> str:
 
 
 class _SeedRowsTestCase(TestCase):
-    """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
+    """The install seed upgrades migration loops and creates modes/schedules."""
 
     def setUp(self) -> None:
+        seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
 
 

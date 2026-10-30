@@ -166,7 +166,7 @@ def _proposal_for(
         checked = ("The reason given for the override cannot be checked here.", f"It has stood for {days} days.")
         options = (replace(_KEEP, recommended=True), _LIFT)
     card = QuestionCard(
-        decision=OwnerDecision.PRODUCT_SCOPE,
+        decision=OwnerDecision.ARCHITECTURE,
         checked=checked,
         blocker="Only the owner can say whether the override still applies.",
         why=why,

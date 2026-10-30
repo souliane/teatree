@@ -28,16 +28,18 @@ from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
+from teatree.core.models import BotPing, PendingTriageRecommendation, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.notify import notify_user
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
 from tests._owner_channel import owner_card
+from tests.factories import MergeAuditFactory, TicketFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -49,6 +51,7 @@ _SHA = "b" * 40
 def checkpoint_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     target = tmp_path / "checking_checkpoint_test.json"
     monkeypatch.setattr("teatree.core.checkpoint.checkpoint_path", lambda *_a, **_k: target)
+    monkeypatch.setattr("teatree.core.management.commands.checking.checkpoint_path", lambda *_a, **_k: target)
     return target
 
 
@@ -200,9 +203,141 @@ def _lane_width_patch(widths: MagicMock) -> AbstractContextManager[Any]:
 class TestCheckingShow:
     """Single-overlay path via ``--this-overlay`` (the old default behavior)."""
 
+    def test_brief_check_in_fits_one_screen_with_many_active_features(self) -> None:
+        for index in range(9):
+            Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{700 + index}",
+                state=Ticket.State.CODED,
+                short_description=f"feature {chr(65 + index)}",
+            )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert text.startswith("Status by feature\n")
+        assert len(text.splitlines()) <= 11
+        assert "Remaining" not in text
+
+    def test_brief_with_only_queued_work_is_one_line(self) -> None:
+        Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/720",
+            state=Ticket.State.NOT_STARTED,
+            short_description="queued work",
+        )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert text.startswith("No active feature work since ")
+        assert len(text.splitlines()) == 1
+
+    def test_brief_keeps_many_failed_runs_out_of_owner_status(self, checkpoint_file: Path) -> None:
+        for index in range(6):
+            DeferredQuestion.record(f"Can I publish change {index}?", card=owner_card())
+        for index in range(24):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{725 + index}",
+                state=Ticket.State.CODED,
+                short_description=f"restore delivery {index}",
+            )
+            task = _task(ticket, "testing", status=Task.Status.FAILED)
+            TaskAttempt.objects.create(
+                task=task, ended_at=timezone.now() - timedelta(days=30), exit_code=1, error="agent crashed"
+            )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert "failed run" not in text.lower()
+        assert len(text.splitlines()) <= 11
+
+    def test_old_failed_run_without_ticket_url_stays_out_of_owner_status(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="", state=Ticket.State.NOT_STARTED, short_description="restore delivery"
+        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(
+            task=task, ended_at=timezone.now() - timedelta(days=2), exit_code=1, error="agent crashed"
+        )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+        needs_you = _show_json()["needs_you"]
+
+        assert "Failed run" not in text
+        assert needs_you["total"] == 0
+
+    def test_brief_keeps_held_pull_request_visible(self, checkpoint_file: Path) -> None:
+        for index in range(6):
+            other = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{730 + index}",
+                state=Ticket.State.PR_OPENED,
+                short_description=f"routine work {index}",
+            )
+            PullRequest.objects.create(
+                ticket=other,
+                repo="acme/widgets",
+                iid=str(740 + index),
+                url=f"https://github.com/acme/widgets/pull/{740 + index}",
+            )
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/726",
+            state=Ticket.State.PR_OPENED,
+            short_description="restore access",
+        )
+        PullRequest.objects.create(
+            ticket=ticket, repo="acme/widgets", iid="727", url="https://github.com/acme/widgets/pull/727"
+        )
+        _task(ticket, "reviewing", status=Task.Status.FAILED, failure_kind="unclassified")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert "held pull request" in text.lower()
+        assert "[restore access](https://github.com/acme/widgets/pull/727)" in text
+
+    def test_brief_caps_held_pull_requests(self, checkpoint_file: Path) -> None:
+        for index in range(12):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{760 + index}",
+                state=Ticket.State.PR_OPENED,
+                short_description=f"repair access {index}",
+            )
+            PullRequest.objects.create(
+                ticket=ticket,
+                repo="acme/widgets",
+                iid=str(780 + index),
+                url=f"https://github.com/acme/widgets/pull/{780 + index}",
+            )
+            _task(ticket, "reviewing", status=Task.Status.FAILED, failure_kind="unclassified")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert len(text.splitlines()) <= 12
+        assert text.count("Held pull request:") == 2
+        assert "and 10 more held pull requests" in text
+
+    def test_brief_escapes_square_brackets_in_a_held_pull_request_title(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/790",
+            state=Ticket.State.PR_OPENED,
+            short_description="Fix [draft] flow",
+        )
+        PullRequest.objects.create(
+            ticket=ticket, repo="acme/widgets", iid="791", url="https://github.com/acme/widgets/pull/791"
+        )
+        _task(ticket, "reviewing", status=Task.Status.FAILED, failure_kind="unclassified")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert r"Held pull request: [Fix \[draft\] flow](https://github.com/acme/widgets/pull/791)" in text
+
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay")
+        assert out.startswith("Status by feature\n")
         assert "Since " in out
         assert "Merged" in out
         assert "[acme/widgets#7]" in out
@@ -243,10 +378,12 @@ class TestCheckingShow:
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
         assert set(payload) == {
+            "status_by_feature",
             "since",
             "merged",
             "in_flight",
             "needs_you",
+            "triage_suggestions",
             "metered",
             "internal_escalations",
             "remaining",
@@ -277,6 +414,22 @@ class TestCheckingShow:
         assert item["owner_only"] is True
         assert "questions dismiss" not in item["detail"]
         assert "Slack" in item["detail"]
+
+    def test_walk_resolves_exact_architecture_repeat_and_lists_owner_limit_once(self, checkpoint_file: Path) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        repeated = DeferredQuestion.record(question, card=owner_card())
+        reserved = DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        repeated.refresh_from_db()
+        assert repeated.answer_text == "Yes."
+        assert str(basis.pk) in repeated.audits.get(action="coordinated").note
+        assert payload["needs_you"]["total"] == 1
+        assert [item["row_id"] for item in payload["needs_you"]["items"]] == [reserved.pk]
+        assert DeferredQuestion.objects.get(pk=reserved.pk).is_pending
 
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -539,10 +692,7 @@ class TestCheckingRemaining:
             with _two_overlay_patch():
                 payload = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
             labels = [item["label"] for item in payload["needs_you"]["items"]]
-            assert "#801" not in labels
-            assert "#802" in labels
-            assert "#803" in labels
-            assert "#804" not in labels
+            assert not labels
 
     def test_remaining_alone_does_not_notify(self, checkpoint_file: Path) -> None:
         self._open_pr()
@@ -1352,9 +1502,13 @@ class TestCheckingNotify:
 
     @pytest.mark.parametrize("aged", [timedelta(minutes=5), timedelta(hours=5), timedelta(days=2)])
     def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path, aged: timedelta) -> None:
-        wait = WaitingItem.objects.add("Read the pending review")
+        wait = DeferredQuestion.record(
+            "May I widen this credential's use?",
+            card=owner_card(OwnerDecision.CREDENTIALS),
+            dedupe_marker="checking-recap-owner-wait",
+        )
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
+        DeferredQuestion.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
 
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 
@@ -1408,6 +1562,7 @@ class TestCheckingShowAllOverlays:
 
         with _two_overlay_patch():
             out = _call("checking", "show", "--no-advance")
+        assert out.startswith("Status by feature\n")
         assert "acme/widgets#10" in out
         assert "beta/core#20" in out
 
@@ -1475,6 +1630,8 @@ class TestCheckingShowAllOverlays:
             out = _call("checking", "show", "--no-advance", "--json")
 
         payload = json.loads(out)
+        assert next(iter(payload)) == "status_by_feature"
+        assert payload["status_by_feature"]["features"][0]["title"] == "acme work"
         assert "all_overlays" in payload
         assert "merged" in payload
 
@@ -1518,3 +1675,44 @@ class TestMachineOutputChannel:
         out, err = self._channels("--this-overlay", "--json")
         assert "since" in json.loads(out)
         assert err == ""
+
+    def test_pending_triage_recommendation_is_a_suggestion_not_a_need(self, checkpoint_file: Path) -> None:
+        PendingTriageRecommendation.record_candidate(
+            issue_url="https://github.com/acme/widgets/issues/21",
+            verdict="close",
+            title="Duplicate widget report",
+            overlay="acme",
+        )
+
+        per_overlay, _err = self._channels("--this-overlay", "--json")
+        with _two_overlay_patch():
+            all_overlays, _err = self._channels("--json")
+
+        for out in (per_overlay, all_overlays):
+            payload = json.loads(out)
+            assert payload["needs_you"]["total"] == 0
+            suggestions = payload["triage_suggestions"]
+            assert suggestions["total"] == 1
+            assert suggestions["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
+            assert suggestions["items"][0]["title"] == "Duplicate widget report"
+            assert "Triage suggestions" in payload["terse"]
+
+
+class TestStatusWithoutGroupContent:
+    def test_status_stays_visible_when_every_group_is_empty(self, checkpoint_file: Path) -> None:
+        ticket = TicketFactory(
+            overlay="acme",
+            issue_url="https://github.com/souliane/teatree/issues/1700",
+            short_description="visible work",
+            state=Ticket.State.DELIVERED,
+        )
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=1701, merged_sha="a" * 40
+        )
+        MergeAudit.objects.filter(pk=audit.pk).update(merged_at=timezone.now() - timedelta(days=3))
+        WorkerGeneration.objects.create(sha="b" * 40, image="test-image", state=WorkerGeneration.State.ACTIVE)
+
+        out = _call("checking", "show", "--this-overlay", "--no-advance")
+
+        assert "Not yet deployed" in out
+        assert "Nothing since" not in out

@@ -424,7 +424,7 @@ def test_rollback_connection_selects_truncate_on_every_open(tmp_path: Path) -> N
     assert db.read_bytes()[18] == 1
 
 
-def test_mismatched_header_waits_for_wal_writer_then_converts_file(tmp_path: Path) -> None:
+def test_mismatched_header_refuses_held_wal_writer_then_converts_file(tmp_path: Path) -> None:
     db = tmp_path / "db.sqlite3"
     writer = sqlite3.connect(db)
     try:

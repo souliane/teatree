@@ -42,6 +42,14 @@ repos:
         always_run: true
         stages: [push]
 
+      - id: refuse-bot-push
+        name: Refuse a human credential or commit on a bot-owned repo (#5122)
+        language: system
+        entry: scripts/hooks/branch-push-only.sh uv run --no-sync python -m teatree.hooks.bot_push_gate
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
       - id: refuse-push-to-foreign-mr
         name: Refuse pushing to a branch that backs a teammate's open MR (#2211)
         language: system

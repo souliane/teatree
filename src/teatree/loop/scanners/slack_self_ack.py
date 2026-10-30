@@ -48,7 +48,7 @@ def _event_user(event: RawAPIDict) -> str:
     return user if isinstance(user, str) else ""
 
 
-def _reaction_item(event: RawAPIDict) -> tuple[str, str]:
+def reaction_item(event: RawAPIDict) -> tuple[str, str]:
     raw = event.get("item")
     if not isinstance(raw, dict):
         return "", ""
@@ -115,7 +115,7 @@ class SlackSelfAckReactor:
     def _ack_one(self, event: RawAPIDict, target_user: str, identity: OwnSlackIdentity) -> bool:
         if _event_user(event) != target_user:
             return False
-        channel, ts = _reaction_item(event)
+        channel, ts = reaction_item(event)
         if not channel or not ts:
             return False
         message = self.backend.fetch_message(channel=channel, ts=ts)

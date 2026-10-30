@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import pytest
 from django.db.models.signals import post_save
-from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -37,6 +36,7 @@ from teatree.dash.cycle_time import (
 )
 from teatree.dash.views.base import NAV_ITEMS
 from tests.factories import PullRequestFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 MINUTE = 60.0
@@ -390,6 +390,22 @@ class CycleTimePageTestCase(TestCase):
 
     def test_the_page_is_in_the_nav(self) -> None:
         assert ("dash:cycle_time", "Cycle time") in NAV_ITEMS
+
+    def test_phase_gap_signal_shows_a_thirty_hour_wait_beside_pull_request_time(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, overlay="t3-teatree")
+        prior = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        next_task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        end = timezone.now() - timedelta(hours=30)
+        Task.objects.filter(pk=prior.pk).update(created_at=end - timedelta(hours=2), status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=next_task.pk).update(created_at=end + timedelta(minutes=1))
+        TaskAttempt.objects.create(task=prior, ended_at=end, exit_code=0)
+
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+
+        assert "Pull requests: start to merged" in body
+        assert "Wait between consecutive ticket phases (1 measured)" in body
+        assert "longest <strong>30h</strong>" in body
 
     def test_the_flow_band_shows_the_merged_median_and_open_ages_oldest_first(self) -> None:
         for hours in (1, 2, 100):

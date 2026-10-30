@@ -80,7 +80,13 @@ from teatree.core.review.author_trust import (
 )
 from teatree.core.work_lease import WorkIdentity, foreign_work_holder
 from teatree.instance_id import instance_id
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
+from teatree.loop.scanners.base import (
+    ScannerError,
+    ScannerErrorClass,
+    ScanSignal,
+    classify_gh_stderr,
+    resolve_identities,
+)
 from teatree.loop.scanners.forge_readback import (
     ReadbackIndex,
     build_readback_index,
@@ -90,7 +96,7 @@ from teatree.loop.scanners.forge_readback import (
 )
 from teatree.loop.scanners.issue_payload import issue_author, issue_created_at, issue_url
 from teatree.types import RawAPIDict
-from teatree.utils.run import redact_secrets
+from teatree.utils.run import CommandFailedError, redact_secrets
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -217,17 +223,19 @@ class IssueIntakeScanner:
             UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
             logger.info("IssueIntakeScanner tick %s: admitted=0 claimed=0 deferred=0", self.overlay_name)
             return []
-        operators = self._resolve_identities()
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
-            readback=self._readback_index(operators),
+            readback=self._readback_index(
+                resolve_identities(self.host, self.identities)
+            ),  # operator handles, not the trust set
             nit_urls=frozenset(issue_url(candidate) for candidate in candidates if is_nit_issue(candidate)),
         )
         signals: list[ScanSignal] = []
         waiting: list[WaitingCandidate] = []
         admitted = 0
         claiming = self.can_claim
+        held_by = "disabled" if not claiming else "none"
         walk = self._resume_ordered(candidates)
         deadline = self.monotonic() + self.pass_budget_seconds
         examined: RawAPIDict | None = None
@@ -242,9 +250,12 @@ class IssueIntakeScanner:
                 if verdict is None:
                     continue
                 admitted += 1
-                claiming = claiming and not (
-                    self._budget_exhausted(issue=issue, nit_urls=context.nit_urls) or self._governor_denied()
-                )
+                if claiming and self._budget_exhausted(issue=issue, nit_urls=context.nit_urls):
+                    claiming = False
+                    held_by = "budget"
+                elif claiming and self._governor_denied():
+                    claiming = False
+                    held_by = "governor"
                 if claiming:
                     self._append_claim(issue, url, verdict, signals)
                     continue
@@ -260,11 +271,12 @@ class IssueIntakeScanner:
         UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting, complete=complete)
         self._record_pass(examined, complete=complete)
         logger.info(
-            "IssueIntakeScanner tick %s: admitted=%d claimed=%d deferred=%d",
+            "IssueIntakeScanner tick %s: admitted=%d claimed=%d deferred=%d held_by=%s",
             self.overlay_name,
             admitted,
             len(signals),
             admitted - len(signals),
+            held_by,
         )
         return signals
 
@@ -487,13 +499,6 @@ class IssueIntakeScanner:
             logger.exception("IssueIntakeScanner could not read the ticket ledger — degrading to empty")
             return frozenset()
 
-    def _resolve_identities(self) -> tuple[str, ...]:
-        """The OPERATOR's handles — the read-back's PR-query scope, not the trust set."""
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
-
     def _candidate_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
         """Open, URL-bearing issues from both scoped discovery queries, OLDEST FILED FIRST.
 
@@ -515,7 +520,7 @@ class IssueIntakeScanner:
         seen_urls: set[str] = set()
         issues: list[RawAPIDict] = []
         attempted = 0
-        failures: list[str] = []
+        failures: list[tuple[str, str]] = []
         for author in sorted(trusted):
             if "/" in author:
                 continue
@@ -537,12 +542,25 @@ class IssueIntakeScanner:
                 failures,
             )
         if attempted and len(failures) == attempted:
+            classifications = {classify_gh_stderr(reason) for _, reason in failures}
+            common_class = next(iter(classifications)) if len(classifications) == 1 else ScannerErrorClass.UNKNOWN
+            error_class = (
+                common_class
+                if common_class in {ScannerErrorClass.RATE_LIMIT, ScannerErrorClass.NETWORK}
+                or classifications == {ScannerErrorClass.RATE_LIMIT, ScannerErrorClass.NETWORK}
+                else ScannerErrorClass.AUTH
+            )
+            causes = "; ".join(dict.fromkeys(reason for _, reason in failures))
+            labeled_failures = "; ".join(f"{label}: {reason}" for label, reason in failures)
+            credential_hint = (
+                " (check the credential store and $GNUPGHOME)" if error_class is ScannerErrorClass.AUTH else ""
+            )
             raise ScannerError(
                 scanner=self.name,
-                error_class=ScannerErrorClass.AUTH,
+                error_class=error_class,
                 detail=(
-                    f"every issue-discovery query failed, so the intake queue is UNKNOWN, not empty "
-                    f"(check the credential store and $GNUPGHOME): {'; '.join(failures)}"
+                    f"every issue-discovery query failed, so the intake queue is UNKNOWN, not empty: "
+                    f"{causes}{credential_hint}; {labeled_failures}"
                 ),
             )
         return sorted(issues, key=lambda issue: (is_nit_issue(issue), issue_created_at(issue) or _UNDATED))
@@ -553,7 +571,7 @@ class IssueIntakeScanner:
         label: str,
         seen_urls: set[str],
         issues: list[RawAPIDict],
-        failures: list[str],
+        failures: list[tuple[str, str]],
     ) -> None:
         try:
             found = fetch()
@@ -561,7 +579,8 @@ class IssueIntakeScanner:
             logger.warning("%s failed — skipping", label, exc_info=True)
             # This string reaches the owner's DM through ScannerError.detail, and a forge
             # exception routinely echoes the request that carried the credential.
-            failures.append(f"{label}: {redact_secrets(str(exc))}")
+            reason = exc.stderr if isinstance(exc, CommandFailedError) and exc.stderr else str(exc)
+            failures.append((label, redact_secrets(reason)))
             return
         for issue in found:
             url = issue_url(issue)

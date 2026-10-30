@@ -18,7 +18,6 @@ SKILL_NAME_SETTINGS = (
     "architectural_review_skill",
     "backlog_sweep_skill",
     "dogfood_smoke_skill",
-    "eval_local_skill",
     "review_skill",
     "scanning_news_skill",
 )

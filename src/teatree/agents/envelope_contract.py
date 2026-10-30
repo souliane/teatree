@@ -27,7 +27,7 @@ from teatree.agents.result_schema import (
 )
 from teatree.agents.result_schema_draft import EXECUTOR_DRAFT_FIELDS
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
@@ -128,6 +128,9 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         }
     },
     "ship_readiness": {"ship_readiness": {"ready": True, "reasons": []}},
+    "sweep_proposals": {
+        "sweep_proposals": {"examined": ["<every issue URL in ISSUE WINDOW>"], "folds": [], "gaps": []}
+    },
     # The id `ticket sweep-begin` printed — the count is read from the run's own
     # recorded URLs, so the example deliberately shows no changed_count to restate.
     "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},
@@ -272,7 +275,7 @@ def envelope_contract_lines(
             '  `user_input_checked`, `user_input_card` {"why", "blocker", '
             '"options": [{"label", "description", "recommended"}]}; stop.'
         ),
-        f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        f"  {', '.join(OWNER_RAISABLE_DECISIONS)}; an access or permission grant is credentials.",
         *(f"  {line}" for line in owner_stop_limits_lines()),
         "  Decide everything else yourself.",
         (
@@ -284,7 +287,12 @@ def envelope_contract_lines(
         "- Only these keys are allowed:",
         f"  {', '.join(_taught_keys(read_only_venue=read_only_venue))}",
         "",
-        "Minimal valid envelope for this phase — copy this shape exactly:",
+        (
+            "Minimal valid envelope for this phase — copy this shape and replace the placeholder with every "
+            "ISSUE WINDOW URL (use [] only for an empty window):"
+            if read_only_venue and normalize_phase(phase) == "backlog_sweep"
+            else "Minimal valid envelope for this phase — copy this shape exactly:"
+        ),
         json.dumps(
             envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=1
         ),

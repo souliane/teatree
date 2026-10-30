@@ -16,7 +16,7 @@ from teatree.agents.attempt_recorder import (
 from teatree.agents.envelope_refusal import UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.issue_hygiene import CreateOutcome
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.task_failure_taxonomy import (
     OWNER_STOP_REFUSAL_PREFIX,
     PLAN_STALE_PREFIX,
@@ -39,6 +39,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.owner_dm.architectural_review_notice import announce_completed
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 from teatree.core.send_proxy import OutboundBlockedError
@@ -95,8 +96,14 @@ class TestValidateResultKeys(TestCase):
         assert "unexpected keys" in validate_result_keys({"bogus": 1})
 
     def test_accepts_each_owner_decision_kind_with_a_complete_card(self) -> None:
-        for kind in OwnerDecision:
+        for kind in OWNER_RAISABLE_DECISIONS:
             assert validate_result_keys(owner_stop("Rotate the deploy token?", kind) | {"summary": "x"}) == ""
+
+    def test_legacy_product_scope_stop_names_the_current_owner_kinds(self) -> None:
+        error = validate_result_keys(owner_stop("Choose the scope?", "product_scope") | {"summary": "x"})
+
+        assert "product_scope" in error
+        assert all(kind.value in error for kind in OWNER_RAISABLE_DECISIONS)
 
     def test_user_input_kind_without_checked_is_refused(self) -> None:
         stop = owner_stop("Rotate the deploy token?") | {"summary": "x"}
@@ -170,6 +177,15 @@ class TestValidateResultKeys(TestCase):
         ):
             with self.subTest(kind=kind, question=question):
                 assert validate_result_keys(owner_stop(question, kind, *facts) | {"summary": "waiting"}) == ""
+
+    def test_automatic_review_command_refusal_is_not_a_credentials_card(self) -> None:
+        stop = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        )
+
+        assert "retry once in the background" in validate_result_keys(stop)
 
 
 class TestRecordResultEnvelope(TestCase):
@@ -285,6 +301,52 @@ class TestRecordResultEnvelope(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
+    def test_automatic_review_refusal_retries_once_then_records_permission_health(self) -> None:
+        task = self._claimed(phase="testing")
+        envelope = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        ) | {"summary": "The command was refused."}
+
+        first = record_result_envelope(task, envelope, phase="testing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert first.error.startswith("result_error: automatic approval review refused")
+        assert "background" in task.execution_reason
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 0
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        task.claim(claimed_by="loop-slot")
+
+        second = record_result_envelope(task, envelope, phase="testing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert second.error.startswith("harness permission fault:")
+        fault = ScannerFault.objects.get(scanner=f"task:{task.pk}:permission")
+        assert "testing" in fault.detail
+        assert "skill preamble command" in fault.detail
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 0
+
+    def test_automatic_review_wording_with_a_spend_decision_records_owner_card(self) -> None:
+        task = self._claimed(phase="testing")
+        envelope = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        ) | {"summary": "Waiting for a decision."}
+        card = envelope["user_input_card"]
+        assert isinstance(card, dict)
+        card["why"] = "This would buy a new paid plan."
+
+        attempt = record_result_envelope(task, envelope, phase="testing")
+
+        assert attempt.error == ""
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 1
+
     def test_unrouted_credentials_denied_command_still_raises_the_card(self) -> None:
         task = self._claimed(phase="scoping")
         envelope = owner_stop("May I start the sub-agent again?", "credentials", DENIED_START)
@@ -344,7 +406,7 @@ class TestRecordResultEnvelope(TestCase):
                     assert_a_plain_card(DeferredQuestion.objects.get(parked_task=task))
 
     def test_routed_coder_without_edits_refuses_non_owner_kept_stop(self) -> None:
-        for kind in ("product_scope", "architecture"):
+        for kind in ("architecture",):
             with self.subTest(kind=kind):
                 task = self._claimed(phase="coding")
 
@@ -1030,7 +1092,7 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
-    def test_recommendations_round_trip_to_pending_rows_and_one_question(self) -> None:
+    def test_recommendations_round_trip_to_pending_rows_without_an_owner_question(self) -> None:
         task = self._claimed()
         record_result_envelope(
             task,
@@ -1049,14 +1111,7 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         assert set(rows.values_list("issue_url", flat=True)) == {"https://ex.com/1", "https://ex.com/2"}
         assert {row.overlay for row in rows} == {"acme"}
         assert {row.status for row in rows} == {PendingTriageRecommendation.Status.PENDING}
-        # Exactly ONE DeferredQuestion DMs the batch, parked to the task.
-        question = DeferredQuestion.objects.get()
-        assert question.parked_task_id == task.pk
-        assert question.dedupe_marker == f"triage-batch-{task.pk}"
-        assert question.is_pending
-        assert question.evidence["decision"] == "product_scope"
-        text = assert_a_plain_card(question, "needs-triage", "triage-batch")
-        assert "2 open issue(s)" in text
+        assert not DeferredQuestion.objects.exists()
 
     def test_summary_only_triage_assessing_is_refused(self) -> None:
         task = self._claimed()

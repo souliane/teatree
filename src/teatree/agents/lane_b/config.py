@@ -58,7 +58,7 @@ def _declared_output_cap() -> int:
 #: observed ``architectural_review`` crash on all but one of ~29 scheduled
 #: dispatches this way.
 _SHELL_EXPLORATION_PHASES: Final[frozenset[str]] = frozenset(
-    {"architectural_review", "bughunt", "dogfood_smoke", "eval_local", "backlog_sweep"}
+    {"architectural_review", "bughunt", "dogfood_smoke", "backlog_sweep"}
 )
 _SHELL_EXPLORATION_TOOL_RETRIES: Final[int] = 10
 _SHELL_EXPLORATION_MAX_DENIALS: Final[int] = 15

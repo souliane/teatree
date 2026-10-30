@@ -378,7 +378,7 @@ EOF
 fi
 
 if [ -n "$_ram_total" ]; then
-    _page_sz=""; _free=""; _inact=""
+    _page_sz=""; _free=""; _inact=""; _purgeable=0; _speculative=0
     _vml=""
     while IFS= read -r _vml; do
         case "$_vml" in
@@ -392,12 +392,19 @@ if [ -n "$_ram_total" ]; then
             "Pages inactive:"*)
                 _inact="${_vml##*[[:space:]]}"; _inact="${_inact%.}"
                 ;;
+            "Pages purgeable:"*)
+                _purgeable="${_vml##*[[:space:]]}"; _purgeable="${_purgeable%.}"
+                ;;
+            "Pages speculative:"*)
+                _speculative="${_vml##*[[:space:]]}"; _speculative="${_speculative%.}"
+                ;;
         esac
     done <<EOF
 $(vm_stat 2>/dev/null)
 EOF
-    if [[ "$_page_sz" =~ ^[0-9]+$ ]] && [[ "$_free" =~ ^[0-9]+$ ]] && [[ "$_inact" =~ ^[0-9]+$ ]]; then
-        _ram_used=$(( _ram_total - (_free + _inact) * _page_sz ))
+    if [[ "$_page_sz" =~ ^[0-9]+$ ]] && [[ "$_free" =~ ^[0-9]+$ ]] && [[ "$_inact" =~ ^[0-9]+$ ]] && [[ "$_purgeable" =~ ^[0-9]+$ ]] && [[ "$_speculative" =~ ^[0-9]+$ ]]; then
+        _reclaimable_pages=$(( _free + _inact + _purgeable + _speculative ))
+        _ram_used=$(( _ram_total - _reclaimable_pages * _page_sz ))
         _ram_pct=$(( _ram_used * 100 / _ram_total ))
         _used_tenths=$(( (_ram_used * 10 + 536870912) / 1073741824 ))
         _total_gb=$(( (_ram_total + 536870912) / 1073741824 ))
@@ -421,7 +428,7 @@ EOF
                 if [[ "$_old_host_json" =~ \"epoch\":([0-9]+) ]]; then _last_host_epoch="${BASH_REMATCH[1]}"; fi
             fi
             if [ $(( _host_epoch - _last_host_epoch )) -ge 45 ]; then
-                _host_ram_mib=$(( (_free + _inact) * _page_sz / 1048576 ))
+                _host_ram_mib=$(( _reclaimable_pages * _page_sz / 1048576 ))
                 _swap_total_mib="${_swap_total%%.*}"
                 _swap_used_mib="${_swap_used%%.*}"
                 if [ -d "$_host_pressure_dir" ] || mkdir -p "$_host_pressure_dir" 2>/dev/null; then
@@ -709,8 +716,7 @@ fi
 # (1 for the object plus THREE MORE PER REPO for its fields). It emits a tagged
 # TSV stream — `M` meta, `S` segment, `F` freshness row — that one builtin loop
 # takes apart. `dirname` is `${var%/*}`.
-_tick_meta="${target%.txt}-meta.json"
-[ ! -r "$_tick_meta" ] && _tick_meta="${target%/*}/tick-meta.json"
+_tick_meta="${target%/*}/tick-meta.json"
 
 _rendered_at=""
 _sl_cadence=""

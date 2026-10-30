@@ -55,6 +55,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay
 from teatree.core.overlay_name_resolution import registered_overlay_name
 from teatree.loop.dogfood_smoke import (
+    TEARDOWN_TIMEOUT_SECONDS,
     SmokeOutcomeKind,
     SmokeReport,
     SmokeStep,
@@ -380,6 +381,7 @@ class _FixtureCheckout:
             step = SmokeStep(
                 name="fixture_cleanup",
                 command=("t3", self.cli_overlay, "worktree", "teardown", "--path", str(path)),
+                timeout_seconds=TEARDOWN_TIMEOUT_SECONDS,
             )
             try:
                 result = run_t3_command(step)

@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-_AUTO_LOGIN = "teatree.core.middleware.LocalAdminAutoLoginMiddleware"
+_LOGIN_GATE = "teatree.core.middleware.OperatorLoginRequiredMiddleware"
 _PROBE = (
     "import json; from teatree import settings as base, webhook_settings as listener; "
     "print(json.dumps({name: {key: getattr(module, key) for key in ('DEBUG', 'MIDDLEWARE', 'INSTALLED_APPS')} "
@@ -31,12 +31,12 @@ def test_listener_debug_off_even_when_env_enables_it() -> None:
     assert _settings(T3_DEBUG="1")["listener"]["DEBUG"] is False
 
 
-def test_listener_has_no_auto_login() -> None:
+def test_listener_has_no_login_gate() -> None:
     loaded = _settings()
 
-    assert _AUTO_LOGIN in loaded["base"]["MIDDLEWARE"]
+    assert _LOGIN_GATE in loaded["base"]["MIDDLEWARE"]
     assert not {
-        _AUTO_LOGIN,
+        _LOGIN_GATE,
         "django.contrib.sessions.middleware.SessionMiddleware",
         "django.contrib.auth.middleware.AuthenticationMiddleware",
         "django.contrib.messages.middleware.MessageMiddleware",

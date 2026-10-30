@@ -599,7 +599,37 @@ class TestAdmissionScore:
             ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/804"
         )
 
-        assert self._score(started) == 150
+        assert self._score(started) == 350
+
+    def test_started_pull_request_beats_expedited_unstarted_work_after_park(self) -> None:
+        started = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/805"
+        )
+        unstarted = self._task(phase="planning", expedited=True)
+        Task.objects.filter(pk=started.pk).update(not_before=timezone.now() - dt.timedelta(seconds=1))
+
+        claimed = Task.objects.claim_next_pending(claimed_by="test", ordering=admission_claim_order())
+
+        assert claimed is not None
+        assert claimed.pk == started.pk
+        assert unstarted.status == Task.Status.PENDING
+
+    def test_started_review_beats_older_unstarted_review_in_its_lane(self) -> None:
+        unstarted = self._task(phase="reviewing")
+        started = self._task(phase="reviewing")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/806"
+        )
+
+        assert self._admission_order([unstarted, started]) == [started.pk, unstarted.pk]
+
+    def test_planning_waiting_a_day_beats_lower_priority_continuing_work(self) -> None:
+        planning = self._task(phase="planning")
+        Task.objects.filter(pk=planning.pk).update(created_at=timezone.now() - dt.timedelta(hours=30))
+        continuing = self._task(phase="coding")
+
+        assert self._admission_order([planning, continuing]) == [planning.pk, continuing.pk]
 
     def test_the_loop_claim_takes_a_newer_review_before_an_older_coding_row(self) -> None:
         self._task(phase="coding")
@@ -637,6 +667,15 @@ class TestAdmissionScore:
         started = self._task(phase="coding")
         PullRequest.objects.record_opened(
             ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/803"
+        )
+        review = self._task(phase="reviewing")
+
+        assert self._admission_order([started, review]) == [review.pk, started.pk]
+
+    def test_expedited_started_coding_still_waits_for_review_lane(self) -> None:
+        started = self._task(phase="coding", expedited=True)
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/807"
         )
         review = self._task(phase="reviewing")
 

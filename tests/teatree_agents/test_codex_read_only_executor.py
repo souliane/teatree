@@ -627,6 +627,7 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
         "triage_assessing",
         "directive_interpreting",
         "answering",
+        "backlog_sweep",
         "requesting_review",
         "shipping",
     ],

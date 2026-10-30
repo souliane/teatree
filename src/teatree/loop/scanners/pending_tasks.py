@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
+from teatree.core.admission_priority import ADMISSION_ORDER, admission_priority_annotations
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -37,7 +38,8 @@ class PendingTasksScanner:
         pending = (
             task_model.objects.filter(status=task_model.Status.PENDING)
             .select_related("ticket")
-            .order_by("id")[: self.limit]
+            .annotate(**admission_priority_annotations())
+            .order_by(*ADMISSION_ORDER)[: self.limit]
         )
         return [
             ScanSignal(

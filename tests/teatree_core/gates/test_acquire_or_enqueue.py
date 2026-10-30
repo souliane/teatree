@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import (
     LocalStackLimitExceededError,
@@ -28,7 +29,10 @@ def _healthy_host_resources() -> Iterator[None]:
     """The acquisition cases control count and RAM explicitly, independent of host pressure."""
     with (
         patch("teatree.core.gates.provision_admission_gate.read_disk_used_percent", return_value=0.0),
-        patch("teatree.core.gates.provision_admission_gate.read_ram_used_percent", return_value=0.0),
+        patch(
+            "teatree.core.gates.provision_admission_gate.read_machine_signal",
+            return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
+        ),
     ):
         yield
 
@@ -93,20 +97,25 @@ class TestEnqueueWhenStillFull(TestCase):
 
 
 class TestRamAwareAdmission(TestCase):
-    """#2949: on a capped overlay, hold a new stack when host RAM is over the ceiling."""
+    """#2949: on a capped overlay, hold a new stack when available memory reaches the floor."""
 
-    def test_ram_over_ceiling_enqueues_even_with_a_free_count_slot(self) -> None:
+    def test_memory_below_floor_enqueues_even_with_a_free_count_slot(self) -> None:
         candidate = _worktree(ticket_number="600", state=Worktree.State.PROVISIONED)
         messages: list[str] = []
         with (
             patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
-            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.hold("ram")),
+            patch.object(
+                gate_mod,
+                "check_provision_admission",
+                return_value=ProvisionAdmissionVerdict.hold("memory_pressure"),
+            ),
         ):
             acquired = acquire_or_enqueue(candidate, write_out=messages.append)
         assert acquired is False
         item = LocalStackQueueItem.objects.get(worktree=candidate)
         assert item.status == LocalStackQueueItem.Status.QUEUED
         assert any("queued" in m.lower() for m in messages)
+        assert any("Resource admission held" in m and "memory_pressure" in m for m in messages)
 
     def test_ram_ok_proceeds_to_the_count_gate(self) -> None:
         candidate = _worktree(ticket_number="601", state=Worktree.State.PROVISIONED)

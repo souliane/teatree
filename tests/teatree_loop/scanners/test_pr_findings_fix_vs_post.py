@@ -150,6 +150,7 @@ class TestAGreenHeadStillOwesItsFindings:
         ).scan()[0]
         assert signal.kind == FIX_KIND
         assert signal.payload["fix_kind"] == RedMrFixAttempt.Kind.REVIEW_FINDINGS
+        assert signal.payload["head_finding"] is True
 
 
 class TestTheRoutingTableCarriesTheSameRule:

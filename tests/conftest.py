@@ -46,6 +46,7 @@ from teatree.llm.credentials import Credential
 from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
+from teatree.loop.slack_answer.card_discussion import reset_card_discussion_senders
 from teatree.loops.slack_inbound import reset_dm_recorders
 from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
@@ -59,7 +60,6 @@ from teatree.quality.pytest_resource_contract import (
 from teatree.quality.pytest_selection import SelectionContext, ci_environment_enabled, oversized_selection_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
-from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.master_key import reset_master_key_volume_warnings
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.secrets import PassStore, use_store
@@ -316,13 +316,6 @@ def _reset_route_availability_cache() -> Iterator[None]:
     clear_route_availability_cache()
 
 
-@pytest.fixture(autouse=True)
-def _reset_host_pressure_warning_memo() -> Iterator[None]:
-    reset_missing_warning_memo()
-    yield
-    reset_missing_warning_memo()
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _private_live_dir() -> Iterator[None]:
     """Keep every test's broker socket out of the host's real control-DB volume."""
@@ -332,11 +325,13 @@ def _private_live_dir() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_live_harness_registries() -> Iterator[None]:
+    reset_card_discussion_senders()
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
     reset_executor_app_servers()
     yield
+    reset_card_discussion_senders()
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
@@ -973,9 +968,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     control_db_dir = tmp_path / "isolated-control-db"
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "isolated-data")
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)
+    # A review or critic dispatch exports its phase; config-writing tests must not inherit that refusal.
+    monkeypatch.delenv("T3_CONFIG_WRITE_PHASE", raising=False)
     # Resolve test registry paths under the isolated HOME.
     monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh

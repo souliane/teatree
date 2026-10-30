@@ -1,20 +1,4 @@
-"""Every phase a loop SCANNER writes to ``Task.phase`` must carry an explicit tool entry.
-
-The #3386 totality lane (``tests/conformance/test_registry_parity.py``) derives its
-producer set from the HAND-MAINTAINED ``SCANNER_DISPATCHED_PHASES`` literal, so it can
-only see a scanner phase somebody remembered to add there. Three did not get added —
-``short_describe`` (a bare literal in ``active_tickets.py``, no constant at all),
-``eval_local`` and ``backlog_sweep`` — so ``tools_for_phase`` resolved them through the
-deny-by-default read-only fallback and Lane A injected ``Bash``/``Write``/``Edit`` into
-``ClaudeAgentOptions.disallowed_tools``. Their briefs still told them to run ``git log``
-and ``t3 tool verify-gates``, so every dispatch stalled on an unanswerable question.
-
-This lane derives the producer set from the scanner SOURCE instead of a literal: it AST-
-walks ``teatree/loop/scanners/`` for the ``phase=`` keyword of every task creation and
-resolves each token against the imported module (so a token reached through an imported
-constant resolves as readily as a bare literal). A new scanner therefore cannot slip
-through by forgetting to update a set — which is exactly how all three of these did.
-"""
+"""Scanner-produced phases have explicit tool entries and totality coverage."""
 
 import ast
 import importlib
@@ -94,15 +78,14 @@ class TestScannerDispatchedPhasesCarryExplicitToolEntries(TestCase):
         )
         assert not invisible, f"{invisible} are producers no totality lane covers"
 
-    def test_eval_local_can_run_the_eval_suite_shell(self) -> None:
+    def test_eval_local_has_no_agent_tools(self) -> None:
         tools = tools_for_phase("eval_local")
-        assert {"shell", "read_file"} <= tools
-        assert "write_file" not in tools
+        assert tools == frozenset()
 
 
 class TestHeadlessSpawnKeepsItsShell(TestCase):
     def test_scanner_dispatched_shell_phase_is_not_denied_bash(self) -> None:
-        assert "Bash" not in _disallowed_tools_for_phase("eval_local")
+        assert "Bash" not in _disallowed_tools_for_phase("dogfood_smoke")
 
     def test_summariser_phase_is_never_granted_write_tools(self) -> None:
         # ``short_describe`` produces a <=40 char string; granting it the shell

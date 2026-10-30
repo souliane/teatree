@@ -1,6 +1,7 @@
 """``t3 <overlay> worktree status`` renders the last provision report."""
 
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.core.management.commands import worktree as worktree_cmd
 from teatree.core.management.commands.worktree import _provision_summary
 from teatree.core.models import Ticket, Worktree
@@ -87,6 +89,40 @@ class TestProvisionSummary(TestCase):
         worktree = Worktree.objects.create(ticket=self.ticket, repo_path="backend", branch="b")
         worktree.extra = None
         assert _provision_summary(worktree) is None
+
+
+class TestProvisionSchemaPreflight(TestCase):
+    def test_repairs_schema_before_ticket_lookup(self) -> None:
+        calls: list[str] = []
+
+        def heal() -> None:
+            calls.append("heal")
+
+        def lookup(_ticket: str) -> None:
+            calls.append("lookup")
+
+        with (
+            patch.object(worktree_cmd, "require_current_schema", side_effect=heal),
+            patch.object(worktree_cmd, "_ticket_by_number", side_effect=lookup),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("worktree", "provision", "--ticket", "404")
+
+        assert exc_info.value.code == 1
+        assert calls == ["heal", "lookup"]
+
+    def test_failed_schema_repair_exits_before_ticket_lookup(self) -> None:
+        stderr = StringIO()
+        with (
+            patch.object(worktree_cmd, "require_current_schema", side_effect=SelfDbMigrationError("repair failed")),
+            patch.object(worktree_cmd, "_ticket_by_number") as lookup,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("worktree", "provision", "--ticket", "404", stderr=stderr)
+
+        assert exc_info.value.code == 1
+        assert "repair failed" in stderr.getvalue()
+        lookup.assert_not_called()
 
 
 class TestStatusEnforcesProvisionPostConditions(TestCase):

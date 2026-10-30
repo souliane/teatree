@@ -140,6 +140,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
     "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
+    "teatree.loop.slack_answer.card_discussion:_SENDERS": "reset_card_discussion_senders",
     "teatree.agents.live_federation:_published": "reset_shared_brokers",
     "teatree.agents.live_registry:_shared_registries": "reset_shared_registries",
     "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
@@ -158,7 +159,6 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
     "teatree.utils.master_key:_WARNED_IN_VOLUME": "reset_master_key_volume_warnings",
-    "teatree.utils.host_pressure:_missing_warned": "reset_missing_warning_memo",
     # Task pks this process is executing (#4164). Pk-keyed, so it is exactly the recycled-rowid
     # class above: a leaked entry makes a later test's fresh task read as still-executing and
     # the sweep withholds a reap that test asserts it takes.

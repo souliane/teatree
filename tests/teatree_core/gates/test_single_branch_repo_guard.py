@@ -105,6 +105,9 @@ class TestRawGitSeamRefuses:
             # A blocked verb hiding in a compound chain is still a second branch.
             ("cd /repo && git checkout -b feat/x", "branch", "feat/x"),
             ("git status; git worktree add -b feat/x /tmp/wt", "worktree", "feat/x"),
+            # A newline-separated script is a chain too; the benign call leads so only per-segment
+            # classification sees the second line.
+            ("git status\ngit checkout -b feat/x", "branch", "feat/x"),
             # A -C redirection into the pinned repo must not bypass the gate.
             ("git -C /repo checkout -b feat/x", "branch", "feat/x"),
         ],

@@ -158,42 +158,42 @@ class TestSeedProvenance(TestCase):
         assert ConfigSetting.objects.filter(key="provision_max_concurrency").exists() is False
 
     def test_reseed_same_value_is_a_noop(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
-        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
         assert outcome is SeedOutcome.UNCHANGED
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 75
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 75
 
     def test_changed_shipped_seed_reseeds_an_unchanged_row(self) -> None:
         # An old deploy seeded 70; the row still equals that seed (operator never
         # touched it), so a new deploy shipping 75 must update it.
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
-        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
         assert outcome is SeedOutcome.UPDATED
-        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        row = ConfigSetting.objects.get(key="provision_slow_threshold_seconds")
         assert row.value == 75
         assert row.seed_value == 75
 
     def test_operator_override_is_preserved_across_reseed(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85)
         # The operator pins their own value via the admin `set` path.
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 90)
-        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 90)
+        outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
         assert outcome is SeedOutcome.PRESERVED
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 90
 
     def test_reseed_equal_to_default_removes_an_owned_row(self) -> None:
         # A row this seeder owns whose shipped seed now equals the code default is
         # DROPPED so the live code default flows through (never frozen).
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
-        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 85, code_default=85)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 85, code_default=85)
         assert outcome is SeedOutcome.REMOVED
-        assert ConfigSetting.objects.filter(key="provision_ram_ceiling_percent").exists() is False
+        assert ConfigSetting.objects.filter(key="provision_slow_threshold_seconds").exists() is False
 
     def test_row_seeded_by_another_marker_is_preserved(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85, seeded_by="other")
-        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85, seeded_by="other")
+        outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
         assert outcome is SeedOutcome.PRESERVED
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 70
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 70
 
     def _pin_during_the_seed_read(self, key: str, value: int) -> "Callable[[], None]":
         """Have an operator ``set_value`` land at the instant ``seed`` reads the row.
@@ -216,31 +216,31 @@ class TestSeedProvenance(TestCase):
         return unpin
 
     def test_an_operator_pin_landing_during_the_seed_read_is_preserved(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
-        disconnect = self._pin_during_the_seed_read("provision_ram_ceiling_percent", 90)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85)
+        disconnect = self._pin_during_the_seed_read("provision_slow_threshold_seconds", 90)
         try:
-            outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+            outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
         finally:
             disconnect()
 
         assert outcome is SeedOutcome.PRESERVED
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 90
 
     def test_an_operator_pin_landing_during_the_seed_read_survives_the_default_removal(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
-        disconnect = self._pin_during_the_seed_read("provision_ram_ceiling_percent", 90)
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 70, code_default=85)
+        disconnect = self._pin_during_the_seed_read("provision_slow_threshold_seconds", 90)
         try:
-            outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 85, code_default=85)
+            outcome = ConfigSetting.objects.seed("provision_slow_threshold_seconds", 85, code_default=85)
         finally:
             disconnect()
 
         assert outcome is SeedOutcome.PRESERVED
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 90
 
     def test_set_value_clears_seed_provenance(self) -> None:
-        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 75)
-        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        ConfigSetting.objects.seed("provision_slow_threshold_seconds", 75, code_default=85)
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 75)
+        row = ConfigSetting.objects.get(key="provision_slow_threshold_seconds")
         assert row.seeded_by == ""
         assert row.seed_value is None
 

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree import paths
 from teatree.hooks import _hook_state
-from teatree.paths import DATA_DIR
 
 
 class TestHookStateRoot:
@@ -19,4 +19,4 @@ class TestHookStateRoot:
 
     def test_falls_back_to_canonical_data_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_DATA_DIR", raising=False)
-        assert _hook_state.hook_state_root() == DATA_DIR
+        assert _hook_state.hook_state_root() == paths.DATA_DIR

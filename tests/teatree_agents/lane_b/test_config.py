@@ -9,6 +9,12 @@ from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
 
 
 class TestLaneBToolConfig:
+    def test_test_shell_inherits_only_isolated_control_db(self, tmp_path: Path) -> None:
+        assert Path(os.environ["T3_CONTROL_DB_DIR"]) == tmp_path / "isolated-control-db"
+        shell_env = LaneBToolConfig.from_options(HarnessOptions(env={"EXTRA": "retained"})).shell_env
+        assert shell_env["T3_CONTROL_DB_DIR"] == os.environ["T3_CONTROL_DB_DIR"]
+        assert "T3_CONFIG_DB" not in shell_env
+
     def test_from_options_uses_cwd_as_fs_root(self, tmp_path: Path) -> None:
         options = HarnessOptions(cwd=str(tmp_path))
         config = LaneBToolConfig.from_options(options, phase="coding")
@@ -67,9 +73,7 @@ class TestShellExplorationRetryBudget:
     ``from_options`` can never disagree.
     """
 
-    @pytest.mark.parametrize(
-        "phase", ["architectural_review", "bughunt", "dogfood_smoke", "eval_local", "backlog_sweep"]
-    )
+    @pytest.mark.parametrize("phase", ["architectural_review", "bughunt", "dogfood_smoke", "backlog_sweep"])
     def test_exploration_phase_widens_both_ceilings(self, phase: str) -> None:
         config = LaneBToolConfig(phase=phase)
         assert config.shell_tool_retries is not None

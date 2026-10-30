@@ -34,7 +34,7 @@ import httpx
 
 import teatree.core.overlay_loader as _overlay_loader
 from teatree.core.backend_protocols import ApprovalState, CodeHostBackend
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload, resolve_identities
 from teatree.loop.scanners.repository_scope import RepositoryScope
 from teatree.types import RawAPIDict
 from teatree.url_classify import is_gitlab_mr_url, pr_ref
@@ -71,7 +71,7 @@ class GitLabApprovalsScanner:
     def scan(self) -> list[ScanSignal]:
         if self._scope.refuses():
             return []
-        authors = self._resolve_identities()
+        authors = resolve_identities(self.host, self.identities)
         if not authors:
             return []
         signals: list[ScanSignal] = []
@@ -89,12 +89,6 @@ class GitLabApprovalsScanner:
             if signal is not None:
                 signals.append(signal)
         return signals
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _collect_unique_prs(self, authors: tuple[str, ...]) -> list[RawAPIDict]:
         seen_urls: set[str] = set()

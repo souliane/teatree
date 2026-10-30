@@ -21,7 +21,7 @@ from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
-from teatree.core.runners.ship_pr_adoption import SHIP_HINT_KEYS, adoptable_pr_url
+from teatree.core.runners.ship_pr_adoption import SHIP_HINT_KEYS, adopt_recorded_pr_url
 from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
@@ -304,7 +304,7 @@ class ShipExecutor(RunnerBase):
         # #1263: short-circuit only when THIS branch already has a PR.
         # A reused ticket can span multiple workstreams. Only the URL
         # associated with this branch can short-circuit its PR creation.
-        recorded_url = adoptable_pr_url(ticket, host, extra, branch)
+        recorded_url = adopt_recorded_pr_url(ticket, host, extra, branch)
         if recorded_url:
             return RunnerResult(ok=True, detail=recorded_url)
 

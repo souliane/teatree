@@ -251,9 +251,9 @@ class TestShippedDefaultComparison(TestCase):
         assert _row("mode").drifts is False
 
     def test_an_override_away_from_the_shipped_default_reads_as_differing(self) -> None:
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        assert _cell("provision_ram_ceiling_percent").verdict is DriftVerdict.DRIFTED
-        assert _row("provision_ram_ceiling_percent").drifts is True
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 42)
+        assert _cell("provision_slow_threshold_seconds").verdict is DriftVerdict.DRIFTED
+        assert _row("provision_slow_threshold_seconds").drifts is True
 
     def test_a_setting_drifts_once_however_many_scopes_override_it(self) -> None:
         # The nav's per-section count is a sum over this, so counting cells here would

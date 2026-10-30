@@ -26,19 +26,9 @@ The blocked set is precise (so the allowed hygiene ops are never locked out):
 update`` and worktree creation keep working.
 """
 
-import shlex
 from dataclasses import dataclass
 
-# Compound-command separators. A blocked verb hiding after ``&&``/``;``/``|`` in
-# an otherwise-benign chain (``cd x && git checkout feature``) is still a
-# main-clone mutation, so each segment is classified independently.
-_SEGMENT_SEPARATORS = ("&&", "||", ";", "|", "&", "\n")
-
-# git's leading global options that consume the NEXT token as their value, so
-# the subcommand scanner skips two tokens for them (``git -C <path> checkout``).
-_GLOBAL_OPTS_WITH_VALUE = frozenset(
-    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
-)
+from teatree.core.gates.git_invocation import command_segments, git_call, safe_split
 
 # checkout/switch flags that move HEAD off the current branch independently of
 # any positional target — a new branch or an explicit detach. Their presence
@@ -100,10 +90,10 @@ def find_main_clone_git_mutation(
     safe_branches = set(protected_branches)
     if default_branch:
         safe_branches.add(default_branch)
-    for segment in _segments(command):
+    for segment in command_segments(command):
         if forge_checkout := _forge_checkout_call(segment):
             return MainCloneFinding(surface="git", target=forge_checkout)
-        call = _git_call(segment)
+        call = git_call(segment)
         if call is None:
             continue
         subcommand, args = call
@@ -141,39 +131,8 @@ def deny_reason(finding: MainCloneFinding) -> str:
     )
 
 
-def _segments(command: str) -> list[str]:
-    """Split a compound shell command into independently-classified segments."""
-    segments = [command]
-    for sep in _SEGMENT_SEPARATORS:
-        segments = [piece for seg in segments for piece in seg.split(sep)]
-    return [seg.strip() for seg in segments if seg.strip()]
-
-
-def _git_call(segment: str) -> tuple[str, list[str]] | None:
-    """Return ``(subcommand, args)`` for a ``git`` invocation in *segment*, else None.
-
-    Skips git's leading global options (``-C <path>``, ``-c k=v``,
-    ``--no-pager`` …) so the real subcommand is found. A segment with no
-    parseable ``git`` token, or one whose quotes don't balance, yields None
-    (fail open — never block on an unparsable command).
-    """
-    tokens = _safe_split(segment)
-    try:
-        index = tokens.index("git")
-    except ValueError:
-        return None
-    cursor = index + 1
-    while cursor < len(tokens):
-        token = tokens[cursor]
-        if not token.startswith("-"):
-            return token, tokens[cursor + 1 :]
-        base = token.split("=", 1)[0]
-        cursor += 2 if base in _GLOBAL_OPTS_WITH_VALUE and "=" not in token else 1
-    return None
-
-
 def _forge_checkout_call(segment: str) -> str | None:
-    tokens = _safe_split(segment)
+    tokens = safe_split(segment)
     for executable, resource in (("gh", "pr"), ("glab", "mr")):
         if executable not in tokens:
             continue
@@ -183,13 +142,6 @@ def _forge_checkout_call(segment: str) -> str | None:
             if tokens[index + 1 : index + 2] == ["checkout"]:
                 return f"{executable} {resource} checkout"
     return None
-
-
-def _safe_split(segment: str) -> list[str]:
-    try:
-        return shlex.split(segment)
-    except ValueError:
-        return []
 
 
 def _is_blocked(subcommand: str, args: list[str], safe_branches: set[str]) -> bool:

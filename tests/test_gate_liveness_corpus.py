@@ -760,6 +760,14 @@ def _mcp_slack_write_allow(ctx: GateContext) -> dict:
     }
 
 
+def _foreign_mcp_deny(ctx: GateContext) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": "mcp__other__read_resource", "tool_input": {"query": "sample"}}
+
+
+def _foreign_mcp_allow(ctx: GateContext) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": "mcp__teatree__ticket_get", "tool_input": {"query": "sample"}}
+
+
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
 # the `Agent` PreToolUse matcher in hooks.json, the only interception point a
@@ -1247,9 +1255,9 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 # The two PreToolUse `Agent` arms (`dispatch-prompt-quote-scanner` and
 # `enforce-orchestrator-boundary-agent`) are now REACHABLE: #1646 wired the
-# `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
-# are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
-# `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
+# `Agent` PreToolUse matcher in hooks.json (registered matchers include
+# Bash/Edit/Write, AskUserQuestion, Slack MCP, foreign MCP, and Agent).
+# The orchestrator-boundary Agent deny is
 # additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
 # PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
 # body (verified against the Claude Code binary, docs/claude-code-internals.md
@@ -1448,6 +1456,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__slack__slack_send_message",
         deny_input=_mcp_slack_write_deny,
         allow_input=_mcp_slack_write_allow,
+    ),
+    GateRow(
+        gate_id="block-foreign-mcp",
+        handler=router.handle_block_foreign_mcp_tool,
+        event="PreToolUse",
+        matched="mcp__other__read_resource",
+        deny_input=_foreign_mcp_deny,
+        allow_input=_foreign_mcp_allow,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",

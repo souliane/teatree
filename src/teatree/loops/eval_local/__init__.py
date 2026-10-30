@@ -1,1 +1,1 @@
-"""Local-eval mini-loop — weekly eval_local cadence."""
+"""Local-eval mini-loop — daily eval_local cadence."""

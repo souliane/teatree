@@ -145,6 +145,7 @@ class RemainingItem(CheckItem):
 
 @dataclass(frozen=True, slots=True)
 class RemainingGroup(CheckGroup):
+    critical_items: list[CheckItem] = field(default_factory=list)
     eta: dict = field(default_factory=dict)
     queue: dict = field(default_factory=dict)
     durations: list[dict] = field(default_factory=list)

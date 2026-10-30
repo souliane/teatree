@@ -8,7 +8,6 @@ All functions here are implementation details — callers import from
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from django.db import models
 from django.db.models import F, OuterRef, Q, Subquery
 
 from teatree.core.checking_types import CheckItem
@@ -17,7 +16,6 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.models.task_cancel_source import operator_cancel_q
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
@@ -177,9 +175,8 @@ def audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) 
 
 def merged_entries_from_qs(
     *,
-    since: datetime,
-    now: datetime,
     scope: _MergedScope,
+    scoped: list[tuple[MergeAudit, str]],
     overlay_tag: str = "",
 ) -> list[tuple[datetime, CheckItem]]:
     """Every scoped merge in the window as ``(merged_at, item)``, newest first.
@@ -188,18 +185,8 @@ def merged_entries_from_qs(
     order the union before capping it — capping each overlay's slice first let one
     overlay's older merges displace another's newer ones.
     """
-    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
-
-    qs = (
-        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
-        .select_related("clear", "clear__ticket")
-        .order_by("-merged_at")
-    )
     entries: list[tuple[datetime, CheckItem]] = []
-    for audit in qs:
-        repo_slug = resolved_repo_slug(audit.clear)
-        if not audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
-            continue
+    for audit, repo_slug in scoped:
         ticket = audit.clear.ticket
         raw_detail = ticket.short_description if ticket else ""
         detail = (f"{raw_detail} {overlay_tag}".strip() if raw_detail else overlay_tag) if overlay_tag else raw_detail
@@ -216,17 +203,20 @@ def merged_entries_from_qs(
     return entries
 
 
-def merged_group_from_qs(
-    *,
-    since: datetime,
-    now: datetime,
-    scope: _MergedScope,
-    cap: int,
-    overlay_tag: str = "",
-) -> tuple[list, int]:
-    """Query and scope the merged audits; return (items, total)."""
-    entries = merged_entries_from_qs(since=since, now=now, scope=scope, overlay_tag=overlay_tag)
-    return [item for _, item in entries[:cap]], len(entries)
+def scoped_merge_audits(*, since: datetime, now: datetime, scope: _MergedScope) -> list[tuple[MergeAudit, str]]:
+    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
+
+    qs = (
+        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
+        .select_related("clear", "clear__ticket")
+        .order_by("-merged_at")
+    )
+    rows: list[tuple[MergeAudit, str]] = []
+    for audit in qs:
+        repo_slug = resolved_repo_slug(audit.clear)
+        if audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
+            rows.append((audit, repo_slug))
+    return rows
 
 
 def motion_for_overlay(
@@ -235,12 +225,10 @@ def motion_for_overlay(
     overlay_name: str,
     overlay_tag: str,
     seen_in_flight: set[int],
-    seen_failed: set[int],
-) -> tuple[list, list]:
-    """Query ticket transitions and failed attempts for one overlay."""
+) -> list:
+    """Query ticket transitions for one overlay."""
     since, now = window
     in_flight: list = []
-    failed: list = []
 
     transitions = (
         TicketTransition.objects.filter(created_at__gte=since, created_at__lt=now)
@@ -266,30 +254,4 @@ def motion_for_overlay(
             )
         )
 
-    attempts = failed_attempts(since=since, now=now, overlay_name=overlay_name)
-    for attempt in attempts:
-        tick = attempt.task.ticket
-        if tick.pk in seen_failed:
-            continue
-        seen_failed.add(tick.pk)
-        failed.append(
-            CheckItem(
-                label=f"#{tick.ticket_number}",
-                url=ticket_url(tick),
-                detail=f"failed agent run {overlay_tag}",
-                title=tick.short_description,
-            )
-        )
-
-    return in_flight, failed
-
-
-def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> models.QuerySet[TaskAttempt]:
-    attempts = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .exclude(operator_cancel_q())
-        .select_related("task__ticket")
-        .order_by("-ended_at")
-    )
-    return attempts.filter(task__ticket__overlay=overlay_name) if overlay_name else attempts
+    return in_flight

@@ -5,7 +5,7 @@ of whether the overlay was registered via ``pip install`` (entry point) or the
 DB-home ``overlays`` registry (injected into ``load_config().raw``).
 """
 
-import importlib.metadata
+import importlib
 import logging
 import os
 from collections.abc import Callable
@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.config.discovery import overlay_entry_points
 from teatree.core import overlay_ownership as _ownership
 from teatree.core.overlay_conformance import conforming_or_none, conforming_or_raise
 from teatree.core.overlay_name_resolution import cwd_overlay_name, overlay_name_of, resolve_overlay_name
@@ -510,7 +511,7 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
     result: dict[str, OverlayBase] = {}
 
     # 1. Entry-point overlays (pip-installed packages)
-    eps = importlib.metadata.entry_points(group="teatree.overlays")
+    eps = overlay_entry_points()
     for ep in eps:
         cls = ep.load()
         if not issubclass(cls, OverlayBase):

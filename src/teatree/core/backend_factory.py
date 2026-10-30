@@ -18,6 +18,7 @@ from teatree.core.account_fingerprint import current_account_fingerprint
 from teatree.core.authoring_credential import reset_authoring_credential_cache
 from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import UnknownSlackScopeProfileError, get_backend_provider
+from teatree.core.notify_targets import configure_operator_dm_policy
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
@@ -227,7 +228,7 @@ def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend 
         return _messaging_cache[key]
     if _none_still_fresh(_messaging_none_until, key):
         return None
-    backend = _build_messaging(key)
+    backend = configure_operator_dm_policy(_build_messaging(key))
     if backend is None:
         _messaging_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
         warn_throttled(
@@ -464,7 +465,7 @@ def iter_overlay_backends() -> list[OverlayBackends]:
         except (ImproperlyConfigured, ValueError):
             hosts = ()
         try:
-            messaging = provider.get_messaging(overlay)
+            messaging = configure_operator_dm_policy(provider.get_messaging(overlay))
         except (ImproperlyConfigured, ValueError):
             messaging = None
         out.append(
@@ -517,7 +518,7 @@ def _backends_from_toml(
             continue
         hosts = tuple(_hosts_from_toml(overlay_cfg))
         try:
-            messaging = _messaging_from_toml(overlay_cfg)
+            messaging = configure_operator_dm_policy(_messaging_from_toml(overlay_cfg))
         except UnknownSlackScopeProfileError as exc:
             logger.warning("Overlay %r: %s Building no Slack backend for it.", name, exc)
             messaging = None

@@ -51,6 +51,25 @@ class TestInsideAScope(RequestScopeMemoTestCase):
         assert len(calls) == 2
 
 
+class TestANestedScope(RequestScopeMemoTestCase):
+    def test_a_nested_scope_shares_the_outer_memo(self) -> None:
+        read, calls = self._counter()
+        with request_scope():
+            first = read()
+            with request_scope():
+                assert read() == first
+            assert read() == first
+        assert len(calls) == 1
+
+    def test_leaving_a_nested_scope_keeps_the_outer_one_active(self) -> None:
+        read, calls = self._counter()
+        with request_scope():
+            with request_scope():
+                read()
+            read()
+        assert len(calls) == 1
+
+
 class TestOutsideAScope(RequestScopeMemoTestCase):
     def test_every_call_runs_the_body(self) -> None:
         read, calls = self._counter()

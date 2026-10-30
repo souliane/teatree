@@ -3,12 +3,12 @@
 import datetime as dt
 from unittest import mock
 
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.core.models import Loop, Mode, ModeOverride
 from teatree.core.models.loop_state import LoopState
 from teatree.dash.loop_control import build_loop_rows
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 def _loop(name: str, *, enabled: bool | None = None, delay_seconds: int = 60) -> Loop:
@@ -98,7 +98,7 @@ class CadencePostTestCase(TestCase):
         seam.assert_called_once_with("inbox", delay_seconds=600, daily_at="")
 
     def test_csrf_is_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         assert csrf_client.post(self.url, {"name": "inbox", "delay_seconds": "600"}).status_code == 403
 
 

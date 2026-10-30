@@ -40,8 +40,6 @@ from pathlib import Path
 
 from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError, base_url_refusal
 
-_HOME_ANCHORED_VARS = ("HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR")
-
 #: The strip set a caller gets when it passes no ``conflicting_vars`` — the metered
 #: lane's conflicts (strip the subscription OAuth token). Both current callers (the
 #: judge and the API runner) pass the SELECTED eval credential's

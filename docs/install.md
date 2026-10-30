@@ -218,6 +218,28 @@ t3 overlay uninstall <overlay-name>
 
 The main clone (detected via a real `.git` directory) refuses `install` — use this in worktrees only. Tracked overlays persist in `.t3.local.json` (gitignored).
 
+## Signing in to the admin and dashboard
+
+Every page of `/admin/` and `/dash/` needs a signed-in staff user, including a request
+that arrives from loopback through a tunnel. Three ways in:
+
+- `t3 admin` (or `t3 dashboard`) opens a two-minute single-use link when one superuser
+  exists. With several superusers, it opens `/login/` so the operator chooses an account.
+- `/login/` takes that superuser's password.
+- `t3 login github` or `t3 login gitlab` signs in with the forge account. It needs one OAuth
+  app per forge, registered in the `operator_oauth_apps` setting (callback
+  `/login/oauth/<forge>/callback/`, client secret named by `client_secret_pass_key` in the
+  secret store). An administrator first attaches the
+  person's forge account ID to a superuser in the Django admin's operator-identity inline;
+  an uninvited account cannot sign in.
+
+Approval actions need separate consent: the signed-in operator runs
+`t3 login <forge> --approvals`. This stores the grant encrypted under the installation
+master key; identity-only sign-in works without that key.
+
+`t3 logout <forge>` revokes that grant at the forge. See
+[the operators appendix](blueprint/operators.md) for the mechanics.
+
 ## Slack integration (optional)
 
 Each overlay can have its own Slack bot for bidirectional messaging

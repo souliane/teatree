@@ -24,9 +24,16 @@ _MISS = object()
 _ACTIVE: ContextVar["dict[Hashable, object] | None"] = ContextVar("teatree_request_cache", default=None)
 
 
+def _scope_is_open() -> bool:
+    return _ACTIVE.get() is not None
+
+
 @contextmanager
 def request_scope() -> Generator[None]:
-    """Memoize :func:`cached_per_request` reads for the duration of the block."""
+    """Memoize :func:`cached_per_request` reads for the duration of the block; inside an active scope, join it."""
+    if _scope_is_open():
+        yield
+        return
     token = _ACTIVE.set({})
     try:
         yield

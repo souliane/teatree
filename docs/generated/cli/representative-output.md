@@ -38,6 +38,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 gunicorn server.                                             │
 │ dashboard       Open the teatree dashboard board, served by the same local   │
 │                 gunicorn as the admin.                                       │
+│ login                                                                        │
+│ logout                                                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -113,10 +115,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 off_live_tick + critic/signal code guards) — the master flag │
 │                 graduated default-ON in #3895, so the disabled loop row is   │
 │                 what keeps a fresh install inert.                            │
-│ peer            The loopback forwards the Compare Instances page reads its   │
-│                 peers through.                                               │
-│ settings        This box's settings beside its peers' — the Compare          │
-│                 Instances page, in a terminal.                               │
+│ peer            Open a peer dashboard to sign in and download a comparison   │
+│                 snapshot.                                                    │
+│ settings        Compare this instance's settings with imported peer          │
+│                 snapshots.                                                   │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

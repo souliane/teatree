@@ -17,7 +17,9 @@ Edit the source command, not this file.
 
 | Subcommand | Description |
 | --- | --- |
-| `show` | Print a terse, grouped, clickable report of changes since the last check |
+| `shoot` | Post or nudge waiting owner questions through the existing Slack drains |
+| `show` | Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check |
+| `brief` | Print the one-screen status while keeping full groups in the returned payload |
 
 ## `config_setting`
 
@@ -377,6 +379,7 @@ Creates new migration(s) for apps.
 | --- | --- |
 | `send` | Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise) |
 | `dm` | DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise) |
+| `reply` | Post a deduped answer in the owner's existing Slack thread |
 | `census` | Count bot messages in the owner DM by UTC day and ledger class |
 | `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
@@ -448,10 +451,12 @@ Persist declared Notion pass-key routes without replacing database overrides.
 
 | Subcommand | Description |
 | --- | --- |
+| `coordinate` | Reuse an exact owner answer for the same architecture question from an operator session |
+| `measure` | Count the owner cards that have a Slack mirror, grouped by creation day and kind |
 | `record` | Record a question by hand — the agent-facing capture surface |
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending internal questions; an owner question is answered only in its Slack thread |
-| `dismiss` | Dismiss pending questions without answering them |
+| `dismiss` | Dismiss pending questions without answering them; live owner limits require a direct owner command |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List open questions, oldest first |
 
@@ -474,6 +479,10 @@ Score the factory against the committed recipe, and pin an approved recipe sha.
 ## `recover`
 
 Report (and optionally recover) work stranded by an outage.
+
+## `repair_self_improve_wedges`
+
+Preview or repair legacy self-improve planning wedges.
 
 ## `repro`
 
@@ -642,6 +651,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
 | `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
+| `unsettle` | Reopen a settled ticket whose issue has an open remainder |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
 | `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
@@ -665,7 +675,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
-| `partial-merge-report` | List merged tickets whose open issue has a declared remainder |
+| `partial-merge-report` | List settled tickets whose issue is still open |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
@@ -705,7 +715,7 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 
 | Subcommand | Description |
 | --- | --- |
-| `list` | List everything currently waiting on the user |
+| `list` | List owner decisions, or the full factory inventory with --all |
 | `add` | Record a manual waiting item the live sources cannot see |
 | `resolve` | Resolve a manual waiting item by id |
 

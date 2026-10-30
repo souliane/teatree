@@ -8,7 +8,7 @@ read chokepoint without a backwards import to this orchestration layer. This
 module re-exports them so the loop scanners keep one stable import path.
 
 :func:`filter_self_messages` is the shared recorder guard. The recorder admits
-an app-posted owner reply only when it belongs to a recorded card thread;
+an app-posted addressee reply only when it belongs to a recorded card thread;
 other app posts still fail :func:`is_on_behalf_posted`'s check.
 The reactive Slack-answer cycle consumes only the rows the recorder admits.
 
@@ -30,8 +30,8 @@ row that turn — better silent for one tick than spam-spawning
 **On-behalf filter (#1941, structural).** An automated on-behalf post
 sent with the human's OWN Slack token carries the human's own ``user``
 id — not the bot's — so :func:`filter_self_messages` never catches it.
-The recorder checks ``api_app_id`` and admits only owner-authored replies
-in recorded owner-card threads; other app posts remain filtered.
+The recorder checks ``api_app_id`` and admits only replies authored by the
+pending card's addressee; other app posts remain filtered.
 """
 
 from teatree.backends.slack.self_identity import (

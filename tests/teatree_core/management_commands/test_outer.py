@@ -15,6 +15,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.models import (
     DeferredQuestion,
     FactoryScoreSnapshot,
@@ -89,7 +90,10 @@ class TestOuterCommandInertAtDefaults(TestCase):
         with (
             _signals(trusted=True),
             mock.patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10),
-            mock.patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=20),
+            mock.patch(
+                "teatree.loop.self_improve.budget._read_machine_signal",
+                return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
+            ),
         ):
             output = _run("status")
         assert "ALLOW" in output
@@ -224,7 +228,10 @@ class TestOuterProposeWhenEnabled(TestCase):
         _run("propose", "--hypothesis", "H", "--target", "review_catch")
         with (
             mock.patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10),
-            mock.patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=20),
+            mock.patch(
+                "teatree.loop.self_improve.budget._read_machine_signal",
+                return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
+            ),
         ):
             output = _run("status")
         assert "active experiment #" in output

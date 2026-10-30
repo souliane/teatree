@@ -32,6 +32,7 @@ import os
 import threading
 import webbrowser
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import typer
 
@@ -72,9 +73,9 @@ _GUNICORN_TIMEOUT_SECONDS = 120
 
 @dataclass(frozen=True, slots=True)
 class SuperuserResult:
-    """The admin user the command resolved — with a password only when freshly created."""
+    """The sole admin user, or no selection when several operators exist."""
 
-    username: str
+    username: str | None
     created_password: str | None
 
 
@@ -120,7 +121,12 @@ def _serve(*, host: str, port: int | None, no_browser: bool, path: str) -> None:
     superuser = _ensure_superuser()
     bound_port = port if port is not None else _DEFAULT_PORT
     forward = ensure_admin_forward()
-    browse_url = f"{forward.url}{path}" if forward.url else f"http://{host}:{bound_port}{path}"
+    base_url = forward.url or f"http://{host}:{bound_port}"
+    browse_url = (
+        f"{base_url}{path}"
+        if no_browser and os.environ.get("TEATREE_ROLE") == _ADMIN_ROLE
+        else _operator_login_url(base_url, superuser.username, path)
+    )
 
     typer.echo(f"teatree admin → {browse_url}")
     if forward.error:
@@ -128,8 +134,10 @@ def _serve(*, host: str, port: int | None, no_browser: bool, path: str) -> None:
     if superuser.created_password is not None:
         typer.echo(f"created superuser '{superuser.username}' with password '{superuser.created_password}'")
         typer.echo("set T3_ADMIN_USER / T3_ADMIN_PASSWORD to control these credentials")
-    else:
+    elif superuser.username is not None:
         typer.echo(f"using existing superuser '{superuser.username}'")
+    else:
+        typer.echo("choose an operator at sign-in")
 
     browser_timer = None if no_browser else _open_browser_when_ready(browse_url)
 
@@ -153,9 +161,23 @@ def _publish_running_admin(*, port: int | None, path: str) -> None:
         _record_browse_url("")
         typer.echo(f"cannot reach the admin from the host: {forward.error}", err=True)
         raise typer.Exit(code=1)
-    browse_url = f"{forward.url}{path}"
+    superuser = _ensure_superuser()
+    browse_url = _operator_login_url(forward.url, superuser.username, path)
     _record_browse_url(browse_url)
     typer.echo(f"teatree admin → {browse_url}")
+
+
+def _operator_login_url(base_url: str, username: str | None, path: str) -> str:
+    if username is None:
+        return f"{base_url}/login/?{urlencode({'next': path})}"
+    from django.contrib.auth import get_user_model  # noqa: PLC0415 — Django is initialized by _serve.
+
+    from teatree.core.operator_auth.operator_login import (  # noqa: PLC0415 — Django is initialized by _serve.
+        create_local_login_link,
+    )
+
+    user = get_user_model().objects.get(username=username)
+    return f"{base_url}{create_local_login_link(user, path)}"
 
 
 def _record_browse_url(url: str) -> None:
@@ -163,7 +185,10 @@ def _record_browse_url(url: str) -> None:
     target = data_dir_root() / BROWSE_URL_FILE
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"{url}\n", encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with os.fdopen(os.open(target, flags, 0o600), "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(f"{url}\n")
     except OSError as exc:
         typer.echo(f"could not record the browse url at {target}: {exc}", err=True)
 
@@ -191,7 +216,7 @@ def _ensure_superuser() -> SuperuserResult:
 
     The password comes from ``T3_ADMIN_PASSWORD`` when set, otherwise a fresh
     random token is generated and surfaced to the caller — never a hardcoded
-    default. An existing superuser is reused untouched (no password is exposed).
+    default. One existing superuser is reused; several are left for sign-in.
     """
     import os  # noqa: PLC0415 — deferred: loaded only when this command runs
     import secrets  # noqa: PLC0415 — deferred: loaded only when this command runs
@@ -199,9 +224,11 @@ def _ensure_superuser() -> SuperuserResult:
     from django.contrib.auth import get_user_model  # noqa: PLC0415 — deferred: Django import at call time
 
     user_model = get_user_model()
-    existing = user_model.objects.filter(is_superuser=True).first()
-    if existing is not None:
-        return SuperuserResult(username=existing.get_username(), created_password=None)
+    existing = list(user_model.objects.filter(is_superuser=True).order_by("pk")[:2])
+    if len(existing) > 1:
+        return SuperuserResult(username=None, created_password=None)
+    if existing:
+        return SuperuserResult(username=existing[0].get_username(), created_password=None)
 
     username = os.environ.get("T3_ADMIN_USER") or _DEFAULT_ADMIN_USER
     password = os.environ.get("T3_ADMIN_PASSWORD") or secrets.token_urlsafe(_GENERATED_PASSWORD_BYTES)

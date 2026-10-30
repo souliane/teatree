@@ -75,13 +75,15 @@ class GlabPrApiClient:
         """Every open MR on *slug*, or a :class:`ScannerError` — never a silent empty.
 
         The project is resolved FIRST because ``list_prs`` degrades an unresolvable
-        project to ``[]``, which the sweep would read as "no open MRs" and skip the
-        repo forever. A 404 there is a project this token cannot see; 401/403 and
-        transport faults surface from the resolve itself.
+        project to ``[]``. A 404 skips this repository with a warning; 401/403 and
+        transport faults still surface from the resolve itself.
         """
         backend = self._backend()
         repo = self._read(lambda: backend.get_repo(repo=slug), slug=slug, what="project lookup")
         if repo.get("error"):
+            if repo["error"] == f"Could not resolve project: {slug}":
+                logger.warning("pr_sweep: skipping GitLab project %s because it did not resolve (404)", slug)
+                return []
             detail = (
                 f"glab project {slug!r} did not resolve: {repo['error']}. The sweep cannot tell "
                 f"'no open MRs' from 'no access', so it refuses instead of reporting an empty pass."

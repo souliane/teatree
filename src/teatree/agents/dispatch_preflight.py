@@ -193,20 +193,23 @@ def _open_review_findings_lines(task: "Task", state: HeadState | None) -> tuple[
         (
             candidate
             for candidate in rows
-            if candidate.pr_url in task.execution_reason and (state is None or candidate.head_sha == state.sha)
+            if candidate.pr_url in task.execution_reason
+            and candidate.review_head_sha
+            and (state is None or candidate.review_head_sha == state.sha)
         ),
         None,
     )
     if row is None or (ref := pr_ref_from_url(row.pr_url)) is None:
         return ()
+    reviewed_sha = row.review_head_sha
     findings = [
         f"  - {verdict.reviewer_identity}: {finding.describe()}"
-        for verdict in ReviewVerdict.objects.speaking_verdicts_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=row.head_sha)
+        for verdict in ReviewVerdict.objects.speaking_verdicts_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=reviewed_sha)
         if verdict.stands_as_hold()
         for finding in verdict.structured_findings
         if finding.kind == "blocking"
     ]
-    return ("", f"OPEN REVIEW FINDINGS at {row.head_sha}:", *(findings or ["  (none recorded)"]))
+    return ("", f"OPEN REVIEW FINDINGS at {reviewed_sha}:", *(findings or ["  (none recorded)"]))
 
 
 def declared_seams_brief_lines(task: "Task") -> tuple[str, ...]:
