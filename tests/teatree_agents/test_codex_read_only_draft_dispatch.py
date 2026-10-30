@@ -44,6 +44,7 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
         self.fake = FakeExecutor(directory, reply="{}")
         self.env = self.fake.install()
         self.enterContext(self.fake.running())
+        self.enterContext(patch("teatree.agents._runner_options._main_clone_cwd", return_value=None))
 
     def tearDown(self) -> None:
         codex_read_only_server.reset_executor_app_servers()

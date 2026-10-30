@@ -120,6 +120,7 @@ class TestSweepFacts(TestCase):
 
     def test_failed_sweep_keeps_the_next_task_on_the_same_window(self) -> None:
         _, first = self._facts()
+        TicketSweepRun.objects.begin(source="loop", overlay=self.ticket.overlay)
         self.task = Task.objects.create(
             ticket=self.ticket,
             session=Session.objects.create(ticket=self.ticket),
