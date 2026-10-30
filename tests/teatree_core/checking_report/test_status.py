@@ -13,7 +13,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.checking import CheckingReport, gather_checking_report
-from teatree.core.checking_report.status import plain_title
+from teatree.core.checking_report.status import UNDEPLOYED_CARRYOVER_WINDOW, plain_title
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
@@ -140,6 +140,33 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.deploy_state == "verified"
         assert "http" not in status.render()[1]
 
+    def test_starting_generation_reports_the_deploy_as_running(self) -> None:
+        sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        WorkerGeneration.objects.create(sha="a" * 40, image="next-image", state=WorkerGeneration.State.STARTING)
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/305")
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=306, merged_sha=sha)
+
+        status = self._report().status_by_feature
+
+        assert status.deploy_state == "running"
+
+    def test_merge_older_than_the_carry_over_window_is_not_reported_undeployed(self) -> None:
+        serving_sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/307", state=Ticket.State.DELIVERED)
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=308, merged_sha="a" * 40
+        )
+        audit.merged_at = timezone.now() - UNDEPLOYED_CARRYOVER_WINDOW - timedelta(days=1)
+        audit.save(update_fields=["merged_at"])
+
+        status = self._report().status_by_feature
+
+        assert status.not_yet_deployed == []
+        assert status.features == []
+        assert status.deploy_state == "verified"
+
     def test_partly_live_feature_lists_only_the_undeployed_merge(self) -> None:
         repo = str(teatree_source_root())
         serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
@@ -248,6 +275,16 @@ class CheckInFeatureStatusTestCase(TestCase):
         url = "https://github.com/example/widgets/pull/436"
         ticket = TicketFactory(extra={"prs": {url: {"pipeline_status": "manual"}}})
         PullRequestFactory(ticket=ticket, url=url, state=PullRequest.State.APPROVED)
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].left[0].state == "tests status unknown"
+
+    def test_approved_pr_without_any_check_result_is_not_described_as_ready(self) -> None:
+        ticket = TicketFactory()
+        PullRequestFactory(
+            ticket=ticket, url="https://github.com/example/widgets/pull/438", state=PullRequest.State.APPROVED
+        )
 
         status = self._report().status_by_feature
 
@@ -585,6 +622,24 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert [feature.title for feature in status.features] == ["Agent communication"]
         assert status.features[0].left[0].url == ticket.issue_url
         assert status.features[0].left[0].state == "waiting for the tests"
+
+    def test_active_ticket_without_a_web_address_is_not_listed_as_an_unlinked_item(self) -> None:
+        TicketFactory(issue_url="dogfood-smoke://run/1", short_description="local rehearsal", state=Ticket.State.CODED)
+
+        assert self._report().status_by_feature.features == []
+
+    def test_active_ticket_without_an_issue_link_uses_its_stored_pull_request_link(self) -> None:
+        pr_url = "https://github.com/example/widgets/pull/604"
+        TicketFactory(
+            issue_url="dogfood-smoke://run/2",
+            short_description="local rehearsal",
+            state=Ticket.State.CODED,
+            extra={"pr_urls": [pr_url]},
+        )
+
+        status = self._report().status_by_feature
+
+        assert [item.url for block in status.features for item in block.left] == [pr_url]
 
     def test_unposted_owner_question_does_not_render_an_unlinked_label(self) -> None:
         ticket = TicketFactory(

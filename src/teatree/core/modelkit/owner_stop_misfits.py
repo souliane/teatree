@@ -1,4 +1,4 @@
-"""Owner stops that are not owner decisions: three explicit rows, every other stop stays a card (#5687).
+"""Owner stops that are not owner decisions: three explicit rows plus the automatic-review refusal (#5687).
 
 A row fires only when every text of the stop is one of its closed forms: the question is the row's benign ask,
 and each checked fact, the why, the blocker and each option label and description is a closed filler sentence

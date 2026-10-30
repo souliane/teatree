@@ -28,6 +28,8 @@ from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_bounded_group
 from teatree.utils.slack_links import slack_permalink
 
 FEATURE_CAP = 8
+UNDEPLOYED_CARRYOVER_WINDOW = timedelta(days=7)
+_CLICKABLE_SCHEMES = ("https://", "http://")
 logger = logging.getLogger(__name__)
 _NUMBERED_WORD = re.compile(r"(?<!\w)(?:#?\d+|v\d+)(?!\w)", re.IGNORECASE)
 _DIGIT_RUN = re.compile(r"\d{2,}")
@@ -223,7 +225,7 @@ def _pr_state(pr: PullRequest, observed: PrInventoryEntry | None) -> str:
         observed.decision in {"flag_conflict", "needs_branch_update"} or observed.next_task == UPDATE_BRANCH
     ):
         state = "needs a merge of main"
-    elif pipeline and ci_state == CiState.UNKNOWN:
+    elif ci_state == CiState.UNKNOWN and (pipeline or pr.state == PullRequest.State.APPROVED):
         state = "tests status unknown"
     elif pr.state == PullRequest.State.APPROVED:
         state = "ready to merge"
@@ -305,6 +307,12 @@ def _add_owner_waits(block_for: Callable[[Ticket | None], FeatureBlock], overlay
             block.unlinked_owner_waits += 1
 
 
+def _clickable_ticket_url(ticket: Ticket) -> str:
+    stored = (ticket.extra or {}).get("pr_urls")
+    candidates = [ticket.issue_url, *(stored if isinstance(stored, list) else [])]
+    return next((url for url in candidates if isinstance(url, str) and url.startswith(_CLICKABLE_SCHEMES)), "")
+
+
 def _add_active_tickets(
     block_for: Callable[[Ticket | None], FeatureBlock], overlay_names: list[str], represented_ticket_ids: set[int]
 ) -> None:
@@ -312,13 +320,12 @@ def _add_active_tickets(
     if overlay_names:
         active_tickets = active_tickets.filter(overlay__in=overlay_names)
     for ticket in active_tickets.exclude(pk__in=represented_ticket_ids):
-        block_for(ticket).left.append(
-            FeatureLink(
-                label=plain_title(ticket.short_description),
-                url=ticket.issue_url,
-                state=_ACTIVE_TICKET_STATES[ticket.state],
+        if url := _clickable_ticket_url(ticket):
+            block_for(ticket).left.append(
+                FeatureLink(
+                    label=plain_title(ticket.short_description), url=url, state=_ACTIVE_TICKET_STATES[ticket.state]
+                )
             )
-        )
 
 
 def _add_open_prs(block_for: Callable[[Ticket | None], FeatureBlock], overlay_names: list[str]) -> set[int]:
@@ -425,7 +432,9 @@ def _deployment_summary(
 ) -> tuple[list[FeatureLink], str]:
     serving_sha = _serving_sha()
     local_slug = remote_slug(repo=str(teatree_source_root()))
-    earlier_qs = MergeAudit.objects.filter(clear__ticket__isnull=False)
+    earlier_qs = MergeAudit.objects.filter(
+        clear__ticket__isnull=False, merged_at__gte=timezone.now() - UNDEPLOYED_CARRYOVER_WINDOW
+    )
     if overlay_names:
         earlier_qs = earlier_qs.filter(clear__ticket__overlay__in=overlay_names)
     earlier = list(earlier_qs.select_related("clear", "clear__ticket")) if serving_sha and local_slug else []
