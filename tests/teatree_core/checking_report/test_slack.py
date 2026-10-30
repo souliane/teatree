@@ -31,6 +31,14 @@ def _shoot(beat: ListenerBeat | None = None, *, missing_listener: bool = False) 
     return json.loads(out.getvalue())
 
 
+def _shoot_human() -> list[str]:
+    err = StringIO()
+    beat = ListenerBeat(updated_at=time.time(), interval_seconds=15, stamps={"test": time.time()})
+    with patch("teatree.core.management.commands.checking.read_heartbeat", return_value=beat):
+        call_command("checking", "shoot", stdout=StringIO(), stderr=err)
+    return err.getvalue().splitlines()
+
+
 class CheckingShootTestCase(TestCase):
     def test_finished_subject_is_settled_before_shoot_posts(self) -> None:
         ticket = TicketFactory()
@@ -256,3 +264,70 @@ class CheckingShootTestCase(TestCase):
         assert ScannerFault.objects.filter(scanner="checking:slack", healed_at__isnull=True).count() == 1
         assert DeferredQuestion.owner_pending().count() == 1
         assert BotPing.objects.count() == 0
+
+    def test_unposted_card_is_not_listed_as_a_thread_link(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        DeferredQuestion.record("Can I merge?", card=owner_card(), slack_channel="D_ME", slack_ts="1800000000.000001")
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=None):
+            report = _shoot()
+
+        assert report["cards"] == [
+            {"label": "a waiting question", "permalink": "https://slack.com/archives/D_ME/p1800000000000001"}
+        ]
+
+    def test_human_output_gives_the_fallback_reason_the_links_and_the_unsent_count(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        DeferredQuestion.record("Can I merge?", card=owner_card(), slack_channel="D_ME", slack_ts="1800000000.000001")
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=None):
+            lines = _shoot_human()
+
+        assert lines == [
+            "Slack post path is unavailable",
+            "[a waiting question](https://slack.com/archives/D_ME/p1800000000000001)",
+            "1 waiting for the next Slack send",
+        ]
+
+    def test_human_output_is_only_the_links_when_slack_works(self) -> None:
+        DeferredQuestion.record("Can I merge?", card=owner_card(), slack_channel="D_ME", slack_ts="1800000000.000001")
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=MagicMock(user_id="U_ME")):
+            lines = _shoot_human()
+
+        assert lines == ["[a waiting question](https://slack.com/archives/D_ME/p1800000000000001)"]
+
+    def test_owner_reply_queued_for_under_two_minutes_is_not_a_broken_listener(self) -> None:
+        DeferredQuestion.record("Can I publish?", card=owner_card(), slack_channel="D_ME", slack_ts="1800000000.000001")
+        PendingChatInjection.objects.create(
+            channel="D_ME",
+            slack_ts="1800000001.000001",
+            thread_ts="1800000000.000001",
+            user_id="U_ME",
+            text="Yes",
+            received_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=MagicMock(user_id="U_ME")):
+            report = _shoot()
+
+        assert report["mode"] == "slack"
+
+    def test_paused_send_reason_needs_a_candidate_nothing_posted_and_a_card_still_waiting(self) -> None:
+        def reason(*, posted: int, candidates: int) -> str:
+            with (
+                patch.object(notify_module, "messaging_from_overlay", return_value=MagicMock(user_id="U_ME")),
+                patch(
+                    "teatree.core.checking_report.slack.drain_unmirrored_deferred_questions",
+                    return_value=(posted, candidates),
+                ),
+            ):
+                report = _shoot()
+            assert report["mode"] == "slack"
+            return report["reason"]
+
+        assert reason(posted=0, candidates=1) == ""
+        DeferredQuestion.record("Can I publish?", card=owner_card())
+        assert reason(posted=0, candidates=1) == "Slack send paused until the next pass"
+        assert reason(posted=0, candidates=0) == ""
+        assert reason(posted=1, candidates=1) == ""
