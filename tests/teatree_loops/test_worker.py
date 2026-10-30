@@ -13,6 +13,7 @@ import datetime as dt
 import functools
 import inspect
 import os
+import sys
 import threading
 import time
 from collections import Counter
@@ -65,6 +66,7 @@ from teatree.loops.worker import (
     agent_executor_queues,
     loops_executor_count,
 )
+from teatree.utils import host_pressure
 from teatree.utils.host_pressure import HostSampler, read_host_pressure
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
@@ -284,6 +286,19 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
     worker_mod._start_live_ingress()
     assert len([peer for peer in live_mailbox.shared_broker().identities() if peer["harness"] == "orchestrator"]) == 1
     assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux host sampler")
+def test_default_worker_seam_publishes_host_pressure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "host-pressure.json"
+    monkeypatch.setenv("T3_HOST_PRESSURE_PATH", str(target))
+    monkeypatch.setattr(host_pressure, "proc_reads_the_host", lambda: True)
+
+    WorkerSeams().publish_host_pressure()
+
+    reading = read_host_pressure(path=target)
+    assert reading is not None
+    assert reading.cores >= 1
 
 
 def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:

@@ -151,7 +151,7 @@ class TestStatuslineHook:
         feed = json.loads((state / "xdg" / "teatree" / "host-pressure.json").read_text(encoding="utf-8"))
         assert feed["cores"] == 10
         assert feed["load1"] == pytest.approx(109.45)
-        assert feed["ram_available_mib"] == 121
+        assert feed["ram_available_mib"] == 125
         assert feed["swap_used_mib"] == 500
         assert feed["swap_total_mib"] == 1000
 

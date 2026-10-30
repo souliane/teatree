@@ -9,7 +9,7 @@ from django.utils import timezone
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
+from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout, writes_checkout
 from teatree.loop.scanners.base import ScanSignal, recent_iso_stamp
 
 _RECHECK = timedelta(hours=24)
@@ -33,11 +33,10 @@ class StuckCheckoutRecheckScanner:
             if not isinstance(stamp, dict) or not str(stamp.get("reason", "")).startswith("checkout parked: "):
                 continue
             task = Task.objects.filter(pk=stamp.get("newest_task"), ticket=ticket, status=Task.Status.PENDING).first()
-            if (
-                task is None
-                or Task.objects.filter(ticket=ticket, pk__gt=task.pk).exists()
-                or not _claim_recheck(ticket, now)
-            ):
+            if task is None or Task.objects.filter(ticket=ticket, pk__gt=task.pk).exists():
+                ticket.merge_extra(pop_keys=["stuck_halt"])
+                continue
+            if not writes_checkout(task) or not _claim_recheck(ticket, now):
                 continue
             checked += 1
             path = dispatch_worktree_path(ticket)

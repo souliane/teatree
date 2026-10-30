@@ -23,7 +23,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base
 from teatree.core.worktree.target_branch import bare_target, resolve_target_branch
 from teatree.loop.scanners.base import ScanSignal, recent_iso_stamp
-from teatree.utils.git import git_env_without_overrides
+from teatree.utils.git_run import git_env_non_interactive
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ def _remote_branch_state(repo: str, branch: str) -> str:
             ["git", "-C", repo, "ls-remote", "--exit-code", "origin", f"refs/heads/{bare_target(branch)}"],
             timeout=10,
             expected_codes=None,
-            env=git_env_without_overrides(),
+            env=git_env_non_interactive(),
         )
     except (CommandFailedError, TimeoutExpired, OSError):
         return "unknown"

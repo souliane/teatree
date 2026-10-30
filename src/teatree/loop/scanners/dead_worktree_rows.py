@@ -11,6 +11,8 @@ from teatree.core.models.known_issue import KnownIssue
 from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.loop.scanners.base import ScanSignal
 
+_SUMMARY_LIMIT = 500
+
 
 @dataclass(slots=True)
 class DeadWorktreeRowScanner:
@@ -21,17 +23,25 @@ class DeadWorktreeRowScanner:
         outcome = release_dead_rows(worktree_root(), dry_run=False)
         with transaction.atomic():
             live: set[str] = set()
+            kept: dict[str, list[str]] = {}
             for verdict in outcome.verdicts:
                 if verdict.releasable:
                     continue
-                fingerprint = f"dead-worktree:{verdict.worktree_pk}:{verdict.disposition}"
+                kept.setdefault(str(verdict.disposition), []).append(
+                    f"{verdict.worktree_pk} for {verdict.branch}: {verdict.reason}"
+                )
+            for disposition, rows in kept.items():
+                fingerprint = f"dead-worktree:{disposition}"
                 live.add(fingerprint)
+                summary = f"{len(rows)} dead worktree row(s) kept ({disposition}): {'; '.join(rows)}"
+                if len(summary) > _SUMMARY_LIMIT:
+                    summary = summary[: _SUMMARY_LIMIT - 1] + "…"
                 row = KnownIssue.objects.record_signal(
                     HealthSignal(
                         fingerprint=fingerprint,
                         severity=KnownIssue.Severity.WARNING,
                         kind="dead_worktree_row",
-                        summary=f"worktree row {verdict.worktree_pk} for {verdict.branch} kept: {verdict.reason}",
+                        summary=summary,
                     )
                 )
                 if row.auto_resolve:

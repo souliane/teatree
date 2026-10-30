@@ -13,5 +13,5 @@ def test_memory_hold_uses_the_governor_brake_floor() -> None:
     assert memory_hold_reason(_machine(4.1)) is None
 
 
-def test_unreadable_memory_does_not_invent_pressure() -> None:
-    assert memory_hold_reason(_machine(None)) is None
+def test_unreadable_memory_names_unknown_pressure() -> None:
+    assert memory_hold_reason(_machine(None)) == "memory_pressure (available memory unknown; container reading)"

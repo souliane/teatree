@@ -208,7 +208,7 @@ def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> in
 
 
 def _macos_available_ram_mib() -> int:
-    """Conservative reclaimable mac RAM (MiB), without counting purgeable pages twice."""
+    """Available mac RAM (MiB) from free, inactive, purgeable, and speculative pages."""
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
@@ -228,9 +228,7 @@ def _macos_available_ram_mib() -> int:
             digits = value.strip().rstrip(".")
             if digits.isdigit():
                 pages[name] = int(digits)
-    reclaimable = (
-        pages["Pages free"] + pages["Pages speculative"] + max(pages["Pages inactive"], pages["Pages purgeable"])
-    )
+    reclaimable = sum(pages.values())
     return reclaimable * page_size // (1024 * 1024)
 
 

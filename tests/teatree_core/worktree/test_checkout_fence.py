@@ -208,6 +208,15 @@ class CheckoutFenceTests(TestCase):
         self.ticket.refresh_from_db()
         assert "stuck_halt" not in self.ticket.extra
 
+    def test_repeated_park_behind_a_long_lease_doubles_then_caps_at_a_day(self) -> None:
+        holder = acquire(self.worktree, holder="owner-terminal", holder_session="owner", lease_seconds=3 * 86400)
+        for expected_minutes in (30, 30, 60, 120, 240, 480, 960, 1440, 1440):
+            before = timezone.now()
+            park_task_checkout(self.task, reason="held by the owner", behind=holder)
+            self.task.refresh_from_db()
+            assert before + timedelta(minutes=expected_minutes) <= self.task.not_before
+            assert self.task.not_before <= timezone.now() + timedelta(minutes=expected_minutes)
+
     def test_held_checkout_is_skipped_until_its_holder_releases_or_lapses(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)
         waiting = Task.objects.waiting_for_admission().filter(pk=self.task.pk)

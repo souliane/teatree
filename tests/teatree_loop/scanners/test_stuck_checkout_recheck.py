@@ -51,14 +51,32 @@ class StuckCheckoutRecheckTests(TestCase):
         self.task.refresh_from_db()
         assert self.task.not_before <= timezone.now()
 
-    def test_non_checkout_and_superseded_halts_are_left_alone(self) -> None:
+    def test_non_checkout_halt_is_left_alone_and_superseded_checkout_halt_is_cleared(self) -> None:
         self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"reason": "budget spent"}})
         assert self.scanner.scan() == []
         self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"reason": "checkout parked: foreign state"}})
         TaskFactory(ticket=self.ticket, session=SessionFactory(ticket=self.ticket), phase="coding")
         assert self.scanner.scan() == []
+        self.ticket.refresh_from_db()
+        assert "stuck_halt" not in self.ticket.extra
         self.task.refresh_from_db()
         assert self.task.not_before > timezone.now() + timedelta(days=365)
+
+    def test_non_writing_task_stays_parked_until_its_checkout_can_be_checked(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(phase="reviewing")
+        with patch("teatree.loop.scanners.stuck_checkout_recheck.verify_task_checkout") as verify:
+            assert self.scanner.scan() == []
+        verify.assert_not_called()
+        self.ticket.refresh_from_db()
+        self.task.refresh_from_db()
+        assert "stuck_halt" in self.ticket.extra
+        assert self.task.not_before > timezone.now() + timedelta(days=365)
+
+    def test_halt_for_a_completed_task_is_cleared(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED)
+        assert self.scanner.scan() == []
+        self.ticket.refresh_from_db()
+        assert "stuck_halt" not in self.ticket.extra
 
     def test_missing_checkout_path_keeps_the_halt(self) -> None:
         self.ticket.worktrees.update(extra={})

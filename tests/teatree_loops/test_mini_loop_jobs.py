@@ -68,7 +68,6 @@ class TestDispatchLoopBuildJobs:
             "outbound_audit",
             "owner_actions",
             "pending_pr_drain",
-            "dead_worktree_rows",
             "stuck_checkout_recheck",
             "undelivered_notify",
             "deferred_question_poster",
@@ -135,6 +134,10 @@ class TestHousekeepingLoopBuildJobs:
     def test_runs_with_no_backends(self) -> None:
         jobs = HOUSEKEEPING_LOOP.build_jobs()
         assert isinstance(jobs, list)
+        assert HOUSEKEEPING_LOOP.default_cadence_seconds == 3600
+        assert [(job.scanner.name, job.overlay) for job in jobs if job.scanner.name == "dead_worktree_rows"] == [
+            ("dead_worktree_rows", "")
+        ]
 
     def test_runs_with_backends(self, stub_backend: Any) -> None:
         jobs = HOUSEKEEPING_LOOP.build_jobs(backends=[stub_backend])

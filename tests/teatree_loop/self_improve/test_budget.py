@@ -37,11 +37,13 @@ def test_low_ram_short_circuits() -> None:
     assert "memory_pressure" in verdict.reason
 
 
-def test_self_improve_uses_the_governor_memory_floor_and_allows_unknown() -> None:
+def test_self_improve_uses_the_governor_memory_floor_and_names_unknown() -> None:
     floor = MachineSignal(cores=8, load1=1.0, ram_available_gb=4.0, memory_source="container reading")
     unreadable = MachineSignal(cores=8, load1=1.0, ram_available_gb=None, memory_source="container reading")
     assert "4 GB floor" in precheck_budget(machine=floor).reason
-    assert precheck_budget(machine=unreadable).ok
+    verdict = precheck_budget(machine=unreadable)
+    assert not verdict.ok
+    assert "unknown; container reading" in verdict.reason
 
 
 def test_low_disk_skips_a_self_improve_cycle() -> None:

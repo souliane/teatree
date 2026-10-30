@@ -244,6 +244,14 @@ class QueuedTaskFreshnessTests(TestCase):
         with patch("teatree.loop.scanners.queued_task_freshness.run_bounded_group", side_effect=OSError):
             assert _remote_branch_state(str(Path.cwd()), "origin/stacked") == "unknown"
 
+    def test_remote_target_probe_disables_credential_prompts(self) -> None:
+        with patch(
+            "teatree.loop.scanners.queued_task_freshness.run_bounded_group",
+            return_value=CompletedProcess([], 0),
+        ) as run:
+            assert _remote_branch_state(str(Path.cwd()), "origin/stacked") == "present"
+        assert run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
     def test_bad_validation_stamp_is_replaced_by_a_current_one(self) -> None:
         for bad in ("not-a-date", "2020-01-01T00:00:00"):
             with self.subTest(bad=bad):

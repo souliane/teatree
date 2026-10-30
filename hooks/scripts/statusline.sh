@@ -403,7 +403,7 @@ if [ -n "$_ram_total" ]; then
 $(vm_stat 2>/dev/null)
 EOF
     if [[ "$_page_sz" =~ ^[0-9]+$ ]] && [[ "$_free" =~ ^[0-9]+$ ]] && [[ "$_inact" =~ ^[0-9]+$ ]] && [[ "$_purgeable" =~ ^[0-9]+$ ]] && [[ "$_speculative" =~ ^[0-9]+$ ]]; then
-        _reclaimable_pages=$(( _free + _speculative + (_inact > _purgeable ? _inact : _purgeable) ))
+        _reclaimable_pages=$(( _free + _inact + _purgeable + _speculative ))
         _ram_used=$(( _ram_total - _reclaimable_pages * _page_sz ))
         _ram_pct=$(( _ram_used * 100 / _ram_total ))
         _used_tenths=$(( (_ram_used * 10 + 536870912) / 1073741824 ))
