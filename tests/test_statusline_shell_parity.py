@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,9 @@ from teatree.config.cold_defaults import DEFAULTS_TOML
 from teatree.config.declared_defaults import declared_defaults
 from teatree.config.host_projection import ProjectionPublisher
 from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool
+from teatree.loop.admit_budget import meta_path
 from teatree.loop.statusline_render import StatuslineEntry, StatuslineZones, default_path, render
+from teatree.loop.statusline_staleness import staleness_banner_for
 
 pytestmark = pytest.mark.integration
 
@@ -195,6 +198,23 @@ class TestRenderedZonesSurviveTheShell:
 
         assert result.returncode == 0, result.stderr
         assert "[acme] default-path chip" in _strip_ansi(result.stdout)
+
+
+class TestTickMetaFreshnessParity:
+    """The shell reads the ``tick-meta.json`` the Django tier names and calls the same render stale."""
+
+    @pytest.mark.parametrize(("age_seconds", "stale"), [(30, False), (6 * 3600, True)])
+    def test_shell_and_python_agree_on_a_render_age(self, sandbox: Path, age_seconds: int, *, stale: bool) -> None:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] anchor chip"]), target=target, colorize=False)
+        meta_path(target).write_text(json.dumps({"cadence": 720, "rendered_at": int(time.time()) - age_seconds}))
+
+        result = _run_shell(sandbox, statusline_file=target)
+
+        assert result.returncode == 0, result.stderr
+        assert bool(staleness_banner_for(target, cadence_seconds=720)) is stale
+        assert ("statusline STALE" in _strip_ansi(result.stdout)) is stale
 
 
 class TestLoopLineClassificationParity:
