@@ -318,6 +318,22 @@ class TestCheckingShow:
         assert text.count("Held pull request:") == 2
         assert "and 10 more held pull requests" in text
 
+    def test_brief_escapes_square_brackets_in_a_held_pull_request_title(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/790",
+            state=Ticket.State.PR_OPENED,
+            short_description="Fix [draft] flow",
+        )
+        PullRequest.objects.create(
+            ticket=ticket, repo="acme/widgets", iid="791", url="https://github.com/acme/widgets/pull/791"
+        )
+        _task(ticket, "reviewing", status=Task.Status.FAILED, failure_kind="unclassified")
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+
+        assert r"Held pull request: [Fix \[draft\] flow](https://github.com/acme/widgets/pull/791)" in text
+
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay")

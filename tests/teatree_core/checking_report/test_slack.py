@@ -297,6 +297,22 @@ class CheckingShootTestCase(TestCase):
 
         assert lines == ["[a waiting question](https://slack.com/archives/D_ME/p1800000000000001)"]
 
+    def test_human_output_escapes_square_brackets_in_a_card_label(self) -> None:
+        ticket = TicketFactory(short_description="Fix [draft] flow")
+        task = TaskFactory(ticket=ticket, session__ticket=ticket)
+        DeferredQuestion.record(
+            "Can I merge?",
+            card=owner_card(),
+            parked_task=task,
+            slack_channel="D_ME",
+            slack_ts="1800000000.000001",
+        )
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=MagicMock(user_id="U_ME")):
+            lines = _shoot_human()
+
+        assert lines == [r"[Fix \[draft\] flow](https://slack.com/archives/D_ME/p1800000000000001)"]
+
     def test_owner_reply_queued_for_under_two_minutes_is_not_a_broken_listener(self) -> None:
         DeferredQuestion.record("Can I publish?", card=owner_card(), slack_channel="D_ME", slack_ts="1800000000.000001")
         PendingChatInjection.objects.create(
