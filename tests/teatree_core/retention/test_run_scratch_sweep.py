@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -275,11 +276,27 @@ def test_real_process_cwd_protects_then_releases_directory(tmp_path: Path) -> No
     root.mkdir()
     candidate = _aged(root, "t3-merge-tree-abcdefgh")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], cwd=candidate)
+    original_iterdir = Path.iterdir
+
+    def only_child_in_proc(path: Path) -> Iterator[Path]:
+        if path == Path("/proc"):
+            return iter((Path("/proc") / str(child.pid),))
+        return original_iterdir(path)
+
     try:
-        assert sweep_run_scratch(root).freed_bytes == 0
-        assert candidate.is_dir()
+        with patch("pathlib.Path.iterdir", new=only_child_in_proc):
+            assert (Path("/proc") / str(child.pid) / "cwd").readlink() == candidate
+            first = sweep_run_scratch(root)
+            assert first.refusal == ""
+            assert first.freed_bytes == 0
+            assert candidate.is_dir()
+            child.terminate()
+            child.wait(timeout=5)
+            second = sweep_run_scratch(root)
     finally:
-        child.terminate()
-        child.wait(timeout=5)
-    assert sweep_run_scratch(root).freed_bytes == 4
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+    assert second.refusal == ""
+    assert second.freed_bytes == 4
     assert not candidate.exists()
