@@ -21,17 +21,16 @@ def test_blueprint_distinguishes_shared_terminal_agents_from_claude_hooks() -> N
     assert "driven through Claude Code's interactive terminal app today" not in text
 
 
-def test_interactive_skill_pins_the_factory_watch_duty() -> None:
+def test_coordinating_skill_pins_the_factory_watch_duty() -> None:
     skills_dir = Path(__file__).resolve().parents[2] / "skills"
-    text = (skills_dir / "interactive" / "SKILL.md").read_text()
+    text = (skills_dir / "coordinating" / "SKILL.md").read_text()
 
-    report = text.index("## A status field is a report")
     watch = text.index("## Factory watch — BLOCKING first (Non-Negotiable)")
-    loading = text.index("## Skill Loading")
-    assert report < watch < loading
+    unblock = text.index("## Unblock — review, merge, advance the board")
+    assert watch < unblock
 
-    section = text[watch:loading]
-    assert (skills_dir / "interactive" / "references" / "factory-watch.md").is_file()
+    section = text[watch:unblock]
+    assert (skills_dir / "coordinating" / "references" / "factory-watch.md").is_file()
     assert "references/factory-watch.md" in section
     reads = [
         "t3 worker status --json",

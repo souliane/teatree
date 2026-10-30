@@ -116,6 +116,10 @@ class TestInteractiveSkillSurvives:
     def _skill() -> str:
         return (_REPO_ROOT / "skills" / "interactive" / "SKILL.md").read_text()
 
+    @staticmethod
+    def _required_duties() -> str:
+        return (_REPO_ROOT / "skills" / "coordinating" / "SKILL.md").read_text()
+
     def test_the_skill_still_exists_and_is_loadable(self) -> None:
         path = _REPO_ROOT / "skills" / "interactive" / "SKILL.md"
         assert path.is_file()
@@ -123,7 +127,7 @@ class TestInteractiveSkillSurvives:
         assert front["name"] == "interactive"
 
     def test_it_carries_the_do_not_implement_order_in_the_imperative(self) -> None:
-        body = self._skill()
+        body = self._required_duties()
         assert "do NOT implement it" in body
         assert "File a ticket" in body
         assert "prioritized" in body
@@ -134,7 +138,7 @@ class TestInteractiveSkillSurvives:
         assert "[gate-escape:headless_authoring: <reason>]" in body
 
     def test_it_says_review_merge_diagnose_answer_are_not_implementation(self) -> None:
-        body = self._skill()
+        body = self._required_duties()
         assert "Reviewing, merging, diagnosing and answering are NOT implementation" in body
 
     def test_it_requires_a_plan_before_the_first_edit_with_no_emergency_exception(self) -> None:
