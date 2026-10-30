@@ -1,6 +1,6 @@
 """The ``t3 teatree waiting`` management command (PR-21).
 
-``list`` prints every entry waiting on the user; ``add`` records a manual
+``list`` prints owner decisions; ``list --all`` includes factory waits; ``add`` records a manual
 item; ``resolve`` closes a manual item by id.
 """
 
@@ -37,17 +37,19 @@ class TestList:
     def test_empty_reports_nothing_waiting(self) -> None:
         assert "nothing waiting" in _call("waiting", "list").lower()
 
-    def test_lists_every_kind(self) -> None:
+    def test_default_lists_only_owner_decisions_and_all_includes_factory_waits(self) -> None:
         DeferredQuestion.record("what region?", **OWNER_DECISION)
         WaitingItem.objects.add("chase finance")
         out = _call("waiting", "list")
         assert "question" in out
-        assert "manual" in out
-        assert "chase finance" in out
+        assert "chase finance" not in out
+        all_waits = _call("waiting", "list", "--all")
+        assert "manual" in all_waits
+        assert "chase finance" in all_waits
 
     def test_json_output(self) -> None:
         WaitingItem.objects.add("call the bank")
-        payload = json.loads(_call("waiting", "list", "--json"))
+        payload = json.loads(_call("waiting", "list", "--all", "--json"))
         assert payload["count"] == 1
         assert payload["entries"][0]["kind"] == WaitingKind.MANUAL
         assert payload["entries"][0]["ref"] == "call the bank"

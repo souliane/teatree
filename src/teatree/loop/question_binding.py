@@ -22,8 +22,8 @@ wins pick it replaces silently answered the wrong row: with 149 questions
 mirrored into a single DM, a reply to a three-day-old question resolved
 whichever had been posted last, and ✅-acked the owner for it.
 
-Every rung binds only a reply whose recorded author is the owner's Slack user id;
-any other reply, or an unknown owner id, binds nothing and is left for the DM path.
+Every rung binds only a reply whose recorded author is the question's Slack
+addressee: the ticket requester when linked, otherwise the configured owner.
 
 A tap on an option button is the strongest evidence of all: :func:`answer_from_click` joins the
 tapped message onto its question by channel and own ``ts``, then the root, and records the option's label.
@@ -40,10 +40,11 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core.models import PendingChatInjection, TicketDmPost, TicketDmThread
+from teatree.core.models import OperatorIdentity, PendingChatInjection, TicketDmPost, TicketDmThread
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
+from teatree.core.notify_targets import question_addressee
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
     NO_LONGER_NEEDED,
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
 # Require a separator so ``#12abc`` cannot answer question 12 with "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
+_EXPLICIT_ANSWER_RE = re.compile(r"^\s*answer:\s*(\S(?:.*\S)?)\s*$", re.IGNORECASE | re.DOTALL)
 OPTION_ACTION_PREFIX = "owner-question-option-"
 _READS_AS_QUESTION = "the text reads as a question"
 logger = logging.getLogger(__name__)
@@ -81,7 +83,6 @@ class AmbiguousCards:
 
 
 class CardThreadStop(StrEnum):
-    TAPS_ONLY = "the card takes taps only"
     CLOSED = "no pending card in this thread"
     NOT_WAITING = "the named question is not waiting"
     OPTIONS_ONLY = "the reply does not match a card option"
@@ -94,6 +95,25 @@ class UnmatchedCardThread:
     options: tuple[str, ...] = ()
 
 
+def is_question_addressee(question: DeferredQuestion, user_id: str, backend: "MessagingBackend") -> bool:
+    target = question_addressee(question, owner_id=configured_owner_id(backend)).user_id
+    if not user_id:
+        return False
+    if user_id == target:
+        return True
+    if not question.slack_channel or not question.slack_ts:
+        return False
+    owner_id = configured_owner_id(backend)
+    if (
+        user_id != owner_id
+        and not OperatorIdentity.objects.filter(
+            platform="slack", handle=user_id, user__is_active=True, user__is_superuser=True
+        ).exists()
+    ):
+        return False
+    return backend.open_dm(user_id) == question.slack_channel
+
+
 def bind_reply(
     reply: PendingChatInjection, *, reader: InboundReader, backend: "MessagingBackend", text: str = ""
 ) -> BoundAnswer | AmbiguousCards | UnmatchedCardThread | None:
@@ -102,9 +122,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    if not is_the_owner(reply.user_id, configured_owner_id(backend)):
-        _log_reply(reply, "rejected: author is not the owner")
-        return None
+    owner_reply = is_the_owner(reply.user_id, configured_owner_id(backend))
     body = text or reply.text
     addressed = _addressed(body)
     if addressed is not None:
@@ -119,19 +137,22 @@ def bind_reply(
         ):
             stop = UnmatchedCardThread(CardThreadStop.NOT_WAITING, question_id)
             _log_reply(reply, f"ignored: {stop.reason}")
-            return stop
+            return stop if owner_reply else None
     else:
         inferred = _inferred_cards(reply, backend=backend, body=body, reader=reader)
         if isinstance(inferred, AmbiguousCards):
             _log_reply(reply, f"ambiguous: questions {inferred.question_ids} share this thread")
-            return inferred
+            return inferred if owner_reply else None
         if isinstance(inferred, UnmatchedCardThread):
             _log_reply(reply, f"ignored: {inferred.reason}")
-            return inferred
+            return inferred if owner_reply else None
         question, key = inferred
-    if question is None:
-        no_card = "no pending card in this thread" if reply.thread_ts else "no pending card"
-        _log_reply(reply, f"ignored: {key or no_card}")
+    if question is None or not is_question_addressee(question, reply.user_id, backend):
+        if question is None:
+            no_card = "no pending card in this thread" if reply.thread_ts else "no pending card"
+            _log_reply(reply, f"ignored: {key or no_card}")
+        else:
+            _log_reply(reply, "rejected: author is not the addressee")
         return None
     return _bind_found(reply, question=question, body=body, reader=reader, key=key)
 
@@ -140,16 +161,12 @@ def _bind_found(
     reply: PendingChatInjection, *, question: DeferredQuestion, body: str, reader: InboundReader, key: str
 ) -> BoundAnswer | UnmatchedCardThread | None:
     if is_action_question(question):
-        _log_reply(reply, f"ignored: {CardThreadStop.TAPS_ONLY}")
-        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY) if reply.thread_ts else None
+        _log_reply(reply, "action-card discussion requested")
+        return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk) if reply.thread_ts else None
     answer = resolve_answer(body, question, reader=reader)
     if answer is None:
-        if (
-            reply.thread_ts
-            and question.audience == DeferredQuestion.Audience.OWNER_QUESTION
-            and _recorded_options(question)
-        ):
-            _log_reply(reply, f"rejected: {CardThreadStop.OPTIONS_ONLY}")
+        if reply.thread_ts and question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+            _log_reply(reply, "card discussion requested")
             options = tuple(str(option.get("label", "")) for option in _recorded_options(question) or [])
             return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk, options)
         _log_reply(reply, f"ignored: {_READS_AS_QUESTION}")
@@ -209,12 +226,12 @@ def apply_bound_answer(
                 resolver_id=f"slack:{bound.answered_by}",
                 note="button" if bound.from_click else "",
             )
+        if applied is not None and resume_task:
+            from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
+
+            resume_on_answer(applied, applied.parked_task)
     if applied is None:
         return False
-    if resume_task:
-        from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
-
-        resume_on_answer(applied, applied.parked_task)
     if on_answer is not None:
         on_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:
@@ -228,12 +245,9 @@ def answer_from_click(
     backend: "MessagingBackend",
     on_answer: Callable[[DeferredQuestion], object] | None = None,
 ) -> bool:
-    """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
+    """Record the addressee's tapped option and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
     if tap is None:
-        return False
-    if not is_the_owner(tap.user_id, configured_owner_id(backend)):
-        logger.warning("Refused a tap on the card at message %s: not the owner", tap.root_ts)
         return False
     question = (
         DeferredQuestion.objects.filter(
@@ -245,6 +259,9 @@ def answer_from_click(
         .first()
     )
     if question is None:
+        return False
+    if not is_question_addressee(question, tap.user_id, backend):
+        logger.warning("Refused a tap on the card at message %s: not the owner or ticket addressee", tap.root_ts)
         return False
     if question.is_pending:
         label = _tapped_label(question, tap)
@@ -262,6 +279,13 @@ def answer_from_click(
     return False
 
 
+def _owner_free_text_answer(text: str) -> str | None:
+    explicit = _EXPLICIT_ANSWER_RE.match(text)
+    if explicit is not None:
+        return explicit.group(1)
+    return text if text.strip().casefold() in {"yes", "no", "approve", "decline"} else None
+
+
 def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundReader) -> str | None:
     """Map a reply body to the answer to apply, or ``None`` when it is not one.
 
@@ -269,19 +293,23 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     live option set: a mismatch returns ``None`` (stale — no wrong-label
     application) so the reply is left for the ordinary DM path; a matching hash
     with ``N`` in range maps to ``options[N-1].label``. An out-of-range digit
-    is applied as typed only for questions without recorded owner-card options.
+    is applied as typed only for non-owner questions without recorded options.
 
     A free-text body used to be applied as typed, which meant a message that was
     itself a QUESTION got consumed as the answer to the pending one, claimed, and
     reacted ✅ — the owner's question answered by nobody and marked handled. So a
     non-digit body on other questions is READ first, and an interrogative one
     returns ``None``: it is left to the reactive cycle, which answers it or dispatches it. Owner
-    option cards accept only recorded labels without a model read. The asymmetry
+    option cards accept only recorded labels without a model read; an optionless
+    owner card requires ``Answer:`` or a short explicit decision word. The asymmetry
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
     if not text.strip() or is_action_question(question):
         return None
+    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and not _recorded_options(question):
+        return _owner_free_text_answer(text)
+    answer: str | None
     match = _DIGIT_RE.match(text)
     if match is None:
         options = _recorded_options(question) or []
@@ -303,7 +331,8 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
         answer = str(options[index - 1].get("label", "")) or text if 1 <= index <= len(options) else text
     if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and _recorded_options(question):
         labels = {str(option.get("label", "")) for option in _recorded_options(question) or []}
-        return answer if answer in labels else None
+        if answer not in labels:
+            answer = None
     return answer
 
 
@@ -404,20 +433,29 @@ def _thread_cards(
             DeferredQuestion.objects.filter(pk=latest.question_id).first() if latest and latest.question_id else None
         )
         return (question, "ticket-newest") if question is not None and question.is_pending else (None, "")
+    return _ordinary_thread_cards(reply, backend=backend, body=body, reader=reader)
+
+
+def _ordinary_thread_cards(
+    reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
+) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
     matched, key = cards_in_thread(
         channel=reply.channel, thread_ts=reply.thread_ts, before_ts=reply.slack_ts, backend=backend
     )
-    pending = [card for card in matched if card.is_pending and not is_action_question(card)]
-    if len(pending) > 1:
+    all_pending = [card for card in matched if card.is_pending]
+    pending = [card for card in all_pending if not is_action_question(card)]
+    if len(all_pending) > 1:
+        if not pending:
+            return AmbiguousCards(tuple(card.pk for card in all_pending))
         if resolve_answer(body, pending[0], reader=reader) is None:
             return None, _READS_AS_QUESTION
-        return AmbiguousCards(tuple(card.pk for card in pending))
+        if len(pending) > 1:
+            return AmbiguousCards(tuple(card.pk for card in pending))
     if pending:
         return pending[0], key
-    if matched:
-        taps_only = any(card.is_pending for card in matched)
-        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY if taps_only else CardThreadStop.CLOSED)
-    return None, ""
+    if len(all_pending) == 1:
+        return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, all_pending[0].pk)
+    return UnmatchedCardThread(CardThreadStop.CLOSED) if matched else (None, "")
 
 
 def _recorded_options(question: DeferredQuestion) -> list[dict] | None:

@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth import get_user_model
 from django.db import OperationalError, connection
 from django.test import TestCase
 
@@ -21,10 +22,19 @@ from teatree.core import notify as notify_module
 from teatree.core.backend_protocols import MessagingReadRefusedError
 from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, IncomingEvent, ThreadBinding, Ticket, TicketDmPost, TicketDmThread
+from teatree.core.models import (
+    BotPing,
+    IncomingEvent,
+    OperatorIdentity,
+    ThreadBinding,
+    Ticket,
+    TicketDmPost,
+    TicketDmThread,
+)
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
 from teatree.core.owner_dm import ticket_dm_delivery
+from teatree.core.send_proxy import SendRequest, SendVerdict
 from teatree.types import RawAPIDict
 
 _DB_LOCKED = OperationalError("database is locked")
@@ -56,6 +66,218 @@ def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p170000
 
 
 class TestNotifyUser(TestCase):
+    def test_ticket_question_goes_to_registered_requester(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/app/issues/44", requested_by="github:alice")
+        backend = _backend()
+
+        outcome = notify_user_outcome(
+            "question",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="operator-question",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        backend.open_dm.assert_called_once_with("U-OP")
+
+    def test_ticket_root_moves_to_requesters_dm_without_reusing_owner_thread(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/app/issues/47")
+        backend = _backend()
+        backend.open_dm.side_effect = lambda user_id: {"U_ME": "D-OWNER", "U-OP": "D-OP"}[user_id]
+        backend.post_message.side_effect = [
+            {"ok": True, "ts": "1700000000.000001"},
+            {"ok": True, "ts": "1700000000.000002"},
+        ]
+
+        first = notify_user_outcome(
+            "owner card",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="owner-card",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+        ticket.requested_by = "github:alice"
+        ticket.save(update_fields=["requested_by"])
+        second = notify_user_outcome(
+            "requester card",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="requester-card",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert first.sent
+        assert second.sent
+        assert backend.post_message.call_args_list[1].kwargs["channel"] == "D-OP"
+        assert not backend.post_message.call_args_list[1].kwargs.get("thread_ts")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.channel, thread.root_ts, thread.generation) == ("D-OP", "1700000000.000002", 1)
+        assert TicketDmPost.objects.filter(channel="D-OWNER", slack_ts="1700000000.000001").exists()
+
+    def test_failed_requester_delivery_does_not_retry_to_owner(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/app/issues/45", requested_by="github:alice")
+        backend = _backend()
+        backend.open_dm.return_value = ""
+
+        outcome = notify_user_outcome(
+            "question",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="failed-operator-question",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.open_dm.assert_called_once_with("U-OP")
+
+    def test_send_proxy_self_dm_carveout_only_covers_owner(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        operator_ticket = Ticket.objects.create(requested_by="github:alice")
+        owner_ticket = Ticket.objects.create()
+        with patch("teatree.core.notify.route_send") as route:
+            for ticket, key in ((operator_ticket, "operator-audit"), (owner_ticket, "owner-audit")):
+                notify_user_outcome(
+                    "question",
+                    kind=NotifyKind.QUESTION,
+                    idempotency_key=key,
+                    audience=NotifyAudience.OWNER_QUESTION,
+                    options=NotifyOptions(backend=_backend(), user_id="U_ME", ticket_id=ticket.pk),
+                )
+
+        assert [(call.args[0].destination, call.args[0].is_self_dm) for call in route.call_args_list] == [
+            ("U-OP", False),
+            ("U_ME", True),
+        ]
+
+    def test_operator_dm_refuses_a_send_proxy_denial(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+        with patch(
+            "teatree.core.notify.route_send",
+            return_value=SendVerdict(allowed=False, payload="question", allowlist_ok=False, reason="denied"),
+        ):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-denied",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_operator_dm_refuses_an_unreadable_redaction_policy(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+        with patch(
+            "teatree.core.notify.route_send",
+            return_value=SendVerdict(allowed=True, payload="question", allowlist_ok=True, redaction_failed=True),
+        ):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-policy-unreadable",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_operator_dm_scans_block_content_before_delivery(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+        scanned: list[str] = []
+
+        def route(request: SendRequest) -> SendVerdict:
+            payload = request.payload
+            scanned.append(payload)
+            return SendVerdict(allowed="private-marker" not in payload, payload=payload, allowlist_ok=True)
+
+        with patch("teatree.core.notify.route_send", side_effect=route):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-block-content",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(
+                    backend=backend,
+                    user_id="U_ME",
+                    ticket_id=ticket.pk,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "private-marker"}}],
+                ),
+            )
+        assert scanned
+        assert "private-marker" in scanned[0]
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_operator_dm_scans_formatted_text_before_delivery(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+
+        def route(request: SendRequest) -> SendVerdict:
+            return SendVerdict(
+                allowed="private-marker" not in request.payload,
+                payload=request.payload,
+                allowlist_ok=True,
+            )
+
+        with (
+            patch("teatree.core.notify.format_notification", return_value="private-marker"),
+            patch("teatree.core.notify.route_send", side_effect=route),
+        ):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-formatted-content",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
+    def test_requester_without_chat_identity_goes_to_owner_with_label(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/app/issues/46", requested_by="github:alice")
+        backend = _backend()
+
+        outcome = notify_user_outcome(
+            "question",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="fallback-operator-question",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        backend.open_dm.assert_called_once_with("U_ME")
+        assert "github:alice" in str(backend.post_message.call_args)
+
     def test_ticket_notes_use_first_card_as_root(self) -> None:
         tickets = [
             Ticket.objects.create(

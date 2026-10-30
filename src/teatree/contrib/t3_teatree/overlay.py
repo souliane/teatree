@@ -269,8 +269,7 @@ class TeatreeOverlay(OverlayBase):
 
     @override
     def get_checking_sources(self) -> list[str]:
-        # The teatree overlay relies on the core needs-you sources (pending
-        # questions + failed agent runs); it adds none of its own.
+        # Core supplies owner decisions; this overlay adds no checking sources.
         return []
 
     @override

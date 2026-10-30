@@ -2,11 +2,11 @@
 
 from unittest.mock import patch
 
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.agents.terminal_launcher import LaunchResult
 from teatree.dash.commands import CommandBusyError, CommandResult
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class CommandRunViewTestCase(TestCase):
@@ -60,7 +60,7 @@ class CommandRunViewTestCase(TestCase):
         assert "already running" in resp.content.decode()
 
     def test_csrf_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         resp = csrf_client.post(self.url, {"command": "doctor"})
         assert resp.status_code == 403
 

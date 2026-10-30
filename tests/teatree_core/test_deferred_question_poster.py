@@ -28,6 +28,20 @@ def _backend(*, ts: str = "1700000000.000000") -> MagicMock:
 
 
 class TestDrainUnmirroredDeferredQuestions(TestCase):
+    def test_first_owner_cards_are_not_throttled(self) -> None:
+        for index in range(7):
+            DeferredQuestion.record(
+                f"May I use credential {index}?",
+                card=owner_card(OwnerDecision.CREDENTIALS, f"Credential {index} is required."),
+            )
+        backend = _backend()
+
+        with patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=True):
+            delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+
+        assert (delivered, total) == (7, 7)
+        assert backend.post_message.call_count == 7
+
     def test_mirrored_parked_question_binds_its_thread_to_the_ticket(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

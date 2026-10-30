@@ -35,6 +35,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 gunicorn server.                                             │
 │ dashboard       Open the teatree dashboard board, served by the same local   │
 │                 gunicorn as the admin.                                       │
+│ login                                                                        │
+│ logout                                                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -110,10 +112,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 off_live_tick + critic/signal code guards) — the master flag │
 │                 graduated default-ON in #3895, so the disabled loop row is   │
 │                 what keeps a fresh install inert.                            │
-│ peer            The loopback forwards the Compare Instances page reads its   │
-│                 peers through.                                               │
-│ settings        This box's settings beside its peers' — the Compare          │
-│                 Instances page, in a terminal.                               │
+│ peer            Open a peer dashboard to sign in and download a comparison   │
+│                 snapshot.                                                    │
+│ settings        Compare this instance's settings with imported peer          │
+│                 snapshots.                                                   │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -367,6 +369,34 @@ Usage: t3 dashboard [OPTIONS]
 │                              port for the forward (default 8803).            │
 │ --no-browser                 Do not open the browser at the dashboard.       │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 login`
+
+```
+Usage: t3 login [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --approvals          Request a separate approval grant after sign-in.        │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 logout`
+
+```
+Usage: t3 logout [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user        TEXT  Operator username when several people have grants.       │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1630,6 +1660,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           escalation ladder (no full matrix).                │
 │ history                   Show recent eval runs and per-scenario pass-rate   │
 │                           over time.                                         │
+│ page                                                                         │
 │ list                      List discovered eval scenarios as a table or one   │
 │                           name per line.                                     │
 │ run                       Run one scenario by name, or all scenarios when no │
@@ -2290,6 +2321,17 @@ Usage: t3 eval history [OPTIONS]
 │ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
 │                                 for its model, then show history.            │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval page`
+
+```
+Usage: t3 eval page [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --out         PATH  Write the results page to this path.                     │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7435,7 +7477,7 @@ Usage: t3 directive history [OPTIONS]
 ```
 Usage: t3 peer [OPTIONS] COMMAND [ARGS]...
 
- The loopback forwards the Compare Instances page reads its peers through.
+ Open a peer dashboard to sign in and download a comparison snapshot.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7539,15 +7581,14 @@ Usage: t3 peer open [OPTIONS] NAME
 ```
 Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 
- This box's settings beside its peers' — the Compare Instances page, in a
- terminal.
+ Compare this instance's settings with imported peer snapshots.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ compare  What differs between this box and its peers, and whether it can be  │
-│          read as drift.                                                      │
+│ compare  What differs between this box and imported peers, and whether it is │
+│          drift.                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7563,9 +7604,8 @@ Usage: t3 settings compare [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
-│                          repeatable. A record reaches what a tunnel cannot:  │
-│                          a box whose forward is down, a box that is gone,    │
-│                          and this box as it stood earlier.                   │
+│                          repeatable. Import a capture from each peer to      │
+│                          compare it with this instance.                      │
 │ --kind            TEXT   Show only these difference kinds, repeatable:       │
 │                          values, override, code. Default shows all three.    │
 │ --timeout         FLOAT  Seconds to wait for each peer, overriding its       │
@@ -12163,7 +12203,7 @@ Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree checking show [OPTIONS]
 
- Print a terse, grouped, clickable report of changes since the last check.
+ Reconcile owner questions and print changes since the last check.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --since               TEXT  ISO timestamp override for the window start      │
@@ -12267,9 +12307,10 @@ Usage: t3 teatree waiting [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree waiting list [OPTIONS]
 
- List everything currently waiting on the user.
+ List owner decisions, or the full factory inventory with --all.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all                  Include internal merge, review, and manual waits.     │
 │ --overlay        TEXT  Scope merge/review entries to this overlay (default:  │
 │                        all).                                                 │
 │ --json                 Emit the entries as JSON instead of the table view.   │
@@ -12850,8 +12891,9 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
-│ partial-merge-report         List merged tickets whose open issue has a      │
-│                              declared remainder.                             │
+│ partial-merge-report         List settled tickets whose issue is still open. │
+│ unsettle                     Reopen a settled ticket whose issue has an open │
+│                              remainder.                                      │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13455,10 +13497,28 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ```
 Usage: t3 teatree ticket partial-merge-report [OPTIONS]
 
- List merged tickets whose open issue has a declared remainder.
+ List settled tickets whose issue is still open.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket unsettle`
+
+```
+Usage: t3 teatree ticket unsettle [OPTIONS] TICKET_ID
+
+ Reopen a settled ticket whose issue has an open remainder.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT  Name open work when the PR declared no remainder.     │
+│ --dry-run              Check without changing the ticket.                    │
 │ --json                 Emit machine-readable JSON.                           │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -14835,6 +14895,9 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ reachability  Report which automated resolvers can decide each pending       │
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
+│ coordinate    Reuse an exact owner answer for a pending architecture         │
+│               question.                                                      │
+│ measure       Count mirrored owner cards by day and decision kind.           │
 │ dismiss       Dismiss a pending question without answering it.               │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
@@ -14872,14 +14935,15 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │                              carrying it is returned unchanged.              │
 │ --decision             TEXT  Only for a decision the owner alone makes:      │
 │                              credentials, money_or_plan, public_post,        │
-│                              irreversible, product_scope, architecture.      │
-│                              Absent: internal.                               │
+│                              irreversible, architecture. Absent: internal.   │
 │ --checked              TEXT  A fact you checked before asking; repeat per    │
 │                              fact. Required with --decision.                 │
 │ --why                  TEXT  One sentence the owner reads: why you ask.      │
 │                              Required with --decision.                       │
 │ --blocker              TEXT  What stops you deciding; kept for operators,    │
 │                              never shown to the owner.                       │
+│ --proposed-text        TEXT  Exact proposed wording for a rules-file change; │
+│                              shown on the card.                              │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -14948,12 +15012,46 @@ Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree questions coordinate`
+
+```
+Usage: t3 teatree questions coordinate [OPTIONS] QUESTION_ID TEXT
+
+ Reuse an exact owner answer for the same architecture question from an
+ operator session.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    question_id      INTEGER  [required]                                    │
+│ *    text             TEXT     The exact recorded owner answer. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --basis        INTEGER  The owner-answered question to cite. [required]   │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions measure`
+
+```
+Usage: t3 teatree questions measure [OPTIONS]
+
+ Count the owner cards that have a Slack mirror, grouped by creation day and
+ kind.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --days        INTEGER  Count cards created in the last N days. [default: 7]  │
+│ --json                 Emit daily kind counts as JSON.                       │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree questions dismiss`
 
 ```
 Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 
- Dismiss pending questions without answering them.
+ Dismiss pending questions without answering them; live owner limits require a
+ direct owner command.
 
  Takes MANY ids because a backlog is dismissed by the class, not one at a
  time. A containerized invocation costs a round-trip of its own, so clearing
@@ -15074,6 +15172,7 @@ Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 │         history.                                                             │
 │ post    Post, token routed by destination (self-DM→bot,                      │
 │         colleague/channel→xoxp); exit 0 on ``ok``.                           │
+│ reply   Reply in an existing owner thread with an idempotency key.           │
 │ react   React, token routed by destination (self-DM→bot,                     │
 │         colleague/channel→xoxp); exit 0 on ``ok``.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -15195,6 +15294,24 @@ Usage: t3 teatree notify post [OPTIONS]
 │ --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay       │
 │                          credentials).                                       │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify reply`
+
+```
+Usage: t3 teatree notify reply [OPTIONS] BODY
+
+ Post a deduped answer in the owner's existing Slack thread.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    body      TEXT  Slack mrkdwn reply body. [required]                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --idempotency-key        TEXT  Required dedupe key. [required]            │
+│ *  --thread-ts              TEXT  Owner DM thread to reply into. [required]  │
+│    --user-id                TEXT  Slack user id to DM.                       │
+│    --help                         Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

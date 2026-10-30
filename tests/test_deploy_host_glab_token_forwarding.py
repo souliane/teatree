@@ -178,7 +178,7 @@ class TestNoHostLoginChangesNothing:
         assert forwarded["T3_OVERLAY_NAME"] == "demo-overlay"
         # Exact on the NAME set, not the values: TEATREE_DEPLOY_CHECKOUT is the
         # wrapper's own export, and an unresolvable glab must add nothing beyond it.
-        assert set(forwarded) == {"T3_OVERLAY_NAME", "TEATREE_DEPLOY_CHECKOUT"}
+        assert set(forwarded) == {"T3_OVERLAY_NAME", "TEATREE_DEPLOY_CHECKOUT", "TEATREE_VERIFY_GITLAB_TOKEN"}
 
 
 class TestTheCredentialNeverReachesATrace:
@@ -219,6 +219,7 @@ class TestExportedTokenWins:
         exported = "stub-operators-own-choice"
         forwarded = _invoke(tmp_path, with_glab=True, env_overrides={"GITLAB_TOKEN": exported})
         assert forwarded["GITLAB_TOKEN"] == exported
+        assert forwarded["TEATREE_VERIFY_GITLAB_TOKEN"] == "1"
 
     def test_exported_token_skips_the_glab_call(self, tmp_path: Path) -> None:
         # An operator's stated choice is authoritative, so there is nothing to

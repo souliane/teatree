@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from django.db import transaction
 from django.http import HttpResponse
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.core.models.task import Task
@@ -17,6 +16,7 @@ from teatree.core.models.transition import TicketTransition
 from teatree.dash.task_actions import enqueue_buttons
 from teatree.dash.ticket_detail import legal_transition_names
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 
@@ -58,7 +58,7 @@ class TicketTransitionPostTestCase(TestCase):
         assert any("action=ticket:scope" in line for line in logs.output)
 
     def test_csrf_is_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         resp = csrf_client.post(self.url, {"action": "scope"})
         assert resp.status_code == 403
 
@@ -315,7 +315,7 @@ class TaskEnqueuePostTestCase(TestCase):
         assert response.status_code == 404
 
     def test_csrf_is_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         assert csrf_client.post(self.url, {"phase": "reviewing"}).status_code == 403
 
     def test_a_get_is_refused(self) -> None:

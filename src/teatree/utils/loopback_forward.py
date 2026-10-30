@@ -1,9 +1,9 @@
 """A loopback-only TCP forward from a fixed host port into the admin process.
 
-The admin container uses host networking and gunicorn binds ``127.0.0.1:8000``.
-:class:`~teatree.core.middleware.LocalAdminAutoLoginMiddleware` authenticates a request
-only when its real peer is loopback. The dashboard forward presents a stable URL on
-another host loopback port and bridges through ``docker exec -i``, preserving that peer.
+The admin container uses host networking and gunicorn binds ``127.0.0.1:8000``. The dashboard
+forward presents a stable URL on another host loopback port and bridges each accepted
+connection through ``docker exec -i`` without publishing the admin port. Dashboard access still
+requires a staff session.
 
 TWO VENUES REACH THIS, and only one of them can bind a host port. A native ``t3 admin``
 binds ``127.0.0.1`` on the host directly. The containerized CLI (``deploy/t3``) cannot —

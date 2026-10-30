@@ -25,6 +25,10 @@
       "summary": "Push retro improvements to a branch, open a PR, and optionally create upstream issues"
     },
     {
+      "name": "coordinating",
+      "summary": "Operating instructions for the coordinator, the agent that keeps the TeaTree factory moving on any harness with no chat needed: watch the factory and handle BLOCKING abnormalities first, unblock by review and merge, drain stranded work, answer owner cards and agent asks from recorded decisions inside the owner's four limits, file and enqueue what it finds instead of implementing, and reach other agents over the mailbox both ways. Load it when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks, when a PR or task is stuck, when work sits uncommitted, unpushed or unmerged, or when a request must be filed rather than built"
+    },
+    {
       "name": "debug",
       "summary": "Troubleshooting and fixing \u2014 something is broken, find and fix it"
     },
@@ -58,7 +62,7 @@
     },
     {
       "name": "interactive",
-      "summary": "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`"
+      "summary": "Shared Claude Code and Codex contract for an attended TeaTree session: it carries every duty of `t3:coordinating` (factory watch, unblocking, owner cards, filing and enqueuing, the mailbox) and adds what only a session with a person at the keyboard needs \u2014 no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`"
     },
     {
       "name": "internals",

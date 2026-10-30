@@ -38,6 +38,7 @@ SECRET_SETTINGS: frozenset[str] = frozenset(
     {
         "banned_term_registry",
         "github_token_pass_key",
+        "operator_oauth_apps",
         "private_repos",
         "slack_token_ref",
         "user_token_ref",

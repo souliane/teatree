@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from teatree.backends.forge_pool import forge_connections
+from teatree.backends.gitlab.api import GitLabOAuthAPI
 from teatree.backends.gitlab.http_client import GitLabHTTPClient
 from teatree.config import cold_reader
 from teatree.config.cold_reader import SettingRead
@@ -47,6 +48,18 @@ def test_get_uses_only_matching_project_read_token(
     GitLabHTTPClient(token="CLIENT").get_json(endpoint)
 
     assert request.call_args.kwargs["headers"] == {"PRIVATE-TOKEN": expected}
+
+
+def test_oauth_client_sends_bearer_header_and_ignores_project_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    read_setting = MagicMock(return_value=SettingRead(value={"42": "project-entry"}, readable=True))
+    monkeypatch.setattr(cold_reader, "read_setting_confirmed", read_setting)
+    request = MagicMock(return_value=_response())
+    monkeypatch.setattr(httpx.Client, "get", request)
+
+    GitLabOAuthAPI(token="OAUTH").get_json("projects/42/merge_requests")
+
+    assert request.call_args.kwargs["headers"] == {"Authorization": "Bearer OAUTH"}
+    read_setting.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ class ForgeServer(ThreadingHTTPServer):
         self.links: dict[str, str] = {}
         self.statuses: dict[str, int] = {}
         self.payloads: dict[str, object] = {}
+        self.response_headers: dict[str, dict[str, str]] = {}
         self.drop_when: Callable[[int], bool] = lambda _served: False
         self.delay_seconds = 0.0
 
@@ -62,6 +63,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if link := server.links.get(self.path):
             self.send_header("Link", link)
+        for name, value in server.response_headers.get(self.path, {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 

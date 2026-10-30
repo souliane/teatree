@@ -3,12 +3,12 @@
 import re
 from pathlib import Path
 
-from django.test import TestCase
 from django.urls import reverse
 
 import teatree.dash
 from teatree.core.models import PullRequest, Ticket
 from teatree.dash.ticket_detail import build_ticket_detail
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _ISSUE_URL = "https://github.com/souliane/teatree/issues/3624"
 

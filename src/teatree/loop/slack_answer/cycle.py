@@ -43,8 +43,7 @@ A fresh dispatch posts no prose (#1155 — the reaction carries it), while a
 request that is already covered DOES post, because "task 42 has this" is
 information the owner does not otherwise have and is what stops him waiting.
 
-Per-unit ``try/except`` so one bad unit never blocks the rest. This is a
-management-command body — it never loads the fat skill stack.
+Per-unit ``try/except`` keeps one bad unit from blocking the rest.
 """
 
 import datetime as dt
@@ -52,13 +51,16 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from django.db.models import Exists, OuterRef, Subquery
+
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
-from teatree.loop.owner_identity import owner_rows
+from teatree.loop.owner_identity import operator_rows
 from teatree.loop.question_binding import (
     AmbiguousCards,
     BoundAnswer,
@@ -66,7 +68,10 @@ from teatree.loop.question_binding import (
     bind_reply,
     log_coalesced_replies,
 )
+from teatree.loop.slack_answer.card_discussion import UNROUTED_AUDIT_ACTION, route_card_result
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
+from teatree.loop.slack_answer.delivery import _handle_simple
+from teatree.loop.slack_answer.foreign_operator import ForeignHandlers, handle_foreign_question
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
 from teatree.loop.slack_answer.session_routing import (
@@ -75,17 +80,10 @@ from teatree.loop.slack_answer.session_routing import (
     _live_receipt,
     _mark_unit_loop_replied,
     _post_live_reply,
-    _reject_foreign_unit,
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
-from teatree.loop.slack_answer.simple_answer import (
-    NEEDS_WORK_SENTINEL,
-    build_simple_answer,
-    is_status_question,
-    status_binding_reader,
-    ticket_status_answer,
-)
+from teatree.loop.slack_answer.simple_answer import is_status_question, status_binding_reader
 from teatree.loop.slack_answer.thread_readback import bot_reply_match_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
@@ -171,75 +169,8 @@ def _handle_noted(backend: MessagingBackend, unit: _Unit) -> bool:
     return True
 
 
-def _handle_simple(backend: MessagingBackend, unit: _Unit, binding: ThreadBinding | None = None) -> str:
-    """SIMPLE path: resolve-root, dedup, post, readback-verify, stamp.
-
-    Returns an outcome tag: ``"simple"`` — answered & whole unit stamped;
-    ``"needs_work"`` — Stage B bailed (delegate); ``"retry"`` —
-    post/readback failed (or a rival cycle owns the unit), left for next cycle.
-
-    Claim -> post -> release-on-failure, the same discipline
-    :func:`_handle_noted` and :func:`_orchestrate` hold: the unit's CAS is taken
-    BEFORE the post, so a concurrent cycle that lost it cannot post a second copy
-    of the same answer. It is released on any post/read-back failure, and the
-    thread-root dedup below then finds a reply that DID land, so a released unit
-    is re-stamped rather than answered twice.
-
-    The thread ROOT (resolved from the user-message ts via #2061's
-    helper) is the single key used for both the pre-post dedup and the
-    post-delivery verification. A reply re-parents to the root, so keying
-    either read on the user-message ts (which may be a non-root reply)
-    would miss the reply — the bug this path fixes (duplicate answer +
-    false "undelivered" verdict). The dedup short-circuit makes the post
-    idempotent across cooperating answerers that do not share the
-    ``mark_loop_replied`` CAS (#2061's cross-agent duplicate incident).
-    """
-    answer = (
-        ticket_status_answer(binding.ticket)
-        if binding is not None and is_status_question(unit.text)
-        else build_simple_answer(unit.lead)
-    )
-    if answer is None or answer == NEEDS_WORK_SENTINEL:
-        return "needs_work"
-    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE):
-        return "retry"
-    try:
-        thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
-        floor = unit.rows[-1].slack_ts
-        matched_ts = bot_reply_match_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor)
-        if matched_ts is None:
-            post = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
-            posted_ts = post.get("ts")
-            matched_ts = (
-                bot_reply_match_in_thread(
-                    backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
-                )
-                if post.get("ok") is True and isinstance(posted_ts, str)
-                else None
-            )
-            if matched_ts is None:
-                _unmark_unit_loop_replied(unit)
-                return "retry"
-        record_ticket_thread_post(unit.channel, thread_root, matched_ts)
-    except Exception:
-        _unmark_unit_loop_replied(unit)
-        raise
-    for row in unit.rows:
-        row.observe_confirmed_loop_reply()
-    _react_done(backend, unit)
-    return "simple"
-
-
 def _react_done(backend: MessagingBackend, unit: _Unit) -> None:
-    """React ✅ DONE — reachable ONLY once the answer is verified visible.
-
-    This is the single call site of the completion emoji in the cycle, which is
-    what makes "nothing is marked complete that was not" a structural property
-    rather than a convention: every other route reaches for
-    :attr:`~teatree.loop.slack_answer.vocabulary.InboundReaction.NOTED` or
-    ``IN_FLIGHT``. A failure to place it is logged and swallowed — the answer is
-    already delivered, and retrying the whole unit would post it twice.
-    """
+    """A failed reaction cannot retry an answer that already landed."""
     try:
         backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.DONE)
     except Exception as exc:  # noqa: BLE001 — the answer landed; a missing emoji never re-posts it
@@ -315,6 +246,7 @@ def _dispatch_or_report(
                 coalesced_ts=coalesced,
                 text=unit.text,
                 thread_root=unit.lead.thread_ts,
+                sender_id=unit.lead.user_id,
             ),
         )
     reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
@@ -385,7 +317,12 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, bound: BoundA
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
         return False
-    if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
+    try:
+        applied = apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    if not applied:
         _unmark_unit_loop_replied(unit)
         return False
     parked_task = bound.question.parked_task
@@ -448,7 +385,13 @@ def _process_unit(
         if unit.lead.thread_ts
         else None
     )
-    if _reject_foreign_unit(backend, unit, report):
+    if handle_foreign_question(
+        backend,
+        unit,
+        report,
+        reader,
+        ForeignHandlers(binding, _react_eyes_once, _route_unbound, _answer_or_acknowledge_question),
+    ):
         return
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
@@ -461,13 +404,15 @@ def _process_unit(
     log_coalesced_replies(unit.rows, result)
     bound = result if isinstance(result, BoundAnswer) else None
     if status_request and bound is None:
-        if _handle_simple(backend, unit, binding) == "simple":
+        if _handle_simple(backend, unit, binding, on_done=_react_done) == "simple":
             report.answered_simple += 1
-        return
-    if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
     if _handle_priority(
         backend, unit, report, binding, eligible=bound is None and not isinstance(result, AmbiguousCards)
+    ):
+        return
+    if route_card_result(backend, unit, result, report) or (
+        isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result)
     ):
         return
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
@@ -493,7 +438,7 @@ def _route_unbound(
             report.acked += 1
         return
     if reading.intent is InboundIntent.QUESTION and reading.answerable:
-        outcome = _handle_simple(backend, unit, binding)
+        outcome = _handle_simple(backend, unit, binding, on_done=_react_done)
         if outcome == "simple":
             report.answered_simple += 1
             return
@@ -525,8 +470,18 @@ def run_slack_answer_cycle(
     resolved_reader = reader or read_inbound
     report = SlackAnswerReport()
 
-    rows = list(owner_rows(PendingChatInjection.loop_unreplied(), resolver)[:_BATCH])
-    units = _coalesce(rows)
+    unrouted_audit = DeferredQuestionAudit.objects.filter(
+        action=UNROUTED_AUDIT_ACTION,
+        note=OuterRef("slack_ts"),
+        question__slack_channel=OuterRef("channel"),
+    )
+    queue = operator_rows(PendingChatInjection.loop_unreplied(), resolver).annotate(
+        unrouted_audited=Exists(unrouted_audit),
+        unrouted_tried_at=Subquery(unrouted_audit.order_by("-resolved_at").values("resolved_at")[:1]),
+    )
+    rows = list(queue.filter(unrouted_audited=False)[:_BATCH])
+    retries = list(queue.filter(unrouted_audited=True).order_by("unrouted_tried_at", "received_at")[:_BATCH])
+    units = [*_coalesce(rows), *_coalesce(retries)]
     for unit in units:
         report.processed += len(unit.rows)
         try:

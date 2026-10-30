@@ -18,7 +18,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (READ-ONLY — never starts work, never transitions a ticket, never posts), then advances per-overlay markers. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` reconciles pending owner questions against recorded answers, then prints a terse, grouped, clickable report of important changes since the user's last check and advances per-overlay markers. That reconciliation can close exact repeats and resume their parked tasks. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -26,7 +26,7 @@ The user does NOT want a long report. Answer first; one idea per line.
 
 Load `/t3:checking` when the user wants a quick "what happened while I was away?" — phrasings like "what did I miss", "catch me up", "what changed since" — or when they want to answer the backlog from here ("ask me the questions", "shoot me the questions").
 
-The catch-up report stays read-only. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
+The report gatherer stays read-only; the command's prior reconciliation can write question and task rows. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
 
 ## Walking the owner waits (no mode flip)
 
@@ -56,7 +56,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
+- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Triage suggestions`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
 - Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
@@ -66,7 +66,8 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
-- **Needs you** — all four live `gather_waiting` kinds, oldest first and not window-bounded, then failed `TaskAttempt` runs excluding operator cancellations. Question items carry their row id and subject link; each wait carries its kind, age in days and owner-only flag. Internal escalations are a separate count and trailing terse line, not Needs you items. The waiting gather runs once for the whole default report, so a global question never appears twice. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
+- **Needs you** — unresolved cards for the four owner limits or an architecture decision, oldest first and not window-bounded. Question items carry their row id and subject link; each carries its age in days and owner-only flag. Failed runs, review waits, merge waits, manual waits and internal escalations stay in the factory inventory. The owner waiting gather runs once for the whole default report, so a global question never appears twice.
+- **Triage suggestions** — PENDING recommendations from the assessor, shown for review without adding owner decisions to Needs you.
 - **Metered** — one row per ticket with metered attempts inside the window, overlay-scoped, with attempt count and total cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
 - **Remaining** — live PR and active pre-PR steps, a global queue by phase with oldest pending age and phase and admission seats, held tickets with reasons, and per-item and total ETA ranges. Rows run Total, Queue, open PRs, pre-PR tickets, then held tickets. A dormant count alone still renders Total and Queue. The range sums median and p80 of completed-task durations (`Task.admitted_at` to the last real `TaskAttempt.ended_at`), merge CLEAR-to-audit spans, and merge-to-delivered spans. Each duration names its source, sample count, and 24h or 7d window. Sparse steps use the slowest measured median and p80 sources as named defaults; fewer than five samples in every source yield `ETA unknown` with no numeric default. Running steps use only samples that outlast elapsed time, widening from 24h to 7d for the same measured step when recent samples have no survivors; sparse defaults are reselected after that filter and name their window. Total and Queue are fixed meta rows, so the cap and `total` count only work rows. A merge-safe pass is compared with the newest recorded review head, not the PR live head: a later push without a new verdict can make Remaining omit review steps. Remaining is a snapshot, independent of `--since` and checkpoints, and never enters the `--notify` recap hash or DM. `--json` carries the same item details and figures.
 
@@ -181,7 +182,7 @@ Keep references clickable when surfacing them to the user — link a ticket/PR i
 
 ## The daily follow-up routine
 
-Fetch all "Not started" issues assigned to the current user, then implement each one sequentially using the full delivery cycle (code, test, push, PR) — the cycle itself is the single one documented in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Workflow. Interactive followup runs that cycle in the main conversation; see § Rules for the sequential-only constraint and how it relates to the batch-mode singleton sub-agent exception.
+Fetch all "Not started" issues assigned to the current user, then implement each one sequentially using the full delivery cycle (code, test, push, PR) — the cycle itself is the single one documented in [`../wip/SKILL.md`](../wip/SKILL.md) § Workflow. Interactive followup runs that cycle in the main conversation; see § Rules for the sequential-only constraint and how it relates to the batch-mode singleton sub-agent exception.
 
 ### Periodic Mode
 
@@ -289,7 +290,7 @@ If the project uses an external tracker (e.g., Notion), update the ticket status
 
 If not found in the external tracker, log a warning but continue — not all tickets have an entry.
 
-**b. Run the full per-ticket delivery cycle.** The delivery cycle (intake → implementation → testing → delivery) is documented once in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Workflow and is not restated here — followup runs the same cycle. The two skills differ only in how the cycle is hosted: batch mode delegates each ticket to a singleton delivery sub-agent (its § Rules "Singleton delivery sub-agent" exception), whereas interactive followup runs the cycle in the main conversation per the constraint in § Rules below.
+**b. Run the full per-ticket delivery cycle.** The delivery cycle (intake → implementation → testing → delivery) is documented once in [`../wip/SKILL.md`](../wip/SKILL.md) § Workflow and is not restated here — followup runs the same cycle. The two skills differ only in how the cycle is hosted: batch mode delegates each ticket to a singleton delivery sub-agent (its § Rules "Singleton delivery sub-agent" exception), whereas interactive followup runs the cycle in the main conversation per the constraint in § Rules below.
 
 **c. Report result** before moving to the next ticket:
 
@@ -429,15 +430,11 @@ Internally the command:
 
 **During long sessions:** Also re-run data sync after significant events (ticket completed, PR pushed, context switch) — don't wait for the next explicit `/t3:checking` invocation.
 
-### `followup.json` Schema
-
-See [`references/followup-schema.md`](references/followup-schema.md) for the full cache schema at `$T3_DATA_DIR/followup.json`.
-
 ### Rules
 
 #### Interactive mode (default)
 
-- **Sequential only.** Interactive followup runs each ticket's delivery cycle in the main conversation and does not delegate ticket implementation to sub-agents — the [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations" default applies here. The batch-mode singleton delivery sub-agent (the explicit exception documented in that same section and in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Rules) is the deliberate carve-out for unattended batch runs, not for interactive followup; the two are not in conflict because they apply to different hosting modes.
+- **Sequential only.** Interactive followup runs each ticket's delivery cycle in the main conversation and does not delegate ticket implementation to sub-agents — the [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations" default applies here. The batch-mode singleton delivery sub-agent (the explicit exception documented in that same section and in [`../wip/SKILL.md`](../wip/SKILL.md) § Rules) is the deliberate carve-out for unattended batch runs, not for interactive followup; the two are not in conflict because they apply to different hosting modes.
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.

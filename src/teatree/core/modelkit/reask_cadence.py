@@ -7,7 +7,7 @@ from teatree.core.modelkit.fibonacci import fibonacci_bump_index
 #: The unit of the per-question bump schedule: 1, 2, 4, 7, 12 … hours after the first post.
 REASK_UNIT = dt.timedelta(hours=1)
 
-#: The owner is never pinged from 22:00 until 08:00 in their own zone.
+#: Re-asks wait from 22:00 until 08:00 in the owner's zone; first cards post immediately.
 OWNER_QUIET_FROM = dt.time(22, 0)
 OWNER_QUIET_UNTIL = dt.time(8, 0)
 
@@ -31,7 +31,7 @@ def bump_due(first_posted_at: dt.datetime, *, now: dt.datetime) -> int:
 
 
 def owner_quiet_at(local_time: dt.time) -> bool:
-    """Whether *local_time* (in the owner's zone) lies in the window nothing is sent in."""
+    """Whether *local_time* (in the owner's zone) lies in the re-ask hold window."""
     return local_time >= OWNER_QUIET_FROM or local_time < OWNER_QUIET_UNTIL
 
 

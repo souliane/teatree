@@ -45,7 +45,7 @@ def _is_dm(event: dict) -> bool:
 
 def _is_colleague_dm(overlay: str, event: dict) -> bool:
     recorder = _dm_recorder(overlay) if _is_dm(event) else None
-    return recorder is not None and not recorder.is_from_owner(event)
+    return recorder is not None and not recorder.is_from_operator(event)
 
 
 def record_slack_dm(overlay: str, event: dict) -> bool:

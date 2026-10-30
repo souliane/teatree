@@ -429,6 +429,8 @@ t3 mutation run                 # scoped mutation testing — mutate only the hi
 t3 hook run <name> [args...]    # run a packaged portable repo-quality gate by name (module-health, no-silent-skip, broad-except, test-shape, test-path-mirror, refuse-main-clone-commit) — no teatree.__file__ shim; `t3 hook list` names them. A consuming repo wires them via `entry: t3 hook run <name>` or pins `repo: <teatree-url>` against the root .pre-commit-hooks.yaml
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
+t3 login github|gitlab           # open the operator OAuth sign-in through the running admin; an administrator must first invite the forge account
+t3 logout github|gitlab [--user NAME]  # revoke an operator's forge grant and remove its stored tokens
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 browser open|act|inspect|close  # drive one headless Playwright browser held open per worktree: each step prints the page's console messages, page errors, failed requests and HTTP errors; `inspect` also saves the accessibility snapshot, HTML and a screenshot (`--json` on every step)
@@ -540,7 +542,13 @@ non-interactively when absent and printing its generated password (override via
 `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and opens the browser at `/admin/`
 (`--no-browser` to skip; `--host` / `--port` to override). The admin binds to the
 same teatree database every other `t3` command reads, so no overlay context is
-needed.
+needed. With several superusers, the browser opens the sign-in page to choose an account.
+
+For forge sign-in, an existing administrator first adds the operator's GitHub or
+GitLab account to their user record in the admin. `t3 login github` or
+`t3 login gitlab` then opens OAuth sign-in; an uninvited account is refused.
+The grant is stored encrypted for that operator, and `t3 logout <forge>` revokes
+and removes it (`--user` selects a grant when several operators are registered).
 
 ### 2. Loop & Statusline
 
@@ -777,6 +785,7 @@ graph LR
 | `checking` | The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
+| `coordinating` | Operating instructions for the coordinator, the agent that keeps the TeaTree factory moving on any harness with no chat needed: watch the factory and handle BLOCKING abnormalities first, unblock by review and merge, drain stranded work, answer owner cards and agent asks from recorded decisions inside the owner's four limits, file and enqueue what it finds instead of implementing, and reach other agents over the mailbox both ways. Load it when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks, when a PR or task is stuck, when work sits uncommitted, unpushed or unmerged, or when a request must be filed rather than built. |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `directive` | Submit a plain-English directive about how teatree itself should behave — captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline |
 | `dogfooding` | Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees |
@@ -785,7 +794,7 @@ graph LR
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
-| `interactive` | Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`. |
+| `interactive` | Shared Claude Code and Codex contract for an attended TeaTree session: it carries every duty of `t3:coordinating` (factory watch, unblocking, owner cards, filing and enqueuing, the mailbox) and adds what only a session with a person at the keyboard needs — no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`. |
 | `internals` | How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`. |
 | `mode` | The operating mode — one of five named presets (present / afk / maintenance / token-outage / off) deciding which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |

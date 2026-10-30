@@ -945,6 +945,13 @@ assert_core_source() {
     }
 }
 
+if [ "$ROLE" != init ] && [ -n "${GITLAB_TOKEN:-}" ]; then
+    "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m teatree.hooks.bot_push_gate --verify-ambient || {
+        echo "entrypoint: withholding an unverified runtime GitLab token; declare the bot identity before enabling GitLab writes" >&2
+        unset GITLAB_TOKEN TEATREE_GITLAB_TOKEN
+    }
+fi
+
 case "$ROLE" in
 init)
     init_preflight

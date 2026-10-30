@@ -949,7 +949,7 @@ class TestBoundTicketThread(TestCase):
             task_session=parked.session,
             card=_FREE_TEXT_CARD,
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend()
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
         client = Mock(unreachable={})
@@ -980,7 +980,7 @@ class TestBoundTicketThread(TestCase):
             task_session=parked.session,
             card=_FREE_TEXT_CARD,
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend(read_after_post=False)
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
         client = Mock(unreachable={})
@@ -1016,7 +1016,7 @@ class TestBoundTicketThread(TestCase):
             task_session=parked.session,
             card=_FREE_TEXT_CARD,
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
         client = Mock(unreachable={})
@@ -1046,7 +1046,7 @@ class TestBoundTicketThread(TestCase):
         question = DeferredQuestion.record(
             "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend()
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
         client = Mock(unreachable={})
@@ -1075,7 +1075,7 @@ class TestBoundTicketThread(TestCase):
         question = DeferredQuestion.record(
             "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
 
@@ -1217,7 +1217,7 @@ class TestBoundTicketThread(TestCase):
         question = DeferredQuestion.record(
             "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
-        row = self._message("Use the new API")
+        row = self._message("Answer: Use the new API")
         backend = RecordingBackend()
         backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
         client = Mock(unreachable={})

@@ -11,7 +11,6 @@ from typing import cast
 
 import pytest
 from django.db import connection
-from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -19,6 +18,7 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.dash.ticket_detail import build_ticket_detail
 from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 

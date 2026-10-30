@@ -18,7 +18,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree import answer_handback
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -64,6 +64,23 @@ class TestDedupeMarker:
 
 
 class TestDeferredQuestionRecord:
+    def test_record_keeps_a_new_credential_decision_with_a_distinct_marker_pending(self) -> None:
+        card = dataclasses.replace(
+            owner_card(OwnerDecision.CREDENTIALS), subject="https://github.com/acme/widgets/issues/42"
+        )
+        first = DeferredQuestion.record(
+            "May I use the approved test route?", card=card, dedupe_marker="test-route:first"
+        )
+        assert first.apply_answer("Use the approved route.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        repeated = DeferredQuestion.record(
+            "May I use the approved test route?", card=card, dedupe_marker="test-route:second"
+        )
+
+        assert repeated.pk != first.pk
+        assert repeated.is_pending
+        assert DeferredQuestion.objects.count() == 2
+
     def test_record_creates_a_pending_row(self) -> None:
         row = DeferredQuestion.record(
             "Should I proceed with the refactor?",
@@ -99,7 +116,7 @@ class TestDeferredQuestionAudience:
         assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert row.evidence == {}
 
-    @pytest.mark.parametrize("decision", list(OwnerDecision))
+    @pytest.mark.parametrize("decision", OWNER_RAISABLE_DECISIONS)
     def test_a_named_decision_makes_an_owner_row(self, decision: OwnerDecision) -> None:
         row = DeferredQuestion.record("Ship it?", card=owner_card(decision, "the issue is silent"))
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
