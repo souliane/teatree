@@ -6,10 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from teatree.backends.slack import receiver
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import OperatorIdentity, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
@@ -147,6 +148,17 @@ class TestDrainedDmsAreRecorded(TestCase):
         assert [signal.payload["ts"] for signal in signals] == [_HUMAN_DM_TS]
         assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [_HUMAN_DM_TS]
         assert not self.queue.exists()
+
+    def test_registered_operators_drained_dm_is_recorded_after_live_record_failure(self) -> None:
+        operator = get_user_model().objects.create_superuser("operator", email="", password=None)
+        OperatorIdentity.objects.create(user=operator, platform="slack", handle="U_OPERATOR")
+        event = {**_HUMAN_DM, "user": "U_OPERATOR"}
+        self._enqueue(event)
+
+        signals = SlackMentionsScanner(backend=FakeMessaging(), overlay="demo").scan()
+
+        assert [signal.payload["ts"] for signal in signals] == [_HUMAN_DM_TS]
+        assert PendingChatInjection.objects.get(slack_ts=_HUMAN_DM_TS).user_id == "U_OPERATOR"
 
     def test_a_failed_card_thread_read_is_retained_while_another_dm_records(self) -> None:
         card = DeferredQuestion.record("Can I ship?", card=OWNER_CARD, slack_channel="D1", slack_ts="100.2")

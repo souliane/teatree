@@ -1,5 +1,5 @@
 # test-path: cross-cutting — drives deploy/t3 (no src mirror).
-"""``deploy/t3`` owns the last two steps of ``t3 admin`` / ``t3 dashboard``.
+"""``deploy/t3`` owns the last two steps of operator browser commands.
 
 The CLI runs inside the stack. The image carries no browser and no ``$BROWSER``, and the
 CLI's own ``127.0.0.1`` is the CONTAINER's — so it can neither open the operator's browser
@@ -48,8 +48,8 @@ class TestTheBrowserHandoffIsSingleSourced:
         assert "8000" not in handoff
 
 
-class TestOnlyTheTwoBrowserVerbsTakeTheHostHop:
-    @pytest.mark.parametrize("verb", ["admin", "dashboard"])
+class TestBrowserVerbsTakeTheHostHop:
+    @pytest.mark.parametrize("verb", ["admin", "dashboard", "login"])
     def test_the_page_verbs_are_routed_to_the_host(self, wrapper: str, verb: str) -> None:
         assert verb in _body(wrapper, "wants_host_browser()")
 
@@ -63,6 +63,11 @@ class TestAnUnreachableUrlIsRefused:
         hop = _body(wrapper, "dispatch_then_open_browser()")
         assert "curl" in hop
         assert "refuse_unreachable_admin" in hop
+
+    def test_reachability_probe_does_not_consume_single_use_login_link(self, wrapper: str) -> None:
+        hop = _body(wrapper, "dispatch_then_open_browser()")
+        assert 'curl --fail --silent --output /dev/null --max-time 15 "$probe_url"' in hop
+        assert 'probe_url="${url%%/login/*}/admin/login/"' in hop
 
     def test_the_refusal_names_what_to_check(self, wrapper: str) -> None:
         refusal = _body(wrapper, "refuse_unreachable_admin()")

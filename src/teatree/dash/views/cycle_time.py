@@ -6,14 +6,12 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
 from teatree.dash.cycle_time import DEFAULT_WINDOW_DAYS, build_cycle_time_view, clamp_window_days
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import nav_context
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
-@require_loopback_or_staff
 @require_GET
 def cycle_time(request: "HttpRequest") -> "HttpResponse":
     """Aggregate distribution, per-transition trend, and one stacked bar per ticket."""

@@ -683,6 +683,12 @@ CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_
         unset GITLAB_TOKEN
     fi
 fi
+if [ -n "${TEATREE_VERIFY_GITLAB_TOKEN:-}" ] && [ -n "${GITLAB_TOKEN:-}" ]; then
+    "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m teatree.hooks.bot_push_gate --verify-ambient || {
+        echo "t3(container): refusing a GitLab token that is not a declared bot credential" >&2
+        exit 69
+    }
+fi
 exec "$@"'
 
 # Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
@@ -700,6 +706,7 @@ FORWARD_ENV_NAMES=(
     TEATREE_INVOCATION_CWD
     PYTEST_XDIST_AUTO_NUM_WORKERS
     GITLAB_TOKEN
+    TEATREE_VERIFY_GITLAB_TOKEN
     GITLAB_URL
     # The launcher `t3 setup` writes through the host-bin mount execs THIS
     # checkout's deploy/t3. An `exec` inherits the environment the stack came up
@@ -849,6 +856,8 @@ host_gitlab_token_from_pass() {
 # forwarded to the container too: the prologue holds the SAME fallback read, so
 # resolving nothing here would merely move the cost across the boundary.
 if needs_gitlab_credential "$@"; then
+    TEATREE_VERIFY_GITLAB_TOKEN=1
+    export TEATREE_VERIFY_GITLAB_TOKEN
     host_keybox_lock_is_clear
     if [ -z "${GITLAB_TOKEN:-}" ]; then
         # `|| refuse_...` runs in the PARENT: an assignment takes the substitution's
@@ -915,7 +924,7 @@ HOST_RUN_RUNNER="$HOST_RUN_DIR/runner.sh"
 
 wants_host_browser() {
     case "${1:-}" in
-    admin | dashboard) ;;
+    admin | dashboard | login) ;;
     *) return 1 ;;
     esac
     local arg
@@ -955,7 +964,7 @@ refuse_unreachable_admin() {
 dispatch_then_open_browser() {
     local route="$1"
     shift
-    local rc=0 url=""
+    local rc=0 url="" probe_url=""
     : >|"$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true
     if [ -n "$route" ]; then
         announce_route "$route"
@@ -971,7 +980,8 @@ dispatch_then_open_browser() {
         echo "deploy/t3: the CLI recorded no browse url — not opening a browser." >&2
         exit 1
     fi
-    if command -v curl >/dev/null 2>&1 && ! curl --silent --output /dev/null --max-time 15 "$url"; then
+    probe_url="${url%%/login/*}/admin/login/"
+    if command -v curl >/dev/null 2>&1 && ! curl --fail --silent --output /dev/null --max-time 15 "$probe_url"; then
         refuse_unreachable_admin "$url"
     fi
     open_host_browser "$url"

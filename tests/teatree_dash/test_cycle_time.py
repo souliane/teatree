@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import pytest
 from django.db.models.signals import post_save
-from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -37,6 +36,7 @@ from teatree.dash.cycle_time import (
 )
 from teatree.dash.views.base import NAV_ITEMS
 from tests.factories import PullRequestFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 MINUTE = 60.0

@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 import pytest
 from django.db import OperationalError
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import Loop, Mode, ModeSchedule
 from teatree.core.settings import seed_editing
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
@@ -87,8 +87,9 @@ class SeedWriteEndpointTestCase(TestCase):
         assert self.client.get(url, **_LOOPBACK).status_code == 405
 
     def test_a_non_loopback_caller_is_refused(self) -> None:
+        self.client.logout()
         url = reverse("dash:settings_seed_set", args=["loops", "review", "description"])
-        assert self.client.post(url, {"value": '"x"'}, REMOTE_ADDR="10.0.0.9").status_code == 403
+        assert self.client.post(url, {"value": '"x"'}, REMOTE_ADDR="198.51.100.9").status_code == 302
 
     def test_an_unexpected_database_failure_surfaces(self) -> None:
         with (

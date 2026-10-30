@@ -1,15 +1,14 @@
 """``t3 peer`` (``list`` / ``up`` / ``down`` / ``status`` / ``open``) — the peers' loopback forwards.
 
-The Compare Instances page reads each peer through a forward onto that box's own
-loopback-bound dashboard. It rendered the command and stopped there, so bringing one up was
-a paste-it-yourself step; these verbs are the missing execution.
+The operator can open each peer's loopback-bound dashboard through a forward, sign in,
+and download a snapshot for manual comparison. These verbs manage the forward.
 
 Every coordinate comes from the ``peer_instances`` registry — the peer's label is the only
 thing these commands ever echo, because the host it resolves to is precisely what must stay
 in config. Resolution happens here; opening is a HOST act, so it goes to the one runner in
 ``deploy/peer-forward.sh`` — directly on a native install, and through ``deploy/t3``'s host
 hop when this CLI is the containerized one, which can neither reach the transport's
-credentials nor bind the loopback the fetch means.
+credentials nor bind the host loopback.
 """
 
 import webbrowser
@@ -28,7 +27,7 @@ from teatree.core.host_hop.peer_forward import (
 peer_app = typer.Typer(
     name="peer",
     no_args_is_help=True,
-    help="The loopback forwards the Compare Instances page reads its peers through.",
+    help="Open a peer dashboard to sign in and download a comparison snapshot.",
 )
 
 _NAME_ARGUMENT = typer.Argument(None, help="Peer label from the registry; omit for every peer.")
@@ -78,7 +77,7 @@ def list_peers() -> None:
 
     peers = load_peer_instances()
     if not peers:
-        typer.echo("no peers are registered — set the `peer_instances` registry to compare against a box.")
+        typer.echo("no peers are registered — set the `peer_instances` registry to open a peer dashboard.")
         return
     for peer in peers:
         port = peer.local_port

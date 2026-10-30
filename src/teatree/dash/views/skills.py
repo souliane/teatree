@@ -19,7 +19,6 @@ from teatree.dash.skill_control import (
     load_cached_receipt,
 )
 from teatree.dash.skills import recent_skill_assurance
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, nav_context
 from teatree.harness_skills import (
     HarnessSkillPolicyError,
@@ -135,7 +134,6 @@ def _render(
     return render(request, "dash/skills.html", context, status=render_options.status)
 
 
-@require_loopback_or_staff
 @require_GET
 def skills(request: "HttpRequest") -> "HttpResponse":
     state = _load_state()
@@ -153,7 +151,6 @@ def skills(request: "HttpRequest") -> "HttpResponse":
     )
 
 
-@require_loopback_or_staff
 @require_POST
 def skills_refresh(request: "HttpRequest") -> "HttpResponse":
     try:
@@ -165,7 +162,6 @@ def skills_refresh(request: "HttpRequest") -> "HttpResponse":
     return redirect("dash:skills")
 
 
-@require_loopback_or_staff
 @require_POST
 def skills_remove(request: "HttpRequest", harness: str, name: str) -> "HttpResponse":
     state = _load_state()
@@ -214,7 +210,6 @@ def skills_remove(request: "HttpRequest", harness: str, name: str) -> "HttpRespo
     return redirect("dash:skills")
 
 
-@require_loopback_or_staff
 @require_POST
 def skills_enable(request: "HttpRequest", harness: str, name: str) -> "HttpResponse":
     """Re-enable an excluded skill for the next setup install."""

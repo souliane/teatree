@@ -259,6 +259,19 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
         [[], ["gitlab.com/group/repo"], ["GitHub.com/Owner"]],
         ["gitlab.com/group/repo", ["owner/repo"], ["gitlab.com//repo"], ["gitlab.com/o/r*"]],
     ),
+    "operator_oauth_apps": (
+        [
+            {},
+            {
+                "github": {
+                    "client_id": "id",
+                    "client_secret_pass_key": "github/oauth",
+                    "redirect_uri": "https://example.com/login/oauth/github/callback/",
+                }
+            },
+        ],
+        ["x", [], {"github": {"client_secret": "literal"}}],
+    ),
     "header_map": (
         [{}, {"X-OrcaRouter-Include-Cost": "true"}, {"x-orcarouter-session-id": "{session}"}, {"Authorization": "x"}],
         ["x", [], True, 5, {"a": 1}, {"a": True}],
@@ -286,6 +299,7 @@ _KIND_BY_QUALNAME = {
     "_parse_agent_skill_models": "agent_skill_models",
     "_parse_agent_phase_harness": "agent_phase_harness",
     "_parse_private_repos": "private_repos",
+    "parse_operator_oauth_apps": "operator_oauth_apps",
     "_parse_header_map": "header_map",
     "parse_harness_name": "harness",
     "parse_speak_setting": "speak",

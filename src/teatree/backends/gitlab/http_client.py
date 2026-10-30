@@ -145,6 +145,8 @@ class GitLabHTTPClient(BoundedRetryTransport):
     offset pagination, uploads, and GraphQL.
     """
 
+    oauth = False
+
     def __init__(
         self,
         *,
@@ -182,9 +184,11 @@ class GitLabHTTPClient(BoundedRetryTransport):
         self._response_cache[cache_key] = (time.monotonic(), value)
 
     def _headers(self) -> dict[str, str]:
-        return {"PRIVATE-TOKEN": self.token}
+        return {"Authorization": f"Bearer {self.token}"} if self.oauth else {"PRIVATE-TOKEN": self.token}
 
     def _read_token_for(self, endpoint: str) -> str:
+        if self.oauth:
+            return self.token
         project = _project_from_endpoint(endpoint)
         if not project:
             return self.token
@@ -238,7 +242,11 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
         def attempt() -> httpx.Response:
             return client_for_url(url).get(
-                url, headers={"PRIVATE-TOKEN": self._read_token_for(endpoint)}, timeout=request_timeout
+                url,
+                headers={"Authorization": f"Bearer {self.token}"}
+                if self.oauth
+                else {"PRIVATE-TOKEN": self._read_token_for(endpoint)},
+                timeout=request_timeout,
             )
 
         return self._run(attempt, idempotent=True)

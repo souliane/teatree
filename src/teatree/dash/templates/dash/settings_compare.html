@@ -7,15 +7,13 @@
   One page holding what differs and letting THIS box's half of it be changed. The write is the
   settings grid's own `settings/set/<key>/` endpoint with the scope in its query, so "how is this
   key edited" has one answer on both pages; a peer's cell stays a reading, because no box may be
-  written to over another box's tunnel.
+  written to through the comparison page.
 
-  Every configured peer has a row in the instance band whether or not it answered, and so does
-  every document the operator handed in. A peer or a file that is silently dropped reads as
-  agreement between the instances that did answer, which is the one wrong answer this page must
-  never give.
+  Every configured peer has a row in the instance band requiring an imported snapshot, and so
+  does every document the operator handed in. A silently dropped peer or file reads as agreement.
   {% endcomment %}
-  <p class="muted">Older instances that read only version 1 refuse a version 2 capture when loading a v2 file;
-    a live peer fetch checks the format only. Upgrade the receiving instance before loading that capture.</p>
+  <p class="muted">Older instances that read only version 1 refuse a version 2 capture.
+    Upgrade the receiving instance before loading that capture.</p>
   <form method="get" action="{% url 'dash:settings_compare' %}" class="toolbar compare-filters">
     <label>Family
       <select name="family">
@@ -172,9 +170,9 @@
   <section class="band">
     <h2>Instances</h2>
     <p class="muted">This box beside every peer in the <span class="mono">peer_instances</span> registry, plus every
-      snapshot file loaded below. A peer is fetched over its own loopback tunnel — no instance publishes a port, and
-      the snapshot carries no raw secret: a withheld value travels as its reason plus a digest, which still compares
-      for difference. A loaded column is a RECORD of the moment it was captured, never a live reading.</p>
+      snapshot file loaded below. Sign in to each peer and save its snapshot, then import it here. No live peer request
+      is made. Snapshots carry no raw secret: a withheld value travels as its reason plus a digest.
+      A loaded column is a RECORD of the moment it was captured.</p>
     <table class="dash compare-table">
       <thead><tr><th>Instance</th><th>Source</th><th>Captured</th><th>State</th></tr></thead>
       <tbody>
@@ -185,8 +183,6 @@
             <td class="mono">{{ instance.captured_at|default:"—" }}</td>
             <td>{% if instance.reachable %}<span class="default-match">&#10003; {% if instance.from_file %}loaded{% else %}answered{% endif %}</span>
               {% else %}<span class="default-differs">&#9679; {{ instance.error }}</span>
-                {% if instance.tunnel_command %}<br><span class="muted">bring its tunnel up:</span>
-                  <span class="mono">{{ instance.tunnel_command }}</span>{% endif %}
               {% endif %}</td>
           </tr>
         {% endfor %}
@@ -232,7 +228,7 @@
     {% for refusal in refusals %}
       <p class="banner-red"><span class="mono">{{ refusal.source }}</span> was not loaded: {{ refusal.reason }}</p>
     {% endfor %}
-    <p class="muted">A snapshot is a record, so a file reaches what a tunnel cannot: a box whose tunnel is not up, a
+    <p class="muted">A snapshot is a record, so a file can represent a box whose tunnel is not up, a
       box that is gone, and this box as it stood at an earlier date. Pick one or more snapshot files, or paste the
       JSON, and each becomes another column in the comparison above under exactly the same rules. Loading writes
       nothing on this box, and the loaded columns last only for the page they produce.</p>
@@ -255,7 +251,7 @@
       </p>
     </form>
     <p class="muted"><a href="{% url 'dash:settings_snapshot' %}?download=1">Download this box's snapshot</a> to keep
-      today's capture as a record, or to carry it to a box no tunnel reaches.
+      today's capture as a record, or to carry it to another box.
       <span class="mono">t3 settings compare --snapshot &lt;file&gt;</span> loads the same records from a terminal.</p>
   </section>
 {% endblock %}
