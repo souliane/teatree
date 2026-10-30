@@ -146,7 +146,6 @@ class TestTaskAttemptSettlement(TestCase):
         assert attempt.pk is not None
         assert task.attempts.count() == 1
 
-
     def test_checkout_exit_settles_before_the_write_transaction_opens(self) -> None:
         ticket = Ticket.objects.create()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
@@ -154,7 +153,7 @@ class TestTaskAttemptSettlement(TestCase):
         outside_the_write = len(connection.savepoint_ids)
         depths: list[int] = []
 
-        def prepare(_task: Task, _attest: bool, _wait: bool) -> CheckoutExit:
+        def prepare(*_args: object) -> CheckoutExit:
             depths.append(len(connection.savepoint_ids))
             return CheckoutExit(release=True)
 
