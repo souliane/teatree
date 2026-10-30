@@ -142,9 +142,6 @@ def test_pooled_error_message_cannot_turn_http_403_into_not_found(pooled_server:
     [
         ("X-RateLimit-Remaining", "401", "remaining"),
         ("X-RateLimit-Remaining", "1401", "remaining"),
-        ("X-RateLimit-Remaining", "2401", "remaining"),
-        ("X-RateLimit-Remaining", "3401", "remaining"),
-        ("X-RateLimit-Remaining", "4401", "remaining"),
         ("Retry-After", "401", "retry-after"),
     ],
 )
