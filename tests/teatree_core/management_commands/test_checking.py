@@ -35,9 +35,11 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.notify import notify_user
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
 from tests._owner_channel import owner_card
+from tests.factories import MergeAuditFactory, TicketFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -1677,3 +1679,23 @@ class TestMachineOutputChannel:
             assert suggestions["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
             assert suggestions["items"][0]["title"] == "Duplicate widget report"
             assert "Triage suggestions" in payload["terse"]
+
+
+class TestStatusWithoutGroupContent:
+    def test_status_stays_visible_when_every_group_is_empty(self, checkpoint_file: Path) -> None:
+        ticket = TicketFactory(
+            overlay="acme",
+            issue_url="https://github.com/souliane/teatree/issues/1700",
+            short_description="visible work",
+            state=Ticket.State.DELIVERED,
+        )
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=1701, merged_sha="a" * 40
+        )
+        MergeAudit.objects.filter(pk=audit.pk).update(merged_at=timezone.now() - timedelta(days=3))
+        WorkerGeneration.objects.create(sha="b" * 40, image="test-image", state=WorkerGeneration.State.ACTIVE)
+
+        out = _call("checking", "show", "--this-overlay", "--no-advance")
+
+        assert "Not yet deployed" in out
+        assert "Nothing since" not in out
