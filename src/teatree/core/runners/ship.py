@@ -340,10 +340,7 @@ class ShipExecutor(RunnerBase):
         fleet-claim fence (:meth:`_fleet_claim_lost`) is checked before spec
         construction and immediately before each outward write.
         """
-        # #940 defense-in-depth: re-check branch currency before pushing. The
-        # `pr create` gate already auto-merged the target, but ``execute_ship``
-        # may run in an async worker after a window where ``origin/<target>``
-        # advanced again. Abort only when the branch now *conflicts* with target.
+        # Re-check against the live target before an async worker pushes.
         currency_error = self._check_branch_currency(ticket, repo_path, branch)
         refusal = (
             RunnerResult(ok=False, detail=currency_error)
@@ -521,9 +518,8 @@ class ShipExecutor(RunnerBase):
     ) -> str | None:
         """#940 defense-in-depth: refuse to push only on a real conflict.
 
-        The ``pr create`` gate ran auto-merge before the async-worker
-        window opened. If ``origin/<target>`` advanced again since AND
-        the branch now *conflicts* with it, the loop escalates via a
+        If ``origin/<target>`` advanced and the branch now *conflicts*
+        with it, the loop escalates via a
         durable backlog entry (the worker cannot re-derive consent to
         mutate the working tree to resolve conflicts). A branch that is
         merely behind but conflict-free pushes fine — being behind is

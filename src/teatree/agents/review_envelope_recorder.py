@@ -21,6 +21,7 @@ from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_nit_policy import normalize_review_envelope
 from teatree.agents.review_rubric_recorder import ReviewGrading, merge_safe_over_fail_error, rubric_coverage_error
 from teatree.core.gates.integration_review_gate import distinct_repos
+from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
@@ -327,6 +328,7 @@ def _record_verdict_and_grades(
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
+            arm_for_recorded_review(recorded)
             _require_verdict_read_back(target)
             _record_hold_dispositions(recorded, envelope)
             if (

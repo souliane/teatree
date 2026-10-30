@@ -42,7 +42,7 @@ def is_self_update_ci_skip(signal: ScanSignal) -> bool:
 
 def is_statusline_dropped(signal: ScanSignal) -> bool:
     """True when *signal* is diagnostic-only and must not reach the statusline."""
-    if is_self_update_ci_skip(signal) or is_pr_sweep_flag(signal):
+    if is_self_update_ci_skip(signal) or is_pr_sweep_flag(signal) or signal.kind == "pr_sweep.waiting_on_critic":
         return False
     if signal.kind in {"review_request_merge_react.missing_scope", "review_nag.mention_held"}:
         return False

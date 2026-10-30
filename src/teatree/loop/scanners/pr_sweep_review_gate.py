@@ -25,14 +25,83 @@ how a contested head accumulated the later verdict that merged it.
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from django.db.models import Q
+
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models.head_carry_over import HeadCarryOver
+from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.round_metric import RoundMetric
+from teatree.core.notify import notify_user
+from teatree.core.notify_types import NotifyKind
+from teatree.loop.pr_ticket_index import resolve_author_ticket
 from teatree.loop.scanners.pr_sweep_decision import own_or_same_repo, pr_ticket_under_external_delivery
 from teatree.loop.scanners.pr_sweep_ports import ReviewDispatcher
-from teatree.loop.scanners.pr_sweep_types import HeadReview, MergeAttempt, PrSummary
+from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON, HeadReview, MergeAttempt, PrSummary
 
-__all__ = ["ReviewArmContext", "arm_cold_review", "held_head_attempt", "review_in_flight_for_pr"]
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
+__all__ = [
+    "REVIEW_ROUNDS_EXHAUSTED",
+    "ReviewArmContext",
+    "arm_cold_review",
+    "held_head_attempt",
+    "no_review_attempt",
+    "report_exhausted_review_rounds",
+    "review_in_flight_for_pr",
+]
 
 logger = logging.getLogger(__name__)
+MAX_REVIEW_ROUNDS = 3
+REVIEW_ROUNDS_EXHAUSTED = "review_rounds_exhausted"
+
+
+def _counted_review_heads(ticket: "Ticket", *, slug: str, pr_id: int) -> tuple[str, ...]:
+    verdicts = list(
+        ReviewVerdict.objects.filter(Q(ticket=ticket) | Q(ticket__isnull=True, slug__iexact=slug, pr_id=pr_id))
+        .exclude(verdict=ReviewVerdict.Verdict.UNVERIFIED)
+        .order_by("recorded_at", "pk")
+        .values_list("slug", "pr_id", "reviewed_sha")
+    )
+    carried = {
+        (row.slug.casefold(), row.pr_id, row.to_head)
+        for row in HeadCarryOver.objects.filter(to_head__in=[head for _, _, head in verdicts])
+        if row.reviewed_by_carry
+    }
+    measured = (
+        RoundMetric.objects.filter(ticket=ticket, kind=RoundMetric.Kind.REVIEW)
+        .exclude(outcome__in=("", "venue_limit", "unverified"))
+        .values_list("subject", flat=True)
+    )
+    direct_carries = (ticket.extra or {}).get("review_carried_heads") or {}
+    recorded_heads = tuple(
+        dict.fromkeys(
+            head
+            for record_slug, record_pr_id, head in verdicts
+            if (record_slug.casefold(), record_pr_id, head) not in carried and head not in direct_carries
+        )
+    )
+    return tuple(dict.fromkeys((*recorded_heads, *measured)))
+
+
+def report_exhausted_review_rounds(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> bool:
+    """True once the ticket's recorded passes spent the cap; the owner is told once per ticket and PR."""
+    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
+    if ticket is None:
+        return False
+    heads = _counted_review_heads(ticket, slug=slug, pr_id=pr_id)
+    if len(heads) < MAX_REVIEW_ROUNDS or head_sha in heads:
+        return False
+    notify_user(
+        f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url} at {head_sha[:8]}: "
+        f"{len(heads)} recorded passes ({', '.join(heads)}). Review the findings before another dispatch.",
+        kind=NotifyKind.INFO,
+        idempotency_key=f"review_rounds_exhausted:{ticket.pk}:{pr_id}",
+        audience=NotifyAudience.OWNER_ESCALATION,
+    )
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,3 +186,16 @@ def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:
     except Exception:
         logger.exception("pr_sweep failed to enqueue auto-review task for %s#%d", pr.slug, pr.number)
         return False
+
+
+def no_review_attempt(pr: PrSummary, *, unusable_clear: bool, exhausted: bool, ctx: ReviewArmContext) -> MergeAttempt:
+    return MergeAttempt(
+        slug=pr.slug,
+        pr_id=pr.number,
+        decision="flag_no_review",
+        reason=REVIEW_ROUNDS_EXHAUSTED
+        if exhausted
+        else (CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review"),
+        url=pr.url,
+        review_dispatched=False if exhausted else arm_cold_review(pr, ctx=ctx),
+    )

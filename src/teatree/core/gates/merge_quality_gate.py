@@ -34,10 +34,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from django.utils import timezone
+
 from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
+from teatree.core.modelkit.review_contract import CRITIC_REMEDY
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
@@ -82,6 +85,10 @@ class MergeQualityVerdictError(MergePreconditionError):
     keystone's single re-escalation path surfaces it and the loop leaves the FSM
     untouched, exactly like every other merge precondition.
     """
+
+
+class MergeAwaitingCriticError(MergePreconditionError):
+    """A live critic task can still produce the required verdict."""
 
 
 def linked_directive(ticket: "Ticket") -> "Directive | None":
@@ -271,6 +278,15 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str, *, changed_tests:
         logger.warning("merge-quality critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
+def _live_merge_critic(ticket: "Ticket", head: str) -> bool:
+    claim = CriticDispatch.objects.filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).first()
+    if claim is None or claim.state != CriticDispatch.State.DISPATCHED or claim.deadline is None:
+        return False
+    if claim.deadline <= timezone.now():
+        return False
+    return CriticDispatch.critic_is_active(claim)
+
+
 def check_merge_quality_verdict(
     ticket: "Ticket",
     head_sha: str,
@@ -295,16 +311,15 @@ def check_merge_quality_verdict(
         from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
 
         if CriticDispatch.saturated().filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).exists():
-            recovery = (
-                "The critic retry budget is exhausted; inspect the failed critic tasks, repair the cause, "
-                "and rearm the claim before retrying."
-            )
+            recovery = f"The critic retry budget is exhausted; {CRITIC_REMEDY}"
         elif worker_is_quiescing():
             recovery = "The worker is quiescing; resume worker admission, then let the queued critic run and retry."
         elif not flock_is_held(WORKER_SINGLETON):
             recovery = "The worker is stopped; start the worker, let the queued critic run, then retry."
         else:
             recovery = "A headless critic has been armed; retry once it records a clean verdict."
+            if _live_merge_critic(ticket, head):
+                raise MergeAwaitingCriticError(recovery)
         msg = (
             f"no recorded merge-quality CriticVerdict covers the shipped head {head} for ticket {ticket.pk} — "
             f"refusing to merge (north-star PR-4). A clean-and-tested-enough verdict (test_value + cleanliness) at "

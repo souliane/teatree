@@ -69,8 +69,8 @@ def last_commit_message(repo: str = ".", *, skip_merges: bool = False) -> tuple[
     """Return ``(subject, body)`` of ``HEAD``.
 
     *skip_merges* walks the first-parent line past merge commits, which is what a
-    PR title must be derived from: ``pr create``'s own branch-currency auto-merge
-    leaves ``Merge branch 'main' into <branch>`` at the tip, and a title taken from
+    PR title must be derived from: a branch-currency merge can leave
+    ``Merge branch 'main' into <branch>`` at the tip, and a title taken from
     it is refused by the overlay's conventional-commit validator
     (souliane/teatree#4103). First-parent keeps the walk on the branch's own line,
     so a target commit newer than the branch's work can never supply the subject,

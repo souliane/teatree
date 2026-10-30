@@ -1,12 +1,4 @@
-"""``pr create`` runs the branch-currency gate FIRST (#940).
-
-Placement is load-bearing: a stale base would otherwise poison the
-visual-QA gate (it renders the pre-merge tree) and the cold reviewer's
-SHA attestation (they would certify a tree missing target-branch
-fixes). The gate runs against a real ``git init`` worktree under
-``tmp_path`` so the merge behaviour is the actual ``git merge``, not a
-mock — anti-vacuous per AGENTS.md § Test-Writing Doctrine.
-"""
+"""``pr create`` predicts target conflicts without changing the reviewed head."""
 
 import subprocess
 from pathlib import Path
@@ -39,8 +31,7 @@ def _make_stale_feature_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
 
     Returns ``(clone, bare, feature_branch_name)``. The feature branch
     is checked out, and ``origin/main`` has one new commit that does
-    not overlap the feature work — so the auto-merge will fast-forward
-    / merge cleanly.
+    not overlap the feature work.
     """
     # Bare remote with initial commit.
     seed = tmp_path / "seed"
@@ -79,7 +70,7 @@ def _make_stale_feature_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 class TestPrCreateBranchCurrency(TestCase):
-    """`pr create` auto-merges target into branch BEFORE other gates (#940)."""
+    """`pr create` checks target conflicts before other gates (#940)."""
 
     @pytest.fixture(autouse=True)
     def _inject_tmp(self, tmp_path: Path) -> None:
@@ -118,7 +109,7 @@ class TestPrCreateBranchCurrency(TestCase):
         assert _git(clone, "rev-parse", "HEAD") == before
         assert "branch_currency_post_merge_sha" not in (ticket.extra or {})
 
-    def test_auto_merges_stale_base_before_visual_qa(self) -> None:
+    def test_clean_stale_base_keeps_reviewed_head(self) -> None:
         clone, _bare, branch_name = _make_stale_feature_worktree(self.tmp_path)
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, overlay="test")
@@ -141,14 +132,11 @@ class TestPrCreateBranchCurrency(TestCase):
         ):
             call_command("pr", "create", str(ticket.id))
 
-        # Auto-merge landed: HEAD advanced, c.txt is now reachable.
         post_sha = _git(clone, "rev-parse", "HEAD")
-        assert post_sha != pre_sha
-        assert (clone / "c.txt").exists()
-        # Post-merge SHA recorded on the ticket so the cold reviewer
-        # attests the post-merge tree.
+        assert post_sha == pre_sha
+        assert not (clone / "c.txt").exists()
         ticket.refresh_from_db()
-        assert ticket.extra.get("branch_currency_post_merge_sha") == post_sha
+        assert "branch_currency_post_merge_sha" not in (ticket.extra or {})
 
     def test_refuses_when_conflict(self) -> None:
         clone, bare, branch_name = _make_stale_feature_worktree(self.tmp_path)
@@ -196,7 +184,7 @@ class TestPrCreateBranchCurrency(TestCase):
         assert result.get("allowed") is False
         assert "conflict" in str(result.get("error", "")).lower()
         assert result.get("branch") == branch_name
-        # Worktree was restored cleanly (merge --abort).
+        # The prediction leaves the worktree clean.
         assert _git(clone, "status", "--porcelain") == ""
 
     def test_skipped_when_branch_already_current(self) -> None:
@@ -256,7 +244,7 @@ class TestPrCreateGatesReconcileRenamedBranch(TestCase):
     query failed and was caught fail-soft — silently skipping its check rather
     than evaluating the real branch. `pr create` now reconciles the recorded
     branch to the worktree's actual git branch BEFORE the gates run, so the
-    currency gate evaluates (and its auto-merge lands) instead of skipping.
+    currency gate evaluates the actual branch instead of skipping.
     """
 
     @pytest.fixture(autouse=True)
@@ -298,13 +286,11 @@ class TestPrCreateGatesReconcileRenamedBranch(TestCase):
         ):
             call_command("pr", "create", str(ticket.id))
 
-        # The currency gate evaluated against the real branch: the auto-merge
-        # landed (HEAD advanced, c.txt reachable, post-merge SHA recorded) —
-        # it did not silently skip on the stale `4242-ticket` ref.
+        # The currency gate evaluated the real branch without changing its head.
         post_sha = _git(clone, "rev-parse", "HEAD")
-        assert post_sha != pre_sha
-        assert (clone / "c.txt").exists()
+        assert post_sha == pre_sha
+        assert not (clone / "c.txt").exists()
         ticket.refresh_from_db()
-        assert ticket.extra.get("branch_currency_post_merge_sha") == post_sha
+        assert "branch_currency_post_merge_sha" not in (ticket.extra or {})
         # The DB was reconciled to the branch that exists in the worktree.
         assert ticket.worktrees.get().branch == renamed

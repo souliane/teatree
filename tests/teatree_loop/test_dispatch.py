@@ -442,6 +442,12 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert action.kind == "statusline"
         assert action.zone == "action_needed"
 
+    def test_live_critic_wait_reaches_in_flight_statusline(self) -> None:
+        action = self._action("pr_sweep.waiting_on_critic", "critic running")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "in_flight"
+
     def test_diagnostic_pr_sweep_outcomes_still_dropped(self) -> None:
         # Anti-vacuous: the exemption is flag-only — a normal merged/skip
         # outcome stays diagnostic noise off the statusline.

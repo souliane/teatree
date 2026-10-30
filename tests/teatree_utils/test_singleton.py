@@ -10,6 +10,7 @@ import pytest
 
 from teatree.utils import singleton as singleton_module
 from teatree.utils.singleton import (
+    WORKER_SINGLETON,
     AlreadyRunningError,
     ExecutionContext,
     HolderVerdict,
@@ -199,6 +200,10 @@ class TestFlockIsHeld:
             assert read_pid(path) is None
             assert path.is_file()
             assert flock_is_held("t", pid_path=path) is True
+
+    def test_default_worker_probe_stays_off_the_host_data_dir(self, tmp_path: Path) -> None:
+        assert default_pid_path(WORKER_SINGLETON).is_relative_to(tmp_path)
+        assert flock_is_held(WORKER_SINGLETON) is False
 
 
 #: A holder outside this runtime (a bare-host process) and the containerized refuser —
