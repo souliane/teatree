@@ -39,7 +39,7 @@ def merge_tree(
     DB, which is its own wrong-answer generator. The extract is a primary checkout
     whose origin is the source clone's real remote URL, so code reading repository
     identity resolves it; --no-git opts out. A default temp extract survives a
-    successful run for review, then the worker reclaims it after three idle hours.
+    successful run for review and becomes eligible for worker reclaim after three idle hours.
     """
     try:
         extract = extract_merge_result(repo, base=base, head=head, into=into, init_git=not no_git)
