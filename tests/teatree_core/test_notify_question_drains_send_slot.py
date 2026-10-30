@@ -239,6 +239,31 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         question.refresh_from_db()
         assert not question.slack_ts
 
+    def test_no_time_left_never_takes_the_send_slot(self) -> None:
+        question = _backlog("Which DB host?")
+        with (
+            patch.object(drains_module, "_send_time_available", side_effect=[False]),
+            patch.object(
+                drains_module, "_held_question_ping_slot", wraps=drains_module._held_question_ping_slot
+            ) as slot,
+        ):
+            result = drain_unmirrored_deferred_questions(user_id="U_ME", backend=self.backend)
+
+        assert result == (0, 1)
+        slot.assert_not_called()
+        question.refresh_from_db()
+        assert not question.slack_ts
+
+    def test_time_spent_taking_the_slot_stops_the_send(self) -> None:
+        question = _backlog("Which DB host?")
+        with patch.object(drains_module, "_send_time_available", side_effect=[True, False]):
+            result = drain_unmirrored_deferred_questions(user_id="U_ME", backend=self.backend)
+
+        assert result == (0, 1)
+        self.backend.post_message.assert_not_called()
+        question.refresh_from_db()
+        assert not question.slack_ts
+
     def test_resurface_has_no_count_slice_with_time_available(self) -> None:
         for index in range(6):
             _backlog(f"Resurface {index}?")
