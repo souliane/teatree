@@ -90,6 +90,21 @@ class PendingPrDrainScannerTestCase(TestCase):
         scanner.scan()
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
+    def test_owner_stop_reminding_keeps_a_due_obligation_from_being_drained(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=4386)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        PendingPullRequest.objects.update(last_attempt_at=None)
+        DeferredQuestion.objects.update(
+            answered_at=timezone.now(), answer_text="Stop reminding", resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        with patch("django.core.management.call_command") as ensure_pr:
+            scanner.scan()
+        ensure_pr.assert_not_called()
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
     def test_local_answer_decides_nothing_and_the_card_is_asked_again(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)
         call_command("pr", "ensure-pr", repo=str(repo), branch=branch)

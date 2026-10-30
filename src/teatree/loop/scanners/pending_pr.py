@@ -57,6 +57,7 @@ class PendingPrDrainScanner:
 
         try:
             retired = PendingPullRequest.objects.retire_absent()
+            discharge_stopped(self._overdue())
             owed: list[PendingPullRequest] = []
             for row in PendingPullRequest.objects.order_by("deferred_at").iterator(chunk_size=100):
                 if len(owed) >= self.limit:
@@ -67,7 +68,6 @@ class PendingPrDrainScanner:
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
-        discharge_stopped(self._overdue())
         discharged = sum(1 for row in owed if self._drain_one(row))
         settle_discharged_stuck_pr_notices()
         ask_owner_about_stuck_prs(self._overdue())

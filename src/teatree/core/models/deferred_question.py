@@ -18,7 +18,7 @@ question) as the same primitive.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
@@ -494,6 +494,11 @@ class DeferredQuestion(models.Model):
     @classmethod
     def internal_pending(cls) -> models.QuerySet["DeferredQuestion"]:
         return cls.pending().filter(audience=cls.Audience.INTERNAL)
+
+    @classmethod
+    def answered_in_slack(cls, chosen: Collection[str]) -> models.QuerySet["DeferredQuestion"]:
+        """Rows the owner answered in Slack with one of *chosen*: the only reply a card's decision reads."""
+        return cls.objects.filter(answered_at__isnull=False, resolved_via=cls.ResolvedVia.SLACK, answer_text__in=chosen)
 
     @classmethod
     def consume(

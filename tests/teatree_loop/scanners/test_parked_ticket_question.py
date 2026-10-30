@@ -160,6 +160,19 @@ class ParkedTicketQuestionTest(TestCase):
         assert waiting.state == Ticket.State.WORK_STARTED
         assert DeferredQuestion.owner_pending().count() == 1
 
+    def test_a_retire_answer_that_retired_nothing_is_asked_afresh_when_the_pull_request_closes(self) -> None:
+        waiting, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        pull_request = PullRequest.objects.create(ticket=waiting, url="https://example.com/pull/1", repo="o/r", iid="1")
+        self._answer("Retire them")
+        scanner.scan()
+        PullRequest.objects.filter(pk=pull_request.pk).update(state=PullRequest.State.CLOSED)
+        scanner.scan()
+        waiting.refresh_from_db()
+        assert waiting.state == Ticket.State.WORK_STARTED
+        assert DeferredQuestion.owner_pending().count() == 1
+
     def test_a_local_answer_decides_nothing_and_the_card_is_asked_again(self) -> None:
         ticket, _ = self._parked()
         scanner = ParkedTicketQuestionScanner()

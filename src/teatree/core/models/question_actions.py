@@ -69,9 +69,8 @@ def held_question(
 class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
     def answered_without_deciding(self, answers: Collection[str]) -> Self:
         """Answered rows whose answer is not one of *answers* given in Slack: a reply that decided nothing."""
-        return self.filter(answered_at__isnull=False).exclude(
-            resolved_via=self.model.ResolvedVia.SLACK, answer_text__in=answers
-        )
+        decided = self.model.answered_in_slack(answers).values("pk")
+        return self.filter(answered_at__isnull=False).exclude(pk__in=decided)
 
     def retired_by_age_ceiling(self) -> Self:
         """Rows the age backstop dismissed unanswered: a non-decision, so the signal they covered may be asked again."""

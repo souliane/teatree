@@ -70,12 +70,11 @@ def ask_owner_about_stuck_prs(rows: Sequence[PendingPullRequest]) -> None:
 
 def discharge_stopped(rows: Sequence[PendingPullRequest]) -> None:
     by_marker = {_marker(row): row for row in rows}
-    stopped = DeferredQuestion.objects.filter(
-        dedupe_marker__in=list(by_marker),
-        answered_at__isnull=False,
-        answer_text=STOP_REMINDING,
-        resolved_via=DeferredQuestion.ResolvedVia.SLACK,
-    ).values_list("dedupe_marker", flat=True)
+    stopped = (
+        DeferredQuestion.answered_in_slack([STOP_REMINDING])
+        .filter(dedupe_marker__in=list(by_marker))
+        .values_list("dedupe_marker", flat=True)
+    )
     for marker in stopped:
         PendingPullRequest.objects.discharge(repo_path=by_marker[marker].repo_path, branch=by_marker[marker].branch)
 

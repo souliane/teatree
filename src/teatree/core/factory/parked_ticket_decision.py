@@ -107,12 +107,7 @@ def ask_owner_about_parked(tasks: list[Task]) -> DeferredQuestion | None:
 
 
 def _owner_answers(answer: str) -> QuerySet[DeferredQuestion]:
-    return DeferredQuestion.objects.filter(
-        dedupe_marker__startswith=PARKED_MARKER_PREFIX,
-        answered_at__isnull=False,
-        resolved_via=DeferredQuestion.ResolvedVia.SLACK,
-        answer_text=answer,
-    )
+    return DeferredQuestion.answered_in_slack([answer]).filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX)
 
 
 def _card_pairs(question: DeferredQuestion) -> set[TaskPair]:
@@ -146,11 +141,16 @@ def settle_changed_parked_cards(awaiting: list[Task]) -> None:
 
 
 def apply_retire_answers(aged: list[Task]) -> int:
-    """Retire the tickets each not-yet-applied "Retire them" answer listed, once, and count them."""
+    """Retire the tickets each not-yet-applied "Retire them" answer listed, once, and count them.
+
+    A spent answer frees its marker, so a ticket it could not retire is asked afresh when it parks again.
+    """
     retired = 0
-    for question in _owner_answers(RETIRE_ANSWER).filter(applied_at__isnull=True):
+    spent = _owner_answers(RETIRE_ANSWER).filter(applied_at__isnull=True)
+    for question in spent:
         retired += _retire_parked(_card_pairs(question), aged)
         question.mark_applied()
+    DeferredQuestion.objects.filter(pk__in=[question.pk for question in spent]).release_markers()
     return retired
 
 
