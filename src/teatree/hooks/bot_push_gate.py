@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx
+
 from teatree.config import cold_reader
 from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path, host_of_slug
 from teatree.hooks._repo_visibility import slug_for_remote_url
@@ -61,17 +63,24 @@ def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *
         token = fields.get("password", "")
     if not token:
         return ""
-    argv = [FORGE_TOOL[forge], "api", "user", "--hostname", host]
-    env_key = "GH_TOKEN" if forge == GITHUB else "GITLAB_TOKEN"
     try:
-        result = run_allowed_to_fail(
-            argv,
-            expected_codes=None,
-            env={**os.environ, env_key: token},
-            timeout=_PROBE_TIMEOUT_SECONDS,
-        )
-        payload = json.loads(result.stdout) if result.returncode == 0 else None
-    except (OSError, TimeoutExpired, ValueError):
+        if forge == GITLAB:
+            response = httpx.get(
+                f"https://{host}/api/v4/user",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_PROBE_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            result = run_allowed_to_fail(
+                [FORGE_TOOL[forge], "api", "user", "--hostname", host],
+                expected_codes=None,
+                env={**os.environ, "GH_TOKEN": token},
+                timeout=_PROBE_TIMEOUT_SECONDS,
+            )
+            payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, TimeoutExpired, ValueError, httpx.HTTPError):
         return ""
     key = "login" if forge == GITHUB else "username"
     login = payload.get(key) if isinstance(payload, dict) else None

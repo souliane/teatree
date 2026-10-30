@@ -46,6 +46,10 @@ class OperatorLoginRequiredTestCase(TestCase):
 
 @override_settings(ALLOWED_HOSTS=["testserver", "127.0.0.1"])
 class PortCookieIsolationTestCase(TestCase):
+    def test_out_of_range_host_port_is_a_bad_request(self) -> None:
+        response = self.client.get("/login/", headers={"host": "127.0.0.1:99999"})
+        assert response.status_code == 400
+
     def test_sign_in_on_one_forward_does_not_authenticate_another(self) -> None:
         get_user_model().objects.create_superuser("admin", email="", password="secret")
         first = self.client.post(

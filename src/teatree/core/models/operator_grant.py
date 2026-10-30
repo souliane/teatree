@@ -121,10 +121,15 @@ class OperatorGrant(models.Model):
         except ValueError as exc:
             message = "operator grant identity is invalid"
             raise PermissionError(message) from exc
+        platform, handle = identity_key.split(":", 1)
         identity = OperatorIdentity.objects.filter(
-            user_id=self.user_id, platform=self.forge, user__is_active=True, user__is_superuser=True
+            user_id=self.user_id,
+            platform=platform,
+            handle=handle,
+            user__is_active=True,
+            user__is_superuser=True,
         ).first()
-        if identity is None or identity.key != identity_key:
+        if identity is None or not OperatorIdentity.objects.filter(user_id=self.user_id, platform=self.forge).exists():
             message = "operator grant does not belong to the approver"
             raise PermissionError(message)
         if not OnBehalfApproval.objects.filter(

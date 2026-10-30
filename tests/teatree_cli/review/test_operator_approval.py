@@ -11,7 +11,7 @@ from django.utils import timezone
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.review.operator_approval import publish_operator_approval
+from teatree.cli.review.operator_approval import OperatorApprover, publish_operator_approval
 from teatree.cli.review.service import ReviewService
 from teatree.core.modelkit.gate_verdict import ReadOutcome
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, OperatorGrant, OperatorIdentity, Ticket
@@ -160,6 +160,64 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is not None
         assert OnBehalfAudit.objects.get(approval=approval).action == "unapprove"
+
+    def test_slack_requester_approval_uses_linked_gitlab_grant_and_slack_consent(self) -> None:
+        Ticket.objects.update(requested_by="slack:U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        self._grant(self.alice, "alice-access")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "slack:U-ALICE")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 0, result.output
+        assert tokens
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+        assert OnBehalfAudit.objects.get(approval=approval).approver_id == "slack:U-ALICE"
+
+    def test_slack_requester_unapproval_uses_linked_gitlab_grant(self) -> None:
+        Ticket.objects.update(requested_by="slack:U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        self._grant(self.alice, "alice-access")
+        approval = OnBehalfApproval.record("org/repo!7", "unapprove", "slack:U-ALICE")
+
+        result, tokens = self._invoke("unapprove")
+
+        assert result.exit_code == 0, result.output
+        assert tokens
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+
+    def test_other_slack_users_consent_cannot_use_requesters_grant(self) -> None:
+        Ticket.objects.update(requested_by="slack:U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        OperatorIdentity.objects.create(user=self.bob, platform="slack", handle="U-BOB")
+        self._grant(self.alice, "alice-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "slack:U-BOB")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert tokens == []
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_publisher_refuses_a_slack_consent_bound_to_another_forge_user(self) -> None:
+        OperatorIdentity.objects.create(user=self.bob, platform="slack", handle="U-BOB")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "slack:U-BOB")
+        api = ApprovalAPI(username="alice")
+        service = ReviewService("alice-oauth", repo="org/repo", api=api, oauth=True)
+
+        message, code = publish_operator_approval(
+            service, "org/repo", 7, "approve", OperatorApprover("slack:U-BOB", "gitlab:alice")
+        )
+
+        assert code == 1
+        assert "different users" in message
+        assert api.posts == 0
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
 
     def test_grant_with_another_forge_identity_refuses_and_preserves_consent(self) -> None:
         self._grant(self.alice, "alice-access")

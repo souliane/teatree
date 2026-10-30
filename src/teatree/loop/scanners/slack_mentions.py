@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.loop.owner_identity import configured_owner_id, sent_by_owner
+from teatree.loop.owner_identity import configured_owner_id, sent_by_operator
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.types import RawAPIDict
@@ -137,7 +137,7 @@ class SlackMentionsScanner:
             event_type = event.get("type", "")
             if event_type == "app_mention":
                 mentions.append(event)
-            elif event_type == "message" and event.get("channel_type", "") == "im" and sent_by_owner(event, owner):
+            elif event_type == "message" and event.get("channel_type", "") == "im" and sent_by_operator(event, owner):
                 dms.append(event)
                 dm_records.append(queued)
         return drained_any, foreign, dm_records

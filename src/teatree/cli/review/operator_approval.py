@@ -1,5 +1,6 @@
 """Approval publishing through the ticket requester's OAuth grant."""
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -8,10 +9,44 @@ from django.utils import timezone
 from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.audit import ReviewArtifactNotVerifiedError
 from teatree.cli.review.post_impl import approve_impl, unapprove_impl
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit
+from teatree.core.models import OnBehalfApproval, OnBehalfAudit, OperatorIdentity
+from teatree.core.models.operator_identity import canonical_operator_key
 
 if TYPE_CHECKING:
     from teatree.cli.review.service import ReviewService
+
+
+@dataclass(frozen=True)
+class OperatorApprover:
+    consent_key: str
+    forge_key: str
+
+
+def _same_operator(approver: OperatorApprover) -> bool:
+    if approver.consent_key == approver.forge_key:
+        return True
+    try:
+        consent_platform, consent_handle = canonical_operator_key(approver.consent_key).split(":", 1)
+        forge_platform, forge_handle = canonical_operator_key(approver.forge_key).split(":", 1)
+    except ValueError:
+        return False
+    if forge_platform != "gitlab":
+        return False
+    consent_user = (
+        OperatorIdentity.objects.filter(
+            platform=consent_platform, handle=consent_handle, user__is_active=True, user__is_superuser=True
+        )
+        .values_list("user_id", flat=True)
+        .first()
+    )
+    forge_user = (
+        OperatorIdentity.objects.filter(
+            platform=forge_platform, handle=forge_handle, user__is_active=True, user__is_superuser=True
+        )
+        .values_list("user_id", flat=True)
+        .first()
+    )
+    return consent_user is not None and consent_user == forge_user
 
 
 def _reviewed(service: "ReviewService", repo: str, mr: int) -> tuple[str, int] | None:
@@ -29,26 +64,28 @@ def _reviewed(service: "ReviewService", repo: str, mr: int) -> tuple[str, int] |
 
 
 def _approval_preflight(
-    service: "ReviewService", repo: str, mr: int, action: str, approver_key: str
+    service: "ReviewService", repo: str, mr: int, action: str, approver: OperatorApprover
 ) -> OnBehalfApproval | tuple[str, int]:
     target = f"{repo}!{mr}"
     if not service.oauth:
         return "OAuth grant required for operator approval", 1
+    if not _same_operator(approver):
+        return "operator approval identities belong to different users", 1
     approval = (
         OnBehalfApproval.objects.filter(
             target=target,
             action=action,
-            approver_id=approver_key,
+            approver_id=approver.consent_key,
             consumed_at__isnull=True,
         )
         .order_by("created_at")
         .first()
     )
     if approval is None:
-        return f"No consent from {approver_key} for {action} on {target}", 1
+        return f"No consent from {approver.consent_key} for {action} on {target}", 1
     actual = service.api.current_username()
-    if f"gitlab:{actual.casefold()}" != approver_key:
-        return f"OAuth grant identity does not match requester {approver_key}", 1
+    if f"gitlab:{actual.casefold()}" != approver.forge_key:
+        return f"OAuth grant identity does not match requester {approver.consent_key}", 1
     if action == "approve":
         refusal = _reviewed(service, repo, mr)
         if refusal:
@@ -57,11 +94,14 @@ def _approval_preflight(
 
 
 def publish_operator_approval(
-    service: "ReviewService", repo: str, mr: int, action: str, approver_key: str
+    service: "ReviewService", repo: str, mr: int, action: str, approver_key: str | OperatorApprover
 ) -> tuple[str, int]:
     target = f"{repo}!{mr}"
     encoded = repo.replace("/", "%2F")
-    preflight = _approval_preflight(service, repo, mr, action, approver_key)
+    approver = (
+        approver_key if isinstance(approver_key, OperatorApprover) else OperatorApprover(approver_key, approver_key)
+    )
+    preflight = _approval_preflight(service, repo, mr, action, approver)
     if isinstance(preflight, tuple):
         return preflight
     approval = preflight
@@ -71,7 +111,7 @@ def publish_operator_approval(
             consumed_at=claimed_at
         )
     if not claimed:
-        return f"No consent from {approver_key} for {action} on {target}", 1
+        return f"No consent from {approver.consent_key} for {action} on {target}", 1
     try:
         result = (
             approve_impl(service, repo, mr, encoded=encoded)
@@ -88,5 +128,5 @@ def publish_operator_approval(
         OnBehalfApproval.objects.filter(pk=approval.pk, consumed_at=claimed_at).update(consumed_at=None)
         return result
     with transaction.atomic():
-        OnBehalfAudit.objects.create(approval=approval, target=target, action=action, approver_id=approver_key)
+        OnBehalfAudit.objects.create(approval=approval, target=target, action=action, approver_id=approver.consent_key)
     return result

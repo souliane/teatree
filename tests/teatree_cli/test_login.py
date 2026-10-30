@@ -49,6 +49,20 @@ class OperatorLoginCliTestCase(TestCase):
         transport.return_value.get.assert_called_once_with("http://127.0.0.1:8000/admin/login/", headers={}, timeout=5)
         browser.assert_called_once_with("http://127.0.0.1:8000/login/oauth/github/approvals/")
 
+    @patch("teatree.cli.login.webbrowser.open")
+    @patch("teatree.cli.login.client_for_url")
+    @patch("teatree.cli.login.running_in_container", return_value=False)
+    def test_native_approval_refuses_unreachable_admin(self, container: Mock, transport: Mock, browser: Mock) -> None:
+        transport.return_value.get.return_value = httpx.Response(
+            503, request=httpx.Request("GET", "http://127.0.0.1:8000/admin/login/")
+        )
+
+        result = runner.invoke(app, ["login", "github", "--approvals"])
+
+        assert result.exit_code == 1
+        assert "Admin did not start OAuth" in result.output
+        browser.assert_not_called()
+
     @patch("teatree.cli.admin.data_dir_root")
     @patch("teatree.cli.login.ensure_admin_forward")
     @patch("teatree.cli.login.running_in_container", return_value=True)

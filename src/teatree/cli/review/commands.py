@@ -16,6 +16,7 @@ from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
     from teatree.cli.review.evidence_gate import FindingEvidence
+    from teatree.cli.review.operator_approval import OperatorApprover
 
 
 def _require_token(repo: str) -> ReviewService:
@@ -45,8 +46,9 @@ def _require_token(repo: str) -> ReviewService:
     return ReviewService(outcome.value, repo=repo)
 
 
-def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewService, str] | None:
+def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewService, "OperatorApprover"] | None:
     ensure_django()
+    from teatree.cli.review.operator_approval import OperatorApprover  # noqa: PLC0415 — ORM after bootstrap
     from teatree.cli.review.operator_target import requester_key_for_mr  # noqa: PLC0415 — ORM after bootstrap
     from teatree.core.models import OnBehalfApproval, OperatorIdentity  # noqa: PLC0415 — ORM after bootstrap
     from teatree.core.operator_auth.operator_oauth import (  # noqa: PLC0415 — ORM after bootstrap
@@ -62,30 +64,30 @@ def _require_operator_approval(repo: str, mr: int, action: str) -> tuple[ReviewS
         raise typer.Exit(code=1) from error
     if not requester:
         return None
-    if not requester.startswith("gitlab:"):
-        typer.echo(f"No GitLab requester recorded for {target}")
-        raise typer.Exit(code=1)
     if not OnBehalfApproval.objects.filter(
         target=target, action=action, approver_id=requester, consumed_at__isnull=True
     ).exists():
         typer.echo(f"No consent from {requester} for {action} on {target}")
         raise typer.Exit(code=1)
+    platform, handle = requester.split(":", 1)
     identity = (
-        OperatorIdentity.objects.filter(
-            platform="gitlab", handle=requester.removeprefix("gitlab:"), user__is_active=True, user__is_superuser=True
-        )
+        OperatorIdentity.objects.filter(platform=platform, handle=handle, user__is_active=True, user__is_superuser=True)
         .select_related("user")
         .first()
     )
     if identity is None:
         typer.echo(f"Requester {requester} has no active operator login")
         raise typer.Exit(code=1)
+    forge_identity = OperatorIdentity.objects.filter(user=identity.user, platform="gitlab").first()
+    if forge_identity is None:
+        typer.echo(f"Requester {requester} has no GitLab operator login")
+        raise typer.Exit(code=1)
     try:
         token = operator_access_token(identity.user, "gitlab", action=action, target=target, approver_id=requester)
     except (OperatorOAuthUnavailableError, PermissionError) as error:
         typer.echo(f"Requester {requester}: {error}")
         raise typer.Exit(code=1) from error
-    return ReviewService(token, repo=repo, oauth=True), requester
+    return ReviewService(token, repo=repo, oauth=True), OperatorApprover(requester, forge_identity.key)
 
 
 _EVIDENCE_JSON_HELP = (
@@ -291,8 +293,8 @@ def approve(
     if operator is None:
         msg, code = _require_token(repo).approve(repo, mr)
     else:
-        service, requester = operator
-        msg, code = publish_operator_approval(service, repo, mr, "approve", requester)
+        service, approver = operator
+        msg, code = publish_operator_approval(service, repo, mr, "approve", approver)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
@@ -318,8 +320,8 @@ def unapprove(
     if operator is None:
         msg, code = _require_token(repo).unapprove(repo, mr)
     else:
-        service, requester = operator
-        msg, code = publish_operator_approval(service, repo, mr, "unapprove", requester)
+        service, approver = operator
+        msg, code = publish_operator_approval(service, repo, mr, "unapprove", approver)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

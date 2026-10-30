@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from django.conf import settings
 from django.contrib.auth.views import redirect_to_login
 from django.db import connections
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseBadRequest
 
 from teatree import request_cache
 
@@ -26,7 +26,11 @@ class PortCookieIsolationMiddleware:
 
     def __call__(self, request: "HttpRequest") -> "HttpResponse":
         host = request.get_host()
-        if urlsplit(f"//{host}").port is None:
+        try:
+            port = urlsplit(f"//{host}").port
+        except ValueError:
+            return HttpResponseBadRequest("invalid Host port")
+        if port is None:
             return self.get_response(request)
         suffix = hashlib.sha256(host.casefold().encode()).hexdigest()[:10]
         names = {

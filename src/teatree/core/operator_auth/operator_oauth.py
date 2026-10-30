@@ -155,10 +155,13 @@ def _token_response(
         raise OperatorOAuthUnavailableError(forge)
     now = timezone.now()
     refresh_seconds = payload.get("refresh_token_expires_in")
+    expires_seconds = payload.get("expires_in")
+    if expires_seconds is None and payload.get("refresh_token"):
+        raise OperatorOAuthUnavailableError(forge)
     return OperatorGrantTokens(
         access_token=str(payload["access_token"]),
         refresh_token=str(payload.get("refresh_token", "")),
-        expires_at=now + timedelta(seconds=int(payload["expires_in"])),
+        expires_at=now + timedelta(seconds=int(expires_seconds)) if expires_seconds is not None else now,
         refresh_expires_at=now + timedelta(seconds=int(refresh_seconds)) if refresh_seconds is not None else None,
         scope=str(payload.get("scope", "")),
     )

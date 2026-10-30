@@ -262,6 +262,24 @@ class OperatorOAuthTestCase(TestCase):
         assert b"master key" in response.content
         assert not OperatorGrant.objects.exists()
 
+    def test_failed_approval_exchange_names_approval_consent_remedy(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        self.client.force_login(user)
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            post.return_value = httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+                json={"error": "access_denied"},
+            )
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            response = self.client.get("/login/oauth/github/callback/", {"code": "denied", "state": state})
+
+        assert response.status_code == 502
+        assert b"t3 login github --approvals" in response.content
+        assert not OperatorGrant.objects.exists()
+
     def test_approval_consent_without_refresh_grant_stores_nothing(self) -> None:
         user = self._invited_github_operator("alice", "123")
         self.client.force_login(user)
@@ -278,6 +296,22 @@ class OperatorOAuthTestCase(TestCase):
 
         assert response.status_code == 403
         assert b"refresh grant" in response.content
+        assert not OperatorGrant.objects.exists()
+
+    def test_classic_github_identity_token_without_expiry_can_sign_in(self) -> None:
+        self._invited_github_operator("alice", "123")
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            post.return_value = httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+                json={"access_token": "access-secret", "scope": "read:user"},
+            )
+            response = self.client.get(
+                "/login/oauth/github/callback/", {"code": "code", "state": self._start_github_login()}
+            )
+
+        assert response.status_code == 302
+        assert "_auth_user_id" in self.client.session
         assert not OperatorGrant.objects.exists()
 
     def test_missing_grant_names_the_approval_consent_command(self) -> None:

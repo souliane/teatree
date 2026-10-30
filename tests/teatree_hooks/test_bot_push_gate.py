@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 from teatree.config.cold_reader import SettingRead
@@ -168,6 +169,45 @@ def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monk
             "github.com",
             "https://person:person-key@github.com/build-bot/engine.git",  # privacy-scan:allow synthetic URL userinfo
             "bot-key",
+        )
+        == ""
+    )
+
+
+def test_gitlab_credential_probe_uses_api_without_glab(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_glab(argv: list[str], **kwargs: object) -> object:
+        if argv[0] == "glab":
+            message = "glab is not installed"
+            raise OSError(message)
+        raise AssertionError(argv)
+
+    observed: list[tuple[str, dict[str, str], float]] = []
+
+    def get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        observed.append((url, headers, timeout))
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"username": "build-bot"})
+
+    monkeypatch.setattr(bot_push_gate, "run_allowed_to_fail", no_glab)
+    monkeypatch.setattr(httpx, "get", get)
+
+    assert (
+        bot_push_gate._credential_login(
+            "gitlab", "gitlab.example.test", "https://gitlab.example.test/build-bot/engine.git", "bot-key"
+        )
+        == "build-bot"
+    )
+    assert observed == [("https://gitlab.example.test/api/v4/user", {"Authorization": "Bearer bot-key"}, 8)]
+
+
+def test_gitlab_credential_probe_refuses_failed_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        return httpx.Response(401, request=httpx.Request("GET", url), json={"username": "build-bot"})
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    assert (
+        bot_push_gate._credential_login(
+            "gitlab", "gitlab.example.test", "https://gitlab.example.test/build-bot/engine.git", "bot-key"
         )
         == ""
     )
