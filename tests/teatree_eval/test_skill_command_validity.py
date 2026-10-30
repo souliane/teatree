@@ -9,6 +9,7 @@ from pathlib import Path
 from teatree.eval.skill_command_validity import (
     _is_placeholder_only,
     iter_backticked_t3_commands,
+    iter_fenced_t3_commands,
     resolve_command_path,
     validate_doc_commands,
 )
@@ -52,6 +53,15 @@ class TestIterBackticked:
         assert iter_backticked_t3_commands("just prose about t3 teatree ticket list") == []
 
 
+class TestIterFenced:
+    def test_reads_fenced_commands_minus_comment_pipe_and_continuation(self) -> None:
+        text = "```bash\n$ t3 teatree ticket list | head\nt3 teatree ticket \\\n  list --json  # tail\nls\n```\n"
+        assert iter_fenced_t3_commands(text) == ["t3 teatree ticket list", "t3 teatree ticket list --json"]
+
+    def test_ignores_commands_outside_a_fence(self) -> None:
+        assert iter_fenced_t3_commands("t3 teatree ticket list\n```bash\nls\n```\nt3 teatree ticket list\n") == []
+
+
 class TestValidateDocCommands:
     def _skill(self, root: Path, body: str) -> None:
         skill = root / "skills" / "myskill"
@@ -70,3 +80,9 @@ class TestValidateDocCommands:
         report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
         assert report.ok
         assert report.checked == 1
+
+    def test_a_fenced_block_citing_a_missing_command_is_a_violation(self, tmp_path: Path) -> None:
+        self._skill(tmp_path, "```bash\nt3 teatree ticket list\nt3 teatree ticket frobnicate 7  # stale\n```\n")
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
+        assert [v.command for v in report.violations] == ["t3 teatree ticket frobnicate 7"]
+        assert report.checked == 2
