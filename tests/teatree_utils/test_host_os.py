@@ -1,10 +1,24 @@
 from pathlib import Path
 
-from teatree.utils.host_os import running_in_a_container
+import pytest
+
+from teatree.utils.host_os import proc_reads_the_host, running_in_a_container
 
 
-def test_a_container_marker_makes_the_process_a_container(tmp_path: Path) -> None:
+def test_declared_linux_host_allows_proc_even_in_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
     marker = tmp_path / "container"
     marker.touch()
     assert running_in_a_container((marker,))
-    assert not running_in_a_container((tmp_path / "absent",))
+    assert proc_reads_the_host((marker,))
+
+
+def test_undeclared_container_and_darwin_do_not_claim_host_proc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    marker = tmp_path / "container"
+    marker.touch()
+    monkeypatch.delenv("TEATREE_HOST_OS", raising=False)
+    assert not proc_reads_the_host((marker,))
+    monkeypatch.setenv("TEATREE_HOST_OS", "Darwin")
+    assert not proc_reads_the_host(())
