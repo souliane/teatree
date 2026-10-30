@@ -68,6 +68,14 @@ def _pr(ticket: Ticket, *, repo: str, iid: str, state: str = PullRequest.State.O
 
 
 class TestCountOpenPrsForRepo(TestCase):
+    def test_settled_indexed_prs_do_not_count(self) -> None:
+        for number, state in enumerate((PullRequest.State.MERGED, PullRequest.State.CLOSED), start=9):
+            with self.subTest(state=state):
+                url = f"https://github.com/{_REPO_A}/pull/{number}"
+                ticket = Ticket.objects.create(overlay="t3-teatree", extra={"pr_url_by_branch": {"first": url}})
+                _pr(ticket, repo=_REPO_A, iid=str(number), state=state)
+                assert open_pr_urls_for_repo(ticket, _REPO_A) == set()
+
     def test_unverified_retry_marker_does_not_count(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
 
@@ -140,6 +148,23 @@ class TestUnlimitedOptOut(TestCase):
 
 
 class TestPerTicketPerRepoScope(TestCase):
+    def test_current_branch_marker_is_excluded_after_forge_union(self) -> None:
+        url = f"https://github.com/{_REPO_A}/pull/9"
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=f"https://github.com/{_REPO_A}/issues/123")
+        record_unverified_pr_url(ticket, url, "feat/x")
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=9, body="Closes #123")])
+
+        check_pr_budget(ticket, _REPO_A, limit=1, host=host, shipping_branch="feat/x")
+
+    def test_other_branch_marker_still_consumes_budget(self) -> None:
+        url = f"https://github.com/{_REPO_A}/pull/9"
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=f"https://github.com/{_REPO_A}/issues/124")
+        record_unverified_pr_url(ticket, url, "feat/other")
+        host = _FakeHost([_gh_pr(repo=_REPO_A, number=9, body="Closes #124")])
+
+        with pytest.raises(PrBudgetExceededError):
+            check_pr_budget(ticket, _REPO_A, limit=1, host=host, shipping_branch="feat/x")
+
     def test_recorded_pr_for_current_branch_does_not_consume_budget(self) -> None:
         url = f"https://github.com/{_REPO_A}/pull/1"
         ticket = Ticket.objects.create(
@@ -195,6 +220,7 @@ class TestPerTicketPerRepoScope(TestCase):
         assert pr.url in message
         assert _REPO_A in message
         assert "max_open_prs_per_repo_per_ticket" in message
+        assert "t3 teatree config_setting set max_open_prs_per_repo_per_ticket 0 --overlay t3-teatree" in message
 
 
 class TestOpenPrUrlsForRepo(TestCase):
