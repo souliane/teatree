@@ -243,7 +243,14 @@
       document.body.addEventListener("htmx:afterSwap", function (evt) {
         var el = evt.target.querySelector("[data-ttyd-launch]");
         var url = el && el.getAttribute("data-ttyd-launch");
-        if (url) window.open(url, "_blank", "noopener");
+        if (url) {
+          fetch(url, {mode: "no-cors", cache: "no-store", signal: AbortSignal.timeout(3000)})
+            .then(function () { window.open(url, "_blank", "noopener"); })
+            .catch(function () {
+              var hint = el.parentElement.querySelector("[data-ttyd-reachability]");
+              if (hint) hint.hidden = false;
+            });
+        }
       });
     })();
   </script>
