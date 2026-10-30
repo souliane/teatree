@@ -102,6 +102,10 @@ def gather_waiting(overlay: str) -> list[WaitingEntry]:
     ]
 
 
+def _card_link(card: QuestionCard | None) -> str:
+    return card.subject if card is not None and "://" in card.subject else ""
+
+
 def gather_owner_waiting() -> list[WaitingEntry]:
     """Return only unresolved decisions addressed to the owner."""
     now = timezone.now()
@@ -115,7 +119,7 @@ def gather_owner_waiting() -> list[WaitingEntry]:
                 kind=WaitingKind.QUESTION,
                 ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
                 age=now - question.created_at,
-                url=card.subject,
+                url=_card_link(card),
                 row_id=question.pk,
                 owner_only=owner_kept_decision(card.decision)
                 or question.dedupe_marker.startswith(HELD_PR_MARKER_PREFIX),
@@ -133,7 +137,7 @@ def _question_entries(now: datetime) -> list[WaitingEntry]:
                 kind=WaitingKind.QUESTION,
                 ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
                 age=now - question.created_at,
-                url=card.subject if card else "",
+                url=_card_link(card),
                 row_id=question.pk,
                 owner_only=owner_kept_decision(card.decision if card else None),
             )

@@ -22,8 +22,8 @@ a repair-halted one once it has aged into the retire-or-keep card of
 so a lane that is down keeps raising the aggregate signal.
 
 Separated from :mod:`teatree.core.factory.operational_health` the way
-``reclaim_is_stalled`` is — the aggregator owns folding signals into a verdict, the
-predicate owns what "stranded" means.
+``reclaim_is_stalled`` is — the aggregator folds the collected signals into a verdict;
+this module owns what "stranded" means and the one signal it raises.
 """
 
 import logging
@@ -73,9 +73,15 @@ def stranded_ticket_count() -> int:
 
 
 def _stalled_backlog_signals() -> SignalCollection:
+    """One CRITICAL when admitted work has been left with no execution path (#4704).
+
+    What "stranded" means, and why neither ``_failed_task_signals`` nor
+    ``StaleTicketsScanner`` covers it, is this module's docstring.
+    Fail-open, naming itself ``unread`` on a read it could not make.
+    """
     try:
         stalled = stranded_ticket_count()
-    except Exception:  # noqa: BLE001 — a failed health read must not auto-resolve an existing issue
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
         return SignalCollection(unread=("_stalled_backlog_signals",))
     if stalled < STALLED_BACKLOG_THRESHOLD:

@@ -33,5 +33,6 @@ class ParkedTicketQuestionScanner:
         retire_parked(retire, aged)
         if DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX).exists():
             return []
-        ask_owner_about_parked([task for task in aged if task_pair(task) not in retire | keep])
+        ruled = retire | keep
+        ask_owner_about_parked([task for task in aged if task_pair(task) not in ruled])
         return []
