@@ -359,7 +359,7 @@ def _add_open_prs(block_for: Callable[[Ticket | None], FeatureBlock], overlay_na
 def _overlay_code_host(overlay_name: str) -> str:
     try:
         return get_overlay(overlay_name).config.code_host or ""
-    except ImproperlyConfigured:
+    except (ImproperlyConfigured, ImportError, LookupError, AttributeError):
         return ""
 
 

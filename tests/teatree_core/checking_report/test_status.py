@@ -909,3 +909,18 @@ class CheckInFeatureStatusTestCase(TestCase):
 
         assert status.features[0].live == "partly"
         assert status.deploy_state == "waiting"
+
+    def test_overlay_that_fails_to_import_does_not_break_the_earlier_undeployed_link(self) -> None:
+        with _two_commit_checkout() as (serving_sha, undeployed_sha):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            ticket = TicketFactory(
+                issue_url="https://github.com/souliane/teatree/issues/594", state=Ticket.State.DELIVERED
+            )
+            self._merge_days_ago(ticket, slug="souliane/teatree", pr_id=595, sha=undeployed_sha)
+
+            with patch(
+                "teatree.core.checking_report.status.get_overlay", side_effect=ImportError("overlay import failed")
+            ):
+                status = self._report().status_by_feature
+
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/595"]
