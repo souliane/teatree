@@ -2,7 +2,9 @@
 
 import os
 import socket
+import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from subprocess import DEVNULL, PIPE
 from typing import ClassVar
@@ -18,6 +20,7 @@ def test_launch_uses_fixed_hardened_terminal_route() -> None:
     proc = MagicMock(pid=999)
     with (
         patch.object(terminal_launcher.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
+        patch.object(terminal_launcher, "_port_available", return_value=True),
         patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
         patch.object(terminal_launcher, "_wait_for_ready", return_value=True),
         patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
@@ -73,37 +76,50 @@ def test_launch_ttyd_missing_binary_returns_error_not_raise() -> None:
     assert "ttyd not found" in result.error
 
 
+def _free_port() -> int:
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        return reservation.getsockname()[1]
+
+
+def _recording_spawn(processes: list[subprocess.Popen[str]]) -> Callable[..., subprocess.Popen[str]]:
+    original_spawn = terminal_launcher.spawn
+
+    def record(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+        process = original_spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    return record
+
+
+def _wait_until(condition: Callable[[], bool], *, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
 def test_exited_ttyd_is_reaped_without_waiting_for_grace(tmp_path: Path) -> None:
     ttyd = tmp_path / "ttyd"
     ttyd.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     ttyd.chmod(0o755)
-    processes = []
-    original_spawn = terminal_launcher.spawn
-
-    def record_spawn(*args: object, **kwargs: object) -> object:
-        proc = original_spawn(*args, **kwargs)
-        processes.append(proc)
-        return proc
-
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
+    processes: list[subprocess.Popen[str]] = []
     with (
         patch.object(
             terminal_launcher.shutil, "which", side_effect=lambda name: str(ttyd) if name == "ttyd" else "/usr/bin/lsof"
         ),
-        patch.object(terminal_launcher, "spawn", side_effect=record_spawn),
+        patch.object(terminal_launcher, "spawn", side_effect=_recording_spawn(processes)),
     ):
-        result = terminal_launcher.launch_ttyd(["claude"], port=port)
+        result = terminal_launcher.launch_ttyd(["claude"], port=_free_port())
     assert "could not start" in result.error
-    deadline = time.monotonic() + 5
-    while processes[0].returncode is None and time.monotonic() < deadline:
-        time.sleep(0.01)
+    assert _wait_until(lambda: processes[0].returncode is not None)
     assert processes[0].returncode == 0
 
 
 def test_busy_port_does_not_spawn_a_second_terminal() -> None:
     with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         port = listener.getsockname()[1]
@@ -114,6 +130,34 @@ def test_busy_port_does_not_spawn_a_second_terminal() -> None:
             result = terminal_launcher.launch_ttyd(["claude"], port=port)
     assert "busy" in result.error
     spawn.assert_not_called()
+
+
+def _port_left_in_time_wait() -> int:
+    with socket.socket() as listener:
+        listener.setsockopt(
+            socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+        )  # ttyd's listener sets it; its TIME_WAIT inherits
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port)) as client:
+            listener.accept()[0].close()
+            assert client.recv(1) == b""
+    return port
+
+
+def test_finished_session_does_not_leave_the_port_reading_busy() -> None:
+    port = _port_left_in_time_wait()
+    proc = MagicMock(pid=999)
+    with (
+        patch.object(terminal_launcher.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
+        patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
+        patch.object(terminal_launcher, "_wait_for_ready", return_value=True),
+        patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
+    ):
+        result = terminal_launcher.launch_ttyd(["claude"], port=port)
+    assert result.error == ""
+    spawn.assert_called_once()
 
 
 def test_terminal_that_never_becomes_ready_is_stopped() -> None:
@@ -132,57 +176,73 @@ def test_terminal_that_never_becomes_ready_is_stopped() -> None:
     proc.terminate.assert_called_once_with()
 
 
+_FAKE_TTYD = (
+    "#!/usr/bin/env python3\n"
+    "import http.server, sys\n"
+    "class Handler(http.server.BaseHTTPRequestHandler):\n"
+    " def do_GET(self):\n"
+    "  self.send_response(200)\n"
+    "  self.end_headers()\n"
+    " def log_message(self, *args): pass\n"
+    "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+    "http.server.HTTPServer(('127.0.0.1', port), Handler).{serve}()\n"
+)
+
+
+def _install_fake_ttyd_and_lsof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, serve: str, client_connected: bool = False
+) -> Path:
+    """Put a fake ttyd and a fake lsof first on PATH; return the file lsof touches when probed."""
+    probed = tmp_path / "probed"
+    ttyd = tmp_path / "ttyd"
+    ttyd.write_text(_FAKE_TTYD.format(serve=serve), encoding="utf-8")
+    ttyd.chmod(0o755)
+    lsof = tmp_path / "lsof"
+    lsof.write_text(
+        f"#!/bin/sh\ntouch {probed}\n" + ("printf 'connected\\n'\n" if client_connected else "exit 1\n"),
+        encoding="utf-8",
+    )
+    lsof.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    return probed
+
+
 @pytest.mark.parametrize("connected", [False, True])
 def test_supervisor_reaps_idle_terminal_and_spares_connected_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, connected: bool
 ) -> None:
-    ttyd = tmp_path / "ttyd"
-    ttyd.write_text(
-        "#!/usr/bin/env python3\n"
-        "import http.server, sys\n"
-        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
-        "class Handler(http.server.BaseHTTPRequestHandler):\n"
-        " def do_GET(self):\n"
-        "  self.send_response(200)\n"
-        "  self.end_headers()\n"
-        " def log_message(self, *args): pass\n"
-        "http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()\n",
-        encoding="utf-8",
-    )
-    ttyd.chmod(0o755)
-    lsof = tmp_path / "lsof"
-    lsof.write_text("#!/bin/sh\nprintf 'connected\\n'\n" if connected else "#!/bin/sh\nexit 1\n", encoding="utf-8")
-    lsof.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
-    processes = []
-    original_spawn = terminal_launcher.spawn
-
-    def record_spawn(*args: object, **kwargs: object) -> object:
-        process = original_spawn(*args, **kwargs)
-        processes.append(process)
-        return process
-
+    probed = _install_fake_ttyd_and_lsof(tmp_path, monkeypatch, serve="serve_forever", client_connected=connected)
+    processes: list[subprocess.Popen[str]] = []
     with (
-        patch.object(terminal_launcher, "spawn", side_effect=record_spawn),
-        patch.object(terminal_launcher, "_CONNECT_GRACE_SECONDS", 0.2),
+        patch.object(terminal_launcher, "spawn", side_effect=_recording_spawn(processes)),
+        patch.object(terminal_launcher, "_CONNECT_GRACE_SECONDS", 1.0),
     ):
-        result = terminal_launcher.launch_ttyd(["/bin/sh"], port=port)
-        assert result.pid == processes[0].pid
+        result = terminal_launcher.launch_ttyd(["/bin/sh"], port=_free_port())
         try:
-            deadline = time.monotonic() + 3
-            while processes[0].returncode is None and time.monotonic() < deadline:
-                time.sleep(0.01)
+            assert result.pid == processes[0].pid
+            assert _wait_until(probed.exists), "the supervisor never probed for a client"
             if connected:
                 assert processes[0].returncode is None
             else:
-                assert processes[0].returncode is not None
+                assert _wait_until(lambda: processes[0].returncode is not None)
         finally:
             if processes[0].returncode is None:
                 processes[0].terminate()
                 processes[0].wait(timeout=5)
+
+
+def test_supervisor_collects_a_terminal_that_exits_after_becoming_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_ttyd_and_lsof(tmp_path, monkeypatch, serve="handle_request")
+    processes: list[subprocess.Popen[str]] = []
+    with (
+        patch.object(terminal_launcher, "spawn", side_effect=_recording_spawn(processes)),
+        patch.object(terminal_launcher, "_CONNECT_GRACE_SECONDS", 60.0),
+    ):
+        result = terminal_launcher.launch_ttyd(["/bin/sh"], port=_free_port())
+    assert result.launch_url
+    assert _wait_until(lambda: processes[0].returncode == 0)
 
 
 def test_reap_if_unconnected_is_a_noop_once_ttyd_already_exited() -> None:

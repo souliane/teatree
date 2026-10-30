@@ -88,6 +88,7 @@ def _arm_connect_grace_reaper(proc: Popen[str], port: int) -> None:
 
 def _port_available(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # a finished session's TIME_WAIT is not busy
         try:
             probe.bind((_LOOPBACK, port))
         except OSError:
