@@ -1,35 +1,21 @@
-"""Loopback ttyd web-terminal launcher (#3162 — resurrected from #541's `f7d65a9e~1`).
+"""Launch one loopback ttyd terminal on the dashboard's fixed forwarded port.
 
-Spawns ``ttyd --writable --once`` on a free ``127.0.0.1`` port wrapping an agent
-command and returns the ``launch_url``. This is the convenience debug tier: it
-binds loopback ONLY (reached through the same SSH tunnel as the admin, never a
-new network door), and ``--once`` makes the ttyd process die once the FIRST
-client disconnects — so a connected-and-debugged session cleans itself up.
-
-``--once`` alone does NOT bound a ttyd nobody ever connects to (it only fires on
-DISCONNECT), so an unconnected ``--writable`` (== RCE-as-the-service-user)
-listener would otherwise sit on loopback forever, and repeated dashboard clicks
-would pile them up. ttyd has no native "exit if no client connects" flag, so a
-per-spawn connect-grace reaper (:func:`_arm_connect_grace_reaper`) terminates an
-unconnected ttyd after :data:`_CONNECT_GRACE_SECONDS`. A live session is spared —
-the reaper checks for an ESTABLISHED client on the port first (fail-SAFE: an
-inconclusive probe never reaps), so the legitimate connect-and-debug flow is
-untouched while orphans are bounded.
-
-The native-window / new-tab modes and the in-process registry the pre-#541 file
-also carried are intentionally NOT resurrected: they served a local operator at
-the machine, not a dashboard reached over a tunnel, and would be dead code here.
-Break-glass when teatree itself is down stays host ``ssh`` + ``tmux`` (see
-``docs/debug-runbook.md``) — a debug path served by the patient cannot treat it.
+The secret base path and origin check protect the writable websocket. A supervisor
+reaps exits immediately and terminates an unused listener after a grace period.
 """
 
 import logging
+import secrets
 import shutil
+import socket
 import threading
+import time
 from dataclasses import dataclass
+from http import HTTPStatus
+from http.client import HTTPConnection, HTTPException
 
-from teatree.utils.ports import find_free_port
-from teatree.utils.run import DEVNULL, Popen, run_allowed_to_fail, spawn
+from teatree.utils.loopback_forward import TERMINAL_PORT
+from teatree.utils.run import DEVNULL, Popen, TimeoutExpired, run_allowed_to_fail, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +25,14 @@ _TTYD_INSTALL_HINT = "ttyd not found on PATH — install with `brew install ttyd
 #: reaped. Generous enough for a human to click the dashboard button and connect,
 #: short enough that an abandoned (or never-opened) one does not linger.
 _CONNECT_GRACE_SECONDS = 120.0
+_STARTUP_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
 class LaunchResult:
     launch_url: str = ""
     pid: int = 0
+    port: int = 0
     error: str = ""
 
 
@@ -86,19 +74,49 @@ def _reap_if_unconnected(proc: Popen[str], port: int) -> None:
 
 
 def _arm_connect_grace_reaper(proc: Popen[str], port: int) -> None:
-    """Arm a daemon timer that reaps *proc* if no client connects within the grace window."""
-    timer = threading.Timer(_CONNECT_GRACE_SECONDS, _reap_if_unconnected, args=(proc, port))
-    timer.daemon = True
-    timer.start()
+    """Wait for exit and collect it; terminate an unconnected process after the grace period."""
+
+    def supervise() -> None:
+        try:
+            proc.wait(timeout=_CONNECT_GRACE_SECONDS)
+        except TimeoutExpired:
+            _reap_if_unconnected(proc, port)
+            proc.wait()
+
+    threading.Thread(target=supervise, daemon=True).start()
 
 
-def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> LaunchResult:
-    """Spawn ``ttyd --writable --once`` on a free loopback port wrapping *command*.
+def _port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # a finished session's TIME_WAIT is not busy
+        try:
+            probe.bind((_LOOPBACK, port))
+        except OSError:
+            return False
+    return True
+
+
+def _wait_for_ready(proc: Popen[str], port: int, path: str) -> bool:
+    deadline = time.monotonic() + _STARTUP_SECONDS
+    while time.monotonic() < deadline and proc.poll() is None:
+        connection = HTTPConnection(_LOOPBACK, port, timeout=0.2)
+        try:
+            connection.request("GET", f"{path}/")
+            if connection.getresponse().status == HTTPStatus.OK:
+                return True
+        except (OSError, HTTPException):
+            pass
+        finally:
+            connection.close()
+        time.sleep(0.02)
+    return False
+
+
+def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None, port: int = TERMINAL_PORT) -> LaunchResult:
+    """Spawn one guarded ttyd on the fixed loopback port wrapping *command*.
 
     Returns a :class:`LaunchResult` with the ``launch_url`` on success, or one
-    carrying an ``error`` when ttyd is not installed — never raises, so a missing
-    binary degrades to a rendered hint rather than a 500. A connect-grace reaper is
-    armed so an unconnected ttyd is bounded, not left listening indefinitely.
+    carrying an ``error`` when a required binary is absent or the port is busy.
 
     *env* is the child's whole environment, already resolved by the caller — which
     credential the wrapped command authenticates with is the caller's decision, not
@@ -109,16 +127,38 @@ def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> Lau
         logger.error(_TTYD_INSTALL_HINT)
         return LaunchResult(error=_TTYD_INSTALL_HINT)
 
-    port = find_free_port(_LOOPBACK)
+    if not shutil.which("lsof"):
+        return LaunchResult(error="lsof not found on PATH — install lsof to supervise the terminal")
+    if not _port_available(port):
+        return LaunchResult(error=f"terminal port {port} is busy — close the existing terminal or wait two minutes")
+    path = f"/{secrets.token_urlsafe(16)}"
     # Both streams go to DEVNULL: nothing reads ttyd's output, and an unread PIPE
     # can fill the OS pipe buffer and block a chatty ttyd mid-session. The reaper's
     # liveness probe is an independent loopback ``lsof`` on the port, not ttyd's stderr.
     proc = spawn(
-        [ttyd_bin, "--writable", "--interface", _LOOPBACK, "--port", str(port), "--once", *command],
+        [
+            ttyd_bin,
+            "--writable",
+            "--check-origin",
+            "--max-clients",
+            "1",
+            "--interface",
+            _LOOPBACK,
+            "--port",
+            str(port),
+            "--base-path",
+            path,
+            "--once",
+            *command,
+        ],
         env=env,
         stdout=DEVNULL,
         stderr=DEVNULL,
     )
     _arm_connect_grace_reaper(proc, port)
+    if not _wait_for_ready(proc, port, path):
+        if proc.poll() is None:
+            proc.terminate()
+        return LaunchResult(error=f"ttyd could not start on port {port}")
     logger.info("Launched loopback ttyd (pid=%d, port=%d)", proc.pid, port)
-    return LaunchResult(launch_url=f"http://{_LOOPBACK}:{port}", pid=proc.pid)
+    return LaunchResult(launch_url=f"http://{_LOOPBACK}:{port}{path}/", pid=proc.pid, port=port)

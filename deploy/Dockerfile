@@ -57,7 +57,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv gnupg jq pass postgresql-client procps sqlite3 ttyd && \
+        ca-certificates curl direnv gnupg jq lsof pass postgresql-client procps sqlite3 ttyd && \
     # Fetch the NodeSource setup script to a FILE, never straight into a shell, so
     # a truncated or error body cannot be executed as a script; and retry, so a
     # transient CDN 403/5xx costs seconds instead of the whole deploy.
