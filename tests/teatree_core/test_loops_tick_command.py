@@ -370,7 +370,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
 
         prompt = Prompt.objects.create(name="silent-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
-        Loop.objects.filter(name="news").update(delay_seconds=3600, last_run_at=None)
+        Loop.objects.filter(name="news").update(delay_seconds=3600, daily_at=None, last_run_at=None)
         Loop.objects.set_manual_override("news", runs=True, reason="exercise periodic tick")
         mini = MiniLoop(
             name="news",
@@ -397,7 +397,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
     def test_periodic_factory_with_no_job_names_reason_and_retries(self) -> None:
         prompt = Prompt.objects.create(name="no-job-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
-        Loop.objects.filter(name="news").update(delay_seconds=3600, last_run_at=None)
+        Loop.objects.filter(name="news").update(delay_seconds=3600, daily_at=None, last_run_at=None)
         Loop.objects.set_manual_override("news", runs=True, reason="exercise periodic tick")
         mini = MiniLoop(
             name="news",
