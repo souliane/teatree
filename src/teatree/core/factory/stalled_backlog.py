@@ -33,8 +33,6 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.utils.throttled_log import warn_throttled
 
-#: A ticket whose newest task FAILED this long ago, with nothing pending or claimed, has
-#: no execution path left — long enough that a retry in flight never trips it.
 STALLED_BACKLOG_WINDOW = timedelta(hours=2)
 #: One stranded ticket is churn; several at once is the dispatch lane itself being down.
 STALLED_BACKLOG_THRESHOLD = 3
@@ -78,8 +76,8 @@ def _stalled_backlog_signals() -> SignalCollection:
                 severity=KnownIssue.Severity.CRITICAL,
                 kind="stalled_backlog",
                 summary=(
-                    f"{stalled} tickets stranded in started — newest task failed over {hours}h ago "
-                    "and nothing is pending or claimed; the dispatch lane is not running"
+                    f"{stalled} tickets stranded in started — newest task created over {hours}h ago and failed, "
+                    "with nothing pending or claimed; dispatch needs investigation"
                 ),
             ),
         )

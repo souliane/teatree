@@ -371,6 +371,7 @@ class TestStalledBacklogCollector:
         assert [s.fingerprint for s in signals] == ["stalled-backlog"]
         assert signals[0].severity == KnownIssue.Severity.CRITICAL
         assert str(STALLED_BACKLOG_THRESHOLD) in signals[0].summary
+        assert "created over 2h ago" in signals[0].summary
 
     def test_below_the_threshold_is_churn_not_a_signal(self) -> None:
         with patch(
