@@ -420,3 +420,24 @@ def test_proposed_commit_refuses_when_git_cannot_name_the_committer(
     _arm_bot_gate(monkeypatch)
 
     assert "bot author and committer" in bot_push_gate.bot_proposed_commit_error(tmp_path, _BOT_REMOTE)
+
+
+def test_a_listed_commit_git_cannot_show_is_not_taken_for_the_bot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, head = _push_repo(tmp_path, author="build-bot")
+    _arm_bot_gate(monkeypatch, base=base)
+    monkeypatch.setattr(bot_push_gate, "_new_commits", lambda repo, local_sha, held: ["1" * 40])
+
+    error = bot_push_gate.bot_push_error(
+        repo=tmp_path, remote_name="origin", remote_url=_BOT_REMOTE, refs=([(head, "")], True)
+    )
+
+    assert "non-bot commit" in error
+
+
+@pytest.mark.parametrize(
+    ("local", "is_the_bot"), [("build-bot", True), ("12345+build-bot", True), ("12345+person", False)]
+)
+def test_a_noreply_email_names_the_bot_with_or_without_its_numeric_id(local: str, *, is_the_bot: bool) -> None:
+    assert bot_push_gate._bot_email(f"{local}{_NOREPLY}", "build-bot") is is_the_bot
