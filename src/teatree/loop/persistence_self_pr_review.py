@@ -43,7 +43,7 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
     variant = str(payload.get("variant") or "claude:review")
     if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, variant=variant):
         return None
-    if review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url):
+    if review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url, head_sha=head_sha):
         notify_review_rounds_exhausted(slug=slug, pr_id=pr_id, pr_url=pr_url, head_sha=head_sha)
         return None
     overlay = str(payload.get("overlay") or "")

@@ -208,6 +208,10 @@ def _authorization(facts: PrActionFacts) -> PrNextAction | None:
 
 
 def _awaiting_review(facts: PrActionFacts) -> PrNextAction | None:
+    if facts.entry is not None and (
+        facts.entry.decision == "waiting_on_critic" or facts.entry.reason == "review_rounds_exhausted"
+    ):
+        return None
     if approvals_met(facts.approvals) is False:
         return PrNextAction("Waiting on colleagues", "Reviewer", f"Await approvals ({facts.approvals})")
     if facts.review_requested:

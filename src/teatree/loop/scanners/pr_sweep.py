@@ -484,7 +484,9 @@ class PrSweepScanner:
         refuses first (#4380). A reviewer who looked and said no is not "no independent
         review", and arming another over a held head is how the newer verdict came to be.
         """
-        exhausted = self.auto_review_dispatch and review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url)
+        exhausted = self.auto_review_dispatch and review_rounds_exhausted(
+            slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha
+        )
         if exhausted:
             notify_review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
         self._flag(

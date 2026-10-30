@@ -76,17 +76,23 @@ def _counted_review_heads(ticket: "Ticket", *, slug: str, pr_id: int) -> tuple[s
         .exclude(outcome__in=("", "venue_limit", "unverified"))
         .values_list("subject", flat=True)
     )
+    direct_carries = (ticket.extra or {}).get("review_carried_heads") or {}
     recorded_heads = tuple(
-        head
-        for record_slug, record_pr_id, head in verdicts
-        if (record_slug.casefold(), record_pr_id, head) not in carried
+        dict.fromkeys(
+            head
+            for record_slug, record_pr_id, head in verdicts
+            if (record_slug.casefold(), record_pr_id, head) not in carried and head not in direct_carries
+        )
     )
-    return (*recorded_heads, *(head for head in measured if head not in recorded_heads))
+    return tuple(dict.fromkeys((*recorded_heads, *measured)))
 
 
-def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str) -> bool:
+def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> bool:
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
-    return ticket is not None and len(_counted_review_heads(ticket, slug=slug, pr_id=pr_id)) >= MAX_REVIEW_ROUNDS
+    if ticket is None:
+        return False
+    heads = _counted_review_heads(ticket, slug=slug, pr_id=pr_id)
+    return len(heads) >= MAX_REVIEW_ROUNDS and head_sha not in heads
 
 
 def notify_review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> None:
@@ -178,7 +184,9 @@ def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:
         slug=pr.slug, pr_id=pr.number, pr_url=pr.url
     ):
         return False
-    if not ctx.rounds_checked and review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
+    if not ctx.rounds_checked and review_rounds_exhausted(
+        slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha
+    ):
         notify_review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
         return False
     if review_in_flight_for_pr(pr_url=pr.url):

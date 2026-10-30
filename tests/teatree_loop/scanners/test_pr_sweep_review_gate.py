@@ -8,7 +8,7 @@ scanner-level decision ladder that calls both is pinned in ``test_pr_sweep_scann
 """
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from unittest.mock import patch
 
 import pytest
@@ -109,7 +109,7 @@ def _record(*, verdict: str, reviewer: str, sha: str = HEAD, at: dt.datetime | N
 class TestArmColdReview:
     """The arm is best-effort: every refusal degrades to "no task armed"."""
 
-    def test_three_recorded_verdicts_on_one_head_refuse_a_fourth_review(self) -> None:
+    def test_three_reviewers_on_one_head_leave_a_new_head_armable(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
         PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
         for reviewer in ("reviewer-agent-7", "reviewer-agent-8", "reviewer-agent-9"):
@@ -123,9 +123,49 @@ class TestArmColdReview:
             )
         dispatcher = _FakeDispatcher()
         with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
-            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
-        assert dispatcher.calls == []
-        assert notify.call_count == 1
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
+        notify.assert_not_called()
+
+    def test_three_counted_heads_can_rearm_the_third_head(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity="reviewer-agent-7",
+                ticket=ticket,
+            )
+        dispatcher = _FakeDispatcher()
+        counted = replace(_pr(), head_sha="c" * 40)
+
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert arm_cold_review(counted, ctx=_ctx(dispatcher)) is True
+        assert dispatcher.calls[0][2] == "c" * 40
+        notify.assert_not_called()
+
+    def test_carry_forward_without_head_carry_over_does_not_spend_round(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in "ab":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity=f"reviewer-agent-{digit}",
+                ticket=ticket if digit == "a" else None,
+            )
+            RoundMetric.objects.open(kind="review", ticket=ticket, subject=digit * 40, size=1, detail={})
+            RoundMetric.objects.settle(kind="review", ticket=ticket, subject=digit * 40, outcome="hold")
+        ReviewVerdict.objects.get(reviewed_sha="b" * 40).carry_forward(reviewed_sha="c" * 40)
+        dispatcher = _FakeDispatcher()
+
+        assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+        assert len(dispatcher.calls) == 1
 
     def test_three_recorded_heads_refuse_a_fourth_review(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
@@ -152,7 +192,7 @@ class TestArmColdReview:
         for digit in "abc":
             _record(verdict="hold", reviewer=f"reviewer-agent-{digit}", sha=digit * 40)
         with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
-            assert review_rounds_exhausted(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL) is True
+            assert review_rounds_exhausted(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD) is True
         notify.assert_not_called()
 
     def test_carried_verdict_does_not_spend_a_review_round(self) -> None:

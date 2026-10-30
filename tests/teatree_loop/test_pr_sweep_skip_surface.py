@@ -73,13 +73,16 @@ class _Recorder:
 class TestSurfacesOnPersistence(django.test.TestCase):
     def test_critic_wait_keeps_existing_streak_unchanged(self) -> None:
         notifier = _Recorder()
-        record_sweep_outcomes([_blocked()], notify=notifier)
+        start = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
+        record_sweep_outcomes([_blocked()], notify=notifier, now=start)
         before = SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count
         waiting = _blocked()
         waiting = ScanSignal(kind="pr_sweep.waiting_on_critic", summary=waiting.summary, payload=waiting.payload)
-        for _ in range(4):
-            record_sweep_outcomes([waiting], notify=notifier)
-        assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == before
+        later = start + dt.timedelta(minutes=70)
+        record_sweep_outcomes([waiting], notify=notifier, now=later)
+        streak = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
+        assert streak.tick_count == before
+        assert streak.last_seen_at == later
         assert notifier.sent == []
 
     def test_a_single_skip_says_nothing(self) -> None:

@@ -212,6 +212,7 @@ class TicketExtra(TicketRepoExtra, total=False):
     anti_vacuity_attestation: "AntiVacuityAttestation"
     anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
+    review_carried_heads: dict[str, str]
     rubric_grades_recorded: bool
     rubric_waivers: list[dict[str, str | int]]
     # Owner waivers of one LLM merge-critic item, keyed by item slug; read by ``unmet_items``.

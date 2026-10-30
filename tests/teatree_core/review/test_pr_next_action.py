@@ -24,7 +24,7 @@ def test_critic_wait_and_review_cap_have_actionable_inventory_rows() -> None:
             review_requested=False,
             question="",
             ci=entry.ci,
-            approvals=entry.approvals,
+            approvals="awaiting approval",
             threads=entry.threads,
             threads_blocking=False,
             draft=False,

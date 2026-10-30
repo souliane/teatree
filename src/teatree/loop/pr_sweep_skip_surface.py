@@ -143,6 +143,7 @@ def _observe(signal: ScanSignal, moment: dt.datetime) -> None:
         SweepSkipStreak.objects.resolve(slug=slug, pr_id=pr_id)
         return
     if signal.kind in _NEUTRAL_KINDS:
+        SweepSkipStreak.objects.touch(slug=slug, pr_id=pr_id, now=moment)
         return
     SweepSkipStreak.objects.observe(
         SkipObservation(
