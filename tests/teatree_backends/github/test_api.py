@@ -238,6 +238,19 @@ def test_pooled_rate_limit_header_classifies_without_message(
     assert classify_gh_stderr(raised.value.stderr) == ScannerErrorClass.RATE_LIMIT
 
 
+@pytest.mark.parametrize("status", [404, 422])
+def test_exhausted_quota_header_does_not_reclassify_unrelated_http_error(
+    pooled_server: ForgeServer, status: int
+) -> None:
+    pooled_server.statuses["/unrelated"] = status
+    pooled_server.response_headers["/unrelated"] = {"X-RateLimit-Remaining": "0"}
+
+    with pytest.raises(CommandFailedError) as raised:
+        api._run_gh("gh", "api", "unrelated", token="test-token")
+
+    assert classify_gh_stderr(raised.value.stderr) == ScannerErrorClass.UNKNOWN
+
+
 @pytest.mark.parametrize("body", ["not JSON", "[]", '{"message": 17}'])
 def test_pooled_unreadable_error_body_keeps_the_status(body: str) -> None:
     response = httpx.Response(403, text=body, request=httpx.Request("GET", "https://api.github.com/x"))
