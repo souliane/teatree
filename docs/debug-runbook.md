@@ -36,12 +36,13 @@ ssh -L 8000:127.0.0.1:8000 <box>   # then open http://127.0.0.1:8000/dash/ local
 ## Tier 2 — convenience: the dashboard's loopback ttyd "Debug session" button
 
 When teatree is *up* but a ticket is stuck, the ticket drawer's **Debug session**
-button spawns `ttyd --writable --once` on a free `127.0.0.1` port wrapping a
-`claude` session (fresh, or `--resume <session>` from the card). It binds loopback
-only, is reached through the **same** SSH tunnel (`ssh -L <port>:127.0.0.1:<port>`),
-and `--once` makes the process die with the session — no lingering writable
-terminal, no new network door. If the Django process is down the button does not
-render; fall back to tier 1.
+button spawns one `ttyd --writable --once` on `127.0.0.1:8804` wrapping a
+`claude` session (fresh, or `--resume <session>` from the card). The URL has a
+secret path; origin checking and a one-client limit guard the websocket. The
+admin container uses host networking, so ttyd binds the box's loopback directly.
+Over a plain SSH connection, add `ssh -L 8804:127.0.0.1:8804 <box>`; only one terminal can use
+the port at a time. An unused terminal closes after two minutes. If Django is
+down, fall back to tier 1.
 
 ## Tier 3 — phone-friendly: allowlisted command buttons
 
