@@ -68,6 +68,26 @@ class TestFirstContactBinding(TestCase):
         assert len(self.backend.replies) == 1
         assert self.backend.replies[0][2] == "overlay=acme\nticket=#1"
 
+    def test_a_bound_status_question_delegates_when_the_simple_answer_bails(self) -> None:
+        _say("thanks!", ts="1.0")
+        _cycle(self.backend)
+        _say("what's the status?", ts="2.0", thread_ts="1.0")
+        self.backend.message_meta["2.0"] = {"ts": "2.0", "thread_ts": "1.0"}
+
+        with (
+            patch(_STATUSLINE, return_value=""),
+            patch("teatree.loop.slack_answer.simple_answer.run_one_shot", return_value=None) as cheap,
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(self.backend))
+            run_slack_answer_cycle(messaging_resolver=_resolver(self.backend))
+
+        row = PendingChatInjection.objects.get(slack_ts="2.0")
+        assert (report.dispatched, row.answer_kind, Task.objects.count()) == (1, "delegated", 1)
+        assert Task.objects.get().ticket_id == self._conversation().pk
+        assert row.loop_response_confirmed_at is not None
+        assert len(self.backend.replies) == 1
+        cheap.assert_called_once()
+
     def test_a_work_implying_reply_takes_the_bound_conversation_instead_of_a_second_ticket(self) -> None:
         _say("thanks!", ts="1.0")
         _cycle(self.backend)

@@ -451,14 +451,16 @@ def _process_unit(
 
     status_request = binding is not None and is_status_question(unit.text)
     read = memoized_reader(reader)
-    result = bind_reply(
-        unit.lead, reader=status_binding_reader(read, status_request=status_request), backend=backend, text=unit.text
-    )
+    routing_reader = status_binding_reader(read, status_request=status_request)
+    result = bind_reply(unit.lead, reader=routing_reader, backend=backend, text=unit.text)
     log_coalesced_replies(unit.rows, result)
     bound = result if isinstance(result, BoundAnswer) else None
     if status_request and bound is None:
-        if _handle_simple(backend, unit, binding) == "simple":
+        outcome = _handle_simple(backend, unit, binding)
+        if outcome == "simple":
             report.answered_simple += 1
+        elif outcome == "needs_work":
+            _orchestrate(backend, unit, routing_reader(unit.text), report, binding)
         return
     if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return

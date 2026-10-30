@@ -339,6 +339,25 @@ class TestConversationTicketsOutliveTheirAnchorOnlyWhileInUse(TestCase):
             short_description="Is the rounding still wrong?",
         )
 
+    def test_a_forge_issue_is_retired_even_with_a_live_task_and_recent_binding(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=_ISSUE)
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
+
+        with _forge(_COMPLETED):
+            transitions, reads = board_reconcile_issue_close.closed_issue_transitions(
+                overlay="t3-teatree", dry_run=False, probe_budget=1
+            )
+
+        ticket.refresh_from_db()
+        assert ([transition.ticket_id for transition in transitions], reads, ticket.state) == (
+            [ticket.pk],
+            1,
+            Ticket.State.IGNORED,
+        )
+
     def test_a_conversation_with_a_live_task_is_kept(self) -> None:
         ticket = self._conversation()
         Task.objects.create(
