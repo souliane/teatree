@@ -295,7 +295,7 @@ class Command(MachineOutputCommand):
             ),
         ] = False,
     ) -> CheckingReportDict | AllOverlaysReportDict:
-        """Print a terse, grouped, clickable report of changes since the last check."""
+        """Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check."""
         flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify, brief=False)
         return self._dispatch_show(flags=flags, this_overlay=this_overlay)
 

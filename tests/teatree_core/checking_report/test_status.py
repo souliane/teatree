@@ -694,3 +694,191 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.to_dict()["features"][0]["pending_delivery"] == 1
         assert "waiting for Slack delivery" in status.render()[1]
         assert "Can I publish" not in status.render()[1]
+
+    def _serving_head(self) -> str:
+        sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        return sha
+
+    def _merge_days_ago(self, ticket: Ticket, *, slug: str, pr_id: int, sha: str, days: int = 3) -> None:
+        audit = MergeAuditFactory(clear__ticket=ticket, clear__slug=slug, clear__pr_id=pr_id, merged_sha=sha)
+        audit.merged_at = timezone.now() - timedelta(days=days)
+        audit.save(update_fields=["merged_at"])
+
+    def test_older_merges_list_only_the_ones_the_serving_build_lacks(self) -> None:
+        with _two_commit_checkout() as (serving_sha, newer_sha):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            live = TicketFactory(
+                issue_url="https://github.com/souliane/teatree/issues/501", state=Ticket.State.DELIVERED
+            )
+            waiting = TicketFactory(
+                issue_url="https://github.com/souliane/teatree/issues/503", state=Ticket.State.DELIVERED
+            )
+            self._merge_days_ago(live, slug="souliane/teatree", pr_id=502, sha=serving_sha)
+            self._merge_days_ago(waiting, slug="souliane/teatree", pr_id=504, sha=newer_sha)
+
+            status = self._report().status_by_feature
+
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/504"]
+        assert [feature.merged for feature in status.features] == [[]]
+        assert status.deploy_state == "waiting"
+
+    def test_older_merge_in_another_repository_does_not_change_the_deployment_state(self) -> None:
+        self._serving_head()
+        other = TicketFactory(issue_url="https://github.com/example/widgets/issues/512", state=Ticket.State.DELIVERED)
+        self._merge_days_ago(other, slug="example/widgets", pr_id=513, sha="a" * 40)
+
+        status = self._report().status_by_feature
+
+        assert status.deploy_state == "verified"
+        assert status.not_yet_deployed == []
+        assert status.features == []
+
+    def test_settled_pull_requests_of_an_active_ticket_are_not_left_work(self) -> None:
+        ticket = TicketFactory(issue_url="https://github.com/example/widgets/issues/520")
+        PullRequestFactory(
+            ticket=ticket, url="https://github.com/example/widgets/pull/521", state=PullRequest.State.MERGED
+        )
+        PullRequestFactory(
+            ticket=ticket, url="https://github.com/example/widgets/pull/522", state=PullRequest.State.CLOSED
+        )
+        PullRequestFactory(
+            ticket=ticket, url="https://github.com/example/widgets/pull/523", state=PullRequest.State.OPEN
+        )
+
+        status = self._report().status_by_feature
+
+        assert [item.url for block in status.features for item in block.left] == [
+            "https://github.com/example/widgets/pull/523"
+        ]
+
+    def test_live_feature_with_nothing_left_reads_done(self) -> None:
+        sha = self._serving_head()
+        ticket = TicketFactory(
+            issue_url="https://github.com/souliane/teatree/issues/530", short_description="finish access"
+        )
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=531, merged_sha=sha)
+
+        lines = self._report().status_by_feature.render()
+
+        assert lines == ["Status by feature", "- finish access: merged and live; nothing left. done."]
+
+    def test_merged_feature_waiting_for_deployment_hands_the_next_step_to_the_coordinator(self) -> None:
+        with _two_commit_checkout() as (serving_sha, merged_sha):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            ticket = TicketFactory(
+                issue_url="https://github.com/souliane/teatree/issues/540", short_description="message delivery"
+            )
+            MergeAuditFactory(
+                clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=541, merged_sha=merged_sha
+            )
+
+            lines = self._report().status_by_feature.render()
+
+        link = "[message delivery](https://github.com/souliane/teatree/pull/541)"
+        assert lines == [
+            "Status by feature",
+            f"- message delivery: {link} merged; deployment waiting; nothing left. the coordinator has the next step.",
+            f"Not yet deployed (waiting): {link}",
+        ]
+
+    def test_open_pull_requests_say_what_they_wait_for_and_who_has_the_next_step(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/550", short_description="review workflow"
+        )
+        PullRequestFactory(
+            ticket=ticket,
+            url="https://github.com/example/widgets/pull/551",
+            state=PullRequest.State.REVIEW_REQUESTED,
+        )
+        PullRequestFactory(
+            ticket=ticket, url="https://github.com/example/widgets/pull/552", state=PullRequest.State.OPEN
+        )
+
+        lines = self._report().status_by_feature.render()
+
+        assert lines[1] == (
+            "- review workflow: no merge since the last check; "
+            "[review workflow](https://github.com/example/widgets/pull/552) (being fixed), "
+            "[review workflow](https://github.com/example/widgets/pull/551) (waiting for review). "
+            "the factory has the next step."
+        )
+
+    def test_owner_questions_say_whether_the_slack_reply_or_the_delivery_is_awaited(self) -> None:
+        ticket = TicketFactory(
+            issue_url="https://github.com/example/widgets/issues/560", short_description="dashboard access"
+        )
+        for question, ts in (("Can I publish the fix?", "1800000000.000001"), ("Can I merge the fix?", "")):
+            task = TaskFactory(ticket=ticket, session__ticket=ticket)
+            DeferredQuestion.record(
+                question,
+                parked_task=task,
+                card=owner_card(),
+                slack_channel="DQUESTION" if ts else "",
+                slack_ts=ts,
+            )
+
+        lines = self._report().status_by_feature.render()
+
+        assert lines[1] == (
+            "- dashboard access: no merge since the last check; "
+            "[dashboard access](https://github.com/example/widgets/issues/560) (waiting for review). "
+            "waiting for your Slack reply: "
+            "[Can I publish the fix?](https://slack.com/archives/DQUESTION/p1800000000000001); "
+            "waiting for Slack delivery of your question."
+        )
+
+    def test_owner_questions_of_another_overlay_stay_out_of_this_overlays_report(self) -> None:
+        own = TicketFactory(
+            overlay="t3-teatree",
+            issue_url="https://github.com/example/widgets/issues/570",
+            short_description="own work",
+        )
+        other = TicketFactory(
+            overlay="other-overlay",
+            issue_url="https://github.com/example/gadgets/issues/571",
+            short_description="their work",
+        )
+        for ticket, ts in ((own, "1800000000.000001"), (other, "1800000000.000002")):
+            task = TaskFactory(ticket=ticket, session__ticket=ticket)
+            DeferredQuestion.record(
+                f"Can I publish {ticket.short_description}?",
+                parked_task=task,
+                card=owner_card(),
+                slack_channel="DQUESTION",
+                slack_ts=ts,
+            )
+
+        status = self._report().status_by_feature
+
+        assert [feature.title for feature in status.features] == ["own work"]
+
+    def _approved_pr_state_with_inventory_age(self, minutes: int) -> str:
+        url = "https://github.com/example/widgets/pull/580"
+        PullRequestFactory(ticket=TicketFactory(), url=url, state=PullRequest.State.APPROVED)
+        entry = PrInventoryEntry(
+            url=url,
+            repo="example/widgets",
+            iid=580,
+            title="repair checks",
+            created_at="",
+            updated_at="",
+            next_task="",
+            decision="my_pr.open",
+            ci="green",
+            approvals="unknown",
+            threads="unknown",
+            draft=False,
+        )
+        with (
+            TemporaryDirectory() as directory,
+            patch("teatree.core.review.pr_inventory.data_dir_root", return_value=Path(directory)),
+        ):
+            write_inventory("t3-teatree", [entry], observed_at=timezone.now() - timedelta(minutes=minutes))
+            return self._report().status_by_feature.features[0].left[0].state
+
+    def test_pr_inventory_observed_within_half_an_hour_still_supplies_the_checks(self) -> None:
+        assert self._approved_pr_state_with_inventory_age(29) == "ready to merge"
+
+    def test_pr_inventory_older_than_half_an_hour_is_ignored(self) -> None:
+        assert self._approved_pr_state_with_inventory_age(31) == "tests status unknown"

@@ -36,6 +36,15 @@ class TestARowFiresOnlyOnItsOwnKindAndWords:
         assert _misfit("credentials", question, refused) is MisfitAction.BACKGROUND_RETRY
         assert _misfit("credentials", question, credential) is None
 
+    def test_automatic_review_refusal_needs_the_credentials_decision_and_at_least_one_checked_fact(self) -> None:
+        question = "Can I have one-time approval to rerun the focused regression tests?"
+        refused = "The automatic approval review refused the focused regression tests as foreground heavy work."
+
+        unchecked = owner_stop(question, "credentials", refused) | {"user_input_checked": []}
+
+        assert _misfit("public_post", question, refused) is None
+        assert owner_stop_misfit(unchecked) is None
+
     def test_automatic_review_classifies_a_new_wording_but_keeps_real_access_decisions(self) -> None:
         fact = "The automatic approval review rejected the test command as foreground heavy work."
         routine = owner_stop("Can I rerun the tests in the background?", "credentials", fact)
