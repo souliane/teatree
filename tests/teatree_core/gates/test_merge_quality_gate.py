@@ -28,6 +28,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.merge_quality_gate import (
     MergeAwaitingCriticError,
@@ -58,10 +59,13 @@ from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.review.nit_lane import NitPoint, nit_point_marker
+from teatree.loop.scanners.pr_sweep import PrSweepScanner
+from teatree.loop.scanners.pr_sweep_adapters import CallCommandMergeKeystone, NullMergeNotifier
 from teatree.quality.brief_constraints import ConstraintViolation
 from tests._forge_stub import merge_path_stdout
 from tests._git_repo import make_git_repo, run_git
 from tests.factories import waive_rubric
+from tests.teatree_loop.test_pr_sweep_scanner import FakePrApiClient, _open_pr
 
 _FORTY_HEX = "a" * 40
 _OTHER_HEX = "b" * 40
@@ -804,6 +808,59 @@ class TestKeystoneWiring(TestCase):
         ticket.refresh_from_db()
         assert outcome.merged_sha
         assert ticket.state == Ticket.State.MERGED
+
+
+class TestRecordedPassChainsToASweepMerge(TestCase):
+    """A recorded pass arms the critic; the armed task's own verdict lets the first sweep tick merge."""
+
+    @pytest.fixture(autouse=True)
+    def _sweep_preconditions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+        monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
+        monkeypatch.setattr(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths", lambda *a, **k: ["README.md"]
+        )
+        monkeypatch.setattr(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", lambda *a, **k: {"test (3.13)"}
+        )
+
+    def test_the_armed_critics_own_verdict_lets_the_first_sweep_tick_merge(self) -> None:
+        ticket = _ordinary_ticket()
+        clear = _keystone_fixtures(ticket)
+        review = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR, reviewed_sha=_FORTY_HEX)
+        assert not CriticDispatch.objects.filter(ticket=ticket).exists()
+
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            arm_for_recorded_review(review)
+
+        armed = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert armed.task is not None
+        envelope = {
+            "summary": "merge critic done",
+            "critic_verdict": {"grader_identity": "critic-agent-7", "items": _clean_verdict_items()},
+        }
+        assert record_returned_critic_verdict(armed.task, envelope) == ""
+
+        scanner = PrSweepScanner(
+            repos=(_SLUG,),
+            api=FakePrApiClient(prs_by_slug={_SLUG: [_open_pr(pr_id=_PR, head=_FORTY_HEX)]}),
+            keystone=CallCommandMergeKeystone(),
+            notifier=NullMergeNotifier(),
+            overlay="teatree",
+            self_identities=("souliane",),
+        )
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_green):
+            signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["pr_sweep.merged"]
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert CriticDispatch.objects.filter(ticket=ticket, transition="merge").count() == 1
 
 
 class TestResolveGatedTicketFailsClosed(TestCase):
