@@ -67,7 +67,7 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     """
     lower = stderr.lower()
     rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
-    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
+    auth_markers = ("gh auth login", "gh_token", "bad credentials")
     network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
     status = re.search(r"\bhttp ([1-5]\d\d)\b", lower)
     rate_limited_status = status is not None and status.group(1) in {"403", "429"}
@@ -76,7 +76,7 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     ):
         return ScannerErrorClass.RATE_LIMIT
     auth_text = re.sub(r"\b(?:remaining|retry-after)=\d+\b", "", lower)
-    if any(marker in auth_text for marker in auth_markers):
+    if any(marker in auth_text for marker in auth_markers) or re.search(r"\b401\b", auth_text):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK

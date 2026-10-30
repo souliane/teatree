@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +26,23 @@ from tests.factories import planned_ticket
 
 
 class TestLiveOrchestrator(TransactionTestCase):
+    def _wait_for_reply_address(self, broker: LiveMailboxBroker, *, previous: str | None = None) -> str:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            address = next(
+                (
+                    peer["address"]
+                    for peer in broker.identities()
+                    if peer["harness"] == "orchestrator_reply" and peer["address"] != previous
+                ),
+                None,
+            )
+            if address is not None:
+                return address
+            time.sleep(0.01)
+        message = "orchestrator reply identity did not register"
+        raise AssertionError(message)
+
     def test_broker_close_stops_orchestrator_before_socket_shutdown(self) -> None:
         with (
             tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
@@ -263,11 +281,11 @@ class TestLiveOrchestrator(TransactionTestCase):
             asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
             client = MailboxClient(asker.socket_path, asker.token)
             first = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
+            first_reply = self._wait_for_reply_address(broker)
             self._ask(client, first, "one", "architecture")
-            first_reply = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator_reply")
             self._ask(client, first, "two", "architecture")
             assert self._ask(client, first, "three", "architecture")["answer_to"] == "three"
-            rotated_reply = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator_reply")
+            rotated_reply = self._wait_for_reply_address(broker, previous=first_reply)
             assert rotated_reply != first_reply
             second_asker = broker.register(room=str(ticket.pk), harness="codex_app_server", label="second asker")
             second_client = MailboxClient(second_asker.socket_path, second_asker.token)
