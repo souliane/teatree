@@ -36,7 +36,10 @@ class TestPreparedSkillBrief(TestCase):
             patch("teatree.agents.runner.pre_harness_refusal", return_value=None),
             patch("teatree.agents.runner.staged_skills_or_refusal", return_value=([], [])),
             patch("teatree.agents.runner._resolve_backend_or_failure", return_value=dispatch),
-            patch("teatree.agents.runner.resolve_executor_sweep_bundle", side_effect=SkillPinRefusalError("bad pin")),
+            patch(
+                "teatree.agents.runner_skill_staging.resolve_executor_sweep_bundle",
+                side_effect=SkillPinRefusalError("bad pin"),
+            ),
         ):
             refusal = _preflight(task, phase="backlog_sweep", overlay_skill_metadata={})
 

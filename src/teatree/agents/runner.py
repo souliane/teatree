@@ -72,15 +72,14 @@ from teatree.agents.runner_route_recording import park_until as _park_until
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
 from teatree.agents.runner_skill_staging import (
-    bundle_or_refusal,
     park_if_worker_skill_roots_empty,
+    read_only_sweep_skills_or_refusal,
     staged_skills_or_refusal,
 )
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_bundle import resolve_executor_sweep_bundle
 from teatree.agents.skill_routing import (
     AmbiguousSkillRouteError,
     ConflictingHarnessRoutingError,
@@ -96,7 +95,6 @@ from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_refused_checkout, verify_task_checkout
-from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
@@ -521,14 +519,7 @@ def _preflight(
         return dispatch
 
     if phase == "backlog_sweep" and dispatch.harness.capabilities.read_only_venue:
-        selected = bundle_or_refusal(
-            task,
-            lambda: resolve_executor_sweep_bundle(
-                overlay_skill_metadata=overlay_skill_metadata,
-                detection_root=dispatch_detection_root(task.ticket),
-                stage_skills=stage_skills,
-            ),
-        )
+        selected = read_only_sweep_skills_or_refusal(task, overlay_skill_metadata, stage_skills)
         if isinstance(selected, TaskAttempt):
             return selected
         skills = selected
