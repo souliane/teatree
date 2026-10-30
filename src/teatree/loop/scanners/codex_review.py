@@ -105,9 +105,6 @@ class GhFileJson(TypedDict, total=False):
     path: str
 
 
-CodexPrApi = SelfPrApi
-
-
 @dataclass(slots=True)
 class CodexReviewScanner:
     """Emit ``codex_review.dispatch`` signals for newly-pushed PR head SHAs.
@@ -121,7 +118,7 @@ class CodexReviewScanner:
     """
 
     repos: tuple[str, ...]
-    api: CodexPrApi
+    api: SelfPrApi
     overlay: str = ""
     name: str = "codex_review"
 
@@ -236,7 +233,7 @@ def _classify_variant(changed_files: tuple[str, ...], *, pr_url: str, slug: str 
 
 @dataclass(slots=True)
 class GhCodexPrApi:
-    """``gh``-backed :class:`CodexPrApi` — lists self-authored open PRs.
+    """``gh``-backed :class:`SelfPrApi` — lists self-authored open PRs.
 
     The target slug's owning overlay supplies ``GH_TOKEN``. Ambient authentication
     is refused. Uses ``--author @me`` to scope to the authenticated
@@ -347,7 +344,6 @@ __all__ = [
     "ADVERSARIAL_REVIEW_VARIANT",
     "STANDARD_REVIEW_VARIANT",
     "UNSETTLED_CHECK_VERDICTS",
-    "CodexPrApi",
     "CodexReviewScanner",
     "GhCodexPrApi",
     "PrSummary",

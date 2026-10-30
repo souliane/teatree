@@ -286,6 +286,30 @@ class MidRunCheckoutTests(TestCase):
         self.run_to(lambda task: mark_verified_checkout_run(), heartbeat=False, held_at_exit=True)
         assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
 
+    def test_a_released_terminal_task_does_not_renew_its_checkout_at_exit(self) -> None:
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(lambda task: task.complete())
+        renewed.assert_not_called()
+        self.assert_released_and_attested()
+
+    def test_a_terminal_task_still_holding_its_checkout_renews_it_at_exit(self) -> None:
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(lambda task: task.complete(), held_at_exit=True)
+        renewed.assert_called_once()
+        assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is not None
+
+    def test_a_read_only_completion_never_renews_a_free_checkout(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        def finish(task: Task) -> None:
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
+
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(finish, heartbeat=False)
+        renewed.assert_not_called()
+        assert Task.objects.get(pk=self.task.pk).status == Task.Status.COMPLETED
+
     def test_short_run_claims_its_new_checkout_before_completion(self) -> None:
         self.run_to(lambda task: task.complete(), heartbeat=False)
         self.assert_released_and_attested()
