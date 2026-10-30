@@ -72,15 +72,14 @@ class DebugSessionViewTestCase(TestCase):
     def test_launches_and_renders_loopback_url(self) -> None:
         with patch(
             "teatree.dash.views.debug.launch_web_session",
-            return_value=LaunchResult(launch_url="http://127.0.0.1:8804", pid=42, port=8804),
+            return_value=LaunchResult(launch_url="http://127.0.0.1:54321", pid=42),
         ) as launch:
             resp = self.client.post(self.url, {})
         launch.assert_called_once_with("")
         body = resp.content.decode()
-        assert "http://127.0.0.1:8804" in body
+        assert "http://127.0.0.1:54321" in body
         # The auto-open hook: the global htmx:afterSwap listener reads this attr.
-        assert 'data-ttyd-launch="http://127.0.0.1:8804"' in body
-        assert "ssh -L 8804:127.0.0.1:8804" in body
+        assert 'data-ttyd-launch="http://127.0.0.1:54321"' in body
 
     def test_missing_claude_returns_400(self) -> None:
         with patch(

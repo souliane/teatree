@@ -412,8 +412,9 @@ jobs:
         run: uv run pytest e2e/browser -n0 -p no:randomly -p no:cacheprovider
       - name: Provide ttyd + a stub claude for the terminal-launch e2e
         # The header terminal button spawns `ttyd --once <claude>` on a loopback
-        # port; the specs check the browser launch and reject a foreign WebSocket origin.
-        # ttyd and a resolvable claude stub are required for those checks.
+        # port; the spec asserts the launch URL renders (it never connects, and
+        # the launcher's reaper bounds the unconnected ttyd). ttyd must exist and
+        # `shutil.which("claude")` must resolve — the stub is never executed.
         run: |
           sudo apt-get update
           sudo apt-get install -y ttyd

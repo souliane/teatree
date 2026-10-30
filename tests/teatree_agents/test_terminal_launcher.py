@@ -1,9 +1,6 @@
 """The resurrected loopback ttyd launcher + claude-argv builder (#3162)."""
 
-import socket
-import time
-from pathlib import Path
-from subprocess import DEVNULL, PIPE, Popen
+from subprocess import DEVNULL, PIPE
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -19,92 +16,16 @@ def test_launch_ttyd_spawns_writable_once_on_loopback() -> None:
     proc = MagicMock(pid=999)
     with (
         patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
         patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
     ):
         result = terminal_launcher.launch_ttyd(["claude"])
     argv = spawn.call_args.args[0]
     assert "--writable" in argv
     assert "--once" in argv
-    assert "--check-origin" in argv
     assert "127.0.0.1" in argv
+    assert result.launch_url == "http://127.0.0.1:45678"
     assert result.pid == 999
-
-
-def test_terminal_uses_a_stable_port_for_the_browser_tunnel() -> None:
-    proc = MagicMock(pid=999)
-    proc.poll.return_value = None
-    with (
-        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
-        patch.object(terminal_launcher, "spawn", return_value=proc),
-    ):
-        result = terminal_launcher.launch_ttyd(["claude"])
-    assert result.launch_url == "http://127.0.0.1:8804"
-
-
-def test_terminal_does_not_report_a_url_when_listener_never_starts() -> None:
-    proc = MagicMock(pid=999)
-    proc.poll.return_value = None
-    with (
-        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "spawn", return_value=proc),
-        patch.object(socket, "create_connection", side_effect=OSError("connection refused")),
-    ):
-        result = terminal_launcher.launch_ttyd(["claude"])
-    assert result.launch_url == ""
-    assert "listen" in result.error
-
-
-def test_terminal_refuses_an_occupied_port() -> None:
-    with (
-        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=False),
-        patch.object(terminal_launcher, "spawn") as spawn,
-    ):
-        result = terminal_launcher.launch_ttyd(["claude"])
-    assert result.launch_url == ""
-    assert "already in use" in result.error
-    spawn.assert_not_called()
-
-
-def test_terminal_port_is_available_after_the_previous_client_closes() -> None:
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", 0))
-        listener.listen()
-        port = listener.getsockname()[1]
-        with socket.create_connection(("127.0.0.1", port)) as client:
-            peer, _ = listener.accept()
-            peer.close()
-            client.recv(1)
-    assert terminal_launcher._port_available(port)
-
-
-def test_terminal_reaps_a_child_that_exits() -> None:
-    proc = Popen(["/bin/true"], stdout=DEVNULL, stderr=DEVNULL, text=True)
-    with (
-        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
-        patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
-        patch.object(terminal_launcher, "spawn", return_value=proc),
-    ):
-        result = terminal_launcher.launch_ttyd(["claude"])
-    deadline = time.monotonic() + 2
-    while proc.returncode is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert result.launch_url
-    assert proc.returncode == 0
-
-
-def test_deploy_image_installs_the_terminal_connection_probe() -> None:
-    dockerfile = Path(__file__).resolve().parents[2] / "deploy" / "Dockerfile"
-    package_line = next(line for line in dockerfile.read_text(encoding="utf-8").splitlines() if "sqlite3 ttyd" in line)
-    assert " lsof " in package_line
 
 
 def test_launch_ttyd_does_not_leave_an_unread_stderr_pipe() -> None:
@@ -113,8 +34,7 @@ def test_launch_ttyd_does_not_leave_an_unread_stderr_pipe() -> None:
     proc = MagicMock(pid=999)
     with (
         patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
         patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
     ):
         terminal_launcher.launch_ttyd(["claude"])
@@ -137,8 +57,7 @@ def test_launch_ttyd_arms_a_connect_grace_reaper() -> None:
     proc = MagicMock(pid=999)
     with (
         patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
         patch.object(terminal_launcher, "spawn", return_value=proc),
         patch.object(terminal_launcher.threading, "Timer") as timer_cls,
     ):
@@ -146,7 +65,7 @@ def test_launch_ttyd_arms_a_connect_grace_reaper() -> None:
     timer_cls.assert_called_once_with(
         terminal_launcher._CONNECT_GRACE_SECONDS,
         terminal_launcher._reap_if_unconnected,
-        args=(proc, 8804),
+        args=(proc, 45678),
     )
     timer = timer_cls.return_value
     assert timer.daemon is True
@@ -224,8 +143,7 @@ class TestTheWebTerminalRidesTheSameCredentialADispatchGets:
         with (
             patch.object(web_terminal.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-            patch.object(terminal_launcher, "_port_available", return_value=True),
-            patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
+            patch.object(terminal_launcher, "find_free_port", return_value=45678),
             patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
             patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
             patch.object(web_terminal, "system_child_env", side_effect=child_env),
@@ -269,8 +187,7 @@ def test_launch_ttyd_without_an_env_inherits_the_parent_environment() -> None:
     proc = MagicMock(pid=999)
     with (
         patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
-        patch.object(terminal_launcher, "_port_available", return_value=True),
-        patch.object(terminal_launcher, "_wait_until_listening", return_value=True),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
         patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
         patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
     ):

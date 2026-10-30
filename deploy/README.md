@@ -1219,7 +1219,7 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   publicly:
 
   ```bash
-  ssh -L 8000:localhost:8000 -L 8804:localhost:8804 -p <ssh-port> <ssh-user>@<box-host>
+  ssh -L 8000:localhost:8000 -p <ssh-port> <ssh-user>@<box-host>
   # then open http://localhost:8000/admin
   ```
 

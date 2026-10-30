@@ -83,6 +83,19 @@ def docker_host_address() -> str:
     return "host.docker.internal" if platform.system() in {"Darwin", "Windows"} else _DEFAULT_BRIDGE_GATEWAY
 
 
+def find_free_port(host: str = "127.0.0.1") -> int:
+    """Ask the OS for a free ephemeral port on *host* and return it.
+
+    Binds to port 0 (the kernel picks a free port), reads the assigned port, then
+    releases the socket. There is an inherent race between release and re-bind, so
+    the caller must bind promptly — used by the ttyd web-terminal launcher, which
+    spawns ``ttyd --port <n>`` immediately.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
+
 # Container-internal ports (fixed). Host ports are auto-mapped by Docker
 # Compose when the override declares ``ports: ["<container_port>"]`` with
 # no left side — Docker picks a free host port, and ``docker compose port``
