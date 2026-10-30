@@ -160,14 +160,46 @@ class TestSweepProposalRecording(TestCase):
         assert [
             fold["citation"] for fold in self.ticket.extra["sweep_fold_proposals"][str(self.task.pk)]["folds"]
         ] == citations
-        quotes = [question.evidence["quoted"] for question in DeferredQuestion.objects.order_by("pk")]
-        assert len(quotes) == 3
-        assert all(not internal_shorthand(quote) for quote in quotes)
-        assert all("<!channel>" not in quote for quote in quotes)
-        assert quotes[2].endswith("...")
-        assert all(
-            "<!channel>" not in json.dumps(render_blocks(question)) for question in DeferredQuestion.objects.all()
-        )
+        question = DeferredQuestion.objects.get()
+        quote = question.evidence["quoted"]
+        assert not internal_shorthand(quote)
+        assert "<!channel>" not in quote
+        assert quote.endswith("...")
+        assert "<!channel>" not in json.dumps(render_blocks(question))
+
+    def test_folds_ask_one_owner_question_per_batch(self) -> None:
+        host = "https://github.com/example-org/example-repo/issues/2"
+        members = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 3)]
+        proposals = {
+            "examined": members,
+            "folds": [{"member_url": member, "host_url": host, "citation": "same module"} for member in members],
+            "gaps": [],
+        }
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+        ):
+            attempt = self._record(proposals, index_urls=[*members, host])
+
+        assert attempt.error == "", attempt.error
+        quoted = DeferredQuestion.objects.get().evidence["quoted"]
+        assert all(url in quoted for url in (*members, host))
+        assert quoted.count("same module") == 2
+
+    def test_a_full_window_of_long_folds_fits_one_owner_question(self) -> None:
+        host = "https://github.com/example-org/example-repo/issues/100"
+        members = [f"https://github.com/example-org/example-repo/issues/{number}" for number in range(1, 21)]
+        proposals = {
+            "examined": members,
+            "folds": [{"member_url": member, "host_url": host, "citation": "same module " * 30} for member in members],
+            "gaps": [],
+        }
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+        ):
+            attempt = self._record(proposals, index_urls=[*members, host])
+
+        assert attempt.error == "", attempt.error
+        assert DeferredQuestion.objects.count() == 1
 
     def test_owner_citation_does_not_cut_an_html_entity(self) -> None:
         citation = _owner_citation("&" * 100)

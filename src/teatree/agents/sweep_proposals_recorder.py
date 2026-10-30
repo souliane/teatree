@@ -27,6 +27,7 @@ from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 
 REFUSAL_PREFIX = SWEEP_PROPOSALS_REFUSAL_PREFIX
 QUESTION_CITATION_CHARS = 240
+BATCH_CITATION_WORDS = 36
 logger = logging.getLogger(__name__)
 
 
@@ -141,26 +142,40 @@ def _owner_citation(raw: str) -> str:
     return safe
 
 
+def _first_words(text: str, limit: int) -> str:
+    words = text.split()
+    return text if len(words) <= limit else f"{' '.join(words[:limit])}..."
+
+
+def _record_fold_question(task: Task, folds: list[dict[str, str]]) -> None:
+    share = max(1, BATCH_CITATION_WORDS // len(folds))
+    proposals = "; ".join(
+        f"<{fold['member_url']}|member> into <{fold['host_url']}|host>: "
+        f"{_first_words(_owner_citation(fold['citation']), share)}"
+        for fold in folds
+    )
+    DeferredQuestion.record(
+        "Should these proposed ticket folds be approved?",
+        task_session=task.session,
+        dedupe_marker=f"backlog-sweep-folds-{task.pk}",
+        card=QuestionCard(
+            decision=OwnerDecision.ARCHITECTURE,
+            checked=("Every issue was open and self-authored when the proposals were recorded.",),
+            blocker="Only the owner decides whether these ticket folds should proceed.",
+            why="Your decision is recorded; this sweep changes no issue.",
+            quoted=proposals,
+            options=(
+                CardOption("Approve all", "Record approval of these proposals.", recommended=True),
+                CardOption("Decline all", "Record that these proposals are declined."),
+            ),
+        ),
+    )
+
+
 def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tuple[int, list[str]]]) -> None:
     try:
-        for position, fold in enumerate(folds):
-            citation = _owner_citation(fold["citation"])
-            DeferredQuestion.record(
-                "Should this proposed ticket fold be approved?",
-                task_session=task.session,
-                dedupe_marker=f"backlog-sweep-fold-{task.pk}-{position}",
-                card=QuestionCard(
-                    decision=OwnerDecision.ARCHITECTURE,
-                    checked=("Both issues were open and self-authored when the proposal was recorded.",),
-                    blocker="Only the owner decides whether this ticket fold should proceed.",
-                    why="Your decision is recorded; this sweep changes neither issue.",
-                    quoted=f"Fold <{fold['member_url']}|member issue> into <{fold['host_url']}|host issue>: {citation}",
-                    options=(
-                        CardOption("Approve", "Record approval of this proposal.", recommended=True),
-                        CardOption("Decline", "Record that this proposal is declined."),
-                    ),
-                ),
-            )
+        if folds:
+            _record_fold_question(task, folds)
         for host_id, keys in gaps:
             host_ticket = Ticket.objects.get(pk=host_id)
             host_ticket.refresh_from_db(fields=["extra"])
