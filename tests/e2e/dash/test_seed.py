@@ -7,7 +7,7 @@ from e2e.dash.seed import seed_board
 
 
 class TestSeed(TestCase):
-    def test_seed_creates_an_admin_for_loopback_auto_login(self) -> None:
+    def test_seed_creates_a_passwordless_operator_for_the_scratch_login(self) -> None:
         seed_board()
 
         user = get_user_model().objects.get(is_superuser=True)

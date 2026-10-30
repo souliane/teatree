@@ -138,6 +138,8 @@ class GitHubSyncBackend(SyncBackend):
             kind=classify_ticket_kind(labels=board.item.labels, title=board.item.title),
         )
         result.tickets_created += 1
+        if board.item.author_login:
+            created.record_requester(f"github:{board.item.author_login}")
         if board.state == Ticket.State.DELIVERED:
             cls._record_delivered_dod_violation(created)
 
@@ -160,6 +162,8 @@ class GitHubSyncBackend(SyncBackend):
         # #800 N3: canonical locked RMW; extra + repos + state stay one atomic
         # write via also_set (no split).
         ticket.merge_extra(set_keys=board.extra, also_set=also_set)
+        if board.item.author_login:
+            ticket.record_requester(f"github:{board.item.author_login}")
         result.tickets_updated += 1
         if board.state == Ticket.State.DELIVERED:
             # Audit runs on EVERY Done sync (idempotent — dedups on the existing

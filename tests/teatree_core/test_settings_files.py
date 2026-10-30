@@ -1,9 +1,8 @@
 """Loading a saved snapshot into the comparison, and saving this box's own as a file.
 
-The live fetch needs the peer to be UP, so three columns were unreachable from the dashboard:
-a box whose tunnel is down, a box that is gone, and this box as it stood weeks ago. A file
-supplies all three — which only works if a RECORD is diffed by the same rules as a live peer
-and can never be read as a live value.
+Each peer needs a saved snapshot imported by the operator. A file can also represent a box
+that is gone and this box as it stood weeks ago. A RECORD follows the same diff rules as
+this box's current reading and carries its capture time.
 
 Two properties carry that and are asserted as properties rather than as examples:
 
@@ -26,7 +25,7 @@ from unittest.mock import patch
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting
@@ -37,6 +36,7 @@ from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
 from teatree.core.settings_snapshot import FORMAT_VERSION, SNAPSHOT_FORMAT, build_snapshot
 from teatree.hooks.term_match import line_matches
 from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
@@ -392,9 +392,9 @@ class TestTheComparePageLoadsFiles(TestCase):
         self.client.post(self.url, {"snapshot_files": self._upload()}, **_LOOPBACK)
         assert list(ConfigSetting.objects.values_list("scope", "key", "value")) == before
 
-    def test_the_load_route_is_refused_off_loopback(self) -> None:
+    def test_the_signed_in_load_route_works_off_loopback(self) -> None:
         response = self.client.post(self.url, {"snapshot_files": self._upload()}, REMOTE_ADDR="10.0.0.9")
-        assert response.status_code == 403
+        assert response.status_code == 200
 
 
 class TestSavingThisBoxsSnapshot(TestCase):

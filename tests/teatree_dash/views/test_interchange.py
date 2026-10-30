@@ -13,7 +13,6 @@ from unittest import mock
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase
 from django.urls import reverse
 from django.utils.html import escape
 
@@ -26,6 +25,7 @@ from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.interchange import MAX_IMPORT_BYTES
 from teatree.hooks.term_match import line_matches
 from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)

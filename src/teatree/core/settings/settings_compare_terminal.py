@@ -8,11 +8,8 @@ answers: a change to what "differs" means lands on both, or on neither.
 
 Three things the page says with layout that plain text loses unless it says them outright:
 
-*   **An instance that did not answer is NAMED, with its reason.** A configured box quietly
-    dropped from the output reads as agreement between the boxes that did answer, which is the
-    one wrong answer this surface must never give. A peer with no teatree deployed on it can
-    never answer — that is a permanent non-column, and reporting it as a named non-answer is
-    the honest result. An error, or a silent omission, both misreport it.
+*   **A configured peer needing an import is named.** Dropping it would read as agreement
+    between the snapshots that were loaded. It remains a non-column until one is imported.
 *   **The comparability verdict comes BEFORE the rows, not after.** Where the boxes declare
     different settings, the rows below cannot be read as configuration drift at all. A diff
     printed without that caveat is LESS truthful than no diff, so the caveat is printed first
@@ -74,9 +71,8 @@ _NOT_DRIFT: Final = (
 
 #: What to say when nothing this side opens can make a peer answer — a permanent non-column.
 _NO_REMEDY: Final = (
-    "none from here — the forward carried the request and the far end answered THAT, so no tunnel "
-    "this side opens changes it. Wait longer with --timeout if the box is merely slow; compare a box "
-    "that serves no snapshot at all from a record instead, with --snapshot <file>"
+    "import a saved capture with --snapshot <file>; live peer fetching requires a signed-in "
+    "staff session and is disabled"
 )
 
 
@@ -140,8 +136,7 @@ def _instance_fields(instance: PeerSnapshot) -> list[tuple[str, str]]:
         fields.append(("state", f"{state}, captured {instance.captured_at or 'an unstated time'}"))
         return fields
     fields.append(("state", f"no answer — {_one_line(instance.error)}"))
-    # `_forward_is_down` withheld the tunnel advice, so the far end itself answered this.
-    remedy = f"bring its tunnel up: {instance.tunnel_command}" if instance.tunnel_command else _NO_REMEDY
+    remedy = _NO_REMEDY
     fields.append(("remedy", remedy))
     return fields
 
@@ -299,7 +294,6 @@ def _instance_payload(instance: PeerSnapshot) -> dict[str, Any]:
         "answered": instance.reachable,
         "captured_at": instance.captured_at,
         "error": instance.error,
-        "tunnel_command": instance.tunnel_command,
     }
 
 

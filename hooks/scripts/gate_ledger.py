@@ -21,6 +21,7 @@ DECLARED_GATES = frozenset(
         "banned_terms",
         "block-standing-grant-ask",
         "block-cron-loop-shell",
+        "bot_push",
         "brief_anchor",
         "classifier_relax",
         "config_overwrite",

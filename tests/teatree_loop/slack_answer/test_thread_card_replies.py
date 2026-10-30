@@ -3,12 +3,13 @@
 from dataclasses import dataclass, field, replace
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
-from teatree.core.models import DeferredQuestion, PendingChatInjection
+from teatree.core.models import DeferredQuestion, OperatorIdentity, PendingChatInjection, Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
@@ -248,6 +249,26 @@ class TestThreadCardReplies(TestCase):
         assert recorded == 1
         assert card.answer_text == "Approve"
         assert report.answered_question == 1
+
+    def test_registered_requesters_app_reply_binds_only_its_ticket_card(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        card = _card("331.2")
+        card.task_session = Session.objects.create(ticket=ticket)
+        card.save(update_fields=["task_session"])
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["331.1"] = [{"ts": "331.1"}, {"ts": "331.2", "thread_ts": "331.1"}]
+        event = {**_api_owner_reply("331.3", "331.1"), "user": "U-OP"}
+
+        recorded = SlackDmRecorder(backend=backend).record_events([event])
+        report = _cycle(backend)
+
+        card.refresh_from_db()
+        assert recorded == 1
+        assert report.answered_question == 1
+        assert card.answer_text == "Approve"
 
     def test_free_text_without_a_reachable_agent_waits_for_retry_and_leaves_card_pending(self) -> None:
         card = _card("335.1")

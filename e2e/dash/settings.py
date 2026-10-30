@@ -25,3 +25,8 @@ DATABASES = {
 # is redundant here and warns about the uncollected STATIC_ROOT, which the suite's
 # ``filterwarnings=error`` would turn into a hard error.
 MIDDLEWARE = [middleware for middleware in _base.MIDDLEWARE if "whitenoise" not in middleware.lower()]
+# The scratch server holds no real data and binds loopback only, so its browser is signed in as the seeded operator.
+MIDDLEWARE.insert(
+    MIDDLEWARE.index("teatree.core.middleware.OperatorLoginRequiredMiddleware"),
+    "e2e.dash.scratch_login.ScratchOperatorLoginMiddleware",
+)

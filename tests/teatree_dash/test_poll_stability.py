@@ -16,11 +16,11 @@ idiomorph morph a card in place instead of replacing the node under the cursor.
 import re
 from pathlib import Path
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models.ticket import Ticket
 from tests.factories import TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _TEMPLATES = Path(__file__).resolve().parents[2] / "src/teatree/dash/templates"
 _POLLING_ELEMENT = re.compile(r"<[^>]*hx-trigger=\"every [^\"]+\"[^>]*>", re.DOTALL)
