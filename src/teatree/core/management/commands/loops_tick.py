@@ -148,7 +148,8 @@ class _ScopedJobsBuilder:
             return
         retry = any(signal.payload.get("retry") is True for signal in report.signals)
         if self.periodic_phase:
-            retry |= periodic_tick_is_silent(self.loop, jobs_built=self.jobs_built, report=report)
+            silent = periodic_tick_is_silent(self.loop, jobs_built=self.jobs_built, report=report)
+            retry = self.jobs_built and (retry or silent)
         if not retry:
             return
         Loop.objects.release_held_run_if_unchanged(

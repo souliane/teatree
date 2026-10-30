@@ -4,6 +4,7 @@ from django.test import TestCase
 
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
 from teatree.core.models import Task, Ticket
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 from teatree.loops.backlog_sweep.loop import nudge_for_dream_gaps
 
 UMBRELLA = "https://gitlab.com/o/f/-/work_items/249"
@@ -23,5 +24,13 @@ class TestNudgeForDreamGaps(TestCase):
 
     def test_a_switched_off_sweep_loop_is_never_nudged(self) -> None:
         with patch("teatree.loops.enable_verdict.loop_admits", return_value=False):
+            assert nudge_for_dream_gaps() is False
+        assert not Task.objects.filter(phase=BACKLOG_SWEEP_PHASE).exists()
+
+    def test_a_failed_task_mint_is_not_reported_as_nudged(self) -> None:
+        with (
+            patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
+            patch.object(PhaseCadence, "queue_task", return_value=None),
+        ):
             assert nudge_for_dream_gaps() is False
         assert not Task.objects.filter(phase=BACKLOG_SWEEP_PHASE).exists()

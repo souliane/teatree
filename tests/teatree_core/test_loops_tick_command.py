@@ -44,6 +44,7 @@ from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanne
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.eval_local import EvalLocalScanner
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
 from teatree.loop.scanners.triage_assessor import TriageAssessorScanner
@@ -329,15 +330,14 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         assert Loop.objects.get(name="eval_local").last_run_at is not None
 
     def test_empty_triage_does_not_recheck_before_its_cadence(self) -> None:
-        class _Scanner:
-            name = "triage_assessor"
-            scans = 0
-
-            def scan(self) -> list[ScanSignal]:
-                self.scans += 1
-                return [ScanSignal(kind="triage_assessor.held", summary="no issues")]
-
-        scanner = _Scanner()
+        host = Mock()
+        host.list_labeled_issues.return_value = []
+        scanner = TriageAssessorScanner(
+            host=cast("CodeHostBackend", host),
+            overlay_name="t3-teatree",
+            identities=("operator",),
+            repo_slugs=("souliane/teatree",),
+        )
         prompt = Prompt.objects.create(name="triage-cadence-prompt", body="test")
         Loop.objects.get_or_create(name="triage_assessor", defaults={"delay_seconds": 3600, "prompt": prompt})
         Loop.objects.filter(name="triage_assessor").update(delay_seconds=3600, last_run_at=None)
@@ -345,6 +345,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             name="triage_assessor",
             default_cadence_seconds=3600,
             build_jobs=lambda **_: [_ScannerJob(scanner=scanner, overlay="")],
+            periodic_phase="triage_assessing",
         )
         with (
             patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
@@ -354,12 +355,85 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
             patch("teatree.loop.tick.render_phase"),
+            patch("teatree.loop.tick.scan_phase", side_effect=TestPeriodicLoopHandover._scan_inline),
         ):
             _run(loop="triage_assessor")
             assert Loop.objects.get(name="triage_assessor").last_run_at is not None
             _run(loop="triage_assessor")
 
-        assert scanner.scans == 1
+        host.list_labeled_issues.assert_called_once()
+
+    def test_named_non_retry_returns_keep_all_periodic_anchors(self) -> None:
+        phases = {
+            mini.name: mini.periodic_phase
+            for mini in iter_loops()
+            if mini.name in {"arch_review", "eval_local", "news", "backlog_sweep", "dogfood", "triage_assessor"}
+        }
+        assert len(phases) == 6
+
+        for reason in ("task already in flight", "cadence has not elapsed"):
+            for loop, phase in phases.items():
+                with self.subTest(loop=loop, reason=reason):
+                    overlay = f"anchor-{loop}-{reason.replace(' ', '-')}"
+                    ticket = Ticket.objects.create(overlay=overlay)
+                    session = Session.objects.create(overlay=overlay, ticket=ticket)
+                    status = Task.Status.CLAIMED if reason == "task already in flight" else Task.Status.COMPLETED
+                    task = Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+                    if status == Task.Status.CLAIMED:
+                        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now())
+
+                    class _NamedReturnScanner:
+                        def __init__(self, *, overlay: str, phase: str, reason: str) -> None:
+                            self.name = phase
+                            self.overlay = overlay
+                            self.reason = reason
+                            self.scans = 0
+
+                        def scan(self) -> list[ScanSignal]:
+                            self.scans += 1
+                            trigger, signals = PhaseCadence(self.overlay, phase=self.name, cadence_hours=24).gate(
+                                now=timezone.now(), held_kind=f"{self.name}.held", not_due_kind=f"{self.name}.not_due"
+                            )
+                            assert trigger is None
+                            assert signals[0].payload["reason"] == self.reason
+                            return signals
+
+                    scanner = _NamedReturnScanner(overlay=overlay, phase=phase, reason=reason)
+                    prompt = Prompt.objects.create(name=f"not-due-{loop}-{reason}", body="test")
+                    Loop.objects.update_or_create(
+                        name=loop,
+                        defaults={
+                            "prompt": prompt,
+                            "script": "",
+                            "delay_seconds": 3600,
+                            "daily_at": None,
+                            "enabled": True,
+                            "last_run_at": None,
+                        },
+                    )
+                    mini = MiniLoop(
+                        name=loop,
+                        default_cadence_seconds=3600,
+                        build_jobs=lambda _scanner=scanner, **_: [_ScannerJob(scanner=_scanner, overlay="")],
+                        periodic_phase=phase,
+                    )
+                    with (
+                        patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+                        patch.object(LoopLease.objects, "acquire", return_value=True),
+                        patch.object(LoopLease.objects, "release"),
+                        patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+                        patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+                        patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
+                        patch("teatree.loop.tick.render_phase"),
+                        patch("teatree.loop.tick.scan_phase", side_effect=TestPeriodicLoopHandover._scan_inline),
+                    ):
+                        _run(loop=loop)
+                        claimed_at = Loop.objects.get(name=loop).last_run_at
+                        _run(loop=loop)
+
+                    assert claimed_at is not None
+                    assert Loop.objects.get(name=loop).last_run_at == claimed_at
+                    assert scanner.scans == 1
 
     def test_periodic_scanner_silence_records_defect_and_retries(self) -> None:
         class _SilentScanner:
@@ -394,15 +468,16 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         assert KnownIssue.objects.open().filter(fingerprint="loop-silent:news").exists()
         assert Loop.objects.get(name="news").last_run_at is None
 
-    def test_periodic_factory_with_no_job_names_reason_and_retries(self) -> None:
+    def test_periodic_factory_with_no_job_names_reason_and_keeps_anchor(self) -> None:
         prompt = Prompt.objects.create(name="no-job-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
         Loop.objects.filter(name="news").update(delay_seconds=3600, daily_at=None, last_run_at=None)
         Loop.objects.set_manual_override("news", runs=True, reason="exercise periodic tick")
+        build_jobs = Mock(return_value=[])
         mini = MiniLoop(
             name="news",
             default_cadence_seconds=3600,
-            build_jobs=lambda **_: [],
+            build_jobs=build_jobs,
             periodic_phase="scanning_news",
         )
         with (
@@ -416,10 +491,14 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             self.assertLogs("teatree.loops.tick_outcome", level="WARNING") as logs,
         ):
             _run(loop="news")
+            claimed_at = Loop.objects.get(name="news").last_run_at
+            _run(loop="news")
 
         assert any("news" in line and "no scanner job" in line for line in logs.output)
         assert KnownIssue.objects.open().filter(fingerprint="loop-silent:news").exists()
-        assert Loop.objects.get(name="news").last_run_at is None
+        assert claimed_at is not None
+        assert Loop.objects.get(name="news").last_run_at == claimed_at
+        build_jobs.assert_called_once()
 
 
 def _periodic_scanner(loop: str) -> Scanner:

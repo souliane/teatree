@@ -35,7 +35,9 @@ def nudge_for_dream_gaps() -> bool:
     if not loop_admits("backlog_sweep"):
         return False
     scanner = _backlog_sweep_scanner()
-    return scanner is not None and bool(scanner.scan_dream_gaps())
+    return scanner is not None and any(
+        signal.kind == "backlog_sweep.queued" and signal.payload.get("task_id") for signal in scanner.scan_dream_gaps()
+    )
 
 
 MINI_LOOP = MiniLoop(

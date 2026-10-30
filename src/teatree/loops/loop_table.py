@@ -325,7 +325,7 @@ def dispatch_loop_table(
                 jobs=tuple(built),
                 claimed_at=now,
                 previous_last_run_at=row.last_run_at,
-                periodic_phase=loop.periodic_phase,
+                periodic_phase=target.periodic_phase,
             )
         )
     return outcomes

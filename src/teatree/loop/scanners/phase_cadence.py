@@ -15,9 +15,9 @@ The task QUERIES live on the ``Task`` manager
 :meth:`TaskQuerySet.last_run_at_for_phase`) — this module is the composition seam
 between a scanner and those queries, never a second home for the SQL.
 
-Every helper degrades to a no-signal default when the ``core`` models are not yet
-registered (a fresh install runs the tick before ``migrate``), preserving the
-per-tick fault isolation the loop relies on (``domain_jobs._run_job``).
+Task and ticket model probes degrade when the app registry is unavailable.
+Health-row writes use ``KnownIssue`` directly; scanner failures are isolated by
+``domain_jobs._run_job`` and reported in the tick.
 """
 
 import datetime as dt
