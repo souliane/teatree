@@ -15,7 +15,7 @@ read_build_space() {
     BUILD_RESERVED_KIB=""
     BUILD_SPACE_PATH=""
     docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
-    for path in / "${TMPDIR:-/tmp}" ${docker_root:+"$docker_root"}; do
+    for path in / ${docker_root:+"$docker_root"}; do
         if ! output="$(df -Pk "$path" 2>/dev/null)"; then
             [ "$path" = / ] && return 1
             continue
