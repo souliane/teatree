@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -50,6 +51,17 @@ class ParkedTicketQuestionTest(TestCase):
         assert changed.state == Ticket.State.WORK_STARTED
         scanner.scan()
         assert DeferredQuestion.objects.count() == 1
+
+    def test_retirement_rechecks_the_newest_task_after_selection(self) -> None:
+        ticket, stale_task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        Task.objects.create(ticket=ticket, session=stale_task.session, status=Task.Status.PENDING)
+        with patch("teatree.core.factory.parked_tickets.aged_parked_tasks", return_value=[stale_task]):
+            scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_other_answer_and_local_channel_leave_tickets_parked(self) -> None:
         ticket, _ = self._parked()

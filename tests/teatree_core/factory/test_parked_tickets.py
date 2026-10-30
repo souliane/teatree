@@ -45,4 +45,5 @@ class ParkedTicketSelectionTest(TestCase):
         self._failed(kind=FailureKind.CANCELLED)
         (signal,) = [row for row in collect_signals().signals if row.fingerprint == "parked-tickets-await-owner"]
         assert signal.fingerprint == "parked-tickets-await-owner"
-        assert "retire or keep" in signal.summary
+        assert "parked for over 14 days" in signal.summary
+        assert "await your decision" not in signal.summary

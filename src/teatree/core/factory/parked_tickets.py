@@ -5,6 +5,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta
 
+from django.db import transaction
 from django.db.models import Exists, OuterRef, Subquery
 from django.utils import timezone
 
@@ -68,7 +69,7 @@ def parked_ticket_signals() -> SignalCollection:
                 fingerprint="parked-tickets-await-owner",
                 severity=KnownIssue.Severity.WARNING,
                 kind="parked_tickets",
-                summary=f"{count} tickets parked for over 14 days await your decision to retire or keep them",
+                summary=f"{count} tickets remain parked for over 14 days after failed tasks",
             ),
         )
     )
@@ -114,6 +115,20 @@ def ask_owner_about_parked(tasks: list[Task]) -> DeferredQuestion | None:
         return None
 
 
+def _still_parked(ticket: Ticket, expected_task_id: int) -> bool:
+    terminal = Ticket.marker_release_states() | {Ticket.State.PR_OPENED, Ticket.State.RETRO_RECORDED}
+    if ticket.state in terminal or is_synthetic_ticket_url(ticket.issue_url):
+        return False
+    newest = Task.objects.filter(ticket_id=ticket.pk).order_by("-pk").first()
+    if newest is None or newest.pk != expected_task_id or newest.status != Task.Status.FAILED:
+        return False
+    if newest.created_at is None or newest.created_at >= timezone.now() - AGED_PARK:
+        return False
+    if HALT_STAMP not in newest.execution_reason and newest.failure_kind != FailureKind.CANCELLED:
+        return False
+    return not Task.objects.filter(ticket_id=ticket.pk, status__in=Task.Status.active()).exists()
+
+
 def retire_answered_parked(question: DeferredQuestion) -> int:
     if (
         not question.answered_on_owner_channel
@@ -126,8 +141,11 @@ def retire_answered_parked(question: DeferredQuestion) -> int:
     for task in aged_parked_tasks():
         if (task.ticket_id, task.pk) not in original:
             continue
-        ticket = task.ticket
-        ticket.ignore()
-        ticket.save(update_fields=["state", "extra"])
-        count += 1
+        with transaction.atomic():
+            ticket = Ticket.objects.select_for_update().get(pk=task.ticket_id)
+            if not _still_parked(ticket, task.pk):
+                continue
+            ticket.ignore()
+            ticket.save(update_fields=["state", "extra"])
+            count += 1
     return count
