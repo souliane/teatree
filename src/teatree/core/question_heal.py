@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core.answering.question_coordinator import coordinate_pending
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_withheld import WITHHELD_ACTION
@@ -42,7 +43,7 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
             if (reason := healed.get(row.pk)) is not None:
                 row.mark_stale(reason, resolver_id=name)
         live = [row for row in live if row.pk not in healed]
-    return live
+    return coordinate_pending(live)
 
 
 def live_owner_questions() -> list[DeferredQuestion]:

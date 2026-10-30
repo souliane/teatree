@@ -16,8 +16,10 @@ decision (``user_input_kind``) is an owner question (#5096).
 
 import dataclasses
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
+from django.db.models import QuerySet
 from django.test import TestCase
 from django.utils import timezone
 
@@ -33,9 +35,10 @@ from teatree.core.models.task_handoff import (
     record_deferred_question,
     release_operator_pause,
     resume_on_answer,
+    schedule_card_discussion,
     schedule_resume,
 )
-from tests._owner_channel import OWNER_CARD, owner_stop
+from tests._owner_channel import OWNER_CARD, answer_on_slack, owner_stop
 from tests.factories import planned_ticket
 
 
@@ -172,7 +175,7 @@ class TestRecordDeferredQuestionAudience(TestCase):
         task = self._headless_task_with_reason(
             "Should I block the review on the missing migration, or accept it and file a follow-up?",
             phase="reviewing",
-            kind="product_scope",
+            kind="architecture",
             checked=("the ticket names neither option",),
         )
         row = record_deferred_question(task)
@@ -315,6 +318,78 @@ class TestResumeNeedsAPlan(TestCase):
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
 
         assert schedule_resume(parked, answer="scope it to X").phase == "planning"
+
+
+class TestCardDiscussionContinuation(TestCase):
+    def test_claim_between_read_and_append_preserves_running_discussion_prompt(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        discussion = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        prompt = discussion.execution_reason
+        original_first = QuerySet.first
+        claimed = False
+
+        def claim_after_read(queryset: QuerySet[Task]) -> Task | None:
+            nonlocal claimed
+            row = original_first(queryset)
+            if row is not None and row.pk == discussion.pk and not claimed:
+                Task.objects.filter(pk=discussion.pk).update(status=Task.Status.CLAIMED)
+                claimed = True
+            return row
+
+        with patch.object(QuerySet, "first", claim_after_read):
+            next_discussion = schedule_card_discussion(parked, event_id="two", message="Explain the exception")
+
+        assert claimed
+        assert next_discussion.pk != discussion.pk
+        assert Task.objects.get(pk=discussion.pk).execution_reason == prompt
+        assert "Explain the exception" in next_discussion.execution_reason
+
+    def test_claimed_discussion_keeps_its_prompt_and_a_new_resume_child_carries_the_answer(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        discussion = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        discussion.status = Task.Status.CLAIMED
+        discussion.save(update_fields=["status"])
+        prompt = discussion.execution_reason
+
+        resumed = schedule_resume(parked, answer="Approve", question="Change the rule?")
+
+        assert resumed.pk != discussion.pk
+        assert resumed.parent_task == parked
+        assert resumed.status == Task.Status.PENDING
+        assert resumed.execution_reason.startswith(f"{RESUME_ANSWER_PREFIX} Approve.")
+        assert Task.objects.get(pk=discussion.pk).execution_reason == prompt
+        assert schedule_resume(parked, answer="Approve", question="Change the rule?").pk == resumed.pk
+        assert parked.child_tasks.count() == 2
+
+    def test_owner_answer_behind_a_running_discussion_resumes_the_task(self) -> None:
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        card = DeferredQuestion.record("Should we adopt the new dependency?", card=OWNER_CARD, parked_task=task)
+        discussion = schedule_card_discussion(task, event_id="one", message="Show me the rule")
+        Task.objects.filter(pk=discussion.pk).update(status=Task.Status.CLAIMED)
+
+        answer_on_slack(card, "Yes")
+
+        resume = task.child_tasks.exclude(pk=discussion.pk).get()
+        assert resume.execution_reason.startswith(f"{RESUME_ANSWER_PREFIX} Yes.")
+        assert RESUME_ANSWER_PREFIX not in Task.objects.get(pk=discussion.pk).execution_reason
+
+    def test_multiple_messages_and_later_answer_reach_one_pending_child(self) -> None:
+        ticket = planned_ticket()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        first = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        duplicate = schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+        second = schedule_card_discussion(parked, event_id="two", message="Explain the exception")
+        answered = schedule_resume(parked, answer="Approve", question="Change the rule?")
+
+        assert first.pk == duplicate.pk == second.pk == answered.pk
+        assert parked.child_tasks.count() == 1
+        assert "Show me the rule" in answered.execution_reason
+        assert "Explain the exception" in answered.execution_reason
+        assert "Approve" in answered.execution_reason
 
 
 class TestAnOwnerActionCardResumesNothing(TestCase):

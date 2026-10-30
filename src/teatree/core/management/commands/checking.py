@@ -1,4 +1,4 @@
-"""``t3 <overlay> checking show`` — terse, read-only "what did I miss" report (#1529).
+"""``t3 <overlay> checking show`` — terse "what did I miss" report (#1529).
 
 Thin wrapper over :func:`teatree.core.checking.gather_checking_report`. The
 command reads the prior checkpoint, gathers the window ``[window_start, now)``,
@@ -12,10 +12,13 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-``show`` and ``brief`` read report rows and only the default path writes a
-checkpoint marker. ``shoot`` posts Slack questions and records delivery state.
+
+Before gathering, ``show`` and ``brief`` reconcile owner questions with recorded
+answers and may resume parked tasks. Only the default path writes a checkpoint
+marker. ``shoot`` posts Slack questions and records delivery state.
 The report is routed through the machine-output seam — JSON on stdout under
 ``--json``, the terse human view on stderr — and returned as the typed payload.
+
 """
 
 import hashlib
@@ -47,6 +50,7 @@ from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_pat
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.question_heal import live_owner_questions
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
@@ -89,12 +93,10 @@ def _listener_stale(beat: ListenerBeat | None, *, now: float) -> bool:
 def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
     lines: list[str] = []
     for group in groups:
-        if group.title == "Needs you":
-            for item in group.critical_items:
-                label = plain_title(item.title)
-                lines.append(f"Failed run: [{label}]({item.url})" if item.url else f"Failed run: {label}")
-        elif group.title == "Remaining":
-            lines.extend(f"Held pull request: [{plain_title(item.title)}]({item.url})" for item in group.critical_items)
+        if group.title == "Remaining":
+            lines.extend(
+                f"Held pull request: [{plain_title(item.title)}]({item.url})" for item in group.critical_items[:2]
+            )
     return lines
 
 
@@ -102,7 +104,10 @@ def _render_brief(groups: list[CheckGroup], *, context: _RenderContext, internal
     status = [*context.status_lines, *_brief_critical_lines(groups)]
     if status:
         if internal_escalations:
-            status[0] = f"{status[0]} · {internal_escalations} internal escalations"
+            if context.status_lines:
+                status[0] = f"{status[0]} · {internal_escalations} internal escalations"
+            else:
+                status.append(f"{internal_escalations} internal escalations")
         return "\n".join(status)
     if all(not group.has_table_content() for group in groups) and not internal_escalations:
         return f"Nothing since {context.stamp}."
@@ -303,6 +308,8 @@ class Command(MachineOutputCommand):
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
         _validate_since(flags.since)
+        live_owner_questions()
+
         if this_overlay:
             return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
         return self._show_all_overlays(now=now, flags=flags)

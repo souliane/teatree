@@ -359,23 +359,9 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
 
 
 def _eval_local_scanner() -> EvalLocalScanner | None:
-    """Build a global local-eval scanner from teatree-core config.
-
-    User directive (2026-06-05): "AI evals should be run locally from
-    time to time, and in CI once a week." The CI half lives in
-    ``.github/workflows/ci.yml`` (``eval-weekly``); this is the local
-    half. The cadence is a teatree-core platform behaviour (weekly by
-    default), so the settings live on :class:`teatree.config.UserSettings`
-    (the ``[teatree]`` table, per-overlay overridable).
-
-    The overlay-anchor identity is resolved via
-    :func:`teatree.config.discover_active_overlay`, falling back to the
-    canonical post-0027 overlay name (``t3-teatree``) when no overlay is
-    registered — mirroring :func:`_scanning_news_scanner`.
-    """
-    settings = get_effective_settings()
+    """Build the global scanner using the active overlay as its task anchor."""
     overlay_name = _active_overlay_anchor()
-    return EvalLocalScanner(overlay_name=overlay_name, skill=settings.eval_local_skill)
+    return EvalLocalScanner(overlay_name=overlay_name)
 
 
 def _backlog_sweep_scanner() -> BacklogSweepScanner | None:

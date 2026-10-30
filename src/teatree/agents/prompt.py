@@ -28,7 +28,7 @@ from teatree.agents.skill_injection import (
     read_only_venue_skill_contents,
 )
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
@@ -54,7 +54,7 @@ _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> wor
 _SKILLS_POINTER = "the full skill — load it with the Skill tool (a harness without one: Read skills/<skill>/SKILL.md)"
 _PARENT_POINTER = "the parent task's recorded result"
 _HANDOFF_POINTER = "Complete predecessor result (source of truth): "
-_OWNER_KINDS = ", ".join(OwnerDecision)
+_OWNER_KINDS = ", ".join(OWNER_RAISABLE_DECISIONS)
 _OWNER_STOP_LINES = (
     "1. Check what has been done so far (git log, existing code, PR status)",
     "2. Identify what remains to be done",

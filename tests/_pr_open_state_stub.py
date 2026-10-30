@@ -9,6 +9,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from django.db import connection
+
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
@@ -21,9 +23,11 @@ class FakePrHost:
         self.state = state
         self.raises = raises
         self.calls: list[str] = []
+        self.atomic_depths: list[int] = []
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
         self.calls.append(pr_url)
+        self.atomic_depths.append(len(connection.atomic_blocks))
         if self.raises:
             msg = "forge unreachable"
             raise RuntimeError(msg)

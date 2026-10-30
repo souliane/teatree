@@ -35,7 +35,7 @@ local-only count so shipping is never wholesale-blocked.
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
+from teatree.config import OverlayEntry, get_effective_settings
 from teatree.core.gates.pr_budget_forge import cached_forge_open_pr_urls_for_ticket
 from teatree.core.models import PullRequest, Ticket
 from teatree.utils.url_slug import pr_ref_from_url
@@ -62,18 +62,16 @@ def resolve_pr_budget(overlay: str | None) -> int:
 
 
 def open_pr_urls_for_repo(ticket: Ticket, repo_slug: str) -> set[str]:
-    """Return the distinct OPEN (not-merged) PR URLs for exactly ``(ticket, repo_slug)``.
+    """Return the distinct live PR URLs for exactly ``(ticket, repo_slug)``.
 
-    Two sources are unioned (deduped by URL): the ticket's non-merged
+    Two sources are unioned (deduped by URL): the ticket's live
     ``PullRequest`` rows in *repo_slug*, and any ``extra["pr_url_by_branch"]``
     URL whose parsed repo slug is *repo_slug* — the synchronously-written index
     that catches a PR the FK reconciler has not yet upserted.
     """
-    urls: set[str] = set(
-        PullRequest.objects.filter(ticket=ticket, repo=repo_slug)
-        .exclude(state=PullRequest.State.MERGED)
-        .values_list("url", flat=True),
-    )
+    rows = dict(PullRequest.objects.filter(ticket=ticket, repo=repo_slug).values_list("url", "state"))
+    settled = {PullRequest.State.MERGED, PullRequest.State.CLOSED}
+    urls = {url for url, state in rows.items() if state not in settled}
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     by_branch = extra.get("pr_url_by_branch")
     if isinstance(by_branch, dict):
@@ -81,13 +79,13 @@ def open_pr_urls_for_repo(ticket: Ticket, repo_slug: str) -> set[str]:
             if not isinstance(url, str):
                 continue
             ref = pr_ref_from_url(url)
-            if ref is not None and ref.slug == repo_slug:
+            if ref is not None and ref.slug == repo_slug and rows.get(url) not in settled:
                 urls.add(url)
     return urls
 
 
 def count_open_prs_for_repo(ticket: Ticket, repo_slug: str) -> int:
-    """Count the distinct open (not-merged) PR URLs for exactly ``(ticket, repo_slug)``."""
+    """Count the distinct live PR URLs for exactly ``(ticket, repo_slug)``."""
     return len(open_pr_urls_for_repo(ticket, repo_slug))
 
 
@@ -108,7 +106,7 @@ def check_pr_budget(
     operator escape. *limit* defaults to the effective per-overlay setting;
     passing it explicitly is the test seam.
 
-    A recorded URL for *shipping_branch* is excluded after unioning the sources,
+    A recorded URL or unverified retry marker for *shipping_branch* is excluded after unioning the sources,
     since retrying that branch adopts its existing PR. Other branches remain counted.
 
     When *host* is supplied (the repo's code host), a live forge read is unioned
@@ -133,11 +131,13 @@ def check_pr_budget(
         else:
             urls |= forge_urls
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    by_branch = extra.get("pr_url_by_branch")
-    if shipping_branch and isinstance(by_branch, dict):
-        recorded = by_branch.get(shipping_branch)
-        if isinstance(recorded, str):
-            urls.discard(recorded)
+    if shipping_branch:
+        for key in ("pr_url_by_branch", "unverified_pr_by_branch"):
+            by_branch = extra.get(key)
+            if isinstance(by_branch, dict):
+                recorded = by_branch.get(shipping_branch)
+                if isinstance(recorded, str):
+                    urls.discard(recorded)
     if len(urls) < effective_limit:
         return
     overlay = ticket.overlay or "<overlay>"
@@ -148,6 +148,7 @@ def check_pr_budget(
         f"would be exceeded: ticket {reference} already has {len(urls)} open PR(s) in "
         f"{repo_slug!r}:\n  - {offending}\n"
         f"Merge or close an existing PR, or lift the cap: "
-        f"`t3 {overlay} config_setting set max_open_prs_per_repo_per_ticket 0 --overlay {overlay}`."
+        f"`t3 {OverlayEntry.canonical_overlay_name(overlay)} config_setting set "
+        f"max_open_prs_per_repo_per_ticket 0 --overlay {overlay}`."
     )
     raise PrBudgetExceededError(msg)

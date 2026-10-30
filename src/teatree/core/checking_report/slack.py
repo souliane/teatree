@@ -3,11 +3,12 @@
 from datetime import datetime, timedelta
 from typing import TypedDict
 
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.checking_report.status import plain_title
-from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
+from teatree.core.models import BotPing, DeferredQuestion, PendingChatInjection
 from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.notify import resolve_owner_dm_backend
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
@@ -15,6 +16,15 @@ from teatree.core.question_heal import live_owner_questions
 from teatree.utils.slack_links import slack_permalink
 
 _FAULT_KEY = "checking:slack"
+
+
+def _unprocessed_owner_answer() -> bool:
+    pending_reply = PendingChatInjection.loop_unreplied().filter(
+        channel=OuterRef("slack_channel"),
+        thread_ts=OuterRef("slack_ts"),
+        received_at__lt=timezone.now() - timedelta(minutes=2),
+    )
+    return DeferredQuestion.owner_pending().exclude(slack_ts="").filter(Exists(pending_reply)).exists()
 
 
 class ShootCardDict(TypedDict):
@@ -38,13 +48,7 @@ def _broken_reason(
         return "Slack post path is unavailable"
     if listener_stale:
         return "Slack answer listener is stale"
-    stuck_answer = IncomingEvent.objects.filter(
-        source=IncomingEvent.Source.SLACK,
-        processed_at__isnull=True,
-        dead_lettered_at__isnull=True,
-        received_at__lt=timezone.now() - timedelta(minutes=2),
-    ).exists()
-    if stuck_answer:
+    if _unprocessed_owner_answer():
         return "Slack owner answers are not being processed"
     if failed_since is None:
         return ""

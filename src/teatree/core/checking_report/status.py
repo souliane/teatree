@@ -1,5 +1,6 @@
 """Durable, plain-language feature status for the check-in report."""
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,7 +17,9 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration, WorkerGenerationQuerySet
 from teatree.core.ref_render import short_title
-from teatree.core.review.pr_inventory import PrInventoryEntry, merged_entries, read_inventory
+from teatree.core.review.mr_ci_state import ci_state_from_status
+from teatree.core.review.mr_triage import CiState
+from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventoryError, merged_entries, read_inventory
 from teatree.core.review.pr_next_action import UPDATE_BRANCH
 from teatree.paths import teatree_source_root
 from teatree.utils.git_remote_ops import remote_slug
@@ -25,6 +28,7 @@ from teatree.utils.run import SUBPROCESS_UNREACHABLE, run_bounded_group
 from teatree.utils.slack_links import slack_permalink
 
 FEATURE_CAP = 8
+logger = logging.getLogger(__name__)
 _NUMBERED_WORD = re.compile(r"(?<!\w)(?:#?\d+|v\d+)(?!\w)", re.IGNORECASE)
 _DIGIT_RUN = re.compile(r"\d{2,}")
 _LANE_TITLE_PATTERNS = (
@@ -209,26 +213,37 @@ def _pr_state(pr: PullRequest, observed: PrInventoryEntry | None) -> str:
     cached_pipeline = entry.get("pipeline_status") if isinstance(entry, dict) else ""
     observed_pipeline = observed.ci.casefold() if observed is not None else ""
     pipeline = observed_pipeline if observed_pipeline not in {"", "unknown"} else cached_pipeline
-    if pipeline in {"red", "failed", "failure", "error"}:
-        return "tests failed"
-    if pipeline in {"pending", "running"}:
-        return "waiting for the tests"
-    if observed is not None and (
+    pipeline_status = pipeline if isinstance(pipeline, str) else ""
+    ci_state = ci_state_from_status("success" if observed_pipeline == "green" else pipeline_status)
+    if ci_state == CiState.FAILED:
+        state = "tests failed"
+    elif ci_state == CiState.PENDING:
+        state = "waiting for the tests"
+    elif observed is not None and (
         observed.decision in {"flag_conflict", "needs_branch_update"} or observed.next_task == UPDATE_BRANCH
     ):
-        return "needs a merge of main"
-    if pr.state == PullRequest.State.APPROVED:
-        return "ready to merge"
-    if pr.state == PullRequest.State.REVIEW_REQUESTED:
-        return "waiting for review"
-    return "being fixed"
+        state = "needs a merge of main"
+    elif pipeline and ci_state == CiState.UNKNOWN:
+        state = "tests status unknown"
+    elif pr.state == PullRequest.State.APPROVED:
+        state = "ready to merge"
+    elif pr.state == PullRequest.State.REVIEW_REQUESTED:
+        state = "waiting for review"
+    else:
+        state = "being fixed"
+    return state
 
 
 def _fresh_pr_inventory(overlay_names: list[str]) -> dict[str, PrInventoryEntry]:
     now = timezone.now()
+    try:
+        inventory = read_inventory()
+    except PrInventoryError:
+        logger.warning("PR inventory unreadable during check-in; using recorded PR state", exc_info=True)
+        inventory = ()
     snapshots = (
         snapshot
-        for snapshot in read_inventory()
+        for snapshot in inventory
         if snapshot.verified
         and now - snapshot.observed_at <= timedelta(minutes=30)
         and (

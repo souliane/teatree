@@ -730,6 +730,10 @@
           "name": "dm"
         },
         {
+          "help": "Post a deduped answer in the owner's existing Slack thread",
+          "name": "reply"
+        },
+        {
           "help": "Count bot messages in the owner DM by UTC day and ledger class",
           "name": "census"
         },
@@ -879,6 +883,14 @@
       "name": "questions",
       "subcommands": [
         {
+          "help": "Reuse an exact owner answer for the same architecture question from an operator session",
+          "name": "coordinate"
+        },
+        {
+          "help": "Count the owner cards that have a Slack mirror, grouped by creation day and kind",
+          "name": "measure"
+        },
+        {
           "help": "Record a question by hand \u2014 the agent-facing capture surface",
           "name": "record"
         },
@@ -891,7 +903,7 @@
           "name": "answer"
         },
         {
-          "help": "Dismiss pending questions without answering them",
+          "help": "Dismiss pending questions without answering them; live owner limits require a direct owner command",
           "name": "dismiss"
         },
         {
@@ -1471,7 +1483,7 @@
       "name": "waiting",
       "subcommands": [
         {
-          "help": "List everything currently waiting on the user",
+          "help": "List owner decisions, or the full factory inventory with --all",
           "name": "list"
         },
         {

@@ -87,6 +87,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "loop preset show": loop_preset.Command.show,
         "teatree questions list": questions.Command.list_pending,
         "teatree questions reachability": questions.Command.reachability,
+        "teatree questions measure": questions.Command.measure,
         "teatree live list": live.Command.list_sessions,
         "teatree live inspect": live.Command.inspect,
         "teatree live steer": live.Command.steer,

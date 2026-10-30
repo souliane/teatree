@@ -16,7 +16,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration
-from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventoryError, write_inventory
 from teatree.core.review.pr_next_action import UPDATE_BRANCH
 from teatree.paths import teatree_source_root
 from teatree.utils.git_run import run_strict, run_with_status
@@ -193,6 +193,63 @@ class CheckInFeatureStatusTestCase(TestCase):
         status = self._report().status_by_feature
 
         assert status.features[0].left[0].state == "tests failed"
+
+    def test_unreadable_inventory_uses_recorded_pr_state(self) -> None:
+        url = "https://github.com/example/widgets/pull/431"
+        ticket = TicketFactory(extra={"prs": {url: {"pipeline_status": "failed"}}})
+        PullRequestFactory(ticket=ticket, url=url)
+
+        with patch("teatree.core.checking_report.status.read_inventory", side_effect=PrInventoryError("bad snapshot")):
+            status = self._report().status_by_feature
+
+        assert status.features[0].left[0].state == "tests failed"
+
+    def test_canonical_pending_pipeline_states_block_ready_wording(self) -> None:
+        for index, pipeline in enumerate(("created", "preparing", "scheduled", "waiting_for_resource"), 432):
+            url = f"https://github.com/example/widgets/pull/{index}"
+            ticket = TicketFactory(extra={"prs": {url: {"pipeline_status": pipeline}}})
+            PullRequestFactory(ticket=ticket, url=url, state=PullRequest.State.APPROVED)
+
+        status = self._report().status_by_feature
+
+        assert [item.state for block in status.features for item in block.left] == ["waiting for the tests"] * 4
+
+    def test_unknown_checks_do_not_describe_an_approved_pr_as_ready(self) -> None:
+        url = "https://github.com/example/widgets/pull/436"
+        ticket = TicketFactory(extra={"prs": {url: {"pipeline_status": "manual"}}})
+        PullRequestFactory(ticket=ticket, url=url, state=PullRequest.State.APPROVED)
+
+        status = self._report().status_by_feature
+
+        assert status.features[0].left[0].state == "tests status unknown"
+
+    def test_fresh_normalized_green_checks_allow_ready_wording(self) -> None:
+        url = "https://github.com/example/widgets/pull/437"
+        ticket = TicketFactory()
+        PullRequestFactory(ticket=ticket, url=url, state=PullRequest.State.APPROVED)
+        entry = PrInventoryEntry(
+            url=url,
+            repo="example/widgets",
+            iid=437,
+            title="repair checks",
+            created_at="",
+            updated_at="",
+            next_task="",
+            decision="my_pr.open",
+            ci="green",
+            approvals="unknown",
+            threads="unknown",
+            draft=False,
+        )
+
+        with (
+            TemporaryDirectory() as directory,
+            patch("teatree.core.review.pr_inventory.data_dir_root", return_value=Path(directory)),
+        ):
+            write_inventory("t3-teatree", [entry])
+            status = self._report().status_by_feature
+
+        assert status.features[0].left[0].state == "ready to merge"
 
     def test_fresh_pr_inventory_supplies_github_ci_and_branch_state(self) -> None:
         red_url = "https://github.com/example/widgets/pull/440"

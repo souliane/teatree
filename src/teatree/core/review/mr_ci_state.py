@@ -43,6 +43,7 @@ CI_BY_STATUS: dict[str, CiState] = {
     "failed": CiState.FAILED,
     "failure": CiState.FAILED,
     "error": CiState.FAILED,
+    "red": CiState.FAILED,
 }
 
 

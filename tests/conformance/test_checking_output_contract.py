@@ -44,13 +44,15 @@ def test_documented_group_order_matches_report() -> None:
         merged=CheckGroup("Merged"),
         in_flight=CheckGroup("In-flight"),
         needs_you=CheckGroup("Needs you"),
+        triage_suggestions=CheckGroup("Triage suggestions"),
         metered=CheckGroup("Metered"),
     )
     names = [group.title for group in report.groups]
-    assert names == ["Merged", "In-flight", "Needs you", "Metered", "Remaining"]
+    assert names == ["Merged", "In-flight", "Needs you", "Triage suggestions", "Metered", "Remaining"]
     line = next(line for line in skill.splitlines() if "Groups in fixed order" in line)
     assert ", ".join(f"`{name}`" for name in names) in line
-    assert "Five groups: Merged / In-flight / Needs you / Metered / Remaining" in blueprint
+
+    assert "Six groups: Merged / In-flight / Needs you / Triage suggestions / Metered / Remaining" in blueprint
 
 
 def test_checking_walk_posts_slack_questions_before_any_direct_fallback() -> None:

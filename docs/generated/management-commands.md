@@ -379,6 +379,7 @@ Creates new migration(s) for apps.
 | --- | --- |
 | `send` | Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise) |
 | `dm` | DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise) |
+| `reply` | Post a deduped answer in the owner's existing Slack thread |
 | `census` | Count bot messages in the owner DM by UTC day and ledger class |
 | `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
@@ -450,10 +451,12 @@ Persist declared Notion pass-key routes without replacing database overrides.
 
 | Subcommand | Description |
 | --- | --- |
+| `coordinate` | Reuse an exact owner answer for the same architecture question from an operator session |
+| `measure` | Count the owner cards that have a Slack mirror, grouped by creation day and kind |
 | `record` | Record a question by hand — the agent-facing capture surface |
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending internal questions; an owner question is answered only in its Slack thread |
-| `dismiss` | Dismiss pending questions without answering them |
+| `dismiss` | Dismiss pending questions without answering them; live owner limits require a direct owner command |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List open questions, oldest first |
 
@@ -707,7 +710,7 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 
 | Subcommand | Description |
 | --- | --- |
-| `list` | List everything currently waiting on the user |
+| `list` | List owner decisions, or the full factory inventory with --all |
 | `add` | Record a manual waiting item the live sources cannot see |
 | `resolve` | Resolve a manual waiting item by id |
 

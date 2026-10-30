@@ -109,6 +109,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("loop preset show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
+    Capability("teatree questions measure", json_output=True, exit_codes=("0", "2")),
     Capability(
         "teatree questions reachability",
         json_output=True,

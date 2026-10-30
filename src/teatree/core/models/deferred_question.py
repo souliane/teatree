@@ -58,6 +58,9 @@ class DeferredQuestion(models.Model):
     the transcript.
     """
 
+    if TYPE_CHECKING:
+        audits: models.Manager["DeferredQuestionAudit"]
+
     STATUS_PENDING = "pending"
     STATUS_ANSWERED = "answered"
     STATUS_DISMISSED = "dismissed"

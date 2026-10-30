@@ -40,6 +40,8 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, owner_decision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, bump_due, first_posted_at, owner_quiet_at, reask_key
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user_outcome, resolve_owner_dm_backend
@@ -54,11 +56,11 @@ from teatree.core.owner_question_message import (
     shown_problems_for,
     withheld_message,
 )
-from teatree.core.question_heal import live_owner_questions, withhold
+from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
 from teatree.loop.preset_resolution import owner_zone
 
-# Bound first-card bursts after the owner returns; later ticks read the remaining backlog.
-_MAX_MIRRORS_PER_TICK = 3
+# Bound repeat-notification bursts after the owner returns; later ticks read the remaining backlog.
+_MAX_RESURFACE_PER_TICK = 3
 
 #: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
 #: The cap must bound NEW deliveries, so the selection reads this ledger back and skips
@@ -121,13 +123,13 @@ def _question_ping_keys() -> Q:
 
 
 def owner_quiet_now() -> bool:
-    """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
+    """Whether it is 22:00-08:00 in the owner's zone — when re-asks are held."""
     return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
 
 
 @contextmanager
-def _question_ping_slot() -> Generator[bool]:
-    if owner_quiet_now():
+def _question_ping_slot(*, first_post: bool = False) -> Generator[bool]:
+    if not first_post and owner_quiet_now():
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
         return
@@ -214,7 +216,14 @@ def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | N
     """The rows that pass the owner-message checks; the others are withheld, never posted, bumped or counted."""
     sendable: list[DeferredQuestion] = []
     for row in rows:
-        if not (problems := shown_problems_for(row)):
+        card = QuestionCard.from_row(row.evidence, row.options_json) if isinstance(row.evidence, dict) else None
+        decision = owner_decision(row.evidence.get("decision")) if isinstance(row.evidence, dict) else None
+        problems = shown_problems_for(row)
+        if card is None:
+            problems.append("owner card is missing")
+        if decision not in OWNER_RAISABLE_DECISIONS:
+            problems.append(f"{decision or 'no decision'} cannot be raised to the owner")
+        if not problems:
             sendable.append(row)
         elif withhold(row, problems) and row.slack_ts:
             _replace_root(row, backend)
@@ -395,9 +404,9 @@ def drain_deferred_questions(
     never its local pk), so re-running on a later tick or after a manual
     ``resurface`` never double-posts. The cap is applied AFTER that ledger is read
     back, so it bounds NEW deliveries and the window advances every call until the
-    backlog is drained. **Capped per call** for the same reason the
-    mirror drain is: an away→present transition after a long absence would otherwise
-    deliver the whole accumulated backlog as one burst of DMs. Returning to present is
+    backlog is drained. **Capped per call** for repeat notifications: an away→present
+    transition after a long absence would otherwise deliver the whole accumulated
+    backlog as one burst of DMs. Returning to present is
     precisely when the backlog is largest, so this is the path that actually fires.
     Fails open: a delivery
     failure for one question is recorded on its ``BotPing`` row by
@@ -413,7 +422,7 @@ def drain_deferred_questions(
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
     # tick, on an away->present transition and on a manual resurface alike (#4064).
     settled = _refs_the_send_will_not_redeliver()
-    rows = [r for r in owner_rows if r.stable_notify_ref not in settled][:_MAX_MIRRORS_PER_TICK]
+    rows = [r for r in owner_rows if r.stable_notify_ref not in settled][:_MAX_RESURFACE_PER_TICK]
     if not rows:
         # Nothing NEW to send. The backlog total is still reported so a caller cannot read
         # "0 delivered" as "queue empty" — the distinction this drain previously erased.
@@ -461,19 +470,11 @@ def drain_unmirrored_deferred_questions(
     resolved in this context) is left un-mirrored — the durable row IS the
     fallback — and retried next tick. Returns ``(mirrored, total)``.
 
-    **The batch is CAPPED per tick.** The backlog grows silently whenever the
-    owner is away — the lanes keep recording rows and nobody answers them — so
-    draining it unbounded turns the moment they come back into one DM per
-    accumulated question, seconds apart — 52 in one burst is what this fix was
-    written for.
-    The owner reads that as spam and mutes the channel, which loses the next
-    genuine question too. The remainder is not dropped: `unmirrored_pending()`
-    is re-read every tick, so the backlog drains steadily instead of at once,
-    and a question that has waited hours can wait one more cadence.
+    First-time cards are posted without a time or count ceiling because an agent
+    waiting on an owner decision needs the card as soon as it is recorded.
     """
-    rows = _checked((row for row in live_owner_questions() if not row.slack_ts), backend=backend)[
-        :_MAX_MIRRORS_PER_TICK
-    ]
+    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)
+
     if not rows:
         return 0, 0
 
@@ -482,7 +483,7 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
-            with _question_ping_slot() as open_slot:
+            with _question_ping_slot(first_post=True) as open_slot:
                 if not open_slot:
                     break
                 sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
