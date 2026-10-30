@@ -190,7 +190,7 @@ class CheckoutFenceTests(TestCase):
             park_task_checkout(self.task, reason="foreign checkout state")
         self.task.refresh_from_db()
         self.ticket.refresh_from_db()
-        assert self.task.not_before >= timezone.now() + timedelta(days=365)
+        assert timezone.now() + timedelta(minutes=59) <= self.task.not_before <= timezone.now() + timedelta(minutes=60)
         assert self.ticket.extra["stuck_halt"]["reason"] == "checkout parked: foreign checkout state"
         assert len(stuck_ticket_halt_signals().signals) == 1
 

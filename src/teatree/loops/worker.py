@@ -60,7 +60,7 @@ from teatree.loops.executor_thread import spawn_executor_thread as _spawn_execut
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 from teatree.loops.worker_health import publish_worker_heartbeat
 from teatree.loops.worker_lease_cleanup import _reap_expired_leases, _reclaim_dead_owner_leases
-from teatree.utils.host_pressure import HostSampler
+from teatree.utils.host_pressure_sampler import HostSampler
 from teatree.utils.ram_probe import default_provision_concurrency
 
 if TYPE_CHECKING:

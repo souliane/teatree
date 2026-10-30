@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils.host_pressure import HostSampler, feed_fault, read_host_pressure
+from teatree.utils.host_pressure import feed_fault, read_host_pressure
+from teatree.utils.host_pressure_sampler import HostSampler
 
 
 def _proc(root: Path, *, available_kib: int = 12_000_000, swapped_pages: int = 0) -> None:
@@ -24,6 +25,7 @@ def test_sampler_publishes_fresh_feed_and_throttles_writes(monkeypatch: pytest.M
 
     sampler.publish_if_due(now=1_000)
     first = target.read_bytes()
+    assert target.stat().st_mode & 0o777 == 0o644
     assert read_host_pressure(path=target, now=1_001) is not None
     assert json.loads(first)["ram_available_mib"] == 12_000_000 // 1024
     assert json.loads(first)["load1"] == pytest.approx(1.25)

@@ -239,8 +239,6 @@ def park_task_checkout(
     task.admitted_at = None
     repeats = attempt.park_repeats + 1
     delay = min(_PARK_RETRY * 2 ** min(max(repeats - 2, 0), 6), timedelta(hours=24))
-    if repeats >= _REPEATED_PARK_THRESHOLD and behind is None:
-        delay = timedelta(days=3650)
     task.park(not_before=min([timezone.now() + delay, *(held.expires_at for held in holders if held)]))
     rearmed = _rearm_if_occupancy_cleared(task, behind=behind, unknown_holder=unknown_holder)
     halt_reason = f"checkout parked: {reason}"

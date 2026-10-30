@@ -66,8 +66,9 @@ from teatree.loops.worker import (
     agent_executor_queues,
     loops_executor_count,
 )
-from teatree.utils import host_pressure
-from teatree.utils.host_pressure import HostSampler, read_host_pressure
+from teatree.utils import host_pressure_sampler
+from teatree.utils.host_pressure import read_host_pressure
+from teatree.utils.host_pressure_sampler import HostSampler
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 from teatree.utils.thread_db import close_thread_db_connections
@@ -292,7 +293,7 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
 def test_default_worker_seam_publishes_host_pressure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "host-pressure.json"
     monkeypatch.setenv("T3_HOST_PRESSURE_PATH", str(target))
-    monkeypatch.setattr(host_pressure, "proc_reads_the_host", lambda: True)
+    monkeypatch.setattr(host_pressure_sampler, "proc_reads_the_host", lambda: True)
 
     WorkerSeams().publish_host_pressure()
 

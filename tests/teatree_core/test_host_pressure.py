@@ -19,11 +19,6 @@ from teatree.utils import host_pressure, ram_probe, ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 
 
-@pytest.fixture(autouse=True)
-def _pin_absent_cpu_quota(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: None)
-
-
 def _write_feed(
     tmp_path: Path,
     *,
@@ -105,13 +100,7 @@ class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
         assert machine.cores == 8
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 4
 
-    def test_a_cgroup_cpu_quota_caps_the_host_ceiling(self) -> None:
-        with patch.object(ram_probe, "cgroup_cpu_quota", return_value=3):
-            machine = read_machine_signal()
-        assert machine.cores == 3
-        assert admission_ceiling(UNREAD_QUOTA, machine).value == 1
-
-    def test_cpu_affinity_caps_the_host_ceiling_without_changing_load_scope(self) -> None:
+    def test_cpu_affinity_or_quota_caps_the_host_ceiling_without_changing_load_scope(self) -> None:
         with patch.object(ram_probe, "available_cpu_count", return_value=2):
             machine = read_machine_signal()
         assert machine.cores == 2
@@ -209,8 +198,7 @@ def test_host_load_is_judged_against_host_cores_not_the_container_quota(
     # 3-core cgroup's watermark.
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     _write_feed(tmp_path, epoch=int(time.time()), load1=12.0, ram_available_mib=12 * 1024, swap_used_mib=0)
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: 3)
-    monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 10)
+    monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 3)
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()
     decision = decide_admission(quota=_quota(), machine=machine, load_brake=MachineBrake(braked=True))

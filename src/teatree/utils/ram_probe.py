@@ -94,9 +94,9 @@ def _macos_page_size(vm_stat_output: str) -> int:
 
     Not a constant: Apple Silicon uses 16384-byte pages where Intel used 4096,
     and ``vm_stat`` reports page COUNTS. Assuming 4 KiB on an arm64 Mac scales
-    the reclaimable total (free + speculative + the larger of inactive or purgeable pages) down 4x,
-    so a 24 GiB host can falsely appear to have less than 4 GiB available. ``vm_stat`` states the
-    real size on its first line, so read it rather than guess.
+    the reclaimable total (free + inactive + purgeable + speculative pages) down 4x, so a 24 GiB
+    host can falsely appear to have less than 4 GiB available. ``vm_stat`` states the real size on
+    its first line, so read it rather than guess.
 
     The 4096 fallback keeps an unparsable header on conservative arithmetic
     instead of raising — consistent with this module degrading rather than
@@ -284,11 +284,6 @@ def _cgroup_v2_cpu_quota() -> "int | None":
     if quota <= 0 or period <= 0:
         return None
     return max(1, -(-quota // period))  # ceil division, floored at 1
-
-
-def cgroup_cpu_quota() -> "int | None":
-    """The CPU quota alone, without a process-affinity or physical-core cap."""
-    return _cgroup_v2_cpu_quota()
 
 
 def available_cpu_count() -> int:
@@ -526,7 +521,6 @@ __all__ = [
     "DockerWorkerSizing",
     "WorkerSizing",
     "available_cpu_count",
-    "cgroup_cpu_quota",
     "cgroup_file",
     "cgroup_v1_memory_mib",
     "cgroup_v2_memory_mib",

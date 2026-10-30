@@ -32,7 +32,7 @@ class StuckCheckoutRecheckTests(TestCase):
         self.task.refresh_from_db()
         self.ticket.refresh_from_db()
         assert verify.call_count == 1
-        assert self.task.not_before > timezone.now() + timedelta(days=365)
+        assert self.task.not_before > timezone.now() + timedelta(minutes=59)
         assert "stuck_halt" in self.ticket.extra
 
     def test_changed_cause_rearms_the_task_and_resolves_the_halt(self) -> None:
@@ -60,7 +60,7 @@ class StuckCheckoutRecheckTests(TestCase):
         self.ticket.refresh_from_db()
         assert "stuck_halt" not in self.ticket.extra
         self.task.refresh_from_db()
-        assert self.task.not_before > timezone.now() + timedelta(days=365)
+        assert self.task.not_before > timezone.now() + timedelta(minutes=59)
 
     def test_non_writing_task_stays_parked_until_its_checkout_can_be_checked(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(phase="reviewing")
@@ -70,7 +70,7 @@ class StuckCheckoutRecheckTests(TestCase):
         self.ticket.refresh_from_db()
         self.task.refresh_from_db()
         assert "stuck_halt" in self.ticket.extra
-        assert self.task.not_before > timezone.now() + timedelta(days=365)
+        assert self.task.not_before > timezone.now() + timedelta(minutes=59)
 
     def test_halt_for_a_completed_task_is_cleared(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED)
