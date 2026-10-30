@@ -1233,7 +1233,8 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   ```
 
   The admin and dashboard require a signed-in staff session even when the request
-  arrives from loopback. `t3 admin` and `t3 dashboard` issue a single-use login link valid for two minutes.
+  arrives from loopback. With one superuser, `t3 admin` and `t3 dashboard` issue a
+  single-use login link valid for two minutes; with several, they open `/login/`.
   Password sign-in at `/login/` or `/admin/login/` remains available using the
   superuser seeded by `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`. The SSH
   tunnel keeps the service off the public network, while the login protects it
@@ -1262,7 +1263,7 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   dashboard local; the forwarder's own listener binds every interface because a
   published mapping delivers to a container's interface and never to its loopback.
   The last hop uses `docker exec` to reach gunicorn's loopback bind. The browser
-  opens the single-use login link recorded with owner-only file permissions. An url that does not answer is refused with the cause
+  opens the recorded single-use link or sign-in page. An url that does not answer is refused with the cause
   instead of opening a browser at a dead page.
 
 - **`t3 <overlay> tool <leaf>` — the generic host hop:** the same shape as the two

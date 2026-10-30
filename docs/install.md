@@ -223,8 +223,8 @@ The main clone (detected via a real `.git` directory) refuses `install` — use 
 Every page of `/admin/` and `/dash/` needs a signed-in staff user, including a request
 that arrives from loopback through a tunnel. Three ways in:
 
-- `t3 admin` (or `t3 dashboard`) opens a single-use link, valid for two minutes, that signs
-  in the superuser seeded by `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`.
+- `t3 admin` (or `t3 dashboard`) opens a two-minute single-use link when one superuser
+  exists. With several superusers, it opens `/login/` so the operator chooses an account.
 - `/login/` takes that superuser's password.
 - `t3 login github` or `t3 login gitlab` signs in with the forge account. It needs one OAuth
   app per forge, registered in the `operator_oauth_apps` setting (callback

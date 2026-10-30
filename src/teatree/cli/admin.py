@@ -32,6 +32,7 @@ import os
 import threading
 import webbrowser
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import typer
 
@@ -72,9 +73,9 @@ _GUNICORN_TIMEOUT_SECONDS = 120
 
 @dataclass(frozen=True, slots=True)
 class SuperuserResult:
-    """The admin user the command resolved — with a password only when freshly created."""
+    """The sole admin user, or no selection when several operators exist."""
 
-    username: str
+    username: str | None
     created_password: str | None
 
 
@@ -133,8 +134,10 @@ def _serve(*, host: str, port: int | None, no_browser: bool, path: str) -> None:
     if superuser.created_password is not None:
         typer.echo(f"created superuser '{superuser.username}' with password '{superuser.created_password}'")
         typer.echo("set T3_ADMIN_USER / T3_ADMIN_PASSWORD to control these credentials")
-    else:
+    elif superuser.username is not None:
         typer.echo(f"using existing superuser '{superuser.username}'")
+    else:
+        typer.echo("choose an operator at sign-in")
 
     browser_timer = None if no_browser else _open_browser_when_ready(browse_url)
 
@@ -164,7 +167,9 @@ def _publish_running_admin(*, port: int | None, path: str) -> None:
     typer.echo(f"teatree admin → {browse_url}")
 
 
-def _operator_login_url(base_url: str, username: str, path: str) -> str:
+def _operator_login_url(base_url: str, username: str | None, path: str) -> str:
+    if username is None:
+        return f"{base_url}/login/?{urlencode({'next': path})}"
     from django.contrib.auth import get_user_model  # noqa: PLC0415 — Django is initialized by _serve.
 
     from teatree.core.operator_auth.operator_login import (  # noqa: PLC0415 — Django is initialized by _serve.
@@ -211,7 +216,7 @@ def _ensure_superuser() -> SuperuserResult:
 
     The password comes from ``T3_ADMIN_PASSWORD`` when set, otherwise a fresh
     random token is generated and surfaced to the caller — never a hardcoded
-    default. An existing superuser is reused untouched (no password is exposed).
+    default. One existing superuser is reused; several are left for sign-in.
     """
     import os  # noqa: PLC0415 — deferred: loaded only when this command runs
     import secrets  # noqa: PLC0415 — deferred: loaded only when this command runs
@@ -219,9 +224,11 @@ def _ensure_superuser() -> SuperuserResult:
     from django.contrib.auth import get_user_model  # noqa: PLC0415 — deferred: Django import at call time
 
     user_model = get_user_model()
-    existing = user_model.objects.filter(is_superuser=True).first()
-    if existing is not None:
-        return SuperuserResult(username=existing.get_username(), created_password=None)
+    existing = list(user_model.objects.filter(is_superuser=True).order_by("pk")[:2])
+    if len(existing) > 1:
+        return SuperuserResult(username=None, created_password=None)
+    if existing:
+        return SuperuserResult(username=existing[0].get_username(), created_password=None)
 
     username = os.environ.get("T3_ADMIN_USER") or _DEFAULT_ADMIN_USER
     password = os.environ.get("T3_ADMIN_PASSWORD") or secrets.token_urlsafe(_GENERATED_PASSWORD_BYTES)

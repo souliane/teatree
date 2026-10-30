@@ -542,7 +542,7 @@ non-interactively when absent and printing its generated password (override via
 `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and opens the browser at `/admin/`
 (`--no-browser` to skip; `--host` / `--port` to override). The admin binds to the
 same teatree database every other `t3` command reads, so no overlay context is
-needed.
+needed. With several superusers, the browser opens the sign-in page to choose an account.
 
 For forge sign-in, an existing administrator first adds the operator's GitHub or
 GitLab account to their user record in the admin. `t3 login github` or

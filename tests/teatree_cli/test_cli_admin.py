@@ -7,7 +7,7 @@ from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import typer
 from django.contrib.auth import get_user_model
@@ -148,6 +148,25 @@ class AdminBrowserTestCase(TestCase):
         url = browser_open.call_args.args[0]
         assert url.startswith("http://127.0.0.1:8000/login/local/")
         assert self.client.get(urlsplit(url).path).headers["Location"] == "/admin/"
+
+    def test_multiple_operators_open_sign_in_without_selecting_an_account(self) -> None:
+        users = get_user_model().objects
+        users.create_superuser(username="first", email="", password="unused")
+        users.create_superuser(username="second", email="", password="unused")
+        with patch("teatree.cli.admin._BROWSER_OPEN_DELAY_SECONDS", 0):
+            result, _run_server, browser_open = _invoke(target=_dashboard_app)
+
+        assert result.exit_code == 0
+        url = urlsplit(browser_open.call_args.args[0])
+        assert url.path == "/login/"
+        assert parse_qs(url.query) == {"next": ["/dash/board/"]}
+
+    def test_oauth_sign_in_keeps_the_requested_dashboard_destination(self) -> None:
+        response = self.client.get("/login/?next=/dash/board/")
+
+        assert response.status_code == 200
+        assert b"/login/oauth/github/start/?next=/dash/board/" in response.content
+        assert b"/login/oauth/gitlab/start/?next=/dash/board/" in response.content
 
     def test_no_browser_flag_suppresses_open(self) -> None:
         result, _run_server, browser_open = _invoke("--no-browser")
