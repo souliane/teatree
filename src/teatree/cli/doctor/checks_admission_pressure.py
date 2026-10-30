@@ -120,7 +120,8 @@ def _check_box_occupancy() -> bool:
     watermark = machine.load_brake_per_core * cores
     reading = (
         f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
-        f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f}){_pressure_reading(machine)}"
+        f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f}; "
+        f"{machine.source or 'reading unknown'}){_pressure_reading(machine)}"
     )
     if machine.load1 < watermark:
         typer.echo(f"OK    Box occupancy — {reading}")

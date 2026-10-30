@@ -18,16 +18,28 @@ never retried in silence.
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
+from django.utils import timezone
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models import PendingPullRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _due(row: "PendingPullRequest") -> bool:
+    if row.drain_attempts < MAX_DRAIN_ATTEMPTS or row.last_attempt_at is None:
+        return True
+    minutes = min(5 * 2 ** min(row.drain_attempts - MAX_DRAIN_ATTEMPTS, 9), 24 * 60)
+    return timezone.now() >= row.last_attempt_at + timedelta(minutes=minutes)
 
 
 @dataclass(slots=True)
@@ -42,12 +54,28 @@ class PendingPrDrainScanner:
 
         try:
             retired = PendingPullRequest.objects.retire_absent()
-            owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
+            owed: list[PendingPullRequest] = []
+            for row in PendingPullRequest.objects.order_by("deferred_at").iterator(chunk_size=100):
+                if len(owed) >= self.limit:
+                    break
+                if _due(row):
+                    owed.append(row)
         except (OperationalError, ProgrammingError):
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
-        discharged = sum(1 for row in owed if self._drain_one(row))
+        discharged = 0
+        for row in owed:
+            if self._drain_one(row):
+                discharged += 1
+            elif row.drain_attempts == MAX_DRAIN_ATTEMPTS:
+                notify_user(
+                    f"Pull request obligation for {row.branch} remains overdue after {row.drain_attempts} attempts: "
+                    f"{row.last_error}",
+                    kind=NotifyKind.INFO,
+                    idempotency_key=f"pending_pr_overdue:{row.pk}",
+                    audience=NotifyAudience.OWNER_ESCALATION,
+                )
         if discharged:
             signals.append(
                 ScanSignal(

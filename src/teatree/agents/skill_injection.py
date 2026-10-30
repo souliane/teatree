@@ -226,6 +226,7 @@ def read_only_venue_skill_contents(
 
 _SUBAGENT_PREAMBLE_HEADER = (
     "# Required skills (a dispatched sub-agent does not auto-load them)\n"
+    "The rules text is embedded below. Run skill-preamble only if you dispatch another agent.\n"
     "Follow the embedded rules and load each required stack skill via the Skill tool,\n"
     "before reading files, running commands, or writing code."
 )

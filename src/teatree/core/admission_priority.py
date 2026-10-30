@@ -5,12 +5,14 @@ earliest current admission breaks ties before the older task row. Every caller o
 :data:`ADMISSION_ORDER`, so a new part is added here without touching any of them.
 """
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models
 from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, When
 from django.db.models.expressions import BaseExpression, OrderBy
+from django.utils import timezone
 
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
 
@@ -26,11 +28,14 @@ ADMISSION_ORDER: tuple[str | OrderBy, ...] = (
 )
 
 #: Stage part: review lane, then a ticket with a started pull request, then continuing work, then a new ticket.
-_REVIEW_STAGE = 400
-_STARTED_PR_STAGE = 150
+_REVIEW_STAGE = 600
+_STARTED_REVIEW_STAGE = 900
+_STARTED_PR_STAGE = 350
 _CONTINUING_STAGE = 100
+_AGED_PLANNING_STAGE = 150
 _NEW_TICKET_STAGE = 0
-#: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
+_PLANNING_AGE_WINDOW = timedelta(hours=24)
+#: Priority part: expedited adds 200 points; started pull requests and reviews retain higher stages.
 _EXPEDITED_PRIORITY = 200
 _NIT_PRIORITY = -1000
 
@@ -56,8 +61,13 @@ def _priority_part() -> Case:
 
 def _stage_part(started: Exists) -> Case:
     return Case(
+        When(Q(phase__in=cheap_phase_spellings()) & started, then=Value(_STARTED_REVIEW_STAGE)),
         When(phase__in=cheap_phase_spellings(), then=Value(_REVIEW_STAGE)),
         When(started, then=Value(_STARTED_PR_STAGE)),
+        When(
+            _new_ticket_autostart_q() & Q(created_at__lte=timezone.now() - _PLANNING_AGE_WINDOW),
+            then=Value(_AGED_PLANNING_STAGE),
+        ),
         When(_new_ticket_autostart_q(), then=Value(_NEW_TICKET_STAGE)),
         default=Value(_CONTINUING_STAGE),
         output_field=IntegerField(),

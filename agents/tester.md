@@ -25,3 +25,6 @@ analyze failures, write missing tests, and verify CI pipelines.
 
 Follow the loaded skills for testing methodology, workspace
 conventions, platform API recipes, and cross-cutting rules.
+
+Run long commands in the background and read their output afterward. If automatic approval refuses a command, retry that command once through the background route; report a harness permission fault if it refuses again.
+The parent already supplies your skill preamble; run the preamble command only if you dispatch a child.

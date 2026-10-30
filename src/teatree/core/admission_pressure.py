@@ -176,6 +176,8 @@ class MachineSignal:
     load_cores: int | None = None
     load_brake_per_core: float = BRAKE_LOAD_PER_CORE
     load_resume_per_core: float = RESUME_LOAD_PER_CORE
+    source: str = ""
+    memory_source: str = ""
 
     @property
     def load_scope_cores(self) -> int:
@@ -448,7 +450,7 @@ def admission_pressure(
     if load_brake.applies:
         components.extend(_machine_components(machine, braked=load_brake.braked, shed_at=shed_at))
     elif machine.vm_pressure_level is not None and machine.vm_pressure_level >= VM_PRESSURE_CRITICAL:
-        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at))
+        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at, source=machine.source))
     return AdmissionPressure(components=tuple(components), shed_at=shed_at)
 
 
@@ -487,6 +489,8 @@ def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
 
 def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float) -> list[PressureComponent]:
     cores = machine.load_scope_cores
+    source = f" ({machine.source})" if machine.source else ""
+    memory_source = f" ({machine.memory_source})" if machine.memory_source else ""
     watermark = _load_watermark(
         cores=cores,
         braked=braked,
@@ -503,7 +507,7 @@ def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float)
                 brake_per_core=machine.load_brake_per_core,
                 resume_per_core=machine.load_resume_per_core,
             ),
-            detail=f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)",
+            detail=f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s){source}",
         )
     ]
     if machine.ram_available_gb is not None:
@@ -517,7 +521,7 @@ def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float)
             PressureComponent(
                 name="memory",
                 value=_ram_pressure(machine.ram_available_gb, braked=braked),
-                detail=f"{detail} ({conflict})" if conflict else detail,
+                detail=f"{detail} ({conflict}){memory_source}" if conflict else f"{detail}{memory_source}",
             )
         )
     if machine.swap_mib_per_s is not None:
@@ -526,21 +530,24 @@ def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float)
             PressureComponent(
                 name="swap",
                 value=_clamp(machine.swap_mib_per_s / swap_watermark),
-                detail=f"host paging {machine.swap_mib_per_s:.1f} MiB/s at/over the {swap_watermark:g} MiB/s watermark",
+                detail=(
+                    f"host paging {machine.swap_mib_per_s:.1f} MiB/s at/over "
+                    f"the {swap_watermark:g} MiB/s watermark{source}"
+                ),
             )
         )
     if machine.vm_pressure_level is not None:
-        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at))
+        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at, source=machine.source))
     return components
 
 
-def _kernel_component(level: int, *, shed_at: float) -> PressureComponent:
+def _kernel_component(level: int, *, shed_at: float, source: str = "") -> PressureComponent:
     """Warn sheds the expensive class and keeps the drain; critical halts every lane."""
     value = HALT_AT if level >= VM_PRESSURE_CRITICAL else shed_at if level >= VM_PRESSURE_WARN else 0.0
     return PressureComponent(
         name="memory-pressure",
         value=value,
-        detail=f"kernel memory pressure level {level} (1 normal, 2 warn, 4 critical)",
+        detail=f"kernel memory pressure level {level} (1 normal, 2 warn, 4 critical){f' ({source})' if source else ''}",
     )
 
 

@@ -52,3 +52,12 @@ def test_documented_group_order_matches_report() -> None:
     line = next(line for line in skill.splitlines() if "Groups in fixed order" in line)
     assert ", ".join(f"`{name}`" for name in names) in line
     assert "Six groups: Merged / In-flight / Needs you / Triage suggestions / Metered / Remaining" in blueprint
+
+
+def test_checking_walk_posts_slack_questions_before_any_direct_fallback() -> None:
+    skill = SKILL.read_text().lower()
+    walk = skill.split("## walking the owner waits", 1)[1].split("## the single command", 1)[0]
+    assert "checking shoot" in walk
+    assert "slack permalink" in walk
+    assert "only when slack is broken" in walk
+    assert "otherwise raise one card at a time through `askuserquestion`" not in walk

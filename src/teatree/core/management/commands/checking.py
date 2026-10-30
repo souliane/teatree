@@ -12,16 +12,17 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-Before gathering, the command reconciles owner questions: stale rows may be dismissed
-and exact repeats may be answered and resume their parked tasks. ``--no-advance``
-only leaves the report checkpoint unchanged. The report is routed
-through the machine-output seam — JSON on stdout under ``--json``, the terse
-human view on stderr — and returned as the typed payload.
+Before gathering, ``show`` and ``brief`` reconcile owner questions with recorded
+answers and may resume parked tasks. Only the default path writes a checkpoint
+marker. ``shoot`` posts Slack questions and records delivery state.
+The report is routed through the machine-output seam — JSON on stdout under
+``--json``, the terse human view on stderr — and returned as the typed payload.
 """
 
 import hashlib
 import io
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, TYPE_CHECKING, Annotated, cast
@@ -30,6 +31,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import command, initialize
 
+from teatree.backends.slack.listener_heartbeat import ListenerBeat, heartbeat_is_stale, read_heartbeat
 from teatree.backends.slack.table_format import render_table_message, slack_table_block
 from teatree.core.checking import (
     DEFAULT_CAP,
@@ -39,7 +41,9 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
-from teatree.core.checking_types import CheckItem, OwnerWaitItem
+from teatree.core.checking_report.slack import ShootReportDict, shoot_questions
+from teatree.core.checking_report.status import markdown_link, plain_title
+from teatree.core.checking_types import CheckItem, OwnerWaitItem, RemainingGroup
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -52,6 +56,8 @@ from teatree.types import RawAPIDict
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
+_BRIEF_HELD_CAP = 2
+
 
 @dataclass(frozen=True, slots=True)
 class _ShowFlags:
@@ -61,6 +67,21 @@ class _ShowFlags:
     json_output: bool
     no_advance: bool
     notify: bool
+    brief: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderContext:
+    header: str
+    stamp: str
+    status_lines: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _GatheredReport:
+    payload: CheckingReportDict | AllOverlaysReportDict
+    groups: list[CheckGroup]
+    context: _RenderContext
 
 
 def _stamp(when: datetime) -> str:
@@ -68,8 +89,45 @@ def _stamp(when: datetime) -> str:
     return local.strftime("%H:%M")
 
 
+def _listener_stale(beat: ListenerBeat | None, *, now: float) -> bool:
+    if beat is None:
+        return True
+    if beat.stamps is not None:
+        return all(heartbeat_is_stale(beat, name, now=now) for name in beat.stamps)
+    return heartbeat_is_stale(beat, "", now=now)
+
+
+def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
+    held = [item for group in groups if isinstance(group, RemainingGroup) for item in group.critical_items]
+    lines = [
+        f"Held pull request: {markdown_link(plain_title(item.title), item.url)}" for item in held[:_BRIEF_HELD_CAP]
+    ]
+    if hidden := max(0, len(held) - _BRIEF_HELD_CAP):
+        lines[-1] = f"{lines[-1]} · and {hidden} more held pull requests"
+    return lines
+
+
+def _render_brief(groups: list[CheckGroup], *, context: _RenderContext, internal_escalations: int) -> str:
+    status = [*context.status_lines, *_brief_critical_lines(groups)]
+    if status:
+        if internal_escalations:
+            if context.status_lines:
+                status[0] = f"{status[0]} · {internal_escalations} internal escalations"
+            else:
+                status.append(f"{internal_escalations} internal escalations")
+        return "\n".join(status)
+    if all(not group.has_table_content() for group in groups) and not internal_escalations:
+        return f"Nothing since {context.stamp}."
+    suffix = f" · {internal_escalations} internal escalations" if internal_escalations else ""
+    return f"No active feature work since {context.stamp}{suffix}."
+
+
 def _render_groups_tables(
-    groups: list[CheckGroup], *, header: str, stamp: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+    groups: list[CheckGroup],
+    *,
+    context: _RenderContext,
+    internal_escalations: int = 0,
+    brief: bool = False,
 ) -> str:
     """Render each non-empty group as a table under *header*.
 
@@ -77,10 +135,16 @@ def _render_groups_tables(
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
-    if all(not group.has_table_content() for group in groups) and not internal_escalations:
-        return f"Nothing since {stamp}."
+    if brief:
+        return _render_brief(groups, context=context, internal_escalations=internal_escalations)
+    status = context.status_lines
+    cap = DEFAULT_CAP
+    if all(not group.has_table_content() for group in groups) and not internal_escalations and not status:
+        return f"Nothing since {context.stamp}."
     buffer = io.StringIO()
-    buffer.write(header + "\n")
+    if status:
+        buffer.write("\n".join(status) + "\n")
+    buffer.write(context.header + "\n")
     for group in groups:
         if not group.has_table_content():
             continue
@@ -176,6 +240,31 @@ class Command(MachineOutputCommand):
         """``t3 <overlay> checking`` group root."""
 
     @command()
+    def shoot(
+        self,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the Slack question links as JSON.")] = False,
+    ) -> ShootReportDict:
+        """Post or nudge waiting owner questions through the existing Slack drains."""
+        overlay = os.environ.get("T3_OVERLAY_NAME", "")
+        stale = _listener_stale(read_heartbeat(), now=time.time())
+        result = shoot_questions(overlay=overlay, listener_stale=stale)
+        self.print_result = False
+        human = "\n".join(markdown_link(card["label"], card["permalink"]) for card in result["cards"])
+        if result["reason"]:
+            human = f"{result['reason']}\n{human}"
+        if result["remaining"]:
+            human += f"\n{result['remaining']} waiting for the next Slack send"
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human.strip(),
+        )
+        return result
+
+    @command()
     def show(
         self,
         *,
@@ -206,19 +295,49 @@ class Command(MachineOutputCommand):
             ),
         ] = False,
     ) -> CheckingReportDict | AllOverlaysReportDict:
-        """Reconcile owner questions and print changes since the last check."""
+        """Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check."""
+        flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify, brief=False)
+        return self._dispatch_show(flags=flags, this_overlay=this_overlay)
+
+    @command()
+    def brief(
+        self,
+        *,
+        since: Annotated[str, typer.Option(help="ISO timestamp override for the window start.")] = "",
+        no_advance: Annotated[bool, typer.Option("--no-advance", help="Do not advance the checkpoint.")] = False,
+        this_overlay: Annotated[bool, typer.Option("--this-overlay", help="Use the current overlay only.")] = False,
+    ) -> CheckingReportDict | AllOverlaysReportDict:
+        """Print the one-screen status while keeping full groups in the returned payload."""
+        flags = _ShowFlags(since=since, json_output=False, no_advance=no_advance, notify=False, brief=True)
+        return self._dispatch_show(flags=flags, this_overlay=this_overlay)
+
+    def _dispatch_show(self, *, flags: _ShowFlags, this_overlay: bool) -> CheckingReportDict | AllOverlaysReportDict:
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
-
-        _validate_since(since)
+        _validate_since(flags.since)
         live_owner_questions()
 
-        flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify)
-        if this_overlay:
-            return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
-        return self._show_all_overlays(now=now, flags=flags)
+        gathered = (
+            self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
+            if this_overlay
+            else self._show_all_overlays(now=now, flags=flags)
+        )
+        self.print_result = False
+        emit(
+            gathered.payload,
+            json_output=flags.json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_groups_tables(
+                gathered.groups,
+                context=gathered.context,
+                internal_escalations=gathered.payload["internal_escalations"],
+                brief=flags.brief,
+            ),
+        )
+        return gathered.payload
 
-    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> CheckingReportDict:
+    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> _GatheredReport:
         """Single-overlay path (``--this-overlay`` or backward-compat)."""
         window_start = resolve_window_start(since=flags.since, now=now)
         report = gather_checking_report(
@@ -244,9 +363,10 @@ class Command(MachineOutputCommand):
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
             advance_checkpoint_monotonic(now)
-        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
+        context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
+        return _GatheredReport(report.to_dict(), groups, context)
 
-    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> AllOverlaysReportDict:
+    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> _GatheredReport:
         """All-overlays path (default): aggregate every configured overlay."""
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
@@ -285,28 +405,8 @@ class Command(MachineOutputCommand):
                 path = checkpoint_path(overlay=name)
                 advance_checkpoint_monotonic(now, path)
 
-        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
-
-    def _emit[ReportT: (CheckingReportDict, AllOverlaysReportDict)](
-        self,
-        payload: ReportT,
-        groups: list[CheckGroup],
-        *,
-        header: str,
-        stamp: str,
-        flags: _ShowFlags,
-    ) -> ReportT:
-        self.print_result = False
-        emit(
-            payload,
-            json_output=flags.json_output,
-            out=cast("IO[str]", self.stdout),
-            err=cast("IO[str]", self.stderr),
-            human=_render_groups_tables(
-                groups, header=header, stamp=stamp, internal_escalations=payload["internal_escalations"]
-            ),
-        )
-        return payload
+        context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
+        return _GatheredReport(report.to_dict(), groups, context)
 
     @staticmethod
     def _resolve_code_host() -> str:
