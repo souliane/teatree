@@ -1,6 +1,6 @@
 # Factory watch — the abnormality map
 
-One row per abnormality an attended session watches for: its tier, the command that answers it, and the deterministic detector that raises it today. `no detector — #NNNN` names the issue that adds the missing one. The tiers, the read order and the handling order are in [`skills/interactive/SKILL.md`](../SKILL.md) § "Factory watch — BLOCKING first".
+One row per abnormality the coordinator watches for: its tier, the command that answers it, and the deterministic detector that raises it today. `no detector — #NNNN` names the issue that adds the missing one. The tiers, the read order and the handling order are in [`skills/coordinating/SKILL.md`](../SKILL.md) § "Factory watch — BLOCKING first".
 
 | Abnormality | Tier | Answered by | Detector today |
 |---|---|---|---|
