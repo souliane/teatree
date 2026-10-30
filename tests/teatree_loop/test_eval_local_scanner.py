@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.credential_config import LIST_SETTING, TokenKind
@@ -45,12 +46,26 @@ class EvalLocalScannerTests(TestCase):
         signals = scanner.scan()
 
         assert [signal.kind for signal in signals] == ["eval_local.parked"]
+        assert signals[0].payload["retry"] is True
         assert "stale" in signals[0].summary
         assert _last_eval_task() is None
 
     def test_below_reserve_queues_no_eval_task(self) -> None:
-        assert [signal.kind for signal in _scanner(reserve_met=False).scan()] == ["eval_local.held"]
+        signals = _scanner(reserve_met=False).scan()
+
+        assert [signal.kind for signal in signals] == ["eval_local.held"]
+        assert signals[0].payload["retry"] is True
         assert _last_eval_task() is None
+
+    def test_a_reserve_hold_clears_once_the_task_is_dispatched(self) -> None:
+        _scanner(reserve_met=False).scan()
+        fingerprint = f"cadence-held:{EVAL_LOCAL_PHASE}:{TEST_OVERLAY_NAME}"
+        assert KnownIssue.objects.open().filter(fingerprint=fingerprint).exists()
+
+        signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["eval_local.queued"]
+        assert not KnownIssue.objects.open().filter(fingerprint=fingerprint).exists()
 
     def test_the_default_gate_reads_the_factory_accounts_not_the_ci_allowlist(self) -> None:
         ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], ["anthropic/oauth/factory"])
@@ -114,7 +129,7 @@ class EvalLocalScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["eval_local.not_due"]
         latest = _last_eval_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -129,7 +144,7 @@ class EvalLocalScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["eval_local.not_due"]
 
     def test_queued_task_identifies_the_factory_account(self) -> None:
         _scanner().scan()

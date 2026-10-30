@@ -64,12 +64,11 @@ class ScanningNewsScanner:
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=SCANNING_NEWS_PHASE, cadence_hours=self.cadence_hours)
-        if cadence.in_flight_exists():
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="scanning_news.held", not_due_kind="scanning_news.not_due"
+        )
         if trigger is None:
-            return []
+            return signals
 
         task = cadence.queue_task(
             placeholder_issue_url=f"scanning-news://{self.overlay_name}",
@@ -78,9 +77,8 @@ class ScanningNewsScanner:
             subject=f"Scan AI news: {self.overlay_name}",
             log_label="ScanningNewsScanner",
         )
-        if task is None:
-            return []
-        return [
+        return cadence.handover(
+            task,
             ScanSignal(
                 kind="scanning_news.queued",
                 summary=f"scanning-news queued for {self.overlay_name} (trigger: {trigger})",
@@ -88,11 +86,12 @@ class ScanningNewsScanner:
                     "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": SCANNING_NEWS_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "trigger": trigger,
                 },
             ),
-        ]
+            held_kind="scanning_news.held",
+        )
 
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive with the article decision contract."""

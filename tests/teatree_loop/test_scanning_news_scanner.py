@@ -122,7 +122,7 @@ class ScanningNewsScannerTests(TestCase):
 
         second = _scanner(cadence_hours=24).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["scanning_news.not_due"]
         latest = _last_news_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -138,7 +138,7 @@ class ScanningNewsScannerTests(TestCase):
 
         second = _scanner(cadence_hours=24).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["scanning_news.not_due"]
         latest = _last_news_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -154,7 +154,7 @@ class ScanningNewsScannerTests(TestCase):
 
         second = _scanner(cadence_hours=24).scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["scanning_news.not_due"]
 
     def test_queued_task_carries_skill_name(self) -> None:
         """The skill name lands in the Task's execution_reason for the dispatcher."""

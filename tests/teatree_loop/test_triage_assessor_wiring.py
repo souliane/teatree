@@ -12,7 +12,7 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import NEEDS_TRIAGE_LABEL
+from teatree.core.models import NEEDS_TRIAGE_LABEL, Ticket
 from teatree.core.models.task import Task
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -40,7 +40,7 @@ def _backend(name: str = "acme") -> OverlayBackends:
 def _issue_host() -> CodeHostBackend:
     host = MagicMock(spec=CodeHostBackend)
     host.current_user.return_value = "alice"
-    host.list_assigned_issues.return_value = [
+    host.list_labeled_issues.return_value = [
         {"web_url": _URL, "title": "open needs-triage issue", "labels": [NEEDS_TRIAGE_LABEL], "state": "open"}
     ]
     return host
@@ -87,10 +87,9 @@ class TriageAssessorQueuesOneTaskTests(TestCase):
         host = _issue_host()
         with patch(_PATCH_TARGET, return_value=_settings()):
             jobs = jobs_for_domain(Domain.TRIAGE_ASSESSOR, _backend_with_host(host))
-        signals = [signal for job in jobs for signal in job.scanner.scan()]
+        with patch.object(Ticket, "has_dispatchable_overlay", return_value=True):
+            signals = [signal for job in jobs for signal in job.scanner.scan()]
         assert [s.kind for s in signals] == ["triage_assessor.queued"]
         assert Task.objects.filter(phase="triage_assessing").count() == 1
-        host.list_assigned_issues.assert_called_once_with(
-            assignee="alice",
-            repo_slugs=("souliane/teatree",),
-        )
+        host.list_labeled_issues.assert_called_once_with(label=NEEDS_TRIAGE_LABEL, repo_slugs=("souliane/teatree",))
+        host.list_assigned_issues.assert_not_called()

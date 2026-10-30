@@ -22,6 +22,7 @@ MINI_LOOP = MiniLoop(
     name="eval_local",
     default_cadence_seconds=3600,  # 1h tick rate — daily cadence enforced by the row
     build_jobs=_build_jobs,
+    periodic_phase="eval_local",
     declared_reach=frozenset(),
     determinism=LoopDeterminism.AI,
 )

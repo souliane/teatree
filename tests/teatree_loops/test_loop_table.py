@@ -232,6 +232,18 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         assert "job-m-target" in jobs
         assert "job-m-alias" not in jobs
 
+    def test_periodic_phase_follows_the_script_target(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-alias", delay_seconds=60, script="src/teatree/loops/m-target/loop.py")
+        alias = MiniLoop(name="m-alias", default_cadence_seconds=60, build_jobs=lambda **_: [], periodic_phase="alias")
+        target = MiniLoop(
+            name="m-target", default_cadence_seconds=60, build_jobs=lambda **_: [], periodic_phase="target"
+        )
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(alias, target)):
+            outcome = dispatch_loop_table({}, now=now, only="m-alias")
+
+        assert outcome[0].periodic_phase == "target"
+
     def test_script_row_pointing_at_its_own_module_dispatches_itself(self) -> None:
         # The seeded shape: a row's ``script`` is its OWN module, so it dispatches
         # its own jobs.

@@ -47,14 +47,15 @@ class ProvisionSmokeScanner:
 
     def scan(self) -> list[ScanSignal]:
         if not self.overlay_name:
-            return []
+            return PhaseCadence(self.overlay_name, phase=DOGFOOD_SMOKE_PHASE).hold(
+                "no overlay anchor", kind="dogfood_smoke.held", retry=True
+            )
         cadence = PhaseCadence(self.overlay_name, phase=DOGFOOD_SMOKE_PHASE)
-        if cadence.in_flight_exists():
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="dogfood_smoke.held", not_due_kind="dogfood_smoke.not_due"
+        )
         if trigger is None:
-            return []
+            return signals
 
         task = cadence.queue_task(
             placeholder_issue_url=f"dogfood-smoke://{self.overlay_name}",
@@ -63,9 +64,8 @@ class ProvisionSmokeScanner:
             subject=f"Provision smoke: {self.overlay_name}",
             log_label="ProvisionSmokeScanner",
         )
-        if task is None:
-            return []
-        return [
+        return cadence.handover(
+            task,
             ScanSignal(
                 kind="dogfood_smoke.queued",
                 summary=f"dogfood smoke queued for {self.overlay_name} (trigger: {trigger})",
@@ -73,11 +73,12 @@ class ProvisionSmokeScanner:
                     "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": DOGFOOD_SMOKE_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "trigger": trigger,
                 },
             ),
-        ]
+            held_kind="dogfood_smoke.held",
+        )
 
 
 def build_provision_smoke_scanner(
