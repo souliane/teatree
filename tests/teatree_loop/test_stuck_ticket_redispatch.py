@@ -417,17 +417,20 @@ class TestAStalePlanGetsAPlanningPass(TestCase):
         assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
 
     def test_the_tick_queues_exactly_one_planning_pass_with_or_without_an_open_pr(self) -> None:
+        tickets: list[tuple[bool, Ticket]] = []
         for open_pr in (False, True):
+            ticket = self._stale()
+            Task.objects.filter(ticket=ticket, phase="coding").update(failure_kind=FailureKind.PLAN_STALE)
+            if open_pr:
+                PullRequest.objects.create(
+                    ticket=ticket, url=f"https://github.com/o/r/pull/{ticket.pk}", repo="o/r", iid=str(ticket.pk)
+                )
+            tickets.append((open_pr, ticket))
+
+        _reap_stale_task_claims()
+
+        for open_pr, ticket in tickets:
             with self.subTest(open_pr=open_pr):
-                ticket = self._stale()
-                Task.objects.filter(ticket=ticket, phase="coding").update(failure_kind=FailureKind.PLAN_STALE)
-                if open_pr:
-                    PullRequest.objects.create(
-                        ticket=ticket, url=f"https://github.com/o/r/pull/{ticket.pk}", repo="o/r", iid=str(ticket.pk)
-                    )
-
-                _reap_stale_task_claims()
-
                 planning = ticket.tasks.get(phase="planning", status=Task.Status.PENDING)
                 assert "The plan is not current" in planning.execution_reason
         assert not DeferredQuestion.objects.exists()

@@ -103,6 +103,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
     "slack.review_intent": "action_needed",
+    "slack.broadcast_unreadable_links": "action_needed",
     "red_card.signal": "action_needed",
     # #3634: an admitted issue is in-flight maker work the user should see
     # surfaced while the orchestrator picks it up.

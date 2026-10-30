@@ -175,6 +175,31 @@ class HeldForTheRunTests(_DispatchCase):
         assert occupancy_holder(settled) is None
         assert settled.get_extra()["attested_state"] == checkout_state(self.checkout).digest
 
+    def test_nested_run_attests_own_edit_with_host_namespace_gaps(self) -> None:
+        self.worktree.delete()
+        self.addCleanup(shutil.rmtree, self.checkout)
+        host_gap = ProcessTable(
+            frozenset(), "/proc", (), ("host namespace unavailable",), ("host namespace unavailable",)
+        )
+
+        def finish(task: Task, **_: object) -> TaskAttempt:
+            _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+            self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+            (self.checkout / "own.txt").write_text("agent edit")
+            task.fail_claimed(reason="agent failed after writing")
+            return mock.Mock(spec=TaskAttempt)
+
+        with (
+            mock.patch.object(runner, "nested_pid_namespace", return_value="pid:[42]"),
+            mock.patch.object(runner, "_run_agent", side_effect=finish),
+            mock.patch("teatree.core.worktree.occupancy.read_process_table", return_value=host_gap),
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        settled = self.fresh()
+        assert occupancy_holder(settled) is None
+        assert settled.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+
     def test_process_settlement_runs_before_checkout_release(self) -> None:
         seen: list[bool] = []
 

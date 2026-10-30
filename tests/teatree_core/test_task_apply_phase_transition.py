@@ -302,6 +302,36 @@ class TestPlanningCompletionOnAnEarlyPlannedTicket(TestCase):
             task._apply_phase_transition()
 
 
+class TestPlanningReplayWithActiveWork(TestCase):
+    def test_replay_queues_planned_work_only_when_no_other_task_is_active(self) -> None:
+        for sibling_status in (None, Task.Status.PENDING, Task.Status.CLAIMED):
+            with self.subTest(sibling_status=sibling_status):
+                ticket = Ticket.objects.create(
+                    overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED
+                )
+                record_test_plan(ticket)
+                session = Session.objects.create(ticket=ticket, agent_id="planning")
+                sibling = (
+                    Task.objects.create(ticket=ticket, session=session, phase="testing")
+                    if sibling_status is not None
+                    else None
+                )
+                if sibling_status == Task.Status.CLAIMED and sibling is not None:
+                    sibling.claim(claimed_by="worker")
+                planning = Task.objects.create(
+                    ticket=ticket, session=session, phase="planning", status=Task.Status.COMPLETED
+                )
+
+                Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+                remaining = list(ticket.tasks.exclude(pk=planning.pk))
+                if sibling is None:
+                    assert len(remaining) == 1
+                    assert remaining[0].parent_task_id == planning.pk
+                else:
+                    assert [task.pk for task in remaining] == [sibling.pk]
+
+
 class TestApplyPhaseTransitionEscalation(TestCase):
     """#10 invariant: an FSM lifecycle transition must never fail silently.
 

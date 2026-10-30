@@ -36,7 +36,7 @@ def test_list_prs_builds_state_and_author_query() -> None:
 
     assert result == [{"iid": 5}]
     client.get_json_paginated.assert_called_once_with(
-        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice"
+        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice", require_list=True
     )
 
 

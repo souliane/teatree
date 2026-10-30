@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Protocol, cast
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.core.self_forge_identities import declared_identities_for_url
 from teatree.types import RawAPIDict
 
@@ -178,17 +179,18 @@ def _self_has_non_system_note(mr: RawAPIDict, identities: set[str]) -> bool:
     notes = mr.get("notes")
     if not isinstance(notes, list):
         return False
+    own = {identity.casefold() for identity in identities}
     for note in notes:
         if not isinstance(note, dict):
             continue
         note_dict = cast("RawAPIDict", note)
-        if bool(note_dict.get("system")):
+        if note_dict.get("system") is True:
             continue
         author = note_dict.get("author")
         if isinstance(author, dict):
             author_dict = cast("RawAPIDict", author)
             username = author_dict.get("username") or author_dict.get("login")
-            if isinstance(username, str) and username in identities:
+            if isinstance(username, str) and username.casefold() in own:
                 return True
     return False
 
@@ -264,7 +266,9 @@ def should_review_candidate_reasons(
     approvers = _approver_usernames(mr)
     if identities and identities.intersection(approvers):
         reasons.append("already_approved_by_self")
-    if identities and _self_has_non_system_note(mr, identities):
+    url = mr.get("web_url") or mr.get("html_url")
+    actors = ForgeActors.for_url(url if isinstance(url, str) else "")
+    if (identities or actors.system_logins) and _self_has_non_system_note(mr, identities | actors.system_logins):
         reasons.append("has_self_note")
     state = mr.get("state")
     if isinstance(state, str):

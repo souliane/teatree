@@ -5,6 +5,7 @@ from collections import defaultdict
 from operator import itemgetter
 
 from teatree.core.modelkit.task_failure_taxonomy import is_causeless
+from teatree.core.models import SelfImproveFiring, TaskAttempt, Ticket, TicketTransition
 
 _WITNESSES = 2
 _MAX_DISTINCT = 5
@@ -54,3 +55,26 @@ class AttemptBurstEvidence:
             if len(entries) == _MAX_DISTINCT:
                 break
         return "; ".join(entries)
+
+
+def handled_by_finished_repair(firing: SelfImproveFiring, ids: list[int]) -> bool:
+    repair = firing.ticket
+    if repair is None or repair.state not in Ticket.finished_states():
+        return False
+    finished_at = None
+    for state, created_at in (
+        TicketTransition.objects.filter(ticket=repair)
+        .order_by("-created_at", "-pk")
+        .values_list("to_state", "created_at")
+    ):
+        if state not in Ticket.finished_states():
+            break
+        finished_at = created_at
+    if finished_at is None:
+        return False
+    handled_ids: set[int] = set()
+    for task_id, ended_at in TaskAttempt.objects.filter(task_id__in=ids).values_list("task_id", "ended_at"):
+        if ended_at is None or ended_at > finished_at:
+            return False
+        handled_ids.add(task_id)
+    return handled_ids == set(ids)

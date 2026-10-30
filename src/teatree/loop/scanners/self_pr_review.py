@@ -25,7 +25,8 @@ import logging
 from dataclasses import dataclass
 
 from teatree.loop.scanners.base import ScannerError, ScanSignal
-from teatree.loop.scanners.codex_review import CodexPrApi, PrSummary, is_adversarial_review
+from teatree.loop.scanners.codex_review import is_adversarial_review
+from teatree.loop.scanners.self_pr_types import PrSummary, SelfPrApi
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ class ClaudeSelfPrReviewScanner:
     """
 
     repos: tuple[str, ...]
-    api: CodexPrApi
+    api: SelfPrApi
     overlay: str = ""
     name: str = "self_pr_review"
 

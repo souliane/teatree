@@ -12,6 +12,7 @@ from django.db import transaction
 from django_fsm import can_proceed
 
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
+from teatree.core.models.task_attempt_settlement import complete_with_strict_lease
 from teatree.core.review.author_trust import classify_author
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.loop.dispatch import ActionPayload
@@ -258,8 +259,8 @@ def _complete_tasks(tasks: "Iterable[Task]", *, skip_reason: str) -> int:
     for task in tasks:
         try:
             with transaction.atomic():
-                task.complete_with_attempt(
-                    result={"summary": f"no verdict reached: {skip_reason}", "review_skipped": skip_reason}
+                complete_with_strict_lease(
+                    task, {"summary": f"no verdict reached: {skip_reason}", "review_skipped": skip_reason}
                 )
         except LeaseLostError:
             logger.info("Left reviewing task %s to the run that claimed it after the read", task.pk)

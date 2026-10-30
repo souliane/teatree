@@ -472,7 +472,8 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
         and not subscription_lane_exhausted(scope=task.ticket.overlay or "", now=moment)
     ):
         return None
-    reason = f"{LIMIT_PARKED_PREFIX}admission: {window.cause} window on lane {lane or 'ambient'!r} active"
+    lane_name = str(lane.value) if isinstance(lane, TaskAttempt.Lane) else (lane or "ambient")
+    reason = f"{LIMIT_PARKED_PREFIX}admission: {window.cause} window on lane {lane_name!r} active"
     return record_park(task, reason=reason, not_before=window.resets_at)
 
 

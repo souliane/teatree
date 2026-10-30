@@ -1,8 +1,8 @@
 """``usage_window_recovery`` — the self-rescheduling re-arm chain (Directive #3).
 
 The crux behavioural contract: a parked usage window is cleared (and its parked tasks
-released, the loop pumped, one Slack line posted) ONLY once the reset instant has passed —
-never before.
+released, the loop pumped, one Slack line posted) at reset or after a routed account
+reads healthy.
 """
 
 from datetime import datetime, timedelta
@@ -12,7 +12,8 @@ import django.test
 import pytest
 from django.utils import timezone
 
-from teatree.core.models import BotPing, Session, Task, Ticket, UsageWindowState
+from teatree.core.models import LIMIT_PARKED_PREFIX, BotPing, ConfigSetting, Session, Task, Ticket, UsageWindowState
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.loops.usage_window_recovery import (
@@ -89,6 +90,34 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         assert Task.objects.claim_next_pending(claimed_by="w") is None
         task.refresh_from_db()
         assert task.not_before == reset
+
+    def test_healthy_routed_account_clears_window_before_reset(self) -> None:
+        now = timezone.now()
+        reset = now + timedelta(hours=5)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/recovered/oauth"])
+        window = UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=LimitCause.SUBSCRIPTION_SESSION.value,
+            resets_at=reset,
+            now=now,
+        )
+        task = _parked_task(not_before=reset)
+        TaskAttempt.objects.create(task=task, error=f"{LIMIT_PARKED_PREFIX}subscription_session: limit reached")
+        reading = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=0.2,
+            status_5h="allowed",
+            status_7d="allowed",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        with mock.patch("teatree.credential_refresh.AccountProber.read", return_value=reading):
+            outcome = recover_windows(now)
+        assert outcome.cleared == [window.pk]
+        assert outcome.released == 1
+        task.refresh_from_db()
+        assert task.not_before is None
 
     def test_at_reset_clears_window_and_releases_task(self) -> None:
         now = timezone.now()

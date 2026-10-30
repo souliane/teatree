@@ -14,6 +14,7 @@ from teatree.agents.dispatch_preflight import branch_currency_brief_lines
 from teatree.agents.skill_injection import _ALWAYS_FULL_SKILLS, _explicit_load_name
 from teatree.core.models import Task
 from teatree.core.review.critic_rubric import EXHAUSTIVE_TEST_VALUE_RULE, merge_item_questions
+from teatree.skill_support.index import skill_tool_load_name
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
@@ -103,7 +104,7 @@ def _stack_skill_load_lines(skills: list[str] | None, *, exclude: frozenset[str]
             "",
         ]
     lines = ["REQUIRED: before writing code, also call the Skill tool for EACH of these stack/overlay skills:"]
-    lines.extend(f"  - /{name}" for name in ordered)
+    lines.extend(f"  - /{skill_tool_load_name(name)}" for name in ordered)
     lines.extend(
         (
             "These carry the framework conventions and overlay-specific rules a dispatched builder",

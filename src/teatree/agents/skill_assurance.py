@@ -6,15 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
 
-from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md, skill_tool_load_name
 
 _EVIDENCE = re.compile(r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{4,1000}$")
 _LOAD_DIRECTIVE = re.compile(
-    r"^[ \t]*(?:REQUIRED:[ \t]*)?Load[ \t]+/((?:t3:)?[A-Za-z0-9_.-]+)"
+    r"^[ \t]*(?:REQUIRED:[ \t]*)?Load[ \t]+/((?:[A-Za-z0-9_.-]+:)?[A-Za-z0-9_.-]+)"
     r"[ \t]+via[ \t]+the[ \t]+Skill[ \t]+tool\b",
     re.IGNORECASE,
 )
-_STACK_LOAD_BULLET = re.compile(r"^[ \t]*-[ \t]+/((?:t3:)?[A-Za-z0-9_.-]+)[ \t]*$")
+_STACK_LOAD_BULLET = re.compile(r"^[ \t]*-[ \t]+/((?:[A-Za-z0-9_.-]+:)?[A-Za-z0-9_.-]+)[ \t]*$")
 _CODING_LOAD_LINE = "REQUIRED: before writing code, call the Skill tool for /t3:architecture-design and /t3:code."
 _STACK_LOAD_HEADER = "REQUIRED: before writing code, also call the Skill tool for EACH of these stack/overlay skills:"
 
@@ -69,7 +69,7 @@ class SkillDelivery:
 
 
 def required_load_line(name: str, skill_md: Path | None) -> str:
-    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
+    load = f"REQUIRED: Load /{skill_tool_load_name(name)} via the Skill tool before you start"
     if skill_md is None:
         return f"{load}; no SKILL.md resolves for it on this host."
     return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."

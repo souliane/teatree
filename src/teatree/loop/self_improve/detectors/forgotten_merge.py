@@ -27,8 +27,13 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.gates.merge_quality_gate import unmet_items
+from teatree.core.modelkit.phases import phase_spellings
+from teatree.core.models import CriticVerdict, DeferredQuestion, Task
+from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.clear_stall_lookup import (
     PROBE_CAP,
@@ -41,6 +46,32 @@ from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
 
 DEFAULT_AGE_THRESHOLD = dt.timedelta(minutes=30)
+
+
+def _critic_refusal_in_progress(clear: MergeClear, cutoff: dt.datetime) -> bool:
+    ticket = clear.ticket
+    if ticket is None:
+        return False
+    verdict = CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=clear.reviewed_sha)
+    if verdict is None or not unmet_items(verdict):
+        return False
+    if verdict.recorded_at > cutoff:
+        return True
+    if (
+        Task.objects.filter(
+            ticket_id=clear.ticket_id,
+            phase__in=[*phase_spellings("coding"), *phase_spellings("debugging")],
+            created_at__gt=verdict.recorded_at,
+        )
+        .exclude(status=Task.Status.FAILED)
+        .exists()
+    ):
+        return True
+    return (
+        DeferredQuestion.owner_pending()
+        .filter(Q(parked_task__ticket_id=clear.ticket_id) | Q(task_session__ticket_id=clear.ticket_id))
+        .exists()
+    )
 
 
 @dataclass(slots=True)
@@ -67,6 +98,8 @@ class ForgottenMergeDetector:
         unknown = [*probe.of(ClearLiveness.UNVERIFIED), *probe.unprobed]
         reports: list[DetectorReport] = []
         for clear in stalled:
+            if _critic_refusal_in_progress(clear, cutoff):
+                continue
             pr_identity = f"{clear.slug}#{clear.pr_id}"
             reports.append(
                 DetectorReport(
