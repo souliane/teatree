@@ -122,9 +122,9 @@ def ruled_pairs(answer: str) -> set[TaskPair]:
 
 def release_undecided_answers() -> None:
     """Ask again after a non-decision: a stray answer or an age-ceiling retirement."""
-    cards = DeferredQuestion.objects.filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX)
-    cards.answered_without_deciding((RETIRE_ANSWER, KEEP_ANSWER)).release_markers()
-    DeferredQuestion.objects.filter(pk__in=cards.retired_by_age_ceiling().values("pk")).release_markers()
+    DeferredQuestion.objects.filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX).release_undecided(
+        (RETIRE_ANSWER, KEEP_ANSWER)
+    )
 
 
 def settle_changed_parked_cards(awaiting: list[Task]) -> None:
@@ -141,15 +141,15 @@ def settle_changed_parked_cards(awaiting: list[Task]) -> None:
 
 
 def apply_retire_answers(aged: list[Task]) -> int:
-    """Retire the tickets each not-yet-applied "Retire them" answer listed, once, and count them.
+    """Retire the tickets each "Retire them" answer listed, once, and count them.
 
-    A spent answer frees its marker, so a ticket it could not retire is asked afresh when it parks again.
+    A spent answer frees its marker, which also keeps it from being applied twice: a ticket it could not retire
+    is asked afresh when it parks again.
     """
     retired = 0
-    spent = _owner_answers(RETIRE_ANSWER).filter(applied_at__isnull=True)
+    spent = list(_owner_answers(RETIRE_ANSWER))
     for question in spent:
         retired += _retire_parked(_card_pairs(question), aged)
-        question.mark_applied()
     DeferredQuestion.objects.filter(pk__in=[question.pk for question in spent]).release_markers()
     return retired
 

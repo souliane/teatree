@@ -118,6 +118,22 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert PendingPullRequest.objects.filter(branch=branch).exists()
         assert DeferredQuestion.owner_pending().count() == 1
 
+    def test_a_card_the_age_ceiling_retired_is_asked_again(self) -> None:
+        self._overdue_obligation("first")
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        DeferredQuestion.objects.get().mark_stale("unanswered through 3 escalations", resolver_id="age_ceiling")
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_card_the_owner_dismissed_is_not_asked_again(self) -> None:
+        self._overdue_obligation("first")
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        DeferredQuestion.consume(DeferredQuestion.objects.get().pk, dismissed_reason="not now")
+        scanner.scan()
+        assert not DeferredQuestion.owner_pending().exists()
+
     def test_steady_state_question_queries_do_not_grow_with_overdue_rows(self) -> None:
         scanner = PendingPrDrainScanner()
         self._overdue_obligation("first")

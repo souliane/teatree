@@ -70,7 +70,7 @@ def stranded_ticket_count() -> int:
     )
 
 
-def _stalled_backlog_signals() -> SignalCollection:
+def stalled_backlog_signals() -> SignalCollection:
     """One CRITICAL when admitted work has been left with no execution path (#4704).
 
     What "stranded" means, and why neither ``_failed_task_signals`` nor
@@ -81,7 +81,7 @@ def _stalled_backlog_signals() -> SignalCollection:
         stalled = stranded_ticket_count()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
-        return SignalCollection(unread=("_stalled_backlog_signals",))
+        return SignalCollection(unread=("stalled_backlog_signals",))
     if stalled < STALLED_BACKLOG_THRESHOLD:
         return SignalCollection()
     hours = int(STALLED_BACKLOG_WINDOW.total_seconds() // 3600)

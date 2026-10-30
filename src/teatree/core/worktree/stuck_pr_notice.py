@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Sequence
 
+from teatree.core.fleet.wire import ClaimLoss
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
@@ -13,17 +14,24 @@ KEEP_TRYING = "Keep trying"
 STOP_REMINDING = "Stop reminding"
 _QUESTION = "Should I keep trying to open this pull request?"
 logger = logging.getLogger(__name__)
+_CLAIM_CAUSES = {
+    ClaimLoss.STOLEN: "Another run now holds the claim on this branch's work.",
+    ClaimLoss.UNREADABLE: "The claim on this branch's work cannot be read, so its holder is unknown.",
+    ClaimLoss.MISSING: "The claim this run held on the branch's work no longer exists.",
+    ClaimLoss.UNPROVEN: "This run cannot prove the claim on the branch's work is still its own.",
+    ClaimLoss.UNREACHABLE: "The place that records the claim on this branch's work is unreachable.",
+}
 
 
 def plain_failure_cause(error: str) -> str:
     lower = error.lower()
     if "not on remote" in lower or "not pushed" in lower:
         return "The branch has not reached its remote yet."
-    if "fleet" in lower or "claim" in lower:
-        return "Another run still holds the branch claim."
+    if cause := next((text for loss, text in _CLAIM_CAUSES.items() if loss.value in error), None):
+        return cause
     if "conflict" in lower:
         return "The branch conflicts with its target."
-    if "debt" in lower or "budget" in lower:
+    if any(word in lower for word in ("debt", "max_open_prs")):
         return "A shipping gate is blocking the pull request."
     return "The last attempt could not open the pull request."
 
@@ -56,8 +64,9 @@ def ask_owner_about_stuck_pr(row: PendingPullRequest) -> DeferredQuestion | None
 
 def ask_owner_about_stuck_prs(rows: Sequence[PendingPullRequest]) -> None:
     """Ask once per overdue obligation, leaving an answered or pending card alone without a write."""
-    cards = DeferredQuestion.objects.filter(dedupe_marker__startswith=MARKER_PREFIX)
-    cards.answered_without_deciding((KEEP_TRYING, STOP_REMINDING)).release_markers()
+    DeferredQuestion.objects.filter(dedupe_marker__startswith=MARKER_PREFIX).release_undecided(
+        (KEEP_TRYING, STOP_REMINDING)
+    )
     held = set(
         DeferredQuestion.objects.filter(dedupe_marker__in=[_marker(row) for row in rows]).values_list(
             "dedupe_marker", flat=True

@@ -30,11 +30,11 @@ from teatree.core.factory.operational_health import (
     _overlay_health_signals,
     _reclaim_stall_signals,
     _stale_tick_signals,
-    _stalled_backlog_signals,
     _status_from_issues,
     collect_signals,
     read_health,
     reconcile_health,
+    stalled_backlog_signals,
 )
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_THRESHOLD
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
@@ -367,7 +367,7 @@ class TestStalledBacklogCollector:
         with patch(
             "teatree.core.factory.stalled_backlog.stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD
         ):
-            signals = _stalled_backlog_signals().signals
+            signals = stalled_backlog_signals().signals
         assert [s.fingerprint for s in signals] == ["stalled-backlog"]
         assert signals[0].severity == KnownIssue.Severity.CRITICAL
         assert str(STALLED_BACKLOG_THRESHOLD) in signals[0].summary
@@ -377,13 +377,13 @@ class TestStalledBacklogCollector:
         with patch(
             "teatree.core.factory.stalled_backlog.stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD - 1
         ):
-            assert _stalled_backlog_signals().signals == ()
+            assert stalled_backlog_signals().signals == ()
 
     def test_an_unreadable_source_names_itself_rather_than_reporting_clear(self) -> None:
         with patch(
             "teatree.core.factory.stalled_backlog.stranded_ticket_count", side_effect=OperationalError("no such table")
         ):
-            assert _stalled_backlog_signals() == SignalCollection(unread=("_stalled_backlog_signals",))
+            assert stalled_backlog_signals() == SignalCollection(unread=("stalled_backlog_signals",))
 
 
 class TestOverlaySignalCollector:

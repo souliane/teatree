@@ -82,6 +82,12 @@ class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
         """Free these rows' dedupe markers so the signal they covered is asked again as a fresh question."""
         return self.update(dedupe_marker=Concat(Value(RELEASED_MARKER_PREFIX), "dedupe_marker"))
 
+    def release_undecided(self, answers: Collection[str]) -> int:
+        """Ask again after a non-decision: a reply that is not one of *answers*, or an age-ceiling retirement."""
+        undecided = self.answered_without_deciding(answers).values("pk")
+        aged = self.retired_by_age_ceiling().values("pk")
+        return self.filter(models.Q(pk__in=undecided) | models.Q(pk__in=aged)).release_markers()
+
     def awaiting_action_outcome(self) -> Self:
         return (
             self.filter(
