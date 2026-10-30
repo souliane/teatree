@@ -129,7 +129,7 @@ class TriageAssessorScanner:
             self.host,
             assignees,
             repo_slugs=self.repo_slugs or (),
-            include_unassigned=bool(self.repo_slugs),
+            by_label=bool(self.repo_slugs),
             read_errors=read_errors,
         ):
             url = _issue_url(issue)

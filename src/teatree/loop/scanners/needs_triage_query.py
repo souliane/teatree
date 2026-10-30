@@ -1,7 +1,7 @@
 """Shared ``needs-triage`` open-issue query — the SSOT two scanners consume.
 
-The ``needs-triage`` discovery half (issue field extractors + the assignee
-fan-out that lists a host's OPEN ``needs-triage`` issues) is used by BOTH the
+The ``needs-triage`` discovery half (issue field extractors plus label and
+assignee queries for a host's OPEN ``needs-triage`` issues) is used by BOTH the
 :class:`~teatree.loop.scanners.issue_disposition.IssueDispositionScanner` (which
 CLOSES high-confidence dead noise) and the
 :class:`~teatree.loop.scanners.triage_assessor.TriageAssessorScanner` (which
@@ -68,46 +68,27 @@ def _issue_is_open(issue: RawAPIDict) -> bool:
     return not (isinstance(state, str) and state.lower() == "closed")
 
 
-def _eligible_issue(issue: RawAPIDict, *, unassigned_only: bool) -> bool:
-    return (
-        _issue_is_open(issue)
-        and NEEDS_TRIAGE_LABEL in _issue_labels(issue)
-        and (not unassigned_only or not (issue.get("assignee") or issue.get("assignees")))
-    )
+def _eligible_issue(issue: RawAPIDict) -> bool:
+    return _issue_is_open(issue) and NEEDS_TRIAGE_LABEL in _issue_labels(issue)
 
 
-def _unassigned_issues(
+def _labeled_issues(
     host: "CodeHostBackend", repo_slugs: tuple[str, ...], read_errors: list[str] | None
-) -> list[RawAPIDict]:
+) -> list[RawAPIDict] | None:
     try:
         return host.list_labeled_issues(label=NEEDS_TRIAGE_LABEL, repo_slugs=repo_slugs)
     except Exception:
         if read_errors is None:
             raise
-        logger.warning("list_labeled_issues failed — keeping assigned issues", exc_info=True)
+        logger.warning("list_labeled_issues failed — falling back to assigned issues", exc_info=True)
         read_errors.append("list_labeled_issues failed")
-        return []
+        return None
 
 
-def needs_triage_issues(
-    host: "CodeHostBackend",
-    assignees: tuple[str, ...],
-    *,
-    repo_slugs: tuple[str, ...] = (),
-    include_unassigned: bool = False,
-    read_errors: list[str] | None = None,
-) -> list[RawAPIDict]:
-    """Open ``needs-triage`` issues assigned to *assignees*, plus optional unassigned issues.
-
-    The single fan-out both the disposition and the assessor scanner consume: it
-    lists each assignee's issues on *host*, keeps only the OPEN ones carrying
-    :data:`~teatree.core.models.NEEDS_TRIAGE_LABEL`, and dedupes by issue URL so an
-    issue assigned to two of the operator's aliases is returned once. The optional
-    unassigned read is limited to the supplied repositories.
-    """
-    seen_urls: set[str] = set()
-    issues: list[RawAPIDict] = []
-    sources: list[tuple[list[RawAPIDict], bool]] = []
+def _assigned_issues(
+    host: "CodeHostBackend", assignees: tuple[str, ...], repo_slugs: tuple[str, ...], read_errors: list[str] | None
+) -> list[list[RawAPIDict]]:
+    sources: list[list[RawAPIDict]] = []
     for assignee in assignees:
         try:
             fetched = (
@@ -120,12 +101,35 @@ def needs_triage_issues(
             if read_errors is not None:
                 read_errors.append(f"list_assigned_issues failed for {assignee}")
             continue
-        sources.append((fetched, False))
-    if include_unassigned and repo_slugs:
-        sources.append((_unassigned_issues(host, repo_slugs, read_errors), True))
-    for fetched, unassigned_only in sources:
+        sources.append(fetched)
+    return sources
+
+
+def needs_triage_issues(
+    host: "CodeHostBackend",
+    assignees: tuple[str, ...],
+    *,
+    repo_slugs: tuple[str, ...] = (),
+    by_label: bool = False,
+    read_errors: list[str] | None = None,
+) -> list[RawAPIDict]:
+    """Open ``needs-triage`` issues by label for owned repos, or by assignee.
+
+    The single fan-out both the disposition and the assessor scanner consume: it
+    The assessor reads every labeled issue in its owned repositories. The
+    disposition scanner reads only assigned issues. Both paths keep only open
+    issues carrying :data:`~teatree.core.models.NEEDS_TRIAGE_LABEL` and dedupe by URL.
+    """
+    seen_urls: set[str] = set()
+    issues: list[RawAPIDict] = []
+    if by_label and repo_slugs:
+        labeled = _labeled_issues(host, repo_slugs, read_errors)
+        sources = [labeled] if labeled is not None else _assigned_issues(host, assignees, repo_slugs, read_errors)
+    else:
+        sources = _assigned_issues(host, assignees, repo_slugs, read_errors)
+    for fetched in sources:
         for issue in fetched:
-            if not _eligible_issue(issue, unassigned_only=unassigned_only):
+            if not _eligible_issue(issue):
                 continue
             url = _issue_url(issue)
             if url and url in seen_urls:

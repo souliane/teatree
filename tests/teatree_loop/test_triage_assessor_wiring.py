@@ -40,7 +40,7 @@ def _backend(name: str = "acme") -> OverlayBackends:
 def _issue_host() -> CodeHostBackend:
     host = MagicMock(spec=CodeHostBackend)
     host.current_user.return_value = "alice"
-    host.list_assigned_issues.return_value = [
+    host.list_labeled_issues.return_value = [
         {"web_url": _URL, "title": "open needs-triage issue", "labels": [NEEDS_TRIAGE_LABEL], "state": "open"}
     ]
     return host
@@ -91,7 +91,5 @@ class TriageAssessorQueuesOneTaskTests(TestCase):
             signals = [signal for job in jobs for signal in job.scanner.scan()]
         assert [s.kind for s in signals] == ["triage_assessor.queued"]
         assert Task.objects.filter(phase="triage_assessing").count() == 1
-        host.list_assigned_issues.assert_called_once_with(
-            assignee="alice",
-            repo_slugs=("souliane/teatree",),
-        )
+        host.list_labeled_issues.assert_called_once_with(label=NEEDS_TRIAGE_LABEL, repo_slugs=("souliane/teatree",))
+        host.list_assigned_issues.assert_not_called()
