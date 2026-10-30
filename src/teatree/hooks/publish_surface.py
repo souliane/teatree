@@ -88,8 +88,6 @@ UNRESOLVABLE_REPO_DIR = _commit_repo_dir.UNRESOLVABLE_REPO_DIR
 _command_segments = _gh_glab_hiding.command_segments
 _segment_is_pure_gh_glab_post = _gh_glab_hiding.segment_is_pure_gh_glab_post
 _strip_benign_prefix = _gh_glab_hiding.strip_benign_prefix
-_token_has_substitution_marker = _gh_glab_hiding.token_has_substitution_marker
-_token_is_transport_construct = _gh_glab_hiding.token_is_transport_construct
 _ENV_ASSIGNMENT_RE = _gh_glab_hiding.ENV_ASSIGNMENT_RE
 
 # ``git commit`` is the first command name + verb (after any env prefix).

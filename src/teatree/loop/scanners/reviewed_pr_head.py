@@ -72,7 +72,7 @@ from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.review_state import DISCHARGED_REVIEW_STATES
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.url_specificity import best_url_match_specificity
+from teatree.loop.url_specificity import url_claimed
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -206,10 +206,4 @@ class ReviewedPrHeadScanner:
         return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
 
     def _url_allowed(self, url: str) -> bool:
-        """Same per-overlay URL-prefix claim as ``ReviewerPrsScanner._url_allowed`` (#1015, #1324)."""
-        if not self.allowed_url_prefixes:
-            return True
-        own = best_url_match_specificity(url, self.allowed_url_prefixes)
-        if own == 0:
-            return False
-        return best_url_match_specificity(url, self.competing_url_prefixes) <= own
+        return url_claimed(url, self.allowed_url_prefixes, self.competing_url_prefixes)

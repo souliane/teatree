@@ -150,6 +150,18 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
             out = _run()
         assert "issue_implementer_label" in out
         assert "no audit table" in out
+        assert "was unknown (audit unreadable)" in out
+        assert "written before audit" not in out
+
+    def test_a_row_with_no_audit_entry_is_labelled_written_before_audit(self) -> None:
+        ConfigSetting.objects.create(key="issue_implementer_label", value="t3-batch")
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
+            return_value={"issue_implementer_label": "t3-auto"},
+        ):
+            out = _run()
+        assert "was unknown (written before audit)" in out
+        assert "audit unreadable" not in out
 
     def test_a_drifted_secret_is_reported_with_its_value_masked(self) -> None:
         # The row still has to surface — a secret that drifted is exactly as misleading as any

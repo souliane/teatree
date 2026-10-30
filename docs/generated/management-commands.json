@@ -1297,6 +1297,10 @@
           "name": "context"
         },
         {
+          "help": "Reopen a settled ticket whose issue has an open remainder",
+          "name": "unsettle"
+        },
+        {
           "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
           "name": "show"
         },
@@ -1389,7 +1393,7 @@
           "name": "fix-record-override"
         },
         {
-          "help": "List merged tickets whose open issue has a declared remainder",
+          "help": "List settled tickets whose issue is still open",
           "name": "partial-merge-report"
         },
         {

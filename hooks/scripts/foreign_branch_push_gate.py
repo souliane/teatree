@@ -107,7 +107,6 @@ sys.modules.setdefault("foreign_branch_push_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.foreign_branch_push_gate", sys.modules[__name__])
 
 GATE_SETTING: Final[str] = "foreign_branch_push_gate_enabled"
-GATE_ID: Final[str] = "foreign_branch_push"
 FORCE_DELETE_GATE_ID: Final[str] = "foreign_branch_push_force_delete"
 
 _SUBSTITUTION_RE: Final[re.Pattern[str]] = re.compile(r"[$`]")
