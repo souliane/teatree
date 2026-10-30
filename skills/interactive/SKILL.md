@@ -14,7 +14,7 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
-An attended session does everything [`/t3:coordinating`](../coordinating/SKILL.md) says, so load that skill alongside this one. This skill states only what is specific to a session with a person at the keyboard.
+An attended session does everything [`/t3:coordinating`](../coordinating/SKILL.md) says: **Load `/t3:coordinating` now** if not already loaded, because the hooks count a `requires:` member as held without injecting its text. This skill states only what is specific to a session with a person at the keyboard.
 
 ## What this session adds to the coordinating duties
 

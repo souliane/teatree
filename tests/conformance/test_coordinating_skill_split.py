@@ -132,6 +132,7 @@ def test_the_coordinating_closure_never_reaches_the_interactive_skill(skill_inde
 def test_the_interactive_skill_requires_and_links_the_coordinating_skill(skill_index: list[dict[str, object]]) -> None:
     assert resolve_requires(["interactive"], skill_index) == ["rules", "coordinating", "interactive"]
     assert "(../coordinating/SKILL.md)" in _text(_INTERACTIVE)
+    assert "**Load `/t3:coordinating` now** if not already loaded" in _text(_INTERACTIVE)
 
 
 def test_dogfood_smoke_keeps_the_shared_skill_without_the_attended_skill(skill_index: list[dict[str, object]]) -> None:
