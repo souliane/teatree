@@ -18,10 +18,7 @@ interface and never to its loopback; the host side of that mapping is pinned to
 ``127.0.0.1``, so the dashboard still never leaves the host. Both venues end at the same
 ``docker exec`` bridge, so the admin's peer is its own loopback either way.
 
-:mod:`teatree.agents.terminal_launcher` has the identical reachability problem — its ttyd
-binds the container loopback and is documented as reached "through the same SSH tunnel as
-the admin", which a developer machine has no equivalent of — and can be pointed at this
-module later. It is deliberately NOT refactored onto it here.
+The terminal route carries ttyd's fixed loopback port beside the dashboard route.
 """
 
 import os
@@ -37,9 +34,9 @@ from teatree.utils.compose_project import production_compose_project
 from teatree.utils.ports import running_in_container
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail, spawn_byte_pipe
 
-#: The one host port a forward ever binds. Fixed rather than ephemeral so a bookmark keeps
-#: working, and clear of 8801/8802, which developer SSH tunnels conventionally take.
+#: Fixed dashboard port, clear of 8801/8802 developer SSH tunnels.
 FORWARD_PORT = 8803
+TERMINAL_PORT = 8804
 
 _LOOPBACK = "127.0.0.1"
 #: The forwarder container's OWN listener interface. A published mapping delivers to the
@@ -53,6 +50,7 @@ _RELAY_CHUNK = 65536
 _DOCKER_PROBE_TIMEOUT_SECONDS = 10.0
 _FORWARDER_NAME = "teatree-admin-forward"
 _FORWARDER_ADMIN_LABEL = "teatree.admin-container"
+_FORWARDER_PORTS_LABEL = "teatree.forward-ports"
 _FORWARDER_MEMORY = "64m"
 _DOCKER_SOCKET = "/var/run/docker.sock"
 
@@ -81,9 +79,9 @@ while True:
 # itself is installed on a named volume this one-off does not mount, so stdlib only.
 _FORWARDER_SOURCE = """\
 import socket, subprocess, sys, threading
-def relay(conn):
+def relay(conn, bridge):
     child = subprocess.Popen(
-        ["docker", "exec", "-i", {container!r}, "python3", "-c", {bridge!r}],
+        ["docker", "exec", "-i", {container!r}, "python3", "-c", bridge],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     def upstream():
         try:
@@ -112,13 +110,20 @@ def relay(conn):
     finally:
         conn.close()
         child.terminate()
-listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-listener.bind(({bind!r}, {port}))
-listener.listen()
-while True:
-    client, _peer = listener.accept()
-    threading.Thread(target=relay, args=(client,), daemon=True).start()
+def accept(listener, bridge):
+    while True:
+        client, _peer = listener.accept()
+        threading.Thread(target=relay, args=(client, bridge), daemon=True).start()
+listeners = []
+for port, bridge in {routes!r}:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(({bind!r}, port))
+    listener.listen()
+    listeners.append((listener, bridge))
+for listener, bridge in listeners:
+    threading.Thread(target=accept, args=(listener, bridge), daemon=True).start()
+threading.Event().wait()
 """
 
 
@@ -274,16 +279,16 @@ class LoopbackForward:
 
 @dataclass(frozen=True, slots=True)
 class ForwardResult:
-    """The base URL a host browser can reach the admin at, or why it could not be reached."""
+    """The admin URL, any route warning, and the forwards this process owns."""
 
     url: str = ""
     error: str = ""
-    forward: LoopbackForward | None = None
+    forwards: tuple[LoopbackForward, ...] = ()
 
     def close(self) -> None:
         """Stop a forward THIS process started; a reused one stays with the process owning it."""
-        if self.forward is not None:
-            self.forward.close()
+        for forward in self.forwards:
+            forward.close()
 
 
 def _docker(*args: str) -> str:
@@ -327,14 +332,20 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     """
     name = _forwarder_name(port)
     url = f"http://{_LOOPBACK}:{port}"
+    if port == TERMINAL_PORT:
+        return ForwardResult(error=f"dashboard port {port} is reserved for the terminal")
+    ports = (port, TERMINAL_PORT)
     # The bridge targets this admin id, which changes when the admin is recreated.
     label = f"{_FORWARDER_ADMIN_LABEL}={container}"
+    ports_label = f"{_FORWARDER_PORTS_LABEL}={','.join(map(str, ports))}"
     if _docker(
         "ps",
         "--filter",
         f"name=^{name}$",
         "--filter",
         f"label={label}",
+        "--filter",
+        f"label={ports_label}",
         "--filter",
         "status=running",
         "--format",
@@ -345,17 +356,24 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     if not image:
         return ForwardResult(error=f"cannot resolve the {_ADMIN_SERVICE} container's image to run the forwarder from")
     _docker("rm", "--force", name)
-    bridge = _BRIDGE_SOURCE.format(host=_LOOPBACK, port=_ADMIN_CONTAINER_PORT, size=_RELAY_CHUNK)
+    routes = tuple(
+        (host_port, _BRIDGE_SOURCE.format(host=_LOOPBACK, port=target_port, size=_RELAY_CHUNK))
+        for host_port, target_port in ((port, _ADMIN_CONTAINER_PORT), (TERMINAL_PORT, TERMINAL_PORT))
+    )
     started = _docker(
         "run",
         "--detach",
         "--rm",
         "--label",
         label,
+        "--label",
+        ports_label,
         "--name",
         name,
         "--publish",
         f"{_LOOPBACK}:{port}:{port}",
+        "--publish",
+        f"{_LOOPBACK}:{TERMINAL_PORT}:{TERMINAL_PORT}",
         "--volume",
         f"{_DOCKER_SOCKET}:{_DOCKER_SOCKET}",
         "--group-add",
@@ -366,9 +384,7 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
         "python3",
         image,
         "-c",
-        _FORWARDER_SOURCE.format(
-            container=container, bridge=bridge, size=_RELAY_CHUNK, bind=_ALL_INTERFACES, port=port
-        ),
+        _FORWARDER_SOURCE.format(container=container, routes=routes, size=_RELAY_CHUNK, bind=_ALL_INTERFACES),
     )
     if not started:
         return ForwardResult(error=f"could not start the published forwarder container {name}")
@@ -398,14 +414,35 @@ def ensure_admin_forward(*, port: int = FORWARD_PORT) -> ForwardResult:
     [container] = containers
     if running_in_container():
         return _ensure_published_forwarder(container, port=port)
+    return _ensure_native_forward(container, port=port)
+
+
+def _ensure_native_forward(container: str, *, port: int) -> ForwardResult:
+    if port == TERMINAL_PORT:
+        return ForwardResult(error=f"dashboard port {port} is reserved for the terminal")
     forward = LoopbackForward(container, _ADMIN_CONTAINER_PORT, port=port)
     try:
         forward.start()
     except OSError as exc:
         if _OwnerMarker(port).held_by_live_process():
-            return ForwardResult(url=forward.url)
+            return _ensure_terminal_forward(container, url=forward.url)
         return ForwardResult(error=f"{_LOOPBACK}:{port} is held by a listener teatree does not own ({exc})")
-    return ForwardResult(url=forward.url, forward=forward)
+    return _ensure_terminal_forward(container, url=forward.url, owned=(forward,))
 
 
-__all__ = ["FORWARD_PORT", "ForwardResult", "LoopbackForward", "ensure_admin_forward"]
+def _ensure_terminal_forward(container: str, *, url: str, owned: tuple[LoopbackForward, ...] = ()) -> ForwardResult:
+    terminal = LoopbackForward(container, TERMINAL_PORT, port=TERMINAL_PORT)
+    try:
+        terminal.start()
+    except OSError as exc:
+        if _OwnerMarker(TERMINAL_PORT).held_by_live_process():
+            return ForwardResult(url=url, forwards=owned)
+        return ForwardResult(
+            url=url,
+            error=f"terminal port {TERMINAL_PORT} is held by a listener teatree does not own ({exc})",
+            forwards=owned,
+        )
+    return ForwardResult(url=url, forwards=(*owned, terminal))
+
+
+__all__ = ["FORWARD_PORT", "TERMINAL_PORT", "ForwardResult", "LoopbackForward", "ensure_admin_forward"]

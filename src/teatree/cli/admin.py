@@ -156,6 +156,8 @@ def _publish_running_admin(*, port: int | None, path: str) -> None:
     browse_url = f"{forward.url}{path}"
     _record_browse_url(browse_url)
     typer.echo(f"teatree admin → {browse_url}")
+    if forward.error:
+        typer.echo(f"terminal unavailable: {forward.error}", err=True)
 
 
 def _record_browse_url(url: str) -> None:

@@ -410,16 +410,10 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       - name: Real-browser `t3 browser` lane (headless keeper, CDP re-attach)
         run: uv run pytest e2e/browser -n0 -p no:randomly -p no:cacheprovider
-      - name: Provide ttyd + a stub claude for the terminal-launch e2e
-        # The header terminal button spawns `ttyd --once <claude>` on a loopback
-        # port; the spec asserts the launch URL renders (it never connects, and
-        # the launcher's reaper bounds the unconnected ttyd). ttyd must exist and
-        # `shutil.which("claude")` must resolve — the stub is never executed.
+      - name: Provide ttyd and lsof for the terminal-launch e2e
         run: |
           sudo apt-get update
-          sudo apt-get install -y ttyd
-          printf '#!/bin/sh\nexec sleep 3600\n' | sudo tee /usr/local/bin/claude >/dev/null
-          sudo chmod +x /usr/local/bin/claude
+          sudo apt-get install -y ttyd lsof
       - name: Behavioral dashboard e2e (live_server + chromium)
         run: uv run pytest e2e/dash --ds=e2e.dash.settings -n0 -p no:randomly -p no:cacheprovider
 

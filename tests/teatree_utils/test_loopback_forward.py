@@ -18,6 +18,10 @@ marker are real.
 
 import os
 import socket
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,7 +30,9 @@ from unittest.mock import patch
 import pytest
 
 from teatree.utils.loopback_forward import (
+    _BRIDGE_SOURCE,
     _DOCKER_PROBE_TIMEOUT_SECONDS,
+    _FORWARDER_SOURCE,
     ForwardResult,
     LoopbackForward,
     _running_admin_containers,
@@ -90,9 +96,13 @@ def marker_home(tmp_path: Path) -> Iterator[Path]:
 @pytest.fixture
 def stack_up() -> Iterator[None]:
     """A host (not a container) whose admin container is running."""
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        terminal_port = reservation.getsockname()[1]
     with (
         patch("teatree.utils.loopback_forward.running_in_container", return_value=False),
         patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
+        patch("teatree.utils.loopback_forward.TERMINAL_PORT", terminal_port),
     ):
         yield
 
@@ -153,7 +163,8 @@ class TestReuseVersusRefusal:
         assert result.url == f"http://127.0.0.1:{port}"
         assert result.error == ""
         # Reused, not owned: closing must not stop the process that actually holds it.
-        assert result.forward is None
+        assert all(forward.address != ("127.0.0.1", port) for forward in result.forwards)
+        result.close()
 
     def test_refuses_a_listener_no_marker_claims(
         self, marker_home: Path, stack_up: None, sockets: Callable[[], socket.socket]
@@ -183,7 +194,44 @@ class TestReuseVersusRefusal:
         result = ensure_admin_forward(port=0)
         try:
             assert result.error == ""
-            assert result.forward is not None
+            assert len(result.forwards) == 2
+            assert all(forward.address is not None and forward.address[0] == "127.0.0.1" for forward in result.forwards)
+        finally:
+            result.close()
+        assert all(forward.address is None for forward in result.forwards)
+
+    def test_a_foreign_terminal_listener_reports_a_warning_but_keeps_admin(
+        self, marker_home: Path, stack_up: None, sockets: Callable[[], socket.socket]
+    ) -> None:
+        blocker = sockets()
+        terminal_port = _port_of(blocker)
+        with patch("teatree.utils.loopback_forward.TERMINAL_PORT", terminal_port):
+            result = ensure_admin_forward(port=0)
+        try:
+            assert result.url.startswith("http://127.0.0.1:")
+            assert f"terminal port {terminal_port}" in result.error
+            assert len(result.forwards) == 1
+        finally:
+            result.close()
+
+    def test_native_dashboard_cannot_take_the_terminal_port(self, marker_home: Path, stack_up: None) -> None:
+        with patch("teatree.utils.loopback_forward.TERMINAL_PORT", 8804):
+            result = ensure_admin_forward(port=8804)
+        assert result.url == ""
+        assert "reserved" in result.error
+
+    def test_native_terminal_route_reuses_a_claimed_listener(
+        self, marker_home: Path, stack_up: None, sockets: Callable[[], socket.socket]
+    ) -> None:
+        blocker = sockets()
+        terminal_port = _port_of(blocker)
+        (marker_home / f"loopback-forward-{terminal_port}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        with patch("teatree.utils.loopback_forward.TERMINAL_PORT", terminal_port):
+            result = ensure_admin_forward(port=0)
+        try:
+            assert result.error == ""
+            assert len(result.forwards) == 1
+            assert result.url.startswith("http://127.0.0.1:")
         finally:
             result.close()
 
@@ -213,7 +261,7 @@ class TestItDeclinesInsteadOfBlocking:
 
         assert result.url == ""
         assert "no running teatree-admin container" in result.error
-        assert result.forward is None
+        assert result.forwards == ()
 
     def test_a_stopped_stack_is_reported_from_inside_a_container_too(self, marker_home: Path) -> None:
         # The venue changes HOW the forward is made, never whether the stack is up.
@@ -296,14 +344,17 @@ def _containerized_stack(ps_answer: Callable[[list[str]], str]) -> Generator[lis
         yield calls
 
 
-def _a_running_forwarder(label: str | None) -> Callable[[list[str]], str]:
+def _a_running_forwarder(label: str | None, *, terminal_route: bool = True) -> Callable[[list[str]], str]:
     def answer(cmd: list[str]) -> str:
         label_filters = [
             cmd[index + 1]
             for index, value in enumerate(cmd[:-1])
             if value == "--filter" and cmd[index + 1].startswith("label=")
         ]
-        return "old-forwarder" if not label_filters or label_filters == [f"label={label}"] else ""
+        expected = [f"label={label}"]
+        if terminal_route:
+            expected.append("label=teatree.forward-ports=8803,8804")
+        return "old-forwarder" if not label_filters or label_filters == expected else ""
 
     return answer
 
@@ -330,6 +381,21 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert result.error == ""
         assert result.url == "http://127.0.0.1:8803"
 
+    def test_dashboard_cannot_take_the_reserved_terminal_port(self, containerized_stack_up: list[list[str]]) -> None:
+        result = ensure_admin_forward(port=8804)
+        assert result.url == ""
+        assert "reserved" in result.error
+        assert not any(call[1:2] == ["run"] for call in containerized_stack_up)
+
+    def test_it_publishes_and_bridges_the_terminal_port(self, containerized_stack_up: list[list[str]]) -> None:
+        ensure_admin_forward(port=8803)
+        argv = _run_argv(containerized_stack_up)
+        publish = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--publish"]
+        assert publish == ["127.0.0.1:8803:8803", "127.0.0.1:8804:8804"]
+        source = argv[-1]
+        assert "8804" in source
+        assert 'create_connection(("127.0.0.1", 8804))' in source
+
     def test_the_published_mapping_is_pinned_to_the_host_loopback(
         self, containerized_stack_up: list[list[str]]
     ) -> None:
@@ -354,7 +420,9 @@ class TestTheContainerizedVenuePublishesAHostPort:
         ensure_admin_forward(port=8803)
 
         source = _run_argv(containerized_stack_up)[-1]
-        assert "'0.0.0.0', 8803" in source
+        assert "listener.bind(('0.0.0.0', port))" in source
+        assert "(8803," in source
+        assert "(8804," in source
 
     def test_it_bridges_through_the_admins_own_loopback(self, containerized_stack_up: list[list[str]]) -> None:
         # The trust anchor: gunicorn must still see 127.0.0.1 as its peer, so the last
@@ -381,6 +449,14 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert [call[1] for call in calls] == ["ps"]
         assert f"label=teatree.admin-container={_ADMIN_CONTAINER}" in calls[0]
 
+    def test_a_forwarder_missing_the_terminal_route_is_replaced(self) -> None:
+        with _containerized_stack(
+            _a_running_forwarder(f"teatree.admin-container={_ADMIN_CONTAINER}", terminal_route=False)
+        ) as calls:
+            result = ensure_admin_forward(port=8803)
+        assert result.url == "http://127.0.0.1:8803"
+        assert [call[1] for call in calls] == ["ps", "inspect", "rm", "run"]
+
     @pytest.mark.parametrize(
         "label", [None, "teatree.admin-container=former-admin"], ids=["unlabelled", "former-admin"]
     )
@@ -404,3 +480,55 @@ class TestTheContainerizedVenuePublishesAHostPort:
 
         assert result.url == ""
         assert "could not start the published forwarder" in result.error
+
+
+def test_published_terminal_route_relays_websocket_upgrade(tmp_path: Path) -> None:
+    docker = tmp_path / "docker"
+    docker.write_text('#!/bin/sh\nshift 3\nexec "$@"\n', encoding="utf-8")
+    docker.chmod(0o755)
+    with socket.socket() as target, socket.socket() as reservation:
+        target.bind(("127.0.0.1", 0))
+        target.listen()
+        target.settimeout(5)
+        reservation.bind(("127.0.0.1", 0))
+        host_port = reservation.getsockname()[1]
+        terminal_port = target.getsockname()[1]
+        bridge = _BRIDGE_SOURCE.format(host="127.0.0.1", port=terminal_port, size=65536)
+        source = _FORWARDER_SOURCE.format(
+            container=_ADMIN_CONTAINER, routes=((host_port, bridge),), size=65536, bind="127.0.0.1"
+        )
+        reservation.close()
+        request = []
+
+        def serve() -> None:
+            with target.accept()[0] as upstream:
+                request.append(upstream.recv(4096))
+                upstream.sendall(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n")
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        process = subprocess.Popen(
+            [sys.executable, "-c", source],
+            env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    client = socket.create_connection(("127.0.0.1", host_port), timeout=1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            with client:
+                client.settimeout(5)
+                client.sendall(b"GET /secret/ws HTTP/1.1\r\nUpgrade: websocket\r\n\r\n")
+                assert client.recv(4096).startswith(b"HTTP/1.1 101 Switching Protocols")
+            server.join(timeout=5)
+            assert request == [b"GET /secret/ws HTTP/1.1\r\nUpgrade: websocket\r\n\r\n"]
+        finally:
+            process.terminate()
+            process.wait(timeout=5)

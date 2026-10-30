@@ -1,8 +1,7 @@
 """Debug access: the loopback ttyd "Debug session" button + allowlisted command buttons (#3162).
 
-Both POST-only, CSRF-protected, and audited. Neither exposes anything beyond
-loopback: the ttyd terminal binds ``127.0.0.1`` reached through the same SSH
-tunnel, and the command buttons run a fixed code allowlist as bounded subprocesses.
+Both POST-only, CSRF-protected, and audited. The terminal binds the fixed loopback
+port carried by the dashboard forwarder; commands use a bounded allowlist.
 """
 
 from typing import TYPE_CHECKING
@@ -30,7 +29,12 @@ def debug_session(request: "HttpRequest") -> "HttpResponse":
         result = launch_web_session(resume)
     except (FileNotFoundError, ValueError) as exc:
         return HttpResponseBadRequest(str(exc))
-    audit.record(actor=actor(request), action="debug:session", target=resume, after=result.launch_url or result.error)
+    audit.record(
+        actor=actor(request),
+        action="debug:session",
+        target=resume,
+        after=f"port={result.port}" if result.port else result.error,
+    )
     return render(request, "dash/partials/_debug_session.html", {"result": result})
 
 

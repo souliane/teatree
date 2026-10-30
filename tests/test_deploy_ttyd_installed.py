@@ -17,3 +17,9 @@ def test_deploy_dockerfile_installs_ttyd() -> None:
     apt_install_lines = [line for line in content.splitlines() if "ca-certificates" in line and "curl" in line]
     assert apt_install_lines, "expected the toolchain apt-get install line in deploy/Dockerfile"
     assert any("ttyd" in line for line in apt_install_lines), "deploy/Dockerfile must apt-install ttyd (#3263)"
+
+
+def test_deploy_dockerfile_installs_lsof() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    apt_install_lines = [line for line in dockerfile.splitlines() if "ca-certificates" in line and "curl" in line]
+    assert any("lsof" in line for line in apt_install_lines)
