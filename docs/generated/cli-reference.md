@@ -12895,8 +12895,9 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
-│ partial-merge-report         List merged tickets whose open issue has a      │
-│                              declared remainder.                             │
+│ partial-merge-report         List settled tickets whose issue is still open. │
+│ unsettle                     Reopen a settled ticket whose issue has an open │
+│                              remainder.                                      │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13500,10 +13501,28 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ```
 Usage: t3 teatree ticket partial-merge-report [OPTIONS]
 
- List merged tickets whose open issue has a declared remainder.
+ List settled tickets whose issue is still open.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket unsettle`
+
+```
+Usage: t3 teatree ticket unsettle [OPTIONS] TICKET_ID
+
+ Reopen a settled ticket whose issue has an open remainder.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT  Name open work when the PR declared no remainder.     │
+│ --dry-run              Check without changing the ticket.                    │
 │ --json                 Emit machine-readable JSON.                           │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯

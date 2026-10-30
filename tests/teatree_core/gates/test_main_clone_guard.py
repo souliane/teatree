@@ -64,6 +64,12 @@ class TestBlockedMutations:
         # a feature target is still off-default → blocked.
         assert _blocks("git checkout feature", default_branch=None) is True
 
+    @pytest.mark.parametrize("separator", ["; ", " | ", " & ", "\n"])
+    def test_blocked_verb_after_a_benign_git_call_is_blocked_past_a_separator(self, separator: str) -> None:
+        # The benign call must come FIRST: with it leading, an unsplit chain reads as the
+        # allowed ``git status`` alone, so only real per-segment classification catches the second.
+        assert _blocks(f"git status{separator}git checkout feature") is True
+
 
 class TestAllowedOperations:
     @pytest.mark.parametrize(

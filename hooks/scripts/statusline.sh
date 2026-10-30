@@ -709,8 +709,7 @@ fi
 # (1 for the object plus THREE MORE PER REPO for its fields). It emits a tagged
 # TSV stream — `M` meta, `S` segment, `F` freshness row — that one builtin loop
 # takes apart. `dirname` is `${var%/*}`.
-_tick_meta="${target%.txt}-meta.json"
-[ ! -r "$_tick_meta" ] && _tick_meta="${target%/*}/tick-meta.json"
+_tick_meta="${target%/*}/tick-meta.json"
 
 _rendered_at=""
 _sl_cadence=""

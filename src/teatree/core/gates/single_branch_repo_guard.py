@@ -37,25 +37,14 @@ the pinned one. Committing, fetching, pulling, checking the pinned branch out,
 pushing the pinned branch, and every read-only git command allow.
 """
 
-import shlex
 from dataclasses import dataclass
+
+from teatree.core.gates.git_invocation import command_segments, git_call
 
 #: The kill-switch key. A COLD-HOOK setting rather than a ``UserSettings`` field
 #: because the Bash seam reads it from a hook with no importable teatree; the
 #: provisioner reads the SAME key through ``cold_reader`` so one flip governs both.
 GATE_KEY = "single_branch_repo_gate_enabled"
-
-# Compound-command separators. A blocked verb hiding after ``&&``/``;`` in an
-# otherwise-benign chain (``cd x && git checkout -b feature``) still creates a
-# second branch, so each segment is classified independently. Mirrors
-# :mod:`teatree.core.gates.main_clone_guard`, which learned the same lesson.
-_SEGMENT_SEPARATORS = ("&&", "||", ";", "|", "&", "\n")
-
-# git's leading global options that consume the NEXT token as their value, so the
-# subcommand scanner skips two tokens for them (``git -C <path> worktree add``).
-_GLOBAL_OPTS_WITH_VALUE = frozenset(
-    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
-)
 
 # ``git push <remote> <refspec>…`` — fewer positionals than this names no refspec,
 # so the destination is the checked-out branch rather than an argument.
@@ -186,8 +175,8 @@ def find_second_branch_creation(
     """
     if not pinned_branch:
         return None
-    for segment in _segments(command):
-        call = _git_call(segment)
+    for segment in command_segments(command):
+        call = git_call(segment)
         if call is None:
             continue
         subcommand, args = call
@@ -235,37 +224,6 @@ def _normalise_slug(repo: str) -> str:
         text = text.rsplit(":", 1)[-1]
     text = text.removesuffix(".git")
     return text.strip("/")
-
-
-def _segments(command: str) -> list[str]:
-    segments = [command]
-    for sep in _SEGMENT_SEPARATORS:
-        segments = [piece for seg in segments for piece in seg.split(sep)]
-    return [seg.strip() for seg in segments if seg.strip()]
-
-
-def _git_call(segment: str) -> tuple[str, list[str]] | None:
-    """``(subcommand, args)`` for a ``git`` invocation in *segment*, else None."""
-    tokens = _safe_split(segment)
-    try:
-        index = tokens.index("git")
-    except ValueError:
-        return None
-    cursor = index + 1
-    while cursor < len(tokens):
-        token = tokens[cursor]
-        if not token.startswith("-"):
-            return token, tokens[cursor + 1 :]
-        base = token.split("=", 1)[0]
-        cursor += 2 if base in _GLOBAL_OPTS_WITH_VALUE and "=" not in token else 1
-    return None
-
-
-def _safe_split(segment: str) -> list[str]:
-    try:
-        return shlex.split(segment)
-    except ValueError:
-        return []
 
 
 def _classify(subcommand: str, args: list[str], pinned_branch: str, current_branch: str) -> SingleBranchFinding | None:
