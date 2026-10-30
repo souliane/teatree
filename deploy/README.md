@@ -16,9 +16,11 @@ overlay is the built-in `t3-teatree`.
 `deploy/deploy.sh` asks the running worker to reclaim disk before staging a new
 image. It rechecks immediately before each Compose build, and refuses below
 17 GiB available to ordinary users. The diagnostic prints the least available
-space across `/`, the temporary directory and Docker's data root, plus root-reserved
-space and the build need. If the worker command is unavailable during an upgrade,
-the deploy prunes only Docker build cache and dangling images before the check.
+space across `/` and Docker's data root, plus root-reserved space and the build need.
+The deploy workflow puts its extracted build context under `/var/tmp` on the root
+filesystem; the guard ignores the RAM-backed `/tmp`. If the worker command is
+unavailable during an upgrade, the deploy prunes only Docker build cache and
+dangling images before the check.
 Under 1 GiB available, the deploy streams its log to `/dev/shm` so an ENOSPC error
 remains visible.
 

@@ -79,6 +79,14 @@ class TestStructuralSignal:
         body = "## Members\n\n- [ ] https://gitlab.com/acme/app/-/issues/12\n- [ ] https://gitlab.com/acme/app/-/issues/13\n"
         assert _reason(body)
 
+    def test_a_gitlab_work_item_child_checklist_counts(self) -> None:
+        body = (
+            "## Members\n\n"
+            "- [ ] https://gitlab.com/acme/app/-/work_items/12\n"
+            "- [ ] https://gitlab.com/acme/app/-/work_items/13\n"
+        )
+        assert _reason(body)
+
     def test_a_non_forge_url_checklist_is_not_a_child_list(self) -> None:
         """A docs-link checklist is a plan, not a tracking parent — the URL grammar is narrow."""
         body = "## Docs\n\n- [ ] https://example.com/readme\n- [ ] https://example.com/changelog\n"
