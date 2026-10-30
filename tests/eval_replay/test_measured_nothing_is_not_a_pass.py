@@ -121,7 +121,3 @@ class TestLedgerLineSaysWhichFactItIs(TestCase):
         payload = json.loads(render_history_json([self._graded_record()]))
         assert payload["runs"][0]["measured_nothing"] is False
         assert payload["runs"][0]["executed"] == 1
-
-    def test_a_suite_with_nothing_to_run_measured_nothing(self) -> None:
-        payload = json.loads(render_history_json([EvalRunRecord.objects.record(model="haiku")]))
-        assert payload["runs"][0]["measured_nothing"] is True

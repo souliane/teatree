@@ -10,6 +10,26 @@ from teatree.eval.results_page import render_results_page
 
 
 class TestResultsPage(TestCase):
+    def test_empty_catalog_run_is_not_presented_as_a_pass(self) -> None:
+        EvalRunRecord.objects.create(model="subscription", suite="eval_local:1")
+
+        page = render_results_page()
+
+        assert "MEASURED NOTHING" in page
+        assert "0 passed" not in page
+
+    def test_six_day_old_run_is_not_stale(self) -> None:
+        now = timezone.now()
+        run = EvalRunRecord.objects.create(
+            model="subscription", suite="eval_local:1", started_at=now - timedelta(days=6)
+        )
+        run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+
+        page = render_results_page(now=now)
+
+        assert "STALE:" not in page
+        assert "1 passed" in page
+
     def test_measured_nothing_is_not_presented_as_a_pass(self) -> None:
         now = timezone.now()
         run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=now)

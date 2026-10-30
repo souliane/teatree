@@ -2,18 +2,19 @@
 
 import os
 import signal
-import sys
 import time
+from contextlib import suppress
 
 from teatree.core.models import EvalRunRecord, EvalVerdict, Loop, Task
-from teatree.utils.run import DEVNULL, PIPE, TimeoutExpired, run_allowed_to_fail, spawn_session_leader
+from teatree.utils.run import DEVNULL, PIPE, TimeoutExpired, redact_secrets, run_allowed_to_fail, spawn_session_leader
 
 _HEARTBEAT_SECONDS = 60
+_CONTROL_TIMEOUT_SECONDS = 30
 _SECONDS_PER_SCENARIO = 15 * 60
 
 
 def _command(*args: str) -> list[str]:
-    return [sys.executable, "-m", "teatree", "eval", *args]
+    return ["t3", "eval", *args]
 
 
 def _subscription_env() -> dict[str, str]:
@@ -33,6 +34,7 @@ def _selected_scenarios(shard: str, env: dict[str, str]) -> list[str]:
         _command("list", "--names-only", "--shard", shard),
         env=env,
         expected_codes=None,
+        timeout=_CONTROL_TIMEOUT_SECONDS,
     )
     if result.returncode:
         msg = f"measured nothing: scenario catalog unavailable: {result.stderr.strip()}"
@@ -44,7 +46,7 @@ def _selected_scenarios(shard: str, env: dict[str, str]) -> list[str]:
     return names
 
 
-def _run_child(task: Task, shard: str, selected: list[str], env: dict[str, str]) -> int:
+def _run_child(task: Task, shard: str, selected: list[str], env: dict[str, str]) -> tuple[int, str, str]:
     child = spawn_session_leader(
         _command(
             "run", "--backend", "api", "--credential", "subscription_oauth", "--local", "--persist", "--shard", shard
@@ -53,17 +55,29 @@ def _run_child(task: Task, shard: str, selected: list[str], env: dict[str, str])
         stdio=(DEVNULL, PIPE, PIPE),
     )
     deadline = time.monotonic() + len(selected) * _SECONDS_PER_SCENARIO
-    while True:
-        try:
-            child.communicate(timeout=min(_HEARTBEAT_SECONDS, max(0.01, deadline - time.monotonic())))
-        except TimeoutExpired:
-            if time.monotonic() >= deadline:
+    stopped = False
+    try:
+        while True:
+            try:
+                timeout = min(_HEARTBEAT_SECONDS, max(0.01, deadline - time.monotonic()))
+                stdout, stderr = child.communicate(timeout=timeout)
+            except TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    stopped = True
+                    stdout, stderr = child.communicate()
+                    return 124, stdout or "", stderr or ""
+                task.renew_lease(lease_seconds=3 * _HEARTBEAT_SECONDS)
+            else:
+                if child.returncode is None:
+                    msg = "eval process ended without an exit status"
+                    raise RuntimeError(msg)
+                return child.returncode, stdout or "", stderr or ""
+    finally:
+        if not stopped and child.returncode is None:
+            with suppress(ProcessLookupError):
                 os.killpg(child.pid, signal.SIGKILL)
-                child.communicate()
-                return 124
-            task.renew_lease(lease_seconds=3 * _HEARTBEAT_SECONDS)
-        else:
-            return child.returncode
+            child.communicate()
 
 
 def _record_unmeasured(selected: list[str], *, reason: str, suite: str) -> EvalRunRecord:
@@ -80,23 +94,39 @@ def run_eval_local(task: Task) -> str:
     shard = _shard()
     try:
         selected = _selected_scenarios(shard, env)
-    except RuntimeError:
-        _record_unmeasured([], reason="scenario catalog unavailable", suite=suite)
+    except (OSError, RuntimeError, TimeoutExpired) as exc:
+        _record_unmeasured([], reason=str(exc), suite=suite)
         raise
-    pinned = run_allowed_to_fail(
-        _command("pinned-regressions"),
-        env=env,
-        expected_codes=None,
-    )
+    try:
+        pinned = run_allowed_to_fail(
+            _command("pinned-regressions", "--strict"),
+            env=env,
+            expected_codes=None,
+            timeout=_CONTROL_TIMEOUT_SECONDS,
+        )
+    except (OSError, RuntimeError, TimeoutExpired) as exc:
+        msg = f"measured nothing: pinned-regressions unavailable: {redact_secrets(str(exc))}"
+        _record_unmeasured(selected, reason=msg, suite=suite)
+        raise RuntimeError(msg) from exc
     prior_pk = EvalRunRecord.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
-    child_exit = _run_child(task, shard, selected, env)
+    try:
+        child_exit, stdout, stderr = _run_child(task, shard, selected, env)
+    except OSError as exc:
+        msg = f"measured nothing: eval lane unavailable: {redact_secrets(str(exc))}"
+        _record_unmeasured(selected, reason=msg, suite=suite)
+        raise RuntimeError(msg) from exc
+    detail = redact_secrets((stderr or stdout).strip())[-1000:]
     run = EvalRunRecord.objects.filter(pk__gt=prior_pk, suite=suite).order_by("-pk").first()
     if run is None:
-        run = _record_unmeasured(selected, reason=f"eval lane exited {child_exit} without a recorded run", suite=suite)
+        reason = f"eval lane exited {child_exit} without a recorded run: {detail}".rstrip(": ")
+        run = _record_unmeasured(selected, reason=reason, suite=suite)
     if run.measured_nothing:
-        msg = f"measured nothing: 0 of {run.total} scenarios graded (child exit {child_exit})"
+        msg = f"measured nothing: 0 of {run.total} scenarios graded (child exit {child_exit}): {detail}".rstrip(": ")
         raise RuntimeError(msg)
     if pinned.returncode:
-        msg = f"pinned-regressions failed (exit {pinned.returncode}) after eval run #{run.pk}"
+        diagnostic = redact_secrets((pinned.stderr or pinned.stdout).strip())[-1000:]
+        msg = (f"pinned-regressions failed (exit {pinned.returncode}) after eval run #{run.pk}: {diagnostic}").rstrip(
+            ": "
+        )
         raise RuntimeError(msg)
     return f"eval run #{run.pk}: {run.passed} passed, {run.failed} failed, {run.errored} errors; {shard}"

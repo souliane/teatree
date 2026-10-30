@@ -30,6 +30,7 @@ inline tag in its detail so the reader can tell provenance. The global owner
 waiting gather runs exactly once, so a pending question never appears twice.
 """
 
+import logging
 import operator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -62,6 +63,8 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.waiting import WaitingKind, format_age, gather_owner_waiting
+
+logger = logging.getLogger(__name__)
 
 CheckItemDict = checking_types.CheckItemDict
 
@@ -507,5 +510,9 @@ def _needs_you_group(*, now: datetime, overlay_name: str, cap: int) -> CheckGrou
 
 
 def _eval_measurement_items(*, now: datetime) -> list[CheckItem]:
-    signal = eval_measurement_signal(now)
+    try:
+        signal = eval_measurement_signal(now)
+    except Exception:
+        logger.exception("Could not read behavioral eval measurement for check-in")
+        return [CheckItem(label="evals", url="", detail="behavioral eval measurement unread")]
     return [CheckItem(label="evals", url="", detail=signal.summary)] if signal is not None else []
