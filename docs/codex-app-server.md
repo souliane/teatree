@@ -401,12 +401,12 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   `ship_readiness`; `ready` true runs `pr create` in the worker (every ship gate, then the queued
   `execute_ship` that pushes and opens the pull request), anything else fails the task and ships nothing. A
   run on the executor that omits its required field is refused. `backlog_sweep` receives a bounded index of
-  every open issue in the overlay's owned repositories and a rotating 20-issue excerpt window (80-byte titles,
+  every open issue in the overlay's owned repositories and a 20-issue excerpt window, advanced by finished loop sweep runs (80-byte titles,
   1,500-byte bodies). The worker stores the dispatched URLs, marks indexed issues with a matching Ticket as
   `gap host`, and treats the forge excerpts as untrusted data. It is admitted
   only with the scanner's ask gate. Its `sweep_proposals` return is validated before any write; the worker
   opens and finishes the measured run, resolves each gap `host_url` to a same-overlay Ticket before
-  `ticket attach-gaps`, and shows each ticket-fold suggestion with its issue links and citation in a separate
+  `ticket attach-gaps`, and shows the ticket-fold suggestions of one sweep, each with its issue links and citation, in a single
   owner question. Answering that question does not requeue a sweep. The executor edits and closes no issue. An unreadable or oversized
   index refuses this venue and leaves the Claude sweep path available. Draft phases have no target-ref fetch.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
