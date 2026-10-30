@@ -371,6 +371,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         prompt = Prompt.objects.create(name="silent-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
         Loop.objects.filter(name="news").update(delay_seconds=3600, last_run_at=None)
+        Loop.objects.set_manual_override("news", runs=True, reason="exercise periodic tick")
         mini = MiniLoop(
             name="news",
             default_cadence_seconds=3600,
@@ -397,6 +398,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         prompt = Prompt.objects.create(name="no-job-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
         Loop.objects.filter(name="news").update(delay_seconds=3600, last_run_at=None)
+        Loop.objects.set_manual_override("news", runs=True, reason="exercise periodic tick")
         mini = MiniLoop(
             name="news",
             default_cadence_seconds=3600,
