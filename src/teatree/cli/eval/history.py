@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, TypedDict
 import typer
 
 from teatree.cli._format_opts import require_valid_format
-from teatree.eval.skip_guard import graded_nothing
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
@@ -42,14 +41,6 @@ class HistoryRun(TypedDict):
     pass_rates: list[HistoryPassRate]
 
 
-def _executed(run: "EvalRunRecord") -> int:
-    return run.total - run.skipped
-
-
-def _measured_nothing(run: "EvalRunRecord") -> bool:
-    return graded_nothing(collected=run.total, executed=_executed(run))
-
-
 def mark_run_baseline(run_id: int) -> bool:
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -72,8 +63,8 @@ def _run_dict(run: "EvalRunRecord") -> HistoryRun:
         passed=run.passed,
         failed=run.failed,
         skipped=run.skipped,
-        executed=_executed(run),
-        measured_nothing=_measured_nothing(run),
+        executed=run.executed,
+        measured_nothing=run.measured_nothing,
         pass_rates=[
             HistoryPassRate(
                 scenario=r.scenario_name, model=r.model, passed=r.passed, total=r.total, pass_rate=r.pass_rate
@@ -94,8 +85,8 @@ def _tally(run: "EvalRunRecord") -> str:
     skipped``, which is shaped exactly like a clean sweep and was read as one for
     five consecutive weeks. The two facts are opposite, so they get different words.
     """
-    if _measured_nothing(run):
-        return f"— MEASURED NOTHING: 0 of {run.total} executed ({run.skipped} skipped)"
+    if run.measured_nothing:
+        return f"— MEASURED NOTHING: 0 of {run.total} graded ({run.skipped} skipped, {run.errored} errors)"
     return f"— {run.passed} passed, {run.failed} failed, {run.skipped} skipped (of {run.total})"
 
 

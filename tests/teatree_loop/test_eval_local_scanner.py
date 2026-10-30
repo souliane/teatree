@@ -1,17 +1,4 @@
-"""DB-backed tests for ``EvalLocalScanner``.
-
-The scanner periodically queues an ``eval_local`` ``Task`` row for the
-active core overlay on a single trigger: cadence
-(its ``Loop`` row's own weekly interval). It mirrors the
-shape of :mod:`teatree.loop.scanners.scanning_news`: the queued task
-directs running the SCOPED eval suite locally via the same runner
-``t3 eval run`` uses (the transcript backend, $0 extra), without
-blocking the tick.
-
-Integration-style with real Django ORM rows. Times are backdated with
-``QuerySet.update()`` (mirrors
-:mod:`tests.teatree_loop.test_scanning_news_scanner`).
-"""
+"""DB-backed cadence, reserve, and dedup checks for ``EvalLocalScanner``."""
 
 from datetime import timedelta
 from unittest.mock import patch
@@ -19,7 +6,6 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.config import UserSettings
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.session import Session
@@ -34,12 +20,9 @@ TEST_OVERLAY_NAME = "t3-teatree"
 def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
-    skill: str = "running-evals",
     reserve_met: bool = True,
 ) -> EvalLocalScanner:
-    return EvalLocalScanner(
-        overlay_name=overlay_name, skill=skill, reserve_met=lambda: EvalReserveDecision(met=reserve_met)
-    )
+    return EvalLocalScanner(overlay_name=overlay_name, reserve_met=lambda: EvalReserveDecision(met=reserve_met))
 
 
 def _last_eval_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
@@ -54,7 +37,6 @@ class EvalLocalScannerTests(TestCase):
     def test_stale_headroom_emits_a_visible_park_signal(self) -> None:
         scanner = EvalLocalScanner(
             overlay_name=TEST_OVERLAY_NAME,
-            skill="running-evals",
             reserve_met=lambda: EvalReserveDecision(
                 met=False, reason="stale OAuth headroom could not be refreshed", stale=True
             ),
@@ -84,10 +66,10 @@ class EvalLocalScannerTests(TestCase):
                 reset_7d=None,
             ),
         )
-        assert len(EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan()) == 1
+        assert len(EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME).scan()) == 1
 
     def test_the_default_gate_fails_closed_with_no_measured_account(self) -> None:
-        signals = EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan()
+        signals = EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME).scan()
         assert [signal.kind for signal in signals] == ["eval_local.held"]
 
     def test_no_prior_run_queues_task(self) -> None:
@@ -97,7 +79,7 @@ class EvalLocalScannerTests(TestCase):
         signal = signals[0]
         assert signal.kind == "eval_local.queued"
         assert signal.payload["overlay"] == TEST_OVERLAY_NAME
-        assert signal.payload["skill"] == "running-evals"
+        assert "skill" not in signal.payload
         assert signal.payload["phase"] == EVAL_LOCAL_PHASE
         assert signal.payload["trigger"] == "bootstrap"
 
@@ -149,20 +131,13 @@ class EvalLocalScannerTests(TestCase):
 
         assert second == []
 
-    def test_queued_task_directs_scoped_transcript_runner(self) -> None:
-        """The execution_reason must direct the SCOPED, $0-extra local runner.
-
-        The dispatched skill reads ``execution_reason``; the directive must
-        name ``t3 eval run`` and the transcript backend so the local run
-        runs no model — mirroring what the user runs by hand.
-        """
+    def test_queued_task_identifies_the_factory_account(self) -> None:
         _scanner().scan()
 
         task = _last_eval_task()
         assert task is not None
         reason = task.execution_reason
-        assert "t3 eval run" in reason
-        assert "transcript" in reason
+        assert "factory subscription account" in reason
 
     def test_signal_summary_mentions_overlay(self) -> None:
         signals = _scanner().scan()
@@ -182,45 +157,14 @@ class EvalLocalScannerTests(TestCase):
 
 
 class EvalLocalWiringTests(TestCase):
-    """The tick-job builder reads teatree-core config for the eval-local scanner."""
-
-    def _settings(self, **overrides: object) -> UserSettings:
-        return UserSettings(**overrides)
-
-    def test_default_core_config_builds_scanner(self) -> None:
-        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.get_effective_settings",
-            return_value=self._settings(),
-        ):
-            scanner = _eval_local_scanner()
-        assert scanner is not None
-        assert scanner.skill == "running-evals"
-
-    def test_tuned_core_config_propagates_to_scanner_kwargs(self) -> None:
-        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.get_effective_settings",
-            return_value=self._settings(eval_local_skill="custom-eval"),
-        ):
-            scanner = _eval_local_scanner()
-        assert scanner is not None
-        assert scanner.skill == "custom-eval"
+    """The tick-job builder anchors the eval-local scanner to the active overlay."""
 
     def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
         from teatree.config import OverlayEntry  # noqa: PLC0415
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
-        with (
-            patch(
-                "teatree.loop.global_scanner_factories.get_effective_settings",
-                return_value=self._settings(),
-            ),
-            patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=discovered),
-        ):
+        with patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=discovered):
             scanner = _eval_local_scanner()
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"
@@ -228,13 +172,7 @@ class EvalLocalWiringTests(TestCase):
     def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
-        with (
-            patch(
-                "teatree.loop.global_scanner_factories.get_effective_settings",
-                return_value=self._settings(),
-            ),
-            patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=None),
-        ):
+        with patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=None):
             scanner = _eval_local_scanner()
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"

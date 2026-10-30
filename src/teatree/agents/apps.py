@@ -16,6 +16,7 @@ nothing else. The registries stay fail-loud: an unresolvable runner raises out o
 the thunk exactly as it would have raised out of ``ready()``.
 """
 
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from django.apps import AppConfig
@@ -41,6 +42,10 @@ def run_short_describe_deferred(task: "Task") -> str:
     return run_short_describe(task)
 
 
+def run_eval_local_deferred(task: "Task") -> str:
+    return import_module("teatree.agents.eval_local_phase").run_eval_local(task)
+
+
 class AgentsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "teatree.agents"
@@ -56,3 +61,4 @@ class AgentsConfig(AppConfig):
         # no path to Ticket.short_description at all, so it narrated a summary it never
         # wrote. Registered here (not imported by core) to keep the layer inversion.
         register_phase_runner(SHORT_DESCRIBE_PHASE, run_short_describe_deferred)
+        register_phase_runner("eval_local", run_eval_local_deferred)

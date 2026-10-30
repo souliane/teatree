@@ -194,7 +194,7 @@ async def _task_create(
     )()
 
 
-async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -> dict[str, Any]:
+async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str, thread_ts: str = "") -> dict[str, Any]:
     """Send a bot→user DM through the audited notify egress.
 
     Wraps :func:`teatree.core.notify.notify_user_outcome` — the single notification
@@ -241,7 +241,9 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
             kind=kind_value,
             idempotency_key=idempotency_key,
             audience=NotifyAudience.OWNER_DELIVERY,
-            options=NotifyOptions(requested_push=True, ticket_id=ticket.pk if ticket is not None else None),
+            options=NotifyOptions(
+                requested_push=True, ticket_id=ticket.pk if ticket is not None else None, thread_ts=thread_ts
+            ),
         )
 
     outcome = await sync_to_async(deliver, thread_sensitive=True)()

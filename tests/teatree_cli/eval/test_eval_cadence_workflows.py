@@ -393,7 +393,7 @@ def test_weekly_dashboard_requires_every_leg_to_complete(
     (tmp_path / "receipts").mkdir()
     if receipt is not None:
         (tmp_path / "receipts" / "eval-leg-result-one.txt").write_text(receipt + "\n", encoding="utf-8")
-    dashboard = tmp_path / "docs" / "evals" / "index.md"
+    dashboard = tmp_path / "docs" / "evals" / "weekly.md"
     dashboard.parent.mkdir(parents=True)
     dashboard.write_text("old dashboard\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"

@@ -8,7 +8,6 @@ from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.declared_defaults import declared_defaults
 from teatree.config.settings import UserSettings
 from teatree.core.overlay import OverlayConfig
-from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.skill_support.demands import LOOP_SKILL_FIELDS, SkillDemand, enumerate_skill_demands, skill_demand_names
 
@@ -26,7 +25,6 @@ def test_every_dispatching_overlay_and_runtime_field_is_enumerated() -> None:
         review_skill_alternates=["codex-review"],
         architectural_review_skill="ac-reviewing-codebase",
         scanning_news_skill="scanning-news",
-        eval_local_skill="running-evals",
         backlog_sweep_skill="sweeping-tickets",
         dogfood_smoke_skill="dogfooding",
     )
@@ -40,7 +38,6 @@ def test_every_dispatching_overlay_and_runtime_field_is_enumerated() -> None:
         SkillDemand("review_skill_alternates", "codex-review"),
         SkillDemand("architectural_review_skill", "ac-reviewing-codebase"),
         SkillDemand("scanning_news_skill", "scanning-news"),
-        SkillDemand("eval_local_skill", "running-evals"),
         SkillDemand("backlog_sweep_skill", "sweeping-tickets"),
         SkillDemand("dogfood_smoke_skill", "dogfooding"),
     )
@@ -79,7 +76,7 @@ def test_every_loop_skill_default_names_a_shipped_skill(field: str) -> None:
     assert not missing, f"{field} defaults name no shipped skill: {missing}"
 
 
-@pytest.mark.parametrize("scanner", [EvalLocalScanner, ProvisionSmokeScanner])
+@pytest.mark.parametrize("scanner", [ProvisionSmokeScanner])
 def test_loop_scanners_take_their_skill_from_the_setting_not_a_literal_of_their_own(scanner: type) -> None:
     skill = next(f for f in dataclasses.fields(scanner) if f.name == "skill")
 

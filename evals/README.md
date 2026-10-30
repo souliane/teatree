@@ -462,13 +462,13 @@ These two RED in every attempt of the historical **`model=haiku`** run
 27903729721 for a behavioural reason (a cleanly-completing short trajectory that
 drifts, not a cap). **Reality check — do not read this table as a current verdict:**
 the catalog now pins `tier: balanced` (→ Sonnet), not `haiku`, and under that tier
-both PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time` and
+both PASSED 2/2 in the cited historical weekly run — `asks_decisions_one_at_a_time` and
 `read_canonical_before_structural_action_under_load`
-(see `docs/evals/index.md`, run 28630941573).
+(see historical run 28630941573; weekly output lives in `docs/evals/weekly.md`).
 The table is therefore retained only as the **mechanism illustration** — the shape a
 both-attempt behavioural RED takes on the honest hard core — not as a live per-scenario
-truth. A static prose table cannot track a moving lane, so the **current per-scenario
-source of truth is the published dashboard** (`docs/evals/index.md`) plus the
+truth. A static prose table cannot track a moving lane, so the **current local
+source of truth is the recorded ledger** (`t3 eval page`) plus the
 persisted-baseline diff (`t3 eval run --gate-regressions`). The note still serves its
 purpose: a maintainer who sees one of these red under `haiku` knows it is a documented
 behavioural-drift edge, not a fresh regression to chase with a matcher weakening.
@@ -1381,6 +1381,7 @@ readers/writers over the committed engine modules (`corpus_loader`,
 
 ```bash
 t3 eval history                             # recent runs + per-scenario pass-rate
+t3 eval page --out /tmp/eval-results.md      # render the latest recorded local run as a scratch results page
 t3 eval history --model haiku               # scope to one model
 t3 eval history --baseline                  # show the current baseline run(s)
 t3 eval history --mark-baseline <run-id>    # promote a run to baseline

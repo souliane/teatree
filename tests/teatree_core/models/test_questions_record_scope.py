@@ -158,7 +158,7 @@ class TestRecordDecision:
         assert "the token was retired" in out
 
     def test_options_carry_the_hash_a_digit_reply_is_checked_against(self) -> None:
-        call_command("questions", "record", "Which env?", "--decision", "product_scope", *_CHECKED)
+        call_command("questions", "record", "Which env?", "--decision", "architecture", *_CHECKED)
 
         [row] = list(DeferredQuestion.pending())
         assert row.options_hash == options_digest(json.loads(_OPTIONS))

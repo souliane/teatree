@@ -41,7 +41,7 @@ own default. An ordered per-skill route can instead pin an explicit Codex model.
 A verification phase uses Codex only when its read-only executor serves that phase and passes a live probe.
 Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk` for other
 harnesses. A Codex candidate is rejected on every unserved phase that bars write tools,
-except `bughunt`, `dogfood_smoke`, and `eval_local`, which use the current worker's
+except `bughunt` and `dogfood_smoke`, which use the current worker's
 write approval policy. Other harnesses retain the original phase tool restrictions.
 `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` and `shipping` pass only after the live probe on that selection
 (see [Read-only executor](#read-only-executor)). Serving `requesting_review` lifts its `claude_sdk` pin for a configured Codex harness. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
