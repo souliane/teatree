@@ -3,13 +3,11 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db.models import Max
-from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.core.forge_url import is_forge_url
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
@@ -188,18 +186,6 @@ class TicketIntrospectionModel(TicketFacet):
     def owes_no_work(self) -> bool:
         """Whether this conversation row was opened by a message recorded as asking for nothing to be built."""
         return self.is_conversation() and self.slack_answer_context().get("implies_work") is False
-
-    def conversation_in_use(self) -> bool:
-        """Whether a conversation row still has a live task or a recent thread, so no sweep may retire it."""
-        if not self.is_conversation():
-            return False
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-        since = timezone.now() - CONVERSATION_QUIET_LIMIT
-        return (
-            self.tasks.filter(status__in=task_model.Status.active()).exists()
-            or self.tasks.filter(created_at__gte=since).exists()
-            or self.slack_threads.filter(created_at__gte=since).exists()
-        )
 
     def recorded_request(self) -> str:
         """All an unfindable row still holds — the request text, else its card label (#4527).

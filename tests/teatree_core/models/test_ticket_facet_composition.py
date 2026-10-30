@@ -69,7 +69,6 @@ class TestStatusFacetCohesionSplit:
             "artifacts",
             "is_admissible",
             "is_conversation",
-            "conversation_in_use",
             "owes_no_work",
             "recorded_request",
             "work_placed_elsewhere",

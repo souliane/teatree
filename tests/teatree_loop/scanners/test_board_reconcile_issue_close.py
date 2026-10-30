@@ -27,7 +27,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners import board_reconcile, board_reconcile_issue_close
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_report import BoardAction
-from teatree.utils.url_slug import slack_conversation_anchor
+from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests._owner_channel import assert_a_plain_card
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4084"
@@ -350,6 +350,69 @@ class TestConversationTicketsOutliveTheirAnchorOnlyWhileInUse(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_a_mailbox_conversation_with_a_live_task_is_kept(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+        )
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_an_old_active_task_keeps_the_conversation(self) -> None:
+        ticket = self._conversation()
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+        Task.objects.filter(pk=task.pk).update(
+            created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1)
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_a_recent_finished_task_keeps_the_conversation(self) -> None:
+        ticket = self._conversation()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_an_old_finished_task_does_not_keep_the_conversation(self) -> None:
+        ticket = self._conversation()
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+        Task.objects.filter(pk=task.pk).update(
+            created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1)
+        )
+
+        with _forge(_COMPLETED):
+            assert [transition.ticket_id for transition in reconcile_board().applied] == [ticket.pk]
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
 
     def test_a_conversation_with_a_young_thread_binding_is_kept(self) -> None:
         ticket = self._conversation()

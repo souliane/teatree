@@ -66,6 +66,7 @@ class TestFirstContactBinding(TestCase):
 
         assert (Ticket.objects.count(), ThreadBinding.objects.count(), Task.objects.count()) == (1, 1, 0)
         assert len(self.backend.replies) == 1
+        assert self.backend.replies[0][2] == "overlay=acme\nticket=#1"
 
     def test_a_work_implying_reply_takes_the_bound_conversation_instead_of_a_second_ticket(self) -> None:
         _say("thanks!", ts="1.0")

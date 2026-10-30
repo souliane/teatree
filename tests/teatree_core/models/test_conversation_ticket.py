@@ -1,16 +1,14 @@
 """A Slack conversation ticket: recognised by its anchor, kept while alive, barred from build phases (#5685)."""
 
-from datetime import timedelta
 from io import StringIO
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
-from django.utils import timezone
 
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.core.models import NoPlanArtifactError, ThreadBinding, Ticket
-from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT, CONVERSATION_REFUSED_PREFIX
+from teatree.core.models.conversation_ticket import CONVERSATION_REFUSED_PREFIX
 from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -48,54 +46,6 @@ class TestIsConversation(TestCase):
         )
 
         assert ticket.is_conversation() is True
-
-
-class TestConversationInUse(TestCase):
-    def test_a_live_task_keeps_the_conversation_alive_whatever_the_binding_age(self) -> None:
-        ticket = _conversation()
-        session = Session.objects.create(ticket=ticket, overlay="t3-teatree", agent_id="answering")
-        Task.objects.create(ticket=ticket, session=session, phase="answering")
-
-        assert ticket.conversation_in_use() is True
-
-    def test_a_live_mailbox_task_keeps_its_conversation_alive(self) -> None:
-        ticket = Ticket.objects.create(
-            overlay="t3-teatree",
-            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
-        )
-        session = Session.objects.create(ticket=ticket, overlay="t3-teatree", agent_id="answering")
-        Task.objects.create(ticket=ticket, session=session, phase="answering")
-
-        assert ticket.conversation_in_use() is True
-
-    def test_a_young_binding_keeps_the_conversation_alive(self) -> None:
-        ticket = _conversation()
-        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
-
-        assert ticket.conversation_in_use() is True
-
-    def test_a_binding_older_than_the_quiet_limit_with_no_task_lets_it_go(self) -> None:
-        ticket = _conversation()
-        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
-        ThreadBinding.objects.update(created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1))
-
-        assert ticket.conversation_in_use() is False
-
-    def test_a_finished_task_inside_the_quiet_limit_keeps_it_alive_for_the_next_reply(self) -> None:
-        ticket = _conversation()
-        session = Session.objects.create(ticket=ticket, overlay="t3-teatree", agent_id="answering")
-        Task.objects.create(ticket=ticket, session=session, phase="answering", status=Task.Status.COMPLETED)
-
-        assert ticket.conversation_in_use() is True
-
-    def test_no_task_and_no_binding_means_nothing_holds_it(self) -> None:
-        assert _conversation().conversation_in_use() is False
-
-    def test_a_forge_issue_ticket_is_never_a_live_conversation(self) -> None:
-        forge = Ticket.objects.create(overlay="t3-teatree", issue_url=_FORGE_ISSUE, short_description="Fix rounding")
-        ThreadBinding.bind(ticket=forge, channel="D1", thread_ts="1700000000.000100")
-
-        assert forge.conversation_in_use() is False
 
 
 class TestBuildPhasesAreRefusedOnAConversation(TestCase):
