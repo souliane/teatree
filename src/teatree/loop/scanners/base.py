@@ -6,6 +6,7 @@ note, webhook trigger) or hand off to a phase agent.
 """
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -64,8 +65,8 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
 
     The classifier reads gh's well-known error wording: auth-required
     prompts (``gh auth login``, ``GH_TOKEN``, ``Bad credentials``, ``401``),
-    GitHub rate-limit messages (``API rate limit exceeded``, ``rate
-    limit``, ``secondary rate limit``), and network failures (``dial
+    GitHub rate-limit messages (``rate limit``), pooled ``gh api`` headers
+    (``remaining=0``, ``retry-after=`` on HTTP 403/429), and network failures (``dial
     tcp``, ``no such host``, ``Could not resolve``). Anything else falls
     through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
     surfaces the failure rather than masking it.
@@ -75,11 +76,16 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     """
     lower = stderr.lower()
     rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
-    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
+    auth_markers = ("gh auth login", "gh_token", "bad credentials")
     network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
-    if any(marker in lower for marker in rate_limit_markers):
+    status = re.search(r"\bhttp ([1-5]\d\d)\b", lower)
+    rate_limited_status = status is not None and status.group(1) in {"403", "429"}
+    if any(marker in lower for marker in rate_limit_markers) or (
+        rate_limited_status and ("remaining=0" in lower or "retry-after=" in lower)
+    ):
         return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower for marker in auth_markers):
+    auth_text = re.sub(r"\b(?:remaining|retry-after)=\d+\b", "", lower)
+    if any(marker in auth_text for marker in auth_markers) or re.search(r"(?<![\w:])401(?!\w|:\w)", auth_text):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK

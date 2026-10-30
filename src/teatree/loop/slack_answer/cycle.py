@@ -43,8 +43,7 @@ A fresh dispatch posts no prose (#1155 — the reaction carries it), while a
 request that is already covered DOES post, because "task 42 has this" is
 information the owner does not otherwise have and is what stops him waiting.
 
-Per-unit ``try/except`` so one bad unit never blocks the rest. This is a
-management-command body — it never loads the fat skill stack.
+Per-unit ``try/except`` keeps one bad unit from blocking the rest.
 """
 
 import datetime as dt
@@ -52,8 +51,11 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from django.db.models import Exists, OuterRef, Subquery
+
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
@@ -66,6 +68,7 @@ from teatree.loop.question_binding import (
     bind_reply,
     log_coalesced_replies,
 )
+from teatree.loop.slack_answer.card_discussion import UNROUTED_AUDIT_ACTION, route_card_result
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
@@ -385,7 +388,12 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, bound: BoundA
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
         return False
-    if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
+    try:
+        applied = apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    if not applied:
         _unmark_unit_loop_replied(unit)
         return False
     parked_task = bound.question.parked_task
@@ -464,10 +472,12 @@ def _process_unit(
         if _handle_simple(backend, unit, binding) == "simple":
             report.answered_simple += 1
         return
-    if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
-        return
     if _handle_priority(
         backend, unit, report, binding, eligible=bound is None and not isinstance(result, AmbiguousCards)
+    ):
+        return
+    if route_card_result(backend, unit, result, report) or (
+        isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result)
     ):
         return
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
@@ -525,8 +535,18 @@ def run_slack_answer_cycle(
     resolved_reader = reader or read_inbound
     report = SlackAnswerReport()
 
-    rows = list(owner_rows(PendingChatInjection.loop_unreplied(), resolver)[:_BATCH])
-    units = _coalesce(rows)
+    unrouted_audit = DeferredQuestionAudit.objects.filter(
+        action=UNROUTED_AUDIT_ACTION,
+        note=OuterRef("slack_ts"),
+        question__slack_channel=OuterRef("channel"),
+    )
+    queue = owner_rows(PendingChatInjection.loop_unreplied(), resolver).annotate(
+        unrouted_audited=Exists(unrouted_audit),
+        unrouted_tried_at=Subquery(unrouted_audit.order_by("-resolved_at").values("resolved_at")[:1]),
+    )
+    rows = list(queue.filter(unrouted_audited=False)[:_BATCH])
+    retries = list(queue.filter(unrouted_audited=True).order_by("unrouted_tried_at", "received_at")[:_BATCH])
+    units = [*_coalesce(rows), *_coalesce(retries)]
     for unit in units:
         report.processed += len(unit.rows)
         try:

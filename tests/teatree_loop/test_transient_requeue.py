@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, ClassVar
 from unittest import mock
 
 import pytest
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -90,6 +91,16 @@ def _exhaustion_error(cause: LimitCause) -> str:
 
 
 class TestTransientRequeue(TestCase):
+    def test_local_eval_that_measured_nothing_is_not_requeued(self) -> None:
+        task = _failed_task(phase="eval_local")
+        _add_failed_attempt(task, error="result_error: measured nothing: 0 of 2 scenarios graded")
+        assert task.attempts.latest("pk").failure_kind == FailureKind.UNCLASSIFIED
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert HALT_STAMP in task.execution_reason
+
     def test_transient_failed_task_is_reopened_once(self) -> None:
         task = _failed_task()
         _add_failed_attempt(task, error="outage_death: connection refused")
@@ -1001,6 +1012,25 @@ class TestDeadReviewTargetRetired(TestCase):
         assert task.status == Task.Status.COMPLETED  # retired, not re-queued
         assert task.ticket.state == Ticket.State.IGNORED  # terminal — drops from active scans
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_dead_pr_is_read_before_the_write_window(self) -> None:
+        task = self._reviewer_task()
+        _add_failed_attempt(task, error="outage_death: connection refused")
+        baseline = len(connection.atomic_blocks)
+        depths: list[int] = []
+
+        def dead_pr(_url: str) -> bool:
+            depths.append(len(connection.atomic_blocks))
+            return True
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", side_effect=dead_pr):
+            assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert depths == [baseline]
+        assert task.status == Task.Status.COMPLETED
+        assert task.ticket.state == Ticket.State.IGNORED
 
     def test_adversarial_review_phase_is_also_retired(self) -> None:
         task = self._reviewer_task(phase="codex_adversarial_reviewing")

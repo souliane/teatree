@@ -71,7 +71,7 @@ class TestFailureCountsSeeRefusalsAndKills(TestCase):
 
         assert report.blockers == []
 
-    def test_checking_needs_you_lists_a_refusal(self) -> None:
+    def test_checking_needs_you_excludes_a_refusal(self) -> None:
         _attempt(self.ticket, exit_code=0, error="refused: cannot verify")
         now = timezone.now()
 
@@ -81,7 +81,7 @@ class TestFailureCountsSeeRefusalsAndKills(TestCase):
             overlay_name=_OVERLAY,
         )
 
-        assert report.needs_you.total == 1
+        assert report.needs_you.total == 0
 
     def test_checking_needs_you_ignores_a_clean_run(self) -> None:
         _attempt(self.ticket, exit_code=0)

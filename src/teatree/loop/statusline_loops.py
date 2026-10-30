@@ -486,10 +486,8 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     *   ``deploy drain <age>, N in flight`` — ONLY while a deploy holds the worker
         quiesced, so a frozen queue never reads as an idle one
         (:func:`_deploy_drain_chunk`).
-    *   ``N waiting`` — appended ONLY when N > 0 things are waiting on the user
-        across the durable waiting-on-you lane (unresolved questions, PRs awaiting
-        a merge authorization, pending review requests, manual items —
-        :func:`teatree.core.waiting.gather_waiting`).
+    *   ``N waiting`` — appended ONLY when N > 0 unresolved owner decisions
+        (:func:`teatree.core.waiting.gather_owner_waiting`).
     *   the live infra :class:`~teatree.core.models.LoopLease` chunks (``tick``,
         ``self-improve``, ``slack-answer``, ``reinstall``) — kept unobtrusive at
         the TAIL (:func:`_live_lease_chunks`), never between the preset and the
@@ -578,7 +576,7 @@ def _waiting_clause() -> str:
     """Return ``N waiting`` when N > 0 things wait on the user, else ``""`` (PR-21).
 
     Fails open to ``""`` (no clause) on any read error so a broken
-    :func:`teatree.core.waiting.gather_waiting` read never blanks the loop line.
+    :func:`teatree.core.waiting.gather_owner_waiting` read never blanks the loop line.
     """
     try:
         count = _waiting_count()
@@ -590,15 +588,15 @@ def _waiting_clause() -> str:
 
 
 def _waiting_count() -> int:
-    """Count every entry waiting on the user across all kinds (PR-21).
+    """Count only unresolved decisions addressed to the owner.
 
     Thin DB-read seam so :func:`live_loops_anchor` stays a pure formatter —
     tests stub this rather than constructing the underlying fixtures. Scoped to
-    every overlay (``""``) so the loop line shows the operator's whole backlog.
+    all overlays so the loop line shows the owner's actual decision backlog.
     """
-    from teatree.core.waiting import gather_waiting  # noqa: PLC0415 — deferred: keep this module Django-free at import
+    from teatree.core import waiting  # noqa: PLC0415 — deferred: keep this module Django-free at import
 
-    return len(gather_waiting(""))
+    return len(waiting.gather_owner_waiting())
 
 
 def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:

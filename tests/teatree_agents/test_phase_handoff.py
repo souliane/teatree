@@ -25,6 +25,7 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_options import SpawnOverrides, _build_options
+from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.claude_cli_spawn import APPEND_PROMPT_FILE_FLAG
 from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness import PydanticAiHarness
@@ -37,7 +38,16 @@ from teatree.agents.prompt import build_system_context
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.cleanup.checkout_registry import is_tagged_cache, scan_checkout_paths
 from teatree.core.cleanup.process_table import ProcessTable
-from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import (
+    AutoReviewDispatch,
+    PullRequest,
+    Session,
+    SessionCommand,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from tests.factories import planned_ticket
@@ -144,6 +154,32 @@ class _Handoff(TestCase):
 
 
 class TestEveryPhaseBoundaryHandsOverTheCompleteResult(_Handoff):
+    def test_accepted_operator_steer_reaches_the_next_phase_file(self) -> None:
+        parent = Task.objects.create(
+            ticket=self.ticket, session=Session.objects.create(ticket=self.ticket), phase="debugging"
+        )
+        parent.claim(claimed_by="loop-slot")
+        SessionCommand.objects.create(
+            command_id="operator-steer",
+            ticket=self.ticket,
+            task=parent,
+            text="Keep the public API",
+            outcome="accepted_current_turn",
+        )
+        attempt = record_result_envelope(parent, {"summary": "The decision was accepted"}, phase="debugging")
+        child = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="testing",
+            parent_task=parent,
+        )
+
+        with delivered_phase_handoff(child) as handoff:
+            assert handoff is not None
+            payload = json.loads(handoff.read_text(encoding="utf-8"))
+        assert attempt.result["operator_inputs"] == ["Keep the public API"]
+        assert payload["result"]["operator_inputs"] == ["Keep the public API"]
+
     def test_the_handoff_file_carries_the_whole_result_and_its_artifact_paths(self) -> None:
         for parent_phase, child_phase in _BOUNDARIES:
             with (

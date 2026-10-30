@@ -41,7 +41,7 @@ scheduling methods with the ``core`` repair-loop budget over a housekeeping swee
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from django.db.models import Count, Q
@@ -70,6 +70,7 @@ from teatree.core.models.task_repair_queries import (
 )
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
+    read_review_pr_state,
     reviewer_dispatch_decline,
     schedule_external_review,
 )
@@ -92,6 +93,7 @@ class _Candidate:
 
     ticket: Ticket
     phase: str
+    pr_state: str | None = None
 
 
 def redispatch_stuck_tickets() -> int:
@@ -112,10 +114,15 @@ def redispatch_stuck_tickets() -> int:
         # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
         # strand every OTHER stuck ticket. Record it loudly and move on.
         try:
+            resolved = (
+                replace(candidate, pr_state=read_review_pr_state(candidate.ticket))
+                if candidate.ticket.role == Ticket.Role.REVIEWER
+                else candidate
+            )
             with redispatch_window() as refusal:
                 if refusal:
                     continue
-                scheduled += _redispatch_one(candidate)
+                scheduled += _redispatch_one(resolved)
         except Exception:
             logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", candidate.ticket.pk)
     return scheduled
@@ -131,15 +138,18 @@ def _redispatch_one(candidate: _Candidate) -> int:
     """
     halt = _budget_halt_reason(candidate.ticket, phase=candidate.phase)
     if halt is not None:
-        if _settled_instead_of_stuck(candidate.ticket):
+        if _settled_instead_of_stuck(candidate):
             return 0
         record_ticket_halt(candidate.ticket, reason=halt)
         return 0
     return _redispatch(candidate)
 
 
-def _settled_instead_of_stuck(ticket: Ticket) -> bool:
-    return ticket.role == Ticket.Role.REVIEWER and reviewer_dispatch_decline(ticket) is ReviewDeclined.RETIRED
+def _settled_instead_of_stuck(candidate: _Candidate) -> bool:
+    return (
+        candidate.ticket.role == Ticket.Role.REVIEWER
+        and reviewer_dispatch_decline(candidate.ticket, pr_state=candidate.pr_state) is ReviewDeclined.RETIRED
+    )
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
@@ -339,9 +349,9 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task | None:
     if ticket.role != Ticket.Role.REVIEWER:
         return _schedule_for_state(ticket)
     if normalize_phase(phase) == "reviewing":
-        result = schedule_external_review(ticket)
+        result = schedule_external_review(ticket, pr_state=candidate.pr_state)
         return None if isinstance(result, ReviewDeclined) else result
-    if reviewer_dispatch_decline(ticket) is not None:
+    if reviewer_dispatch_decline(ticket, pr_state=candidate.pr_state) is not None:
         return None
     return create_phase_task(
         ticket,
