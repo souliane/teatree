@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.hooks import remote_holds
 from teatree.hooks.remote_holds import remote_holdings
 
 
@@ -39,6 +40,27 @@ def clone(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 class TestWhatTheRemoteListsIsWhatItHolds:
+    def test_caller_token_reaches_remote_listing(
+        self, clone: tuple[Path, Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        origin, work, tip = clone
+        original = remote_holds.run_allowed_to_fail
+        observed: list[dict[str, str]] = []
+
+        def capture(*args: object, **kwargs: object) -> object:
+            if "ls-remote" in args[0]:
+                observed.append(kwargs["env"])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(remote_holds, "run_allowed_to_fail", capture)
+        holdings = remote_holdings(
+            work, remote_url=str(origin), remote_name="origin", env_override={"GH_TOKEN": "bot-key"}
+        )
+
+        assert holdings.tips == (tip,)
+        assert len(observed) == 2
+        assert all(env["GH_TOKEN"] == "bot-key" for env in observed)
+
     def test_every_head_the_remote_lists_that_this_clone_has(self, clone: tuple[Path, Path, str]) -> None:
         origin, work, tip = clone
         _git(origin, "checkout", "-q", "-b", "other")

@@ -8,12 +8,12 @@ content, and whether a polled morph swap is allowed to overwrite what someone is
 import socket
 from html.parser import HTMLParser
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.dash.views.base import brand_logo, instance_label, nav_context
 from tests.factories import TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class InstanceLabelTestCase(TestCase):

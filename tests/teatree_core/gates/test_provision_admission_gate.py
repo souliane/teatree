@@ -5,12 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.gates import provision_admission_gate
 from teatree.core.gates.provision_admission_gate import (
     ProvisionAdmissionVerdict,
     check_provision_admission,
     resolve_provision_max_concurrency,
-    resolve_provision_ram_ceiling_percent,
 )
 
 
@@ -20,39 +20,48 @@ def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestCheckProvisionAdmission(TestCase):
+    @staticmethod
+    def _machine(available_gb: float) -> MachineSignal:
+        return MachineSignal(cores=8, load1=1.0, ram_available_gb=available_gb)
+
+    def test_holds_on_the_governor_memory_floor_and_names_unknown(self) -> None:
+        floor = MachineSignal(cores=8, load1=1.0, ram_available_gb=4.0, memory_source="container reading")
+        unreadable = MachineSignal(cores=8, load1=1.0, ram_available_gb=None, memory_source="container reading")
+        assert "4 GB floor" in check_provision_admission(machine=floor).reason
+        verdict = check_provision_admission(machine=unreadable)
+        assert not verdict.ok
+        assert "unknown; container reading" in verdict.reason
+
     def test_holds_on_critical_disk_before_provisioning(self) -> None:
-        verdict = check_provision_admission(ram_used_percent=20, disk_used_percent=96)
+        verdict = check_provision_admission(machine=self._machine(8), disk_used_percent=96)
         assert not verdict.ok
         assert "disk_pressure" in verdict.reason
 
     def test_unmeasurable_disk_does_not_wedge_provisioning(self) -> None:
-        verdict = check_provision_admission(ram_used_percent=20, disk_probe=lambda: None)
+        verdict = check_provision_admission(machine=self._machine(8), disk_probe=lambda: None)
         assert verdict.ok
 
     def test_healthy_disk_keeps_the_existing_ram_refusal(self) -> None:
-        verdict = check_provision_admission(ram_used_percent=95, disk_used_percent=20)
+        verdict = check_provision_admission(machine=self._machine(2), disk_used_percent=20)
         assert not verdict.ok
-        assert "ram_pressure" in verdict.reason
+        assert "memory_pressure" in verdict.reason
 
     def test_allows_when_ram_under_ceiling(self) -> None:
-        verdict = check_provision_admission(ram_used_percent=50)
+        verdict = check_provision_admission(machine=self._machine(8))
         assert verdict.ok is True
         assert verdict.reason == ""
 
     def test_holds_when_ram_at_or_above_ceiling(self) -> None:
-        verdict = check_provision_admission(ram_used_percent=95)
+        verdict = check_provision_admission(machine=self._machine(2))
         assert verdict.ok is False
-        assert "ram_pressure" in verdict.reason
+        assert "memory_pressure" in verdict.reason
 
-    def test_holds_exactly_at_ceiling(self) -> None:
-        with patch(
-            "teatree.core.gates.provision_admission_gate.resolve_provision_ram_ceiling_percent", return_value=85
-        ):
-            verdict = check_provision_admission(ram_used_percent=85)
+    def test_holds_exactly_at_floor(self) -> None:
+        verdict = check_provision_admission(machine=self._machine(4))
         assert verdict.ok is False
 
     def test_reads_the_live_probe_when_no_sample_given(self) -> None:
-        with patch("teatree.core.gates.provision_admission_gate.read_ram_used_percent", return_value=10.0):
+        with patch("teatree.core.gates.provision_admission_gate.read_machine_signal", return_value=self._machine(8)):
             verdict = check_provision_admission()
         assert verdict.ok is True
 
@@ -74,13 +83,3 @@ class TestResolveProvisionMaxConcurrency(TestCase):
         with patch("teatree.core.gates.provision_admission_gate.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_max_concurrency=7)
             assert resolve_provision_max_concurrency() == 7
-
-
-class TestResolveProvisionRamCeilingPercent(TestCase):
-    def test_reads_effective_settings(self) -> None:
-        with patch("teatree.core.gates.provision_admission_gate.get_effective_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(provision_ram_ceiling_percent=70)
-            assert resolve_provision_ram_ceiling_percent() == 70
-
-    def test_default_is_positive(self) -> None:
-        assert resolve_provision_ram_ceiling_percent() > 0

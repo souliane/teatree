@@ -61,17 +61,17 @@ def _plan(live_global: dict[str, Any], *, shipped=None, banned_scan=_never_banne
 
 class TestDirectionIsDbIntoTheFile:
     def test_a_live_global_row_becomes_a_proposed_change(self) -> None:
-        current = _shipped()["provision_ram_ceiling_percent"]
-        plan = _plan({"provision_ram_ceiling_percent": current - 10})
+        current = _shipped()["provision_slow_threshold_seconds"]
+        plan = _plan({"provision_slow_threshold_seconds": current - 10})
         assert plan.changes == (
             SnapshotChange(
-                key="provision_ram_ceiling_percent",
+                key="provision_slow_threshold_seconds",
                 shipped=current,
                 proposed=current - 10,
                 scope="global",
             ),
         )
-        assert _emitted(plan.toml)["provision_ram_ceiling_percent"] == current - 10
+        assert _emitted(plan.toml)["provision_slow_threshold_seconds"] == current - 10
 
     def test_no_live_rows_proposes_nothing_and_reproduces_the_file(self) -> None:
         plan = _plan({})
@@ -87,14 +87,14 @@ class TestDirectionIsDbIntoTheFile:
         assert _emitted(plan.toml)["session_stale_after_hours"] == 24
 
     def test_a_live_row_equal_to_the_shipped_value_is_not_a_change(self) -> None:
-        current = _shipped()["provision_ram_ceiling_percent"]
-        assert _plan({"provision_ram_ceiling_percent": current}).changes == ()
+        current = _shipped()["provision_slow_threshold_seconds"]
+        assert _plan({"provision_slow_threshold_seconds": current}).changes == ()
 
     def test_a_key_absent_from_the_file_is_proposed_at_its_code_default(self) -> None:
-        without = {k: v for k, v in _shipped().items() if k != "provision_ram_ceiling_percent"}
+        without = {k: v for k, v in _shipped().items() if k != "provision_slow_threshold_seconds"}
         plan = _plan({}, shipped=without)
         assert [(c.key, c.proposed, c.scope) for c in plan.changes] == [
-            ("provision_ram_ceiling_percent", _shipped()["provision_ram_ceiling_percent"], "code-default")
+            ("provision_slow_threshold_seconds", _shipped()["provision_slow_threshold_seconds"], "code-default")
         ]
         assert plan.changes[0].shipped is None
 
@@ -293,12 +293,12 @@ class TestTheRenderedBlockIsNested:
 
 class TestChangeTable:
     def test_rows_carry_key_current_proposed_and_scope(self) -> None:
-        current = _shipped()["provision_ram_ceiling_percent"]
-        headers, rows = change_table(_plan({"provision_ram_ceiling_percent": current - 10}).changes)
+        current = _shipped()["provision_slow_threshold_seconds"]
+        headers, rows = change_table(_plan({"provision_slow_threshold_seconds": current - 10}).changes)
         assert headers == ["setting", "shipped now", "proposed", "scope"]
-        assert rows == [["provision_ram_ceiling_percent", str(current), str(current - 10), "global"]]
+        assert rows == [["provision_slow_threshold_seconds", str(current), str(current - 10), "global"]]
 
     def test_an_absent_shipped_value_renders_as_absent(self) -> None:
-        without = {k: v for k, v in _shipped().items() if k != "provision_ram_ceiling_percent"}
+        without = {k: v for k, v in _shipped().items() if k != "provision_slow_threshold_seconds"}
         _headers, rows = change_table(_plan({}, shipped=without).changes)
         assert rows[0][1] == "(absent)"

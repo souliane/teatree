@@ -6,7 +6,9 @@ state on a real remote, not by a patched classifier.
 """
 
 import shutil
+from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
@@ -162,6 +164,39 @@ class PendingPrDrainScannerTestCase(TestCase):
 
     def test_no_obligations_emits_nothing(self) -> None:
         assert PendingPrDrainScanner().scan() == []
+
+    def test_backed_off_old_rows_do_not_hide_a_new_due_obligation(self) -> None:
+        repo = self._tmp_path / "checkout"
+        repo.mkdir()
+        for index in range(50):
+            row = PendingPullRequest.objects.owe(repo_path=str(repo), branch=f"feat/paused-{index}", reason="waiting")
+            PendingPullRequest.objects.filter(pk=row.pk).update(
+                drain_attempts=MAX_DRAIN_ATTEMPTS, last_attempt_at=timezone.now()
+            )
+        due = PendingPullRequest.objects.owe(repo_path=str(repo), branch="feat/due", reason="waiting")
+        with patch("django.core.management.call_command", return_value={"created": True}) as ensure:
+            signals = PendingPrDrainScanner().scan()
+        assert [signal.kind for signal in signals] == ["pending_pr.drained"]
+        ensure.assert_called_once_with("pr", "ensure-pr", repo=str(repo), branch=due.branch)
+        assert not PendingPullRequest.objects.filter(pk=due.pk).exists()
+        assert PendingPullRequest.objects.count() == 50
+
+    def test_overdue_obligation_backs_off_and_asks_the_owner_once(self) -> None:
+        repo = self._tmp_path / "checkout"
+        repo.mkdir()
+        row = PendingPullRequest.objects.owe(repo_path=str(repo), branch="feat/stuck", reason="push pending")
+        start = timezone.now()
+        with (
+            patch("django.core.management.call_command", return_value={"owed": True}) as ensure,
+            patch("django.utils.timezone.now") as clock,
+        ):
+            for tick in range(2333):
+                clock.return_value = start + timedelta(minutes=5 * tick)
+                PendingPrDrainScanner().scan()
+        row.refresh_from_db()
+        assert ensure.call_count <= 30
+        assert row.drain_attempts == ensure.call_count
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"pending-pr-stuck:{row.pk}").count() == 1
 
     def test_branch_still_unpushed_keeps_the_obligation_and_ages_it(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)

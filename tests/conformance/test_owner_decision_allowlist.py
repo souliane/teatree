@@ -16,6 +16,7 @@ _DECLARED_BY_THE_CALLER = "<declared by the caller>"
 _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
     {
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_answer_draft"),
+        ("src/teatree/agents/sweep_proposals_recorder.py", "_record_fold_question"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "_record_clarifications"),
         ("src/teatree/core/gates/gate_escape_request.py", "request_owner_escape"),
         ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver"),
@@ -40,6 +41,7 @@ _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
 _CARD_KINDS: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("src/teatree/agents/reactive_envelope_recorders.py", "<module>", "PUBLIC_POST"),
+        ("src/teatree/agents/sweep_proposals_recorder.py", "_fold_card", "ARCHITECTURE"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "ARCHITECTURE"),
         ("src/teatree/core/gates/gate_escape_request.py", "request_owner_escape", "CREDENTIALS"),
         ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver", "ARCHITECTURE"),

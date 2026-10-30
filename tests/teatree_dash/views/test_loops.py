@@ -4,7 +4,6 @@ import re
 
 import pytest
 from django.http import HttpResponse
-from django.test import Client, TestCase
 from django.urls import NoReverseMatch, reverse
 
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode
@@ -12,6 +11,7 @@ from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_preset import Mode
 from teatree.dash.loop_control import MODE_SWITCH_AUTO
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 def _make_loop(name: str = "dashloop") -> Loop:
@@ -164,7 +164,6 @@ class TheLoopsPageEditsNoEnablementTestCase(TestCase):
     def setUp(self) -> None:
         super().setUp()
         Loop.objects.create(name="dashloop", script="teatree.loops.review", delay_seconds=60)
-        self.client = Client()
 
     def _page(self) -> HttpResponse:
         return self.client.get(reverse("dash:loops"), headers={"x-forwarded-for": "127.0.0.1"})

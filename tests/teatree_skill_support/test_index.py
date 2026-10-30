@@ -80,6 +80,23 @@ def test_the_resolver_accepts_qualified_and_path_references(tmp_path: Path) -> N
     assert resolve_skill_md("ghost", [tmp_path]) is None
 
 
+def test_skill_tool_load_name_uses_the_registered_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin, installed = tmp_path / "plugin", tmp_path / "installed"
+    _skill(plugin, "workspace")
+    _skill(installed, "writing-plans")
+    _skill(plugin, "ac-django")
+    monkeypatch.setattr(index, "DEFAULT_SKILLS_DIR", plugin)
+
+    assert index.skill_tool_load_name("workspace") == "t3:workspace"
+    assert index.skill_tool_load_name("t3:workspace") == "t3:workspace"
+    assert index.skill_tool_load_name("t3:writing-plans") == "t3:writing-plans"
+    assert index.skill_tool_load_name("ac-django") == "ac-django"
+    assert index.skill_tool_load_name("other:review") == "other:review"
+
+    monkeypatch.setattr(index, "PROJECT_SKILLS_DIR", tmp_path / "missing")
+    assert index.skill_tool_load_name("workspace") == "t3:workspace"
+
+
 def test_direct_requires_reads_only_the_first_level(tmp_path: Path) -> None:
     _skill(tmp_path, "alpha", requires=["beta"])
     _skill(tmp_path, "beta", requires=["gamma"])

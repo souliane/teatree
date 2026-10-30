@@ -22,6 +22,7 @@ _NEVER = frozenset(
     {
         "ai_signature",
         "banned_terms",
+        "bot_push",
         "dispatch_quote_scanner",
         "foreign_branch_push_force_delete",
         "quote_scanner",

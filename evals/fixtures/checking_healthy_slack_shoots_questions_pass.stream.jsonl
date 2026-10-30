@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-checking_healthy_slack_shoots_questions-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Slack is healthy, so I shoot the waiting questions and link their threads."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example checking shoot --json", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

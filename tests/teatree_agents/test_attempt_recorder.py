@@ -39,6 +39,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.owner_dm.architectural_review_notice import announce_completed
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 from teatree.core.send_proxy import OutboundBlockedError
@@ -177,6 +178,15 @@ class TestValidateResultKeys(TestCase):
             with self.subTest(kind=kind, question=question):
                 assert validate_result_keys(owner_stop(question, kind, *facts) | {"summary": "waiting"}) == ""
 
+    def test_automatic_review_command_refusal_is_not_a_credentials_card(self) -> None:
+        stop = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        )
+
+        assert "retry once in the background" in validate_result_keys(stop)
+
 
 class TestRecordResultEnvelope(TestCase):
     def _claimed(self, *, phase: str = "coding") -> Task:
@@ -290,6 +300,52 @@ class TestRecordResultEnvelope(TestCase):
         assert requeue_transient_failed() == 1
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+    def test_automatic_review_refusal_retries_once_then_records_permission_health(self) -> None:
+        task = self._claimed(phase="testing")
+        envelope = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        ) | {"summary": "The command was refused."}
+
+        first = record_result_envelope(task, envelope, phase="testing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert first.error.startswith("result_error: automatic approval review refused")
+        assert "background" in task.execution_reason
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 0
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        task.claim(claimed_by="loop-slot")
+
+        second = record_result_envelope(task, envelope, phase="testing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert second.error.startswith("harness permission fault:")
+        fault = ScannerFault.objects.get(scanner=f"task:{task.pk}:permission")
+        assert "testing" in fault.detail
+        assert "skill preamble command" in fault.detail
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 0
+
+    def test_automatic_review_wording_with_a_spend_decision_records_owner_card(self) -> None:
+        task = self._claimed(phase="testing")
+        envelope = owner_stop(
+            "Can you approve local command access so testing can continue?",
+            "credentials",
+            "The automatic approval review refused the required skill preamble command.",
+        ) | {"summary": "Waiting for a decision."}
+        card = envelope["user_input_card"]
+        assert isinstance(card, dict)
+        card["why"] = "This would buy a new paid plan."
+
+        attempt = record_result_envelope(task, envelope, phase="testing")
+
+        assert attempt.error == ""
+        assert DeferredQuestion.objects.filter(parked_task=task).count() == 1
 
     def test_unrouted_credentials_denied_command_still_raises_the_card(self) -> None:
         task = self._claimed(phase="scoping")

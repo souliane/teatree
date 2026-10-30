@@ -32,6 +32,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.intake.event_router import RoutedAction, route_event
 from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -147,6 +148,16 @@ class IncomingEventsScanner:
         )
 
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
+        if event.source == "gitlab" and (
+            event.event_name == "note" or (event.payload_json or {}).get("object_kind") == "note"
+        ):
+            user = (event.payload_json or {}).get("user")
+            user_type = user.get("type") if isinstance(user, dict) else ""
+            if ForgeActors.for_url(_event_forge_url(event)).is_automation(
+                event.actor,
+                user_type=user_type if isinstance(user_type, str) else "",
+            ):
+                return None
         self._resolve_parent_text(event)
         classification = classify_event(event)
         action = route_event(event, classification)

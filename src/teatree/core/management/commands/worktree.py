@@ -18,6 +18,7 @@ from django_typer.management import command
 
 from teatree.core.diagrams import render_fsm_mermaid
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
+from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.intake.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks
@@ -179,6 +180,11 @@ class Command(WorktreeAdoptCommands, OccupancyCommands, MachineOutputCommand):
         variant, overlay_name = _resolve_typer_defaults(variant, overlay)
         if overlay_name:
             os.environ["T3_OVERLAY_NAME"] = overlay_name
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            self.stderr.write(f"  {exc}")
+            raise SystemExit(1) from exc
         ticket_hint = self._resolve_ticket_hint(ticket)
         worktree = resolve_worktree(path, ticket_hint=ticket_hint)
         ticket_obj = Ticket.objects.get(pk=worktree.ticket.pk)

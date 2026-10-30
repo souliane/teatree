@@ -23,6 +23,8 @@ import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.audit import ReviewArtifactNotVerifiedError
+from teatree.cli.review.post_impl import approve_impl
 from teatree.core.models import OutboundClaim
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
@@ -160,9 +162,8 @@ class TestPhantomPostReportsFailure:
         # approved_by does NOT contain the current user → approve must fail.
         stub = _PhantomAPI(approvers=["someone-else"])
         service = _service(stub)
-        msg, code = service.approve(OWNED_REPO, 15)
-        assert code == 1, msg
-        assert not msg.startswith("OK approved")
+        with pytest.raises(ReviewArtifactNotVerifiedError, match="approval not present"):
+            approve_impl(service, OWNED_REPO, 15, encoded=OWNED_REPO.replace("/", "%2F"))
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
 
@@ -254,7 +255,7 @@ class TestTransientReadbackDoesNotReportFailure:
         stub = _PhantomAPI(read_back_error=_http_503(), approvers=["someone-else"])
         service = _service(stub)
         with pytest.raises(httpx.HTTPStatusError):
-            service.approve(OWNED_REPO, 15)
+            approve_impl(service, OWNED_REPO, 15, encoded=OWNED_REPO.replace("/", "%2F"))
 
 
 class TestVerifiedPostStillSucceeds:
@@ -288,7 +289,7 @@ class TestVerifiedPostStillSucceeds:
     def test_approve_verified_succeeds(self) -> None:
         stub = self._ConfirmingAPI(approvers=["souliane"])
         service = _service(stub)
-        msg, code = service.approve(OWNED_REPO, 15)
+        msg, code = approve_impl(service, OWNED_REPO, 15, encoded=OWNED_REPO.replace("/", "%2F"))
         assert code == 0, msg
         assert OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 

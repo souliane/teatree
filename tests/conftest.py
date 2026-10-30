@@ -60,7 +60,6 @@ from teatree.quality.pytest_resource_contract import (
 from teatree.quality.pytest_selection import SelectionContext, ci_environment_enabled, oversized_selection_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
-from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.master_key import reset_master_key_volume_warnings
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.secrets import PassStore, use_store
@@ -315,13 +314,6 @@ def _reset_route_availability_cache() -> Iterator[None]:
     clear_route_availability_cache()
     yield
     clear_route_availability_cache()
-
-
-@pytest.fixture(autouse=True)
-def _reset_host_pressure_warning_memo() -> Iterator[None]:
-    reset_missing_warning_memo()
-    yield
-    reset_missing_warning_memo()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -976,6 +968,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     control_db_dir = tmp_path / "isolated-control-db"
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "isolated-data")
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)

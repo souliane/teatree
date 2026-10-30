@@ -23,6 +23,8 @@ Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> qu
 
 Checkout safety refusals are factory decisions: the writing fence retries them internally and records a standing health signal if they persist. Do not create, answer, or dismiss an owner card for a checkout refusal.
 
+For a check-in, use `checking shoot` to post or nudge waiting owner cards on Slack and reference each by its thread permalink. Ask directly through the client only when the Slack health check reports a broken path.
+
 The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. A costly design, dependency, or large-mechanism choice also reaches the owner with intent, size, alternatives and a recommendation. Leave those on the owner's card and report them; do not decide, dismiss or act for the owner.
 
 ## File and enqueue — never implement (Non-Negotiable)

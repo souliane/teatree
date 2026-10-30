@@ -26,7 +26,9 @@ class ConstraintViolation:
     detail: str
 
 
-_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
+_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;:\n]{0,120})", re.IGNORECASE)
+_POSITIVE_QUOTA = re.compile(r"^(?:(?:exactly|at\s+least|at\s+most)\s+)?(?:one|[1-9]\d*)\b", re.IGNORECASE)
+_MEMBER_ROW = re.compile(r"^[ \t]*(?:[-*][ \t]+)?M\d+[ \t]+#(?P<number>\d+)\b[^\n]*$", re.MULTILINE)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)
 _BLOCK_QUOTE = re.compile(r"^[ \t]*>[^\n]*$", re.MULTILINE)
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'|\u2018[^\u2019\n]*\u2019')
@@ -55,7 +57,38 @@ _ALLOWED_SETTINGS = re.compile(
 )
 
 
+_CLAUSE_SEPARATOR = re.compile(r",\s*|\s+(?:and|or)\s+")
+_BANNED_TOPICS: tuple[tuple[ConstraintKind, str], ...] = (
+    ("no_migration", r"\bmigrations?\b"),
+    ("no_setting", r"\bsettings?\b"),
+    ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
+)
+
+
+def _banned_kinds(scope: str) -> set[ConstraintKind]:
+    if scope.lstrip().startswith("forget to "):
+        return set()
+    scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
+    before_unless, separator, after_unless = scope.partition(" unless ")
+    clauses = _CLAUSE_SEPARATOR.split(before_unless)
+    conditional = clauses[-1] if separator else ""
+    banned_clauses = [
+        clause for index, clause in enumerate(clauses) if index == 0 or not _POSITIVE_QUOTA.match(clause.strip())
+    ]
+    banned = {
+        kind
+        for kind, pattern in _BANNED_TOPICS
+        if any(re.search(pattern, clause) for clause in banned_clauses) and not re.search(pattern, conditional)
+    }
+    for later in _NEGATIVE.finditer(after_unless):
+        banned |= _banned_kinds(later.group(1))
+    return banned
+
+
 def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[BriefConstraint, ...]:
+    text = _MEMBER_ROW.sub(
+        lambda match: match.group() if not own_issue_number or match.group("number") == own_issue_number else "", text
+    )
     text = _EXAMPLE_GROUP.sub("", text)
     text = _BLOCK_QUOTE.sub("", text)
     text = _ATTRIBUTED.sub("", text)
@@ -77,19 +110,10 @@ def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[Brief
     )
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
-        scope = match.group(1).lower()
-        if scope.lstrip().startswith("forget to "):
-            continue
-        scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
-        for kind, pattern in (
-            ("no_migration", r"\bmigrations?\b"),
-            ("no_setting", r"\bsettings?\b"),
-            ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
-        ):
-            if re.search(pattern, scope):
-                found[kind, ""] = BriefConstraint(
-                    kind, "", match.group(0).strip(), allowed_settings if kind == "no_setting" else frozenset()
-                )
+        for kind in _banned_kinds(match.group(1).lower()):
+            found[kind, ""] = BriefConstraint(
+                kind, "", match.group(0).strip(), allowed_settings if kind == "no_setting" else frozenset()
+            )
     for pattern in (_KEEP, _STAYS, _DO_NOT_TOUCH):
         for match in pattern.finditer(text):
             target = match.group(1).removeprefix("./")

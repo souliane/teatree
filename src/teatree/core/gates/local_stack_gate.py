@@ -261,10 +261,10 @@ def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None 
 
 
 def _ram_admission_holds(candidate: Worktree, *, write_out: Callable[[str], object]) -> bool:
-    """Enqueue *candidate* and return ``True`` when host RAM is at/above the ceiling (#2949).
+    """Enqueue *candidate* and return ``True`` when available memory is at or below the floor.
 
     Reuses the parallel-provision admission gate so the START path and the
-    ``workspace provision`` path share one RAM ceiling. A hold enqueues to the
+    ``workspace provision`` path share one available-memory floor. A hold enqueues to the
     existing durable queue (idempotently) — the drainer re-checks and starts it
     once RAM frees, so nothing is lost.
     """
@@ -274,7 +274,7 @@ def _ram_admission_holds(candidate: Worktree, *, write_out: Callable[[str], obje
     from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
 
     LocalStackQueueItem.objects.enqueue(candidate)
-    write_out(f"  Host RAM over ceiling — queued {_blocker_label(candidate)} for retry ({verdict.reason}).")
+    write_out(f"  Resource admission held — queued {_blocker_label(candidate)} for retry ({verdict.reason}).")
     return True
 
 

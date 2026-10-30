@@ -28,6 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.post_impl import approve_impl
 from teatree.core.review.comment_checks import COLLEAGUE_PROSE_CAP_WORDS
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
@@ -274,15 +275,7 @@ class TestColleagueMRShapeGate:
         # Pretend the agent has already reviewed (satisfies the
         # review-before-approve precondition) — the focus here is the
         # shape gate, not the review-first gate.
-        from teatree.cli.review import service as review_mod  # noqa: PLC0415
-
-        self.monkeypatch.setattr(
-            review_mod,
-            "identity_has_reviewed",
-            lambda api, encoded, mr: (True, ""),
-        )
-
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = approve_impl(service, OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert code == 0, f"approve on colleague MR must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_status" for c in stub.calls)

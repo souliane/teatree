@@ -18,16 +18,26 @@ never retried in silence.
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
+from django.utils import timezone
 
+from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models import PendingPullRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _due(row: "PendingPullRequest") -> bool:
+    if row.drain_attempts < MAX_DRAIN_ATTEMPTS or row.last_attempt_at is None:
+        return True
+    minutes = min(5 * 2 ** min(row.drain_attempts - MAX_DRAIN_ATTEMPTS, 9), 24 * 60)
+    return timezone.now() >= row.last_attempt_at + timedelta(minutes=minutes)
 
 
 @dataclass(slots=True)
@@ -47,12 +57,17 @@ class PendingPrDrainScanner:
 
         try:
             retired = PendingPullRequest.objects.retire_absent()
+            owed: list[PendingPullRequest] = []
+            for row in PendingPullRequest.objects.order_by("deferred_at").iterator(chunk_size=100):
+                if len(owed) >= self.limit:
+                    break
+                if _due(row):
+                    owed.append(row)
         except (OperationalError, ProgrammingError):
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
         discharge_stopped(self._overdue())
-        owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
         discharged = sum(1 for row in owed if self._drain_one(row))
         settle_discharged_stuck_pr_notices()
         ask_owner_about_stuck_prs(self._overdue())

@@ -27,8 +27,8 @@ class Command(MachineOutputCommand):
             typer.Option(
                 "--snapshot",
                 help=(
-                    "A saved snapshot JSON file to compare against, repeatable. A record reaches what a tunnel "
-                    "cannot: a box whose forward is down, a box that is gone, and this box as it stood earlier."
+                    "A saved snapshot JSON file to compare against, repeatable. "
+                    "Import a capture from each peer to compare it with this instance."
                 ),
             ),
         ] = None,

@@ -25,7 +25,10 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.owner_dm_rows import owner_dm_rows
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
-from teatree.loop.self_improve.detectors.lifecycle_incident_evidence import AttemptBurstEvidence
+from teatree.loop.self_improve.detectors.lifecycle_incident_evidence import (
+    AttemptBurstEvidence,
+    handled_by_finished_repair,
+)
 
 _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
@@ -79,12 +82,25 @@ class LifecycleIncidentDetector:
         now: datetime,
         ticket_allowed: bool = True,
     ) -> str:
-        if ticket_allowed and len(ids) >= _RECURRING_FAILURE:
-            return ActionRung.TICKET
-        firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
+        firing = (
+            SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause))
+            .select_related("ticket")
+            .first()
+        )
+        if (
+            kind == "task_failed"
+            and firing is not None
+            and firing.resolved_at is None
+            and handled_by_finished_repair(firing, ids)
+        ):
+            return ActionRung.STATUSLINE
         if firing is None or firing.resolved_at is not None:
-            return ActionRung.TICKET if ticket_allowed and self.repair_after <= timedelta(0) else ActionRung.SLACK
-        if ticket_allowed and firing.last_action == ActionRung.TICKET:
+            return (
+                ActionRung.TICKET
+                if ticket_allowed and (len(ids) >= _RECURRING_FAILURE or self.repair_after <= timedelta(0))
+                else ActionRung.SLACK
+            )
+        if ticket_allowed and (len(ids) >= _RECURRING_FAILURE or firing.last_action == ActionRung.TICKET):
             return ActionRung.TICKET
         age = now - firing.first_fired_at
         if ticket_allowed and age >= self.repair_after:

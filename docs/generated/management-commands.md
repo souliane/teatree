@@ -17,7 +17,9 @@ Edit the source command, not this file.
 
 | Subcommand | Description |
 | --- | --- |
-| `show` | Reconcile owner questions and print changes since the last check |
+| `shoot` | Post or nudge waiting owner questions through the existing Slack drains |
+| `show` | Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check |
+| `brief` | Print the one-screen status while keeping full groups in the returned payload |
 
 ## `config_setting`
 
@@ -477,6 +479,10 @@ Score the factory against the committed recipe, and pin an approved recipe sha.
 ## `recover`
 
 Report (and optionally recover) work stranded by an outage.
+
+## `repair_self_improve_wedges`
+
+Preview or repair legacy self-improve planning wedges.
 
 ## `repro`
 

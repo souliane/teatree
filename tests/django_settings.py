@@ -41,6 +41,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "teatree.core.middleware.PortCookieIsolationMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -48,6 +49,7 @@ MIDDLEWARE = [
     # Carried over from the project settings so the dashboard query-count pins
     # measure the plan production actually runs, memo included.
     "teatree.core.middleware.RequestScopedReadCacheMiddleware",
+    "teatree.core.middleware.OperatorLoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 

@@ -136,11 +136,13 @@ class TestGitLabAPICacheHits:
     def test_get_mr_discussions_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = gitlab_api.GitLabAPI(token="t")
         calls = []
-        monkeypatch.setattr(client, "get_json_paginated", lambda ep: calls.append(1) or [{"id": "d1"}])
+        monkeypatch.setattr(
+            client, "get_json_paginated", lambda ep, *, require_list: calls.append(require_list) or [{"id": "d1"}]
+        )
         client.get_mr_discussions(1, 1)
         result = client.get_mr_discussions(1, 1)
         assert result == [{"id": "d1"}]
-        assert len(calls) == 1
+        assert calls == [True]
 
     def test_get_draft_notes_count_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = gitlab_api.GitLabAPI(token="t")

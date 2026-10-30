@@ -55,6 +55,7 @@ INTENTIONALLY_UNREGISTERED_MODULES: frozenset[str] = frozenset(
         "loops_tick",
         "prompts_list",
         "recipe",
+        "repair_self_improve_wedges",
         "recover",
         "session",
         "shipped_seed",

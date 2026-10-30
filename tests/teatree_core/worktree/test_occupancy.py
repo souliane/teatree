@@ -22,6 +22,7 @@ from django.utils import timezone
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Task, Worktree
+from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.checkout_state import checkout_state
@@ -216,6 +217,7 @@ class MidRunCheckoutTests(TestCase):
         finish: Callable[[Task], None],
         *,
         creates_checkout: bool = True,
+        heartbeat: bool = True,
         held_at_exit: bool = False,
         table: ProcessTable | None = None,
     ) -> None:
@@ -232,7 +234,8 @@ class MidRunCheckoutTests(TestCase):
             assert path == ""
             if creates_checkout:
                 _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
-                renew_ticket_checkout(self.ticket, holder=holder, holder_session=session)
+                if heartbeat:
+                    renew_ticket_checkout(self.ticket, holder=holder, holder_session=session)
                 (self.checkout / "work.txt").write_text("the run's own edit\n")
             finish(self.task)
 
@@ -246,6 +249,116 @@ class MidRunCheckoutTests(TestCase):
     def test_completion_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
         self.run_to(lambda task: task.complete())
         self.assert_released_and_attested()
+
+    def test_terminal_release_does_not_retake_a_successors_checkout(self) -> None:
+        def finish(task: Task) -> None:
+            task.complete()
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+
+        self.run_to(finish)
+        holder = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
+        assert holder is not None
+        assert (holder.holder, holder.holder_session) == ("task:999", "rival")
+
+    def test_completion_does_not_renew_a_checkout_taken_by_a_rival(self) -> None:
+        def finish(task: Task) -> None:
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+            task.complete()
+
+        self.run_to(finish, heartbeat=False)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert (row.occupied_by, row.occupied_by_session) == ("task:999", "rival")
+        assert "attested_state" not in row.get_extra()
+
+    def test_exit_does_not_renew_a_checkout_taken_by_a_rival(self) -> None:
+        self.run_to(lambda task: acquire(self.worktree, holder="task:999", holder_session="rival"), heartbeat=False)
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert (row.occupied_by, row.occupied_by_session) == ("task:999", "rival")
+
+    def test_exit_claims_a_checkout_created_after_the_last_heartbeat_and_attests_a_verified_run(self) -> None:
+        self.run_to(lambda task: mark_verified_checkout_run(), heartbeat=False)
+        self.assert_released_and_attested()
+
+    def test_a_read_only_run_never_takes_a_checkout_at_exit(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        self.run_to(lambda task: mark_verified_checkout_run(), heartbeat=False, held_at_exit=True)
+        assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is None
+
+    def test_a_released_terminal_task_does_not_renew_its_checkout_at_exit(self) -> None:
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(lambda task: task.complete())
+        renewed.assert_not_called()
+        self.assert_released_and_attested()
+
+    def test_a_terminal_task_still_holding_its_checkout_renews_it_at_exit(self) -> None:
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(lambda task: task.complete(), held_at_exit=True)
+        renewed.assert_called_once()
+        assert occupancy_holder(Worktree.objects.get(pk=self.worktree.pk)) is not None
+
+    def test_a_read_only_completion_never_renews_a_free_checkout(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        def finish(task: Task) -> None:
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
+
+        with patch("teatree.core.worktree.occupancy.renew_ticket_checkout", wraps=renew_ticket_checkout) as renewed:
+            self.run_to(finish, heartbeat=False)
+        renewed.assert_not_called()
+        assert Task.objects.get(pk=self.task.pk).status == Task.Status.COMPLETED
+
+    def test_short_run_claims_its_new_checkout_before_completion(self) -> None:
+        self.run_to(lambda task: task.complete(), heartbeat=False)
+        self.assert_released_and_attested()
+
+    def test_read_only_completion_does_not_take_rivals_checkout(self) -> None:
+        self.task.phase = "reviewing"
+        self.task.save(update_fields=["phase"])
+
+        def finish(task: Task) -> None:
+            acquire(self.worktree, holder="task:999", holder_session="rival")
+            task.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
+
+        self.run_to(finish, heartbeat=False)
+        assert Task.objects.get(pk=self.task.pk).status == Task.Status.COMPLETED
+        holder = occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
+        assert holder is not None
+        assert (holder.holder, holder.holder_session) == ("task:999", "rival")
+
+    def test_nested_run_attests_with_only_host_namespace_gaps(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        table = ProcessTable(frozenset(), "/proc", (), ("host namespace unavailable",), ("host namespace unavailable",))
+        holder, session = task_holder_id(self.task), self.task.claimed_by_session
+        with (
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=table),
+            occupy_ticket_checkout(self.ticket, holder=holder, holder_session=session, namespace="container"),
+            drive_claim(self.task),
+        ):
+            (self.checkout / "work.txt").write_text("the run's own edit\n")
+            self.task.complete()
+        self.assert_released_and_attested()
+
+    def test_changed_claim_session_does_not_attest_the_old_checkout_holder(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        holder, session = task_holder_id(self.task), self.task.claimed_by_session
+        with (
+            patch(
+                "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
+            ),
+            occupy_ticket_checkout(self.ticket, holder=holder, holder_session=session),
+            drive_claim(self.task),
+        ):
+            Task.objects.filter(pk=self.task.pk).update(claimed_by_session="new-session")
+            self.task.claimed_by_session = "new-session"
+            (self.checkout / "work.txt").write_text("the old holder's edit\n")
+            self.task.complete()
+
+        row = Worktree.objects.get(pk=self.worktree.pk)
+        assert occupancy_holder(row) is None
+        assert "attested_state" not in row.get_extra()
 
     def test_a_failed_run_releases_and_attests_a_checkout_taken_mid_run(self) -> None:
         self.run_to(lambda task: task.fail_claimed(reason="result_error: harness ended"))

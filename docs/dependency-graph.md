@@ -73,10 +73,13 @@ graph TD
     teatree.core --> teatree.quality
     teatree.core --> teatree.backends.types
     teatree.core --> teatree.backends.http_retry
+    teatree.core --> teatree.backends.forge_pool
     teatree.core --> teatree.core.admission
     teatree.core --> teatree.core.admission_pressure
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.owner_question_message
+    teatree.core --> teatree.core.owner_dm.question_ticket
+    teatree.core --> teatree.core.notify_targets
     teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
@@ -339,11 +342,18 @@ graph TD
     teatree.loop.inbound_reading --> teatree.agents
     teatree.loop.inbound_reading --> teatree.loop.inbound_classifier
     teatree.loop.question_binding --> teatree.core.models
+    teatree.loop.question_binding --> teatree.core.notify_targets
     teatree.loop.question_binding --> teatree.core.owner_question_message
     teatree.loop.question_binding --> teatree.loop.inbound_reading
     teatree.loop.question_binding --> teatree.loop.owner_identity
     teatree.loop.owner_identity --> teatree.core.models
+    teatree.loop.owner_identity --> teatree.core.notify_targets
     teatree.loop.owner_identity --> teatree.types
+    teatree.core.notify_targets --> teatree.config
+    teatree.core.notify_targets --> teatree.core.models
+    teatree.core.notify_targets --> teatree.core.owner_dm.question_ticket
+    teatree.core.notify_targets --> teatree.types
+    teatree.core.owner_dm.question_ticket --> teatree.core.models
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
@@ -380,6 +390,7 @@ graph TD
     teatree.core.mode_resolution --> teatree.core.session_identity
     teatree.loop.preset_resolution --> teatree.core.models
     teatree.loop.preset_resolution --> teatree.core.modelkit
+    teatree.loop.scanners --> teatree.core.forge_url
     teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.scanners --> teatree.loop.question_binding
     teatree.loop.scanners --> teatree.loop.owner_identity

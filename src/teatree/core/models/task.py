@@ -1,22 +1,22 @@
 import re
 from datetime import datetime
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
-from django.utils import timezone
 from django_fsm import FSMField, TransitionNotAllowed, can_proceed
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, exhausted_the_conversation
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.session import Session
+from teatree.core.models.task_attempt_settlement import AttemptInput
+from teatree.core.models.task_attempt_settlement import complete_with_attempt as _complete_with_attempt
 from teatree.core.models.task_claim import atomic_after_checkout_exit
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
@@ -218,7 +218,8 @@ class Task(models.Model):
         registered sub-agent (``SUBAGENT_BY_PHASE``, matched across every accepted
         phase spelling via ``phase_spellings`` — the DB-side of ``loop_dispatched``)
         AND its ticket is NOT under a live #2104 external-delivery lease
-        (``not_under_external_delivery_q``, #2217).
+        (``not_under_external_delivery_q``, #2217). Terminal author work is excluded,
+        while a REVIEW_DELIVERED reviewer ticket can receive a new review.
 
         The ONE source of truth every dispatch consumer builds on: the
         ``orchestrate`` planner's target + admit sweep and its in-flight budget
@@ -229,7 +230,10 @@ class Task(models.Model):
         role_phase = Q(pk__in=[])
         for role, phase in SUBAGENT_BY_PHASE:
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-        return role_phase & not_under_external_delivery_q()
+        admissible_state = ~Q(ticket__state__in=Ticket.in_flight_excluded_states()) | Q(
+            ticket__role=Ticket.Role.REVIEWER, ticket__state=Ticket.State.REVIEW_DELIVERED
+        )
+        return role_phase & not_under_external_delivery_q() & admissible_state
 
     def claim(
         self,
@@ -592,28 +596,7 @@ class Task(models.Model):
         one, so tokens already billed are genuinely unreadable here. Every other caller
         reaches this having billed nothing, which the default ``False`` says (#4816).
         """
-        task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
-
-        attempt = task_attempt_model.objects.create(
-            # no-usage: core cannot import the agent layer to parse a result message, so usage_unknown carries it
-            task=self,
-            ended_at=timezone.now(),
-            exit_code=exit_code,
-            artifact_path=artifact_path,
-            error=error,
-            result=result or {},
-            usage_unknown=usage_unknown,
-        )
-        if exit_code == 0:
-            self.complete(result_artifact_path=artifact_path)
-        else:
-            # A non-zero exit with no error text still names a cause (#3957): the exit
-            # code IS the only thing known, so record that rather than nothing.
-            self.fail(
-                reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded",
-                by_holder=True,
-            )
-        return attempt
+        return _complete_with_attempt(self, AttemptInput(artifact_path, exit_code, error, result, usage_unknown))
 
     def spawn_child_tasks(self, repos: list[str], *, phase: str = "") -> list["Task"]:
         """Create one child task per repo for parallel execution.

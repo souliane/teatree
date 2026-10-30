@@ -8,6 +8,7 @@ than silently classifying it as a benign open PR.
 """
 
 import logging
+from unittest.mock import MagicMock
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.core.merge import CodeHostQuery
@@ -57,6 +58,117 @@ def test_enriched_failure_rollup_still_fires_the_failed_lane() -> None:
     host = FakeCodeHost(user="alice", my_prs=[_pr_with_rollup(state="failure")])
     signals = MyPrsScanner(host=host).scan()
     assert [s.kind for s in signals] == ["my_pr.failed"]
+
+
+def test_gitlab_findings_use_latest_person_note_on_open_threads() -> None:
+    host = MagicMock(forge="gitlab")
+    host.current_user.return_value = "alice"
+    host.get_repo.return_value = {"id": 42}
+    host.list_my_prs.return_value = [
+        {
+            "iid": 9,
+            "title": "Review me",
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/9",
+            "sha": "a" * 40,
+            "head_pipeline": {"status": "success"},
+            "user_notes_count": 4,
+            "author": {"username": "alice"},
+        }
+    ]
+    host.list_pr_discussions.return_value = [
+        {"notes": [{"id": 11, "resolvable": True, "resolved": False, "author": {"username": "project_2_bot_abc"}}]},
+        {
+            "notes": [
+                {"id": 20, "resolvable": True, "resolved": False, "author": {"username": "review-bot[bot]"}},
+                {"id": 42, "resolvable": True, "resolved": False, "author": {"username": "bob"}},
+            ]
+        },
+        {"notes": [{"id": 99, "resolvable": True, "resolved": True, "author": {"username": "carol"}}]},
+    ]
+
+    (signal,) = MyPrsScanner(host=host).scan()
+
+    assert signal.kind == "my_pr.findings_to_fix"
+    assert signal.payload["draft_count"] == 1
+    assert signal.payload["activity_key"] == 42
+    host.list_pr_discussions.assert_called_once_with(repo="org/repo", pr_iid=9)
+
+
+def test_gitlab_latest_bot_and_gate_marker_notes_do_not_trigger_findings() -> None:
+    host = MagicMock(forge="gitlab")
+    host.current_user.return_value = "alice"
+    host.get_repo.return_value = {"id": 42}
+    host.list_my_prs.return_value = [
+        {
+            "iid": 9,
+            "title": "Review me",
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/9",
+            "head_pipeline": {"status": "success"},
+            "user_notes_count": 3,
+            "author": {"username": "alice"},
+        }
+    ]
+    host.list_pr_discussions.return_value = [
+        {
+            "notes": [
+                {"id": 10, "resolvable": True, "resolved": False, "author": {"username": "bob"}},
+                {"id": 12, "resolvable": True, "resolved": False, "author": {"username": "project_2_bot_abc"}},
+            ]
+        },
+        {
+            "notes": [
+                {
+                    "id": 13,
+                    "resolvable": True,
+                    "resolved": False,
+                    "author": {"username": "bob"},
+                    "body": "[gate:merge] waiting",
+                }
+            ]
+        },
+    ]
+
+    assert [signal.kind for signal in MyPrsScanner(host=host).scan()] == ["my_pr.open"]
+
+
+def test_unreadable_gitlab_discussions_do_not_trigger_note_run(caplog) -> None:
+    url = "https://gitlab.example/org/repo/-/merge_requests/9"
+    host = MagicMock(forge="gitlab")
+    host.current_user.return_value = "alice"
+    host.get_repo.return_value = {"id": 42}
+    host.list_my_prs.return_value = [
+        {
+            "iid": 9,
+            "title": "Review me",
+            "web_url": url,
+            "head_pipeline": {"status": "success"},
+            "user_notes_count": 1,
+            "author": {"username": "alice"},
+        }
+    ]
+    host.list_pr_discussions.side_effect = Exception("unavailable")
+
+    assert [signal.kind for signal in MyPrsScanner(host=host).scan()] == ["my_pr.open"]
+    assert any(url in record.message for record in caplog.records)
+
+
+def test_gitlab_zero_notes_do_not_fetch_discussions() -> None:
+    host = MagicMock(forge="gitlab")
+    host.current_user.return_value = "alice"
+    host.list_my_prs.return_value = [
+        {
+            "iid": 9,
+            "title": "No notes",
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/9",
+            "head_pipeline": {"status": "success"},
+            "user_notes_count": 0,
+            "author": {"username": "alice"},
+        }
+    ]
+
+    assert [signal.kind for signal in MyPrsScanner(host=host).scan()] == ["my_pr.open"]
+    host.get_repo.assert_not_called()
+    host.list_pr_discussions.assert_not_called()
 
 
 class TestCiEnrichmentReachesTheRedLane:

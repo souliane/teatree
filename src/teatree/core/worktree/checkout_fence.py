@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.modelkit.phases import phase_cost
 from teatree.core.models import LocalStackQueueItem, Task, TaskAttempt, Worktree, WorktreeEnvOverride
@@ -37,6 +38,7 @@ from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
 _PARK_RETRY = timedelta(minutes=30)
+_REPEATED_PARK_THRESHOLD = 3
 _DUPLICATE_COUNT = 2
 
 
@@ -235,8 +237,20 @@ def park_task_checkout(
     holders = (occupancy_holder(row) for row in Worktree.objects.filter(ticket=task.ticket).exclude(occupied_by=""))
     own_row.update(admitted_at=None)
     task.admitted_at = None
-    task.park(not_before=min([timezone.now() + _PARK_RETRY, *(held.expires_at for held in holders if held)]))
+    repeats = attempt.park_repeats + 1
+    delay = min(_PARK_RETRY * 2 ** min(max(repeats - 2, 0), 6), timedelta(hours=24))
+    task.park(not_before=min([timezone.now() + delay, *(held.expires_at for held in holders if held)]))
     rearmed = _rearm_if_occupancy_cleared(task, behind=behind, unknown_holder=unknown_holder)
+    halt_reason = f"checkout parked: {reason}"
+    stamp = (task.ticket.extra or {}).get("stuck_halt")
+    if (
+        isinstance(stamp, dict)
+        and str(stamp.get("reason", "")).startswith("checkout parked: ")
+        and (rearmed or stamp.get("reason") != halt_reason)
+    ):
+        task.ticket.merge_extra(pop_keys=["stuck_halt"])
+    if repeats >= _REPEATED_PARK_THRESHOLD and behind is None and not rearmed:
+        record_ticket_halt(task.ticket, reason=halt_reason)
     if seat_freed or rearmed:
         checkout_capacity_opened.send(sender=Task)
     if rearmed:

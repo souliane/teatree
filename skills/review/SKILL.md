@@ -98,6 +98,10 @@ On a wrong checkout, return `review_head_mismatch` (`observed_sha`, `reason`) wi
 cd <worktree> && t3 <overlay> run tests -- <test-files-or-node-ids>   # `--path` also works
 ```
 
+If that command refuses a detached review checkout with `TicketWorkspaceDivergenceError`,
+run `uv sync` there, then `uv run pytest <test-files-or-node-ids>` there. Keep the
+checkout detached and report the fallback with its test result.
+
 For teatree core, inspect `t3 tool affected-tests`. Run `bash dev/test-affected.sh` on SCOPED; on FULL, run changed test files or pinned node ids locally and read CI at the reviewed head. Pytest refuses oversized package directories.
 
 The local lane uses `-n auto --reuse-db` without coverage; CI's 12 `pytest-split` shards add doctests and enforce the combined 93% coverage floor. Report selected tests. In a checkout at the reviewed head, run `t3 tool verify-gates --expect-sha <head>` and quote its measured SHA. Read head-bound CI via `gh api repos/<o>/<r>/commits/<sha>/check-runs`. <!-- mcp-ratchet: allow — the per-SHA check-runs read has no MCP tool; `gh pr checks` reads only the current head -->
@@ -413,13 +417,12 @@ t3 review approve <REPO> <MR_IID>      # approve
 t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 ```
 
-**Review-first precondition (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Any of three footprints clears the gate, none of which is a colleague-visible auto-comment:
+**Review-first precondition (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Either of two footprints clears the gate:
 
 - a **published note/discussion** authored by your identity (a genuine inline finding — still fine, never auto-posted just to clear this gate);
 - a **draft note** authored by your identity (a colleague-invisible review — no public comment);
-- the **recorded internal verdict** — an `OnBehalfApproval` for `(<repo>!<mr>, "approve")`, the human-recorded, maker≠checker attribution the on-behalf approve path already requires. On the on-behalf path the `approve-on-behalf` row *is* the footprint, so approving records the verdict + the GitLab `approved_by` (and the ✅ reaction) with **zero** MR notes/discussions posted.
 
-If it refuses, leave a genuine review (a real finding via `t3 review post-comment` — default draft, #1207 — or record the internal verdict), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
+An `OnBehalfApproval` records consent but does not itself prove review. If it refuses, leave a genuine review via `t3 review post-comment` (default draft, #1207), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
 **On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the posture pre-gate (souliane/teatree#960). No autonomy tier opens colleague egress (#3895), so under a forbidding posture the command refuses unattended at every tier with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or select a permitting posture with `t3 loop preset use present --reason <why>`. Raising the `autonomy` tier removes the per-MR ask, not this gate.
 

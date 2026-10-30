@@ -6,6 +6,11 @@ from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.core.management.commands.config_setting import _ALLOWED_SETTINGS
 
 
+def test_provision_ram_percent_setting_is_retired() -> None:
+    assert "provision_ram_ceiling_percent" not in ALL_KNOWN_CONFIG_SETTINGS
+    assert config_key_hint("provision_ram_ceiling_percent").startswith("retired:")
+
+
 class TestAllKnownConfigSettings:
     def test_unites_all_four_registries(self) -> None:
         expected = (

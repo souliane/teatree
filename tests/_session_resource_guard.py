@@ -28,7 +28,7 @@ def _live_resources() -> list[str]:
         if thread is not threading.main_thread() and not thread.daemon and thread.ident not in parked
     ]
     children = [child for child in multiprocessing.active_children() if child.is_alive() and not child.daemon]
-    popens = [obj for obj in gc.get_objects() if isinstance(obj, subprocess.Popen) and obj.poll() is None]
+    popens = [obj for obj in gc.get_objects() if issubclass(type(obj), subprocess.Popen) and obj.poll() is None]
     leaks = [
         f"thread {thread.name} target={getattr(getattr(thread, '_target', None), '__qualname__', None)}"
         for thread in threads

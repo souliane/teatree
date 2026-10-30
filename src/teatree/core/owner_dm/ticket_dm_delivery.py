@@ -63,13 +63,14 @@ class _RootSend:
 
     def root_for_channel(self, channel: str) -> str:
         self.thread, _ = TicketDmThread.objects.get_or_create(ticket=self.ticket)
-        if self.thread.channel and self.thread.channel != channel:
-            msg = "ticket DM channel changed"
-            raise RuntimeError(msg)
-        if self.thread.root_ts and root_is_deleted(self.request.backend, channel, self.thread.root_ts):
+        if (
+            self.thread.channel == channel
+            and self.thread.root_ts
+            and root_is_deleted(self.request.backend, channel, self.thread.root_ts)
+        ):
             _retire(self.thread)
             self.thread.refresh_from_db()
-        if self.thread.root_ts:
+        if self.thread.channel == channel and self.thread.root_ts:
             _record_root(self.thread, self.ticket, channel)
             return self.thread.root_ts
         self.stack.enter_context(transaction.atomic())
@@ -78,8 +79,10 @@ class _RootSend:
             ticket=self.ticket
         )
         if self.thread.channel and self.thread.channel != channel:
-            msg = "ticket DM channel changed"
-            raise RuntimeError(msg)
+            TicketDmThread.objects.filter(pk=self.thread.pk).update(
+                channel=channel, root_ts="", generation=F("generation") + 1
+            )
+            self.thread.refresh_from_db()
         self.first_send = not bool(self.thread.root_ts)
         if not self.first_send:
             _record_root(self.thread, self.ticket, channel)

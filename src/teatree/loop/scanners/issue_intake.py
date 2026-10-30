@@ -223,18 +223,19 @@ class IssueIntakeScanner:
             UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
             logger.info("IssueIntakeScanner tick %s: admitted=0 claimed=0 deferred=0", self.overlay_name)
             return []
-        # The OPERATOR's handles — the read-back's PR-query scope, not the trust set.
-        operators = resolve_identities(self.host, self.identities)
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
-            readback=self._readback_index(operators),
+            readback=self._readback_index(
+                resolve_identities(self.host, self.identities)
+            ),  # operator handles, not the trust set
             nit_urls=frozenset(issue_url(candidate) for candidate in candidates if is_nit_issue(candidate)),
         )
         signals: list[ScanSignal] = []
         waiting: list[WaitingCandidate] = []
         admitted = 0
         claiming = self.can_claim
+        held_by = "disabled" if not claiming else "none"
         walk = self._resume_ordered(candidates)
         deadline = self.monotonic() + self.pass_budget_seconds
         examined: RawAPIDict | None = None
@@ -249,9 +250,12 @@ class IssueIntakeScanner:
                 if verdict is None:
                     continue
                 admitted += 1
-                claiming = claiming and not (
-                    self._budget_exhausted(issue=issue, nit_urls=context.nit_urls) or self._governor_denied()
-                )
+                if claiming and self._budget_exhausted(issue=issue, nit_urls=context.nit_urls):
+                    claiming = False
+                    held_by = "budget"
+                elif claiming and self._governor_denied():
+                    claiming = False
+                    held_by = "governor"
                 if claiming:
                     self._append_claim(issue, url, verdict, signals)
                     continue
@@ -267,11 +271,12 @@ class IssueIntakeScanner:
         UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting, complete=complete)
         self._record_pass(examined, complete=complete)
         logger.info(
-            "IssueIntakeScanner tick %s: admitted=%d claimed=%d deferred=%d",
+            "IssueIntakeScanner tick %s: admitted=%d claimed=%d deferred=%d held_by=%s",
             self.overlay_name,
             admitted,
             len(signals),
             admitted - len(signals),
+            held_by,
         )
         return signals
 

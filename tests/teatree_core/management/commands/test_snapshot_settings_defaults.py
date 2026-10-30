@@ -29,7 +29,7 @@ from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.term_match import line_matches
 from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
-_TUNABLE = "provision_ram_ceiling_percent"
+_TUNABLE = "provision_slow_threshold_seconds"
 _LEAK = TEST_TERM_REGISTRY["leak"][0]
 _OV = TEST_TERM_REGISTRY["overlay"][0]
 _SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)

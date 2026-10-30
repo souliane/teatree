@@ -263,7 +263,7 @@ class TestSimpleStageBBailFallsThroughToOrchestration:
         report = SlackAnswerReport()
 
         with patch(
-            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            "teatree.loop.slack_answer.delivery.build_simple_answer",
             return_value="NEEDS_WORK",
         ):
             _process_unit(backend, _Unit([row]), report, _STATE_QUESTION)
@@ -277,7 +277,7 @@ class TestSimpleStageBBailFallsThroughToOrchestration:
         report = SlackAnswerReport()
 
         with patch(
-            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            "teatree.loop.slack_answer.delivery.build_simple_answer",
             return_value=None,
         ):
             _process_unit(backend, _Unit([row]), report, _STATE_QUESTION)

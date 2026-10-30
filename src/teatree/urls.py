@@ -4,6 +4,9 @@ from django.contrib.staticfiles.views import serve as serve_static
 from django.urls import include, path, re_path
 from django.views.generic.base import RedirectView
 
+from teatree.core.operator_auth.operator_login import consume_local_login_link
+from teatree.core.operator_auth.operator_oauth import finish_login, start_approval_consent, start_login
+
 urlpatterns = [
     # Browsers request /favicon.ico unprompted on any page that declares no icon
     # link. The dash templates declare one; Django's admin does not, so the admin
@@ -17,14 +20,16 @@ urlpatterns = [
         name="favicon",
     ),
     path("", include("teatree.core.urls", namespace="teatree")),
+    path("login/", admin.site.login, name="login"),
+    path("login/local/<str:key>/", consume_local_login_link, name="local-login"),
+    path("login/oauth/<str:forge>/start/", start_login, name="operator-oauth-start"),
+    path("login/oauth/<str:forge>/approvals/", start_approval_consent, name="operator-oauth-approvals"),
+    path("login/oauth/<str:forge>/callback/", finish_login, name="operator-oauth-callback"),
     # The first-party admin dashboard (#3162) — ticket-FSM kanban, health, and
-    # loop control. Rides this same gunicorn process on the same loopback port,
-    # behind the same loopback auto-login (its prefix gate covers `/dash/`).
+    # loop control.
     path("dash/", include("teatree.dash.urls", namespace="dash")),
     # Mounted unconditionally — the admin is the operator's observability window
-    # and must not depend on DEBUG. It stays protected by Django auth (+ the
-    # deploy's loopback bind + SSH tunnel); auto-login is loopback + flag gated
-    # in ``teatree.core.middleware``.
+    # and must not depend on DEBUG. It stays protected by the session gate.
     path("admin/", admin.site.urls),
     # Serve the admin's own static assets from the finders under a production
     # WSGI server (gunicorn) with DEBUG off — Django's ``runserver`` did this via

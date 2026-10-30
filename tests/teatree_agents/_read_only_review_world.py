@@ -10,11 +10,15 @@ from unittest.mock import patch
 from teatree.agents import phase_blocks
 from teatree.agents.prompt import build_read_only_system_context, build_read_only_task_prompt
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts
-from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
+from teatree.agents.skill_bundle import (
+    configured_lifecycle_skill,
+    resolve_executor_sweep_bundle,
+    resolve_skill_bundle,
+    stage_skills_for_dispatch,
+)
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.models import Session, Task, Ticket
 from teatree.skill_support import index as skill_index
-from teatree.skill_support.loading import SkillLoadingPolicy
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
@@ -61,14 +65,15 @@ def read_only_context(phase: str, *, reviewer: bool = False) -> str:
     )
     task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
     stage = stage_skills_for_dispatch(phase)
-    skills = resolve_skill_bundle(
-        phase=phase,
-        overlay_skill_metadata=TeatreeOverlay().metadata.get_skill_metadata(),
-        detection_root=ROOT,
-        stage_skills=stage,
-    )
+    metadata = TeatreeOverlay().metadata.get_skill_metadata()
+    if phase == "backlog_sweep":
+        skills = resolve_executor_sweep_bundle(overlay_skill_metadata=metadata, detection_root=ROOT, stage_skills=stage)
+    else:
+        skills = resolve_skill_bundle(
+            phase=phase, overlay_skill_metadata=metadata, detection_root=ROOT, stage_skills=stage
+        )
     return build_read_only_system_context(
-        task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase), stage_skills=stage
+        task, skills=skills, lifecycle_skill=configured_lifecycle_skill(phase), stage_skills=stage
     )
 
 
