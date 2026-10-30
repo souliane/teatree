@@ -25,16 +25,15 @@ manager own the persistence. Fail-safe-to-silent on any error (a Stop hook must
 NEVER crash turn-end).
 """
 
-import contextlib
 import json
 import subprocess  # noqa: S404 — runs the operator-registered green check_command by design.
 import sys
 import time
-from pathlib import Path
 
 from hooks.scripts.django_bootstrap import orm_failures
 from hooks.scripts.gate_escape import escape_allows
 from hooks.scripts.gate_result import warn_gate_skipped
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Alias both identities so a bare ``from standing_goal_stop_gate import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.standing_goal_stop_gate``
@@ -62,20 +61,12 @@ def handle_standing_goal_stop(data: dict) -> bool | None:
     is reported as SKIPPED and returns ``None``; any other error reaches the router's
     crash boundary, which allows the stop.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run(data)
+        with teatree_src_on_path():
+            return _run(data)
     except orm_failures() as exc:
         warn_gate_skipped("standing goal Stop", f"the ORM check failed ({type(exc).__name__}: {exc})")
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _gate_is_out_of_scope(data: dict) -> bool:

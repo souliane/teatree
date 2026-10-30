@@ -25,7 +25,6 @@ back-import), so the self-rescue allowlist and the master
 ``danger_gate_fail_open`` switch apply unchanged.
 """
 
-import contextlib
 import os
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `git rev-parse` call
 import sys
@@ -248,37 +247,31 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
     class) is NOT swallowed silently: it emits a loud stderr NOTE before the
     fail-open so a dead gate is diagnosable instead of invisible.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        import django  # noqa: PLC0415 — deferred: Django import at call time
-        from django.core.exceptions import FieldError  # noqa: PLC0415 — deferred: Django import at call time
+        with teatree_src_on_path():
+            import django  # noqa: PLC0415 — deferred: Django import at call time
+            from django.core.exceptions import FieldError  # noqa: PLC0415 — deferred: Django import at call time
 
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
+            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+            django.setup()
 
-        try:
-            toplevel = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-                ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607 — trusted internal git invocation with a fixed argv
-                text=True,
-                timeout=3,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-        except (subprocess.SubprocessError, OSError):
-            return None
-        try:
-            return _resolve_worktree_state(toplevel)
-        except (FieldError, TypeError, AttributeError, ImportError) as exc:
-            # Programming-error class (the #1957 dead-gate root cause): stay
-            # crash-proof (return None) but make it LOUD, never a silent ALLOW.
-            sys.stderr.write(f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n")
-            return None
+            try:
+                toplevel = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                    ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                    text=True,
+                    timeout=3,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except (subprocess.SubprocessError, OSError):
+                return None
+            try:
+                return _resolve_worktree_state(toplevel)
+            except (FieldError, TypeError, AttributeError, ImportError) as exc:
+                # Programming-error class (the #1957 dead-gate root cause): stay
+                # crash-proof (return None) but make it LOUD, never a silent ALLOW.
+                sys.stderr.write(
+                    f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n"
+                )
+                return None
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
