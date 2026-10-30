@@ -314,7 +314,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
   bash dev/test-affected.sh             # teatree core: the diff-scoped lane
   bash dev/test-affected.sh --full      # opt in to the whole suite for a genuinely cross-cutting change
   # overlay repo: use the overlay's wired runner from its playbook skill, e.g.
-  t3 <overlay> test run                 # runs the repo's regression suite under its config
+  t3 <overlay> run tests                # runs the repo's regression suite under its config
   ```
 
   The selector is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all report FULL; run changed test files or pinned node ids locally in that case. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py`.

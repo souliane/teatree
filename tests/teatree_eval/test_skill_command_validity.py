@@ -6,6 +6,8 @@ as an argument, so these drive it with a small synthetic registry and a tmp repo
 
 from pathlib import Path
 
+import pytest
+
 from teatree.eval.skill_command_validity import (
     _is_placeholder_only,
     iter_backticked_t3_commands,
@@ -61,6 +63,34 @@ class TestIterFenced:
     def test_ignores_commands_outside_a_fence(self) -> None:
         assert iter_fenced_t3_commands("t3 teatree ticket list\n```bash\nls\n```\nt3 teatree ticket list\n") == []
 
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            ("t3 <overlay> ticket start <id>", ["t3 <overlay> ticket start <id>"]),
+            ("t3 <overlay> a <b> --x=<c>", ["t3 <overlay> a <b> --x=<c>"]),
+            ("$ t3 <overlay> ticket list", ["t3 <overlay> ticket list"]),
+            ("FOO=1 t3 loop tick", ["t3 loop tick"]),
+            ("FOO=1 BAR=x t3 loop tick", ["t3 loop tick"]),
+            ("$ FOO=1 t3 loop tick", ["t3 loop tick"]),
+            ("t3 teatree ticket list 2>&1", ["t3 teatree ticket list"]),
+            ("t3 teatree ticket list > out.txt", ["t3 teatree ticket list"]),
+            ("t3 teatree ticket list >> out.txt", ["t3 teatree ticket list"]),
+            ("t3 teatree ticket list &>out.txt", ["t3 teatree ticket list"]),
+        ],
+    )
+    def test_reads_one_whole_command_per_line(self, block: str, expected: list[str]) -> None:
+        assert iter_fenced_t3_commands(f"```bash\n{block}\n```\n") == expected
+
+    def test_reads_a_tilde_fence(self) -> None:
+        assert iter_fenced_t3_commands("~~~\nt3 teatree ticket list\n~~~\n") == ["t3 teatree ticket list"]
+
+    def test_a_shorter_marker_does_not_close_a_longer_fence(self) -> None:
+        text = "````md\n```bash\nt3 teatree ticket list\n```\nt3 teatree ticket start\n````\nt3 teatree outside\n"
+        assert iter_fenced_t3_commands(text) == ["t3 teatree ticket list", "t3 teatree ticket start"]
+
+    def test_a_tilde_marker_does_not_close_a_backtick_fence(self) -> None:
+        assert iter_fenced_t3_commands("```\n~~~\nt3 teatree ticket list\n```\n") == ["t3 teatree ticket list"]
+
 
 class TestValidateDocCommands:
     def _skill(self, root: Path, body: str) -> None:
@@ -86,3 +116,14 @@ class TestValidateDocCommands:
         report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
         assert [v.command for v in report.violations] == ["t3 teatree ticket frobnicate 7"]
         assert report.checked == 2
+
+    def test_a_fenced_placeholder_command_with_a_missing_subcommand_is_a_violation(self, tmp_path: Path) -> None:
+        self._skill(tmp_path, "```bash\nt3 <overlay> ticket frobnicate <id>\n```\n")
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
+        assert [v.command for v in report.violations] == ["t3 <overlay> ticket frobnicate <id>"]
+
+    def test_a_fenced_placeholder_command_with_a_real_subcommand_is_checked_and_passes(self, tmp_path: Path) -> None:
+        self._skill(tmp_path, "```bash\nt3 <overlay> ticket list\n```\n")
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
+        assert report.ok
+        assert report.checked == 1

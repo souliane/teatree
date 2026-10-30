@@ -47,10 +47,13 @@ EXCLUDED_DOC_PREFIXES: tuple[str, ...] = ("docs/generated/",)
 # backtick; the captured words are normalized by the token-walker afterwards.
 _T3_IN_BACKTICKS = re.compile(r"`(t3 [^`]+)`")
 
-_FENCE = re.compile(r"^\s*```")
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+_ENV_PREFIX = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
 
 # What ends a fenced command line: a trailing shell comment, a pipe, a chain, or a redirect.
-_COMMAND_TAIL = re.compile(r"\s+#\s|\s*(?:\||&&|;|>|<<)\s*")
+# A redirect needs leading whitespace so the closing `>` of an `<overlay>` placeholder stays in the command.
+_COMMAND_TAIL = re.compile(r"\s+#\s|\s*(?:\||&&|;|<<)\s*|\s+[\d&]?>")
 
 # Tokens that terminate the command path: an ASCII/unicode ellipsis (a generic
 # CLI mention, not a specific command), an angle/brace placeholder, a shell var,
@@ -141,15 +144,20 @@ def iter_backticked_t3_commands(text: str) -> list[str]:
 def iter_fenced_t3_commands(text: str) -> list[str]:
     """Every ``t3 …`` command a fenced code block runs, minus its trailing comment, pipe and line continuations."""
     commands: list[str] = []
-    inside = False
+    opener = ""
     pending = ""
     for line in text.splitlines():
-        if _FENCE.match(line):
-            inside, pending = not inside, ""
+        if fence := _FENCE.match(line):
+            marker, rest = fence.groups()
+            if not opener:
+                opener = marker
+            elif marker[0] == opener[0] and len(marker) >= len(opener) and not rest.strip():
+                opener = ""
+            pending = ""
             continue
-        joined = f"{pending} {line.strip().removeprefix('$ ')}".strip()
+        joined = _ENV_PREFIX.sub("", f"{pending} {line.strip().removeprefix('$ ')}".strip())
         pending = ""
-        if not inside or not joined.startswith("t3 "):
+        if not opener or not joined.startswith("t3 "):
             continue
         if joined.endswith("\\"):
             pending = joined.removesuffix("\\").strip()
