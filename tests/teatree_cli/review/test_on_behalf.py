@@ -1,35 +1,23 @@
-"""``on_behalf_gate_active`` resolves the gate; it never degrades to "gate off".
+"""``check_on_behalf`` reads WHOSE ``on_behalf_auto_actions`` allowlist gates a review post.
 
-The helper used to wrap its ``teatree.on_behalf_gate`` import in
-``except ModuleNotFoundError: return False`` — a safety gate failing OPEN. The
-module is a first-party leaf importing only ``enum`` and ``teatree.config``, so
-that branch was unreachable; these tests pin that an unimportable-gate world now
-surfaces rather than silently un-gating an approve/unapprove.
-
-The second half pins WHOSE ``on_behalf_auto_actions`` allowlist the gate reads,
-through ``check_on_behalf`` — the live path every publishing ``ReviewService``
-method calls. A review post names its target repo in the invocation, so the
-allowlist is the owning overlay's; resolved ambiently it was the invoking cwd's,
+It is the live path every publishing ``ReviewService`` method calls. A review post names its target repo in the
+invocation, so the allowlist is the owning overlay's; resolved ambiently it was the invoking cwd's,
 which on a multi-overlay install resolves nothing and refused a post the target
 overlay had carved out. A target NO single overlay owns is the other direction of
 the same error, and stays gated even when the ambient overlay carves that action out.
 """
 
-import builtins
-import sys
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.cli.review.on_behalf import check_on_behalf, on_behalf_gate_active, target_overlay
+from teatree.cli.review.on_behalf import check_on_behalf, target_overlay
 from teatree.core.overlay_loader import OverlayConfigResolver
-from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
-_GATE_MODULE = "teatree.on_behalf_gate"
 _GATE_ENV = ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS")
 _BLOCKED = "on-behalf post blocked"
 
@@ -39,42 +27,6 @@ def no_gate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop every env tier that would decide the mode ahead of the config under test."""
     for env in _GATE_ENV:
         monkeypatch.delenv(env, raising=False)
-
-
-class TestGateResolutionNeverFailsOpen:
-    def test_an_unimportable_gate_module_raises_rather_than_reporting_gate_off(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        real_import = builtins.__import__
-
-        def refuse(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == _GATE_MODULE:
-                detail = f"No module named {name!r}"
-                raise ModuleNotFoundError(detail, name=name)
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.delitem(sys.modules, _GATE_MODULE, raising=False)
-        monkeypatch.setattr(builtins, "__import__", refuse)
-
-        with pytest.raises(ModuleNotFoundError):
-            on_behalf_gate_active()
-
-
-class TestGateResolutionFollowsThePosture(TestCase):
-    """``approve`` is a non-draft action: gated by whatever the active posture says."""
-
-    @pytest.fixture(autouse=True)
-    def _env(self, no_gate_env: None) -> None:
-        """Bind the shared env-clearing fixture into this ``TestCase``."""
-
-    def test_a_forbidding_posture_reports_the_gate_active(self) -> None:
-        seed_forbidding_posture()
-        assert on_behalf_gate_active() is True
-
-    def test_a_permitting_posture_reports_the_gate_inactive(self) -> None:
-        seed_permitting_posture()
-        assert on_behalf_gate_active() is False
 
 
 @contextmanager

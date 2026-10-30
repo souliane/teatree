@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.db import connection
-from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -21,6 +20,7 @@ from teatree.core.telemetry.observation_read import ObservationRead
 from teatree.dash.skills import skill_assurance
 from teatree.dash.telemetry import build_telemetry_view
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class DashboardTelemetryTestCase(TestCase):

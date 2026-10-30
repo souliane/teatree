@@ -6,6 +6,7 @@ Covers _merge_results, dual GitHub+GitLab sync and the GitHub sync backend.
 import shutil
 import subprocess
 from collections.abc import Iterator
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,6 +71,7 @@ class TestDualSync(TestCase):
         github_item.position = 1
         github_item.labels = []
         github_item.updated_at = "2026-04-01T00:00:00Z"
+        github_item.author_login = ""
 
         self._monkeypatch.setattr(
             "teatree.backends.github.fetch_project_items",
@@ -257,6 +259,46 @@ class TestSyncGitHub(TestCase):
         ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/42")
         assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.extra["issue_title"] == "Test issue"
+
+    def test_issue_author_is_recorded_once_as_the_requester(self) -> None:
+        overlay = self._make_overlay()
+        item = ProjectItem(
+            issue_number=88,
+            title="Requested work",
+            url="https://github.com/souliane/teatree/issues/88",
+            status="Todo",
+            position=0,
+            labels=[],
+            author_login="ALIce",
+        )
+        with _patch_overlay(overlay), patch("teatree.backends.github.fetch_project_items", return_value=[item]):
+            GitHubSyncBackend().sync(overlay)
+        ticket = Ticket.objects.get(issue_url=item.url)
+        assert ticket.requested_by == "github:alice"
+
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[replace(item, author_login="bob")]),
+        ):
+            GitHubSyncBackend().sync(overlay)
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "github:alice"
+
+    def test_existing_unattributed_ticket_gets_its_issue_author(self) -> None:
+        overlay = self._make_overlay()
+        item = ProjectItem(
+            issue_number=89,
+            title="Existing request",
+            url="https://github.com/souliane/teatree/issues/89",
+            status="Todo",
+            position=0,
+            labels=[],
+            author_login="Alice",
+        )
+        Ticket.objects.create(overlay="teatree", issue_url=item.url)
+        with _patch_overlay(overlay), patch("teatree.backends.github.fetch_project_items", return_value=[item]):
+            GitHubSyncBackend().sync(overlay)
+        assert Ticket.objects.get(issue_url=item.url).requested_by == "github:alice"
 
     def test_updates_existing_ticket(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415

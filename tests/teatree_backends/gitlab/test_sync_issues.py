@@ -20,6 +20,30 @@ from teatree.core.models import Ticket
 from teatree.types import SyncResult
 
 
+class TestGitLabIssueRequester(TestCase):
+    URL = "https://gitlab.com/o/r/-/issues/710"
+
+    def _sync(self, author: str) -> None:
+        host = MagicMock()
+        host.list_assigned_issues.return_value = [
+            {"web_url": self.URL, "title": "Request", "labels": [], "author": {"username": author}}
+        ]
+        fetch_assigned_issues(host, "me", SyncResult(), overlay_name="acme")
+
+    def test_new_issue_records_its_author(self) -> None:
+        self._sync("ALIce")
+        assert Ticket.objects.get(issue_url=self.URL).requested_by == "gitlab:alice"
+
+    def test_existing_ticket_gets_missing_requester_without_overwriting_one(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url=self.URL)
+        self._sync("ALIce")
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "gitlab:alice"
+        self._sync("Bob")
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "gitlab:alice"
+
+
 class TestGitLabAssignedIssueSyncClassifiesKind(TestCase):
     def _synced_ticket(self, *, url: str, title: str, labels: list[str]) -> Ticket:
         host = MagicMock()

@@ -17,7 +17,7 @@ from teatree.utils.django_bootstrap import ensure_django
 settings_app = typer.Typer(
     name="settings",
     no_args_is_help=True,
-    help="This box's settings beside its peers' — the Compare Instances page, in a terminal.",
+    help="Compare this instance's settings with imported peer snapshots.",
 )
 
 
@@ -25,7 +25,7 @@ settings_app = typer.Typer(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True, "help_option_names": []}
 )
 def compare(ctx: typer.Context) -> None:
-    """What differs between this box and its peers, and whether it can be read as drift.
+    """What differs between this box and imported peers, and whether it is drift.
 
     Exits non-zero only when there was nothing to compare — fewer than two instances answered. A
     comparison that RAN is a success whatever it found, "not comparable" included: that verdict is

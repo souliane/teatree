@@ -1,13 +1,8 @@
 """A loopback-only TCP forward from a fixed host port into a container's own loopback.
 
-The admin gunicorn binds the CONTAINER's ``127.0.0.1``, and
-:class:`~teatree.core.middleware.LocalAdminAutoLoginMiddleware` authenticates a request
-only when its real peer is loopback — so neither obvious way to reach it from a host
-browser works: a published bridge port NATs the source to the docker gateway, and a
-same-host reverse proxy in front of the admin is forbidden outright (``deploy/README.md``
-§ "Access & networking"). Each accepted connection is bridged through ``docker exec -i``
-instead, which publishes nothing and proxies nothing, so the loopback trust model is
-untouched.
+The admin gunicorn binds the CONTAINER's ``127.0.0.1``, which a host browser
+cannot reach directly. Each accepted connection is bridged through ``docker exec -i``
+without publishing the admin port. Dashboard access still requires a staff session.
 
 TWO VENUES REACH THIS, and only one of them can bind a host port. A native ``t3 admin``
 binds ``127.0.0.1`` on the host directly. The containerized CLI (``deploy/t3``) cannot —

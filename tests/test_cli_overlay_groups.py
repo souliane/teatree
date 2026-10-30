@@ -76,6 +76,14 @@ def test_ticket_partial_merge_report_routes_through_the_overlay_cli(tmp_path: Pa
     assert run.call_args.args[0][-3:] == ["ticket", "partial-merge-report", "--json"]
 
 
+def test_ticket_unsettle_routes_through_the_overlay_cli(tmp_path: Path) -> None:
+    app = OverlayAppBuilder(overlay_name="example", project_path=tmp_path).build()
+    with patch("teatree.cli.overlay.run_streamed") as run:
+        result = CliRunner().invoke(app, ["ticket", "unsettle", "42", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert run.call_args.args[0][-4:] == ["ticket", "unsettle", "42", "--dry-run"]
+
+
 def test_ticket_group_exposes_comment() -> None:
     assert "comment" in _ticket_subcommands()
 

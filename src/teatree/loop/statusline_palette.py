@@ -12,7 +12,6 @@ _ANSI_RED = "\033[1;31m"
 _ANSI_YELLOW = "\033[1;33m"
 _ANSI_GREEN = "\033[1;32m"
 _ANSI_CYAN = "\033[1;36m"
-_ANSI_BOLD = "\033[1m"
 
 # Per-loop recency thresholds, expressed as the FRACTION of the loop's own
 # cadence still remaining until its next tick. Judging on the fraction (not

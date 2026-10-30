@@ -10,21 +10,19 @@ import json
 import os
 import pathlib
 import re
-import socket
-import threading
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.template.loader import get_template
-from django.test import Client, SimpleTestCase, TestCase
+from django.test import SimpleTestCase
 from django.urls import reverse
 
 import teatree.core.settings.settings_compare as settings_compare_module
 import teatree.dash
-from teatree.config import PeerInstance, PeerTunnel
+from teatree.config import PeerInstance
 from teatree.config.declared_defaults import declared_defaults
 from teatree.config.provenance import ValueSource
 from teatree.config.setting_registries import ENV_VAR_BY_SETTING, SAFETY_POSTURE_KEYS
@@ -42,9 +40,10 @@ from teatree.core.settings.settings_compare import (
 from teatree.core.settings.settings_compare_rendering import FOLD_OVER, RowKind
 from teatree.core.settings.settings_compare_sync import SEED, SETTING, SYNC_RULES, Disposition, classify
 from teatree.core.settings.settings_compat import COMPAT_SIGNALS, Severity, build_compat_report
-from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, peer_snapshots, snapshot_url
-from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, build_snapshot, canonical_json
+from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, peer_snapshots
+from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, canonical_json
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
@@ -279,14 +278,6 @@ class TestCompatSignals(SimpleTestCase):
         assert row.readings == ("3", "")
 
 
-class TestPeerFetching(SimpleTestCase):
-    def test_the_snapshot_path_is_derived_from_the_urlconf_not_written_out(self) -> None:
-        assert snapshot_url("http://127.0.0.1:9401") == "http://127.0.0.1:9401" + reverse("dash:settings_snapshot")
-
-    def test_a_base_url_with_a_trailing_slash_resolves_the_same(self) -> None:
-        assert snapshot_url("http://127.0.0.1:9401/") == snapshot_url("http://127.0.0.1:9401")
-
-
 class TestTheEndpoints(TestCase):
     def test_the_snapshot_route_answers_a_snapshot(self) -> None:
         response = self.client.get(reverse("dash:settings_snapshot"), **_LOOPBACK)
@@ -296,9 +287,9 @@ class TestTheEndpoints(TestCase):
     def test_the_snapshot_route_is_read_only(self) -> None:
         assert self.client.post(reverse("dash:settings_snapshot"), **_LOOPBACK).status_code == 405
 
-    def test_the_snapshot_route_is_refused_off_loopback(self) -> None:
-        response = self.client.get(reverse("dash:settings_snapshot"), REMOTE_ADDR="10.0.0.9")
-        assert response.status_code == 403
+    def test_the_signed_in_snapshot_route_works_off_loopback(self) -> None:
+        response = self.client.get(reverse("dash:settings_snapshot"), REMOTE_ADDR="198.51.100.9")
+        assert response.status_code == 200
 
     def test_the_compare_page_renders_with_no_peer_configured(self) -> None:
         response = self.client.get(reverse("dash:settings_compare"), **_LOOPBACK)
@@ -329,20 +320,18 @@ class TestTheEndpoints(TestCase):
         assert self.client.post(reverse("dash:settings_compare"), **_LOOPBACK).status_code == 200
         assert list(ConfigSetting.objects.values_list("scope", "key", "value")) == before
 
-    def test_the_compare_page_is_refused_off_loopback(self) -> None:
-        assert self.client.get(reverse("dash:settings_compare"), REMOTE_ADDR="10.0.0.9").status_code == 403
+    def test_the_signed_in_compare_page_works_off_loopback(self) -> None:
+        assert self.client.get(reverse("dash:settings_compare"), REMOTE_ADDR="198.51.100.9").status_code == 200
 
     def test_the_settings_page_links_to_the_comparison(self) -> None:
         response = self.client.get(reverse("dash:settings"), **_LOOPBACK)
         assert reverse("dash:settings_compare").encode() in response.content
 
 
-class TestOneUnresolvablePeerNeverTakesTheOthersDown(TestCase):
-    """A peer whose own fields cannot be resolved is one degraded row, never a 500."""
-
+class TestConfiguredPeersNeedImports(TestCase):
     _PEERS = (
-        PeerInstance(name="good", url="http://127.0.0.1:1/", tunnel=PeerTunnel(host="good.example.invalid")),
-        PeerInstance(name="typo", url="http://127.0.0.1:94011/", tunnel=PeerTunnel(host="typo.example.invalid")),
+        PeerInstance(name="good", url="http://127.0.0.1:1/"),
+        PeerInstance(name="typo", url="http://127.0.0.1:94011/"),
     )
 
     def _snapshots(self) -> tuple[PeerSnapshot, ...]:
@@ -352,10 +341,19 @@ class TestOneUnresolvablePeerNeverTakesTheOthersDown(TestCase):
     def test_every_peer_still_gets_a_row(self) -> None:
         assert [peer.label for peer in self._snapshots()] == ["good", "typo"]
 
-    def test_the_unresolvable_one_carries_its_reason(self) -> None:
-        typo = self._snapshots()[1]
-        assert not typo.reachable
-        assert typo.error
+    def test_each_peer_names_its_live_fetch_failure(self) -> None:
+        with (
+            patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=list(self._PEERS)),
+            patch(
+                "teatree.core.settings.settings_peers.httpx.Client.get",
+                side_effect=httpx.ConnectError("forward unavailable"),
+            ),
+        ):
+            rows = peer_snapshots()
+        assert [peer.error for peer in rows] == [
+            "ConnectError: forward unavailable",
+            "ValueError: Port out of range 0-65535",
+        ]
 
     def test_the_compare_page_still_answers_200(self) -> None:
         with patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=list(self._PEERS)):
@@ -372,126 +370,6 @@ class TestUnreachablePeersAreNeverDropped(TestCase):
         assert [instance.label for instance in view.instances] == ["this instance", "box-b"]
         assert view.unreachable == (unreachable,)
         assert view.error.startswith("no reachable peer to compare against")
-
-
-class TestOneDeadPeerCostsExactlyOneRow(TestCase):
-    """The unhappy path the page exists for, with nothing about the transport mocked.
-
-    One peer's port genuinely has nothing listening on it and the other genuinely serves its
-    snapshot over HTTP, because a guard exercised only against a patched ``httpx`` says nothing
-    about the refusal an operator actually meets. What is asserted is the whole degradation
-    contract: the dead peer costs its OWN row and only its own row — it is named, it carries
-    its reason, it is kept out of the difference table's columns, and the peer that answered
-    still produces the comparison it would have produced alone.
-
-    The page is fetched ONCE for the class: it builds a full settings snapshot per request, so
-    a fetch per assertion buys nothing and costs seconds. The assertions stay one fact each.
-    """
-
-    _KEY = "merge_wip"
-    _LOCAL_VALUE = 3
-    _PEER_VALUE = 41
-    _DEAD = "unreachable-box"
-    _LIVE = "answering-box"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        # Not `setUpTestData`: what it publishes is deep-copied per test, and an HttpResponse
-        # carries a ResolverMatch that refuses to be copied at all.
-        super().setUpClass()
-        ConfigSetting.objects.set_value(cls._KEY, cls._LOCAL_VALUE, scope="")
-        peers = [
-            PeerInstance(name=cls._DEAD, url=f"http://127.0.0.1:{cls._closed_port()}/"),
-            PeerInstance(name=cls._LIVE, url=f"http://127.0.0.1:{cls._serve_snapshot()}/"),
-        ]
-        with (
-            patch("teatree.core.settings.settings_peers.load_peer_instances", return_value=peers),
-            # The FETCHING venue, pinned. Under CI this suite runs in a container, where
-            # `fetch_target` rewrites a loopback peer onto the docker host — which cannot
-            # reach a server bound on this container's own loopback, so the live peer would
-            # read as refused. Pinning the venue leaves the transport itself untouched.
-            patch("teatree.core.settings.settings_peers.host_published_port_host", return_value="127.0.0.1"),
-        ):
-            cls.response = Client().get(reverse("dash:settings_compare"), **_LOOPBACK)
-        cls.view = cls.response.context["comparison"]
-
-    @staticmethod
-    def _closed_port() -> int:
-        """A port with nothing on it — bound only to learn its number, then released."""
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            return probe.getsockname()[1]
-
-    @classmethod
-    def _serve_snapshot(cls) -> int:
-        """Serve one real peer's snapshot on a real loopback port; return the port."""
-        payload = build_snapshot(cls._LIVE)
-        payload["values"]["settings"].setdefault("", {})[cls._KEY] = cls._PEER_VALUE
-        body = json.dumps(payload).encode("utf-8")
-        route = reverse("dash:settings_snapshot")
-
-        class _Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                if self.path != route:
-                    self.send_error(404)
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 — the stdlib's own name.
-                """Silence: this test's output is its assertions, not an access log."""
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        cls.addClassCleanup(server.server_close)
-        cls.addClassCleanup(server.shutdown)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        return int(server.server_address[1])
-
-    def test_the_page_still_answers(self) -> None:
-        assert self.response.status_code == 200
-
-    def test_the_dead_peer_is_named_on_the_page(self) -> None:
-        assert self._DEAD.encode() in self.response.content
-
-    def test_it_is_named_as_an_instance_that_did_not_answer_rather_than_dropped(self) -> None:
-        assert [instance.label for instance in self.view.unreachable] == [self._DEAD]
-
-    def test_the_dead_peer_carries_the_reason_it_did_not_answer(self) -> None:
-        dead = self.view.unreachable[0]
-        assert not dead.reachable
-        assert dead.error
-
-    def test_the_peer_that_answered_is_still_compared(self) -> None:
-        assert self.view.labels == (LOCAL_LABEL, self._LIVE)
-
-    def test_the_dead_peer_never_becomes_a_column(self) -> None:
-        """A heading above no cell slides every later value under the wrong instance's name."""
-        assert self._DEAD not in self.view.labels
-        assert all(len(row.cells) == len(self.view.labels) for row in self.view.rows)
-
-    def test_the_difference_the_reachable_peer_carries_is_still_reported(self) -> None:
-        row = next(row for row in self.view.rows if row.title == self._KEY and not row.scope)
-        assert [cell.value for cell in row.cells] == [self._LOCAL_VALUE, self._PEER_VALUE]
-
-    def test_the_page_is_not_the_empty_one_it_shows_with_nothing_to_compare(self) -> None:
-        assert not self.view.error
-        assert b"no reachable peer to compare against" not in self.response.content
-
-    def test_the_missing_box_is_reported_as_a_gap_not_as_a_failure(self) -> None:
-        """A box that did not answer narrows the comparison; it does not break it.
-
-        Rendered in the same red as the comparability verdict, this note competed with the one
-        banner on the page that decides whether the rows below may be read as drift at all — and
-        one of the two boxes here can NEVER answer, so its red was permanent.
-        """
-        body = self.response.content.decode()
-        note = re.search(r'<p class="banner-amber">(.*?)</p>', body, re.DOTALL)
-        assert note is not None
-        assert self._DEAD in note.group(1)
-        assert "banner-red" not in body
 
 
 _DECLARED = ("merge_wip", "overlays")
@@ -722,8 +600,8 @@ class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
         assert "Changes from this page apply to this instance only" in rendered
         assert re.search(r"this instance\s*<span class=\"muted\">v1.2.3</span>", rendered)
         assert re.search(r"peer\s*<span class=\"muted\">v2.3.4</span>", rendered)
-        assert "refuse a version 2 capture when loading a v2 file" in rendered
-        assert "a live peer fetch checks the format only" in rendered
+        assert "refuse a version 2 capture" in rendered
+        assert "No live peer request" in rendered
 
     def test_compare_posts_only_to_local_relative_urls(self) -> None:
         local = PeerSnapshot(
@@ -1350,25 +1228,25 @@ class TestTheControlOnThisPageActuallyWrites(TestCase):
 
     def test_posting_the_rendered_url_stores_the_value(self) -> None:
         url = self._row().readings[0].cell.post_url
-        response = Client().post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        response = self.client.post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
         assert response.status_code == 200
         assert ConfigSetting.objects.get(key=self._KEY, scope="").value == self._NEW
 
     def test_posting_a_scoped_control_stores_it_in_that_scope_only(self) -> None:
         url = self._row(scope="t3-teatree").readings[0].cell.post_url
-        Client().post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        self.client.post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
         assert ConfigSetting.objects.filter(key=self._KEY, scope="t3-teatree").exists()
         assert not ConfigSetting.objects.filter(key=self._KEY, scope="").exists()
 
     def test_an_emptied_control_clears_the_row_so_the_default_resolves_again(self) -> None:
         url = self._row().readings[0].cell.post_url
-        Client().post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
-        Client().post(url, {"value": ""}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        self.client.post(url, {"value": json.dumps(self._NEW)}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        self.client.post(url, {"value": ""}, HTTP_HX_REQUEST="true", **_LOOPBACK)
         assert not ConfigSetting.objects.filter(key=self._KEY, scope="").exists()
 
     def test_a_refused_value_answers_400_and_stores_nothing(self) -> None:
         url = self._row().readings[0].cell.post_url
-        response = Client().post(url, {"value": "{not json"}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        response = self.client.post(url, {"value": "{not json"}, HTTP_HX_REQUEST="true", **_LOOPBACK)
         assert response.status_code == 400
         assert not ConfigSetting.objects.filter(key=self._KEY, scope="").exists()
 

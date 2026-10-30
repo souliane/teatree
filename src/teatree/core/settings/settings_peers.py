@@ -193,7 +193,13 @@ def _fetch(label: str, base: str, note: str, timeout: float, tunnel_command: str
     url = snapshot_url(base)
     try:
         target = fetch_target(url)
-        response = httpx.get(target.url, timeout=timeout, follow_redirects=True, headers=target.headers)
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            response = client.get(target.url, headers=target.headers)
+        location = urlsplit(response.headers.get("location", "")).path
+        if response.status_code in {401, 403} or (
+            response.is_redirect and location.startswith(("/login/", "/admin/login/"))
+        ):
+            return PeerSnapshot(label=label, url=url, note=note, error="peer requires sign-in")
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:

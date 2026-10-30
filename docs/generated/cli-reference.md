@@ -35,6 +35,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 gunicorn server.                                             │
 │ dashboard       Open the teatree dashboard board, served by the same local   │
 │                 gunicorn as the admin.                                       │
+│ login                                                                        │
+│ logout                                                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -110,10 +112,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 off_live_tick + critic/signal code guards) — the master flag │
 │                 graduated default-ON in #3895, so the disabled loop row is   │
 │                 what keeps a fresh install inert.                            │
-│ peer            The loopback forwards the Compare Instances page reads its   │
-│                 peers through.                                               │
-│ settings        This box's settings beside its peers' — the Compare          │
-│                 Instances page, in a terminal.                               │
+│ peer            Open a peer dashboard to sign in and download a comparison   │
+│                 snapshot.                                                    │
+│ settings        Compare this instance's settings with imported peer          │
+│                 snapshots.                                                   │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -367,6 +369,34 @@ Usage: t3 dashboard [OPTIONS]
 │                              port for the forward (default 8803).            │
 │ --no-browser                 Do not open the browser at the dashboard.       │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 login`
+
+```
+Usage: t3 login [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --approvals          Request a separate approval grant after sign-in.        │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 logout`
+
+```
+Usage: t3 logout [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user        TEXT  Operator username when several people have grants.       │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7447,7 +7477,7 @@ Usage: t3 directive history [OPTIONS]
 ```
 Usage: t3 peer [OPTIONS] COMMAND [ARGS]...
 
- The loopback forwards the Compare Instances page reads its peers through.
+ Open a peer dashboard to sign in and download a comparison snapshot.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7551,15 +7581,14 @@ Usage: t3 peer open [OPTIONS] NAME
 ```
 Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 
- This box's settings beside its peers' — the Compare Instances page, in a
- terminal.
+ Compare this instance's settings with imported peer snapshots.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ compare  What differs between this box and its peers, and whether it can be  │
-│          read as drift.                                                      │
+│ compare  What differs between this box and imported peers, and whether it is │
+│          drift.                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7575,9 +7604,8 @@ Usage: t3 settings compare [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
-│                          repeatable. A record reaches what a tunnel cannot:  │
-│                          a box whose forward is down, a box that is gone,    │
-│                          and this box as it stood earlier.                   │
+│                          repeatable. Import a capture from each peer to      │
+│                          compare it with this instance.                      │
 │ --kind            TEXT   Show only these difference kinds, repeatable:       │
 │                          values, override, code. Default shows all three.    │
 │ --timeout         FLOAT  Seconds to wait for each peer, overriding its       │
@@ -12863,8 +12891,9 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
-│ partial-merge-report         List merged tickets whose open issue has a      │
-│                              declared remainder.                             │
+│ partial-merge-report         List settled tickets whose issue is still open. │
+│ unsettle                     Reopen a settled ticket whose issue has an open │
+│                              remainder.                                      │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13468,10 +13497,28 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ```
 Usage: t3 teatree ticket partial-merge-report [OPTIONS]
 
- List merged tickets whose open issue has a declared remainder.
+ List settled tickets whose issue is still open.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket unsettle`
+
+```
+Usage: t3 teatree ticket unsettle [OPTIONS] TICKET_ID
+
+ Reopen a settled ticket whose issue has an open remainder.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT  Name open work when the PR declared no remainder.     │
+│ --dry-run              Check without changing the ticket.                    │
 │ --json                 Emit machine-readable JSON.                           │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯

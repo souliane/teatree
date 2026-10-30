@@ -3,13 +3,13 @@
 import datetime as dt
 from unittest import mock
 
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.dash.preset_editor import build_preset_editor
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.enable_verdict import effective_verdicts
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 def _loop(name: str) -> Loop:
@@ -70,7 +70,7 @@ class PresetEntryPostTestCase(TestCase):
         seam.assert_called_once_with("present", "review", "on")
 
     def test_csrf_is_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         resp = csrf_client.post(self.url, {"preset": "present", "loop": "review", "state": "on"})
         assert resp.status_code == 403
 

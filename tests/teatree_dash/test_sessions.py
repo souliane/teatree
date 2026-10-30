@@ -13,7 +13,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models.task_attempt import TaskAttempt
@@ -21,6 +20,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.dash.sessions import SESSION_ROWS, build_session_index
 from teatree.dash.views.base import NAV_ITEMS
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 _SECRET = "hunter2-supersecret-token"

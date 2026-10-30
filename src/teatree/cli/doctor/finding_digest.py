@@ -25,10 +25,6 @@ import re
 #: identity (one placeholder per remaining id), which is a real change, not drift.
 _DIGITS = re.compile(r"\d+")
 
-#: Truncation of the hex digest. 64 bits is far beyond collision range for the handful
-#: of findings one box emits, and a short key keeps the DM ledger readable.
-_DIGEST_CHARS = 16
-
 
 def finding_identity(message: str) -> str:
     """The volatility-normalized identity of one doctor FAIL *message*."""

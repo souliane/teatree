@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.post_impl import approve_impl, unapprove_impl
 from teatree.core.models import OnBehalfApproval, OutboundClaim
 from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
@@ -142,7 +143,7 @@ class TestReviewServiceRecordsOutboundClaims:
 
     def test_approve_records_gitlab_approve_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.approve(OWNED_REPO, 15)
+        msg, code = approve_impl(service, OWNED_REPO, 15, encoded=OWNED_REPO.replace("/", "%2F"))
         assert code == 0, msg
         claim = OutboundClaim.objects.get(idempotency_key=f"gitlab_approve:{OWNED_REPO}!15:approve")
         assert claim.kind == OutboundClaim.Kind.GITLAB_APPROVE
@@ -152,7 +153,7 @@ class TestReviewServiceRecordsOutboundClaims:
         # After unapprove the read-back must show this identity ABSENT from
         # approved_by (verify_unapproval_landed, #2081).
         service, _ = _service(approvers=[])
-        msg, code = service.unapprove(OWNED_REPO, 16)
+        msg, code = unapprove_impl(service, OWNED_REPO, 16, encoded=OWNED_REPO.replace("/", "%2F"))
         assert code == 0, msg
         claim = OutboundClaim.objects.get(idempotency_key=f"gitlab_approve:{OWNED_REPO}!16:unapprove")
         assert claim.kind == OutboundClaim.Kind.GITLAB_APPROVE

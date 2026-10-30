@@ -1246,3 +1246,20 @@ class TestEveryFailureKindIsActionable:
     def test_only_success_maps_to_zero(self) -> None:
         zeros = [failure for failure, code in PUSH_EXIT_CODES.items() if code == 0]
         assert zeros == [PushFailure.NONE]
+
+
+class TestBotOwnedPush:
+    def test_factory_push_refuses_before_git_when_the_bot_gate_fails(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://github.com/build-bot/engine.git")
+        credential = ForgeCredential(token=FAKE_TOKEN, source=CredentialSource.OVERLAY_PASS_STORE)
+        with (
+            patch.object(forge_push, "_forge_write_credential", return_value=credential),
+            patch.object(forge_push, "bot_push_error", return_value="bot identity mismatch") as guard,
+            patch.object(forge_push, "run_bounded_group") as push,
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_REFUSED
+        assert "bot identity mismatch" in outcome.detail
+        assert guard.call_args.kwargs["token"] == FAKE_TOKEN
+        push.assert_not_called()

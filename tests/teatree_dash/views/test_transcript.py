@@ -6,10 +6,10 @@ drawer only links to it. A missing transcript renders an empty-state, never a 50
 
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.dash.transcript import TranscriptEntry
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _NON_LOOPBACK = "203.0.113.7"
 
@@ -28,10 +28,10 @@ class TranscriptViewTestCase(TestCase):
         assert resp.status_code == 200
         assert "no transcript" in resp.content.decode().lower()
 
-    def test_non_loopback_is_forbidden(self) -> None:
+    def test_signed_in_staff_can_access_off_loopback(self) -> None:
         with patch("teatree.dash.views.transcript.tail_transcript", return_value=[]):
             resp = self.client.get(reverse("dash:transcript", args=["s"]), REMOTE_ADDR=_NON_LOOPBACK)
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
     def test_post_is_rejected(self) -> None:
         resp = self.client.post(reverse("dash:transcript", args=["s"]))

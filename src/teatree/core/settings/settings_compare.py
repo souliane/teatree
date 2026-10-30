@@ -24,7 +24,7 @@ both read off :attr:`CompareView.compared` — the instances that ANSWERED — s
 can never slide a value under another box's name. The peers that did not answer are named in
 full, with their reason, beside the table rather than inside it.
 
-**A column is a live peer or a loaded record, and the rules do not fork.** A snapshot file the
+**A column is this instance or a loaded record, and the rules do not fork.** A snapshot file the
 operator loaded (:mod:`teatree.core.settings.settings_files`) enters :func:`build_compare_view` as one
 more instance and is diffed by everything above unchanged — which is what lets an offline box,
 a decommissioned box, and this box as it stood weeks ago be compared at all. The no-opinion
@@ -150,11 +150,7 @@ def build_compare_view(
     kinds: Sequence[RowKind] = (),
     filters: CompareFilters | None = None,
 ) -> CompareView:
-    """Fetch every peer, add every loaded record, and build the rows the instances differ on.
-
-    *timeout* raises the per-peer wait for a caller that would rather wait than be told a slow
-    forward did not answer; ``None`` leaves each peer on the wait its registry entry declares.
-    """
+    """List configured peers, add loaded records, and compare the snapshots that answered."""
     filters = filters or CompareFilters()
     instances = (local_snapshot(), *peer_snapshots(timeout), *loaded)
     live = tuple(instance for instance in instances if instance.reachable)
@@ -224,9 +220,7 @@ def reading_order(row: CompareRow) -> tuple[Any, ...]:
 
 _MIN_INSTANCES: Final = 2
 
-_NOTHING_TO_COMPARE: Final = (
-    "no reachable peer to compare against — bring a peer's tunnel up, or load a saved snapshot file below"
-)
+_NOTHING_TO_COMPARE: Final = "no reachable peer to compare against — load a saved snapshot file below"
 
 
 def _setting_rows(live: Sequence[PeerSnapshot], scope_filter: str) -> list[CompareRow]:

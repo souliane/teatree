@@ -17,6 +17,7 @@ src/teatree/config/host_projection.py
 src/teatree/config/known_settings.py
 src/teatree/config/loader.py
 src/teatree/config/mr_reminder.py
+src/teatree/config/operator_oauth_apps.py
 src/teatree/config/overlay_code_defaults.py
 src/teatree/config/override_read_health.py
 src/teatree/config/override_reader.py
