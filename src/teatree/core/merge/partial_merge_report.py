@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TypedDict
 
 from teatree.core.issue_writes.issue_candidate_selection import description_of
@@ -34,7 +35,10 @@ class PartialMergeReport(TypedDict):
     unreadable: list[PartialMergeUnreadable]
 
 
-SETTLED_STATES = frozenset({Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED})
+class InspectionOutcome(StrEnum):
+    MATCH = "match"
+    CLOSED = "closed"
+    UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +46,10 @@ class SettledTicketInspection:
     match: PartialMergeMatch | None = None
     reason: str = ""
     issue: RawAPIDict | None = None
+    outcome: InspectionOutcome = InspectionOutcome.UNREADABLE
 
 
-def last_merged_pr(ticket: Ticket) -> tuple[PullRequest, PrRef] | None:
+def _last_merged_pr(ticket: Ticket) -> tuple[PullRequest, PrRef] | None:
     rows = [
         (row, ref)
         for row in PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED)
@@ -71,20 +76,20 @@ def last_merged_pr(ticket: Ticket) -> tuple[PullRequest, PrRef] | None:
 
 
 def inspect_settled_ticket(ticket: Ticket) -> SettledTicketInspection:
-    latest = last_merged_pr(ticket)
+    latest = _last_merged_pr(ticket)
     if latest is None:
         return SettledTicketInspection(reason="last merged pull request unknown")
     pr, ref = latest
     try:
         query = CodeHostQuery.for_ref(ref)
         issue = query.backend.get_issue(ticket.issue_url)
-    except Exception:
+    except Exception:  # core never imports backends (§17.6.2), so a 404 or forge error cannot be named
         logger.warning("partial merge report: could not read %s", ticket.issue_url, exc_info=True)
         return SettledTicketInspection(reason="issue unreadable on the forge")
     if not isinstance(issue, dict) or issue.get("state") not in {"open", "opened", "closed"}:
         return SettledTicketInspection(reason="issue state unreadable", issue=issue)
     if issue["state"] == "closed":
-        return SettledTicketInspection(reason="issue closed", issue=issue)
+        return SettledTicketInspection(reason="issue closed", issue=issue, outcome=InspectionOutcome.CLOSED)
     try:
         message = query.pr_message()
     except Exception:
@@ -105,12 +110,15 @@ def inspect_settled_ticket(ticket: Ticket) -> SettledTicketInspection:
             "unmet": list(reading.unmet),
         },
         issue=issue,
+        outcome=InspectionOutcome.MATCH,
     )
 
 
 def find_partial_merges(*, overlay: str = "") -> PartialMergeReport:
     report: PartialMergeReport = {"matches": [], "unreadable": []}
-    tickets = Ticket.objects.filter(state__in=SETTLED_STATES, role=Ticket.Role.AUTHOR, issue_url__startswith="http")
+    tickets = Ticket.objects.filter(
+        state__in=Ticket.merged_states(), role=Ticket.Role.AUTHOR, issue_url__startswith="http"
+    )
     if overlay:
         tickets = tickets.filter(overlay=overlay)
 
@@ -118,6 +126,6 @@ def find_partial_merges(*, overlay: str = "") -> PartialMergeReport:
         inspection = inspect_settled_ticket(ticket)
         if inspection.match is not None:
             report["matches"].append(inspection.match)
-        elif inspection.reason != "issue closed":
+        elif inspection.outcome is InspectionOutcome.UNREADABLE:
             report["unreadable"].append({"ticket_id": ticket.pk, "reason": inspection.reason})
     return report

@@ -6,8 +6,8 @@ from django.test import TestCase
 
 from teatree.backends import forge_merge_rpc
 from teatree.backends.github import client as github_client
-from teatree.core.models import Task, Ticket
-from tests.teatree_core.merge.test_partial_merge_report import _merged_ticket, _pr_bodies
+from teatree.core.models import Session, Task, Ticket
+from tests.teatree_core.merge.partial_merge_helpers import merged_ticket, pr_bodies
 
 
 def _unsettle(
@@ -18,7 +18,7 @@ def _unsettle(
     reason: str = "",
     dry_run: bool = False,
 ) -> dict[str, object]:
-    gh = _pr_bodies({"860": body, "861": body})
+    gh = pr_bodies({"860": body, "861": body})
     args = ["ticket", "unsettle", str(ticket.pk)]
     if reason:
         args.extend(["--reason", reason])
@@ -47,7 +47,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket=no_url).exists()
 
     def test_refuses_closed_issue_without_changing_ticket_or_queuing_task(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
 
         result = _unsettle(
             ticket, body="Part of #4242", issue_data={"state": "closed", "body": ""}, reason="Finish work"
@@ -59,7 +59,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_refuses_closing_keyword_even_when_issue_stays_open(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
 
         result = _unsettle(ticket, body="Closes #4242", reason="Finish work")
 
@@ -69,7 +69,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_reopens_settled_ticket_and_queues_one_reasoned_plan(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
         ticket.extra = {"pr_url_by_branch": {"old": "https://github.com/souliane/teatree/pull/860"}}
         ticket.save(update_fields=["extra"])
 
@@ -90,7 +90,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert Task.objects.filter(ticket=ticket, phase="planning").count() == 1
 
     def test_reason_can_authorize_part_of_without_declared_remainder_but_dry_run_writes_nothing(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
 
         refused = _unsettle(ticket, body="Part of #4242")
         preview = _unsettle(ticket, body="Part of #4242", reason="Finish the audit", dry_run=True)
@@ -106,8 +106,74 @@ class TestPartialMergeUnsettle(TestCase):
         assert ticket.state == Ticket.State.WORK_STARTED
         assert "Finish the audit" in Task.objects.get(pk=applied["planning_task"]).execution_reason
 
+    def test_dry_run_refuses_an_already_planned_remainder(self) -> None:
+        ticket = merged_ticket(4242, 860)
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="planning",
+            status=Task.Status.COMPLETED,
+            execution_reason="Open after that merge (1):\n- audit",
+        )
+
+        preview = _unsettle(ticket, body="Part of #4242\nUnmet: audit", dry_run=True)
+        applied = _unsettle(ticket, body="Part of #4242\nUnmet: audit")
+
+        assert "error" in preview
+        assert preview == applied
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
+    def test_dry_run_rechecks_state_after_the_forge_read(self) -> None:
+        ticket = merged_ticket(4242, 860)
+
+        def advance(_url: str) -> dict[str, str]:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.WORK_STARTED)
+            return {"state": "open", "body": ""}
+
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=pr_bodies({"860": "Part of #4242\nUnmet: audit"})),
+            patch.object(github_client.GitHubCodeHost, "get_issue", side_effect=advance),
+        ):
+            result = cast("dict[str, object]", call_command("ticket", "unsettle", str(ticket.pk), "--dry-run"))
+
+        assert "error" in result
+        assert not Task.objects.filter(ticket=ticket).exists()
+
+    def test_operator_reason_is_one_capped_remainder_item(self) -> None:
+        ticket = merged_ticket(4242, 860)
+        reason = "  Finish\n the\t audit  " + "x" * 350
+
+        result = _unsettle(ticket, body="Part of #4242", reason=reason)
+
+        assert len(cast("list[str]", result["remainder"])[0]) == 300
+        assert "\n" not in cast("list[str]", result["remainder"])[0]
+        assert "- Finish the audit" in Task.objects.get(pk=result["planning_task"]).execution_reason
+        assert "Open after that merge (1):" in Task.objects.get(pk=result["planning_task"]).execution_reason
+
+    def test_refuses_to_cancel_an_active_task_on_a_settled_ticket(self) -> None:
+        ticket = merged_ticket(4242, 860)
+        ticket.state = Ticket.State.RETRO_RECORDED
+        ticket.save(update_fields=["state"])
+        active = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="retro",
+            status=Task.Status.CLAIMED,
+        )
+
+        preview = _unsettle(ticket, body="Part of #4242\nUnmet: audit", dry_run=True)
+        applied = _unsettle(ticket, body="Part of #4242\nUnmet: audit")
+
+        active.refresh_from_db()
+        ticket.refresh_from_db()
+        assert preview == applied
+        assert "error" in applied
+        assert active.status == Task.Status.CLAIMED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+
     def test_reopens_delivered_ticket_with_a_reason_when_pr_has_no_issue_link(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
         ticket.state = Ticket.State.DELIVERED
         ticket.save(update_fields=["state"])
 
@@ -119,10 +185,10 @@ class TestPartialMergeUnsettle(TestCase):
         assert Task.objects.get(pk=result["planning_task"]).phase == "planning"
 
     def test_refuses_reviewer_ticket_and_umbrella_issue(self) -> None:
-        reviewer = _merged_ticket(4242, 860)
+        reviewer = merged_ticket(4242, 860)
         reviewer.role = Ticket.Role.REVIEWER
         reviewer.save(update_fields=["role"])
-        umbrella = _merged_ticket(4243, 861)
+        umbrella = merged_ticket(4243, 861)
 
         reviewer_result = _unsettle(reviewer, body="Part of #4242", reason="Finish work")
         umbrella_result = _unsettle(
@@ -137,7 +203,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket__in=[reviewer, umbrella]).exists()
 
     def test_refuses_unreadable_issue_and_pull_request_body(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
 
         unknown_issue = _unsettle(ticket, body="Part of #4242", issue_data={"state": "draft", "body": ""})
         with (
@@ -153,7 +219,7 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_refuses_nonsettled_ticket_before_asking_forge(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
         ticket.state = Ticket.State.WORK_STARTED
         ticket.save(update_fields=["state"])
 
@@ -167,14 +233,14 @@ class TestPartialMergeUnsettle(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_refuses_when_ticket_moves_out_of_settled_state_during_forge_read(self) -> None:
-        ticket = _merged_ticket(4242, 860)
+        ticket = merged_ticket(4242, 860)
 
         def advance(_url: str) -> dict[str, str]:
             Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.WORK_STARTED)
             return {"state": "open", "body": ""}
 
         with (
-            patch.object(forge_merge_rpc, "gh_runner", return_value=_pr_bodies({"860": "Part of #4242\nUnmet: audit"})),
+            patch.object(forge_merge_rpc, "gh_runner", return_value=pr_bodies({"860": "Part of #4242\nUnmet: audit"})),
             patch.object(github_client.GitHubCodeHost, "get_issue", side_effect=advance),
         ):
             result = cast("dict[str, object]", call_command("ticket", "unsettle", str(ticket.pk)))

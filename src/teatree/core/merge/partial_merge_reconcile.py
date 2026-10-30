@@ -5,8 +5,14 @@ from typing import TypedDict
 from teatree.core.intake.factory_admission import payload_labels, resolve_umbrella_labels
 from teatree.core.intake.umbrella import umbrella_reason
 from teatree.core.issue_writes.issue_candidate_selection import description_of
-from teatree.core.merge.partial_merge import MergedPrReading, PrLink, hold_for_remainder
-from teatree.core.merge.partial_merge_report import SETTLED_STATES, PartialMergeMatch, inspect_settled_ticket
+from teatree.core.merge.partial_merge import (
+    MergedPrReading,
+    PrLink,
+    capped_remainder_item,
+    hold_for_remainder,
+    preview_remainder_hold,
+)
+from teatree.core.merge.partial_merge_report import PartialMergeMatch, inspect_settled_ticket
 from teatree.core.models import Ticket
 
 
@@ -26,7 +32,7 @@ def _candidate(ticket_id: int) -> tuple[Ticket | None, str]:
         return None, f"Ticket {ticket_id} not found"
     if ticket.role != Ticket.Role.AUTHOR:
         return None, "only author tickets can be unsettled"
-    if ticket.state not in SETTLED_STATES:
+    if ticket.state not in Ticket.merged_states():
         return None, f"ticket {ticket_id} is not settled ({ticket.state})"
     if not ticket.issue_url.startswith(("https://", "http://")):
         return None, "ticket has no forge issue URL"
@@ -51,8 +57,8 @@ def _remainder(match: PartialMergeMatch, reason: str) -> tuple[list[str], str]:
     if match["link"] == PrLink.CLOSING:
         return [], "the merged pull request used a closing keyword for this issue"
     remainder = [*match["unmet"]]
-    if reason.strip():
-        remainder.append(reason.strip())
+    if normalized_reason := capped_remainder_item(" ".join(reason.split())):
+        remainder.append(normalized_reason)
     if not remainder:
         return [], "no remainder evidence; pass --reason to name the open work"
     return remainder, ""
@@ -68,28 +74,21 @@ def unsettle_ticket(ticket_id: int, *, reason: str, dry_run: bool) -> UnsettleRe
     remainder, refusal = _remainder(match, reason)
     if refusal:
         return {"error": refusal}
+    reading = MergedPrReading(PrLink(match["link"]), tuple(remainder))
     if dry_run:
-        return {
-            "ticket_id": ticket_id,
-            "state": ticket.state,
-            "planning_task": None,
-            "remainder": remainder,
-            "dry_run": True,
-        }
-
-    task = hold_for_remainder(
-        ticket,
-        MergedPrReading(PrLink(match["link"]), tuple(remainder)),
-        merged_pr=match["pr_url"],
-        settled=True,
-    )
-    if task is None:
+        task = None
+        state = preview_remainder_hold(ticket, reading)
+    else:
+        task = hold_for_remainder(ticket, reading, merged_pr=match["pr_url"], settled=True)
+        if task is not None:
+            ticket.refresh_from_db()
+        state = ticket.state if task is not None else None
+    if state is None:
         return {"error": "ticket could not be reopened or this remainder was already planned"}
-    ticket.refresh_from_db()
     return {
         "ticket_id": ticket_id,
-        "state": ticket.state,
-        "planning_task": task.pk,
+        "state": state,
+        "planning_task": task.pk if task else None,
         "remainder": remainder,
-        "dry_run": False,
+        "dry_run": dry_run,
     }

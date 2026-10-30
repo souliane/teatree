@@ -18,7 +18,7 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.issue_writes.issue_candidate_selection import description_of
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.host_kind import resolve_host_kind
-from teatree.core.models import MergeClear, PullRequest, Ticket
+from teatree.core.models import MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
 from teatree.core.runners.ship import CLOSE_KEYWORD_RE
@@ -28,7 +28,6 @@ from teatree.utils.url_slug import repo_namespaced_key
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from teatree.core.models import Task
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def _plain(text: str) -> str:
     return re.sub(r"[\s*_`]+", " ", text).strip().casefold()
 
 
-def _capped(item: str) -> str:
+def capped_remainder_item(item: str) -> str:
     return item[:_ITEM_CAP].strip()
 
 
@@ -143,12 +142,12 @@ class MergedPrReading:
             return cls()
         lines = body.splitlines()
         declared = (*_status_table_items(lines), *_marker_line_items(lines, ticket))
-        return cls(PrLink.PARTIAL, tuple(dict.fromkeys(_capped(item) for item in declared)))
+        return cls(PrLink.PARTIAL, tuple(dict.fromkeys(capped_remainder_item(item) for item in declared)))
 
     def with_unclaimed_issue_boxes(self, issue_body: str, pr_body: str) -> "MergedPrReading":
         claimed = _plain(pr_body)
         boxes = (box for box in _unchecked_acceptance_boxes(issue_body) if _plain(box) not in claimed)
-        return MergedPrReading(self.link, tuple(dict.fromkeys(_capped(box) for box in boxes)))
+        return MergedPrReading(self.link, tuple(dict.fromkeys(capped_remainder_item(box) for box in boxes)))
 
 
 def read_merged_pr(clear: MergeClear, repo_slug: str) -> MergedPrReading:
@@ -186,6 +185,31 @@ def _branches_bound_to_merged_prs(ticket: Ticket) -> list[tuple[str, str]]:
     return [("pr_url_by_branch", branch) for branch, url in bound.items() if url in merged_urls]
 
 
+def _remainder_listing(reading: MergedPrReading) -> str:
+    return f"Open after that merge ({len(reading.unmet)}):\n" + "\n".join(f"- {item}" for item in reading.unmet)
+
+
+def _can_hold_locked(ticket: Ticket, listing: str, *, settled: bool) -> bool:
+    holdable = ticket.state in (
+        Ticket.merged_states() if settled else _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
+    )
+    if not holdable or ticket.role != Ticket.Role.AUTHOR:
+        return False
+    if settled and ticket.tasks.filter(status__in=Task.Status.active()).exists():
+        return False
+    if ticket.tasks.filter(phase="planning", execution_reason__endswith=listing).exists():
+        logger.info("partial merge: ticket %s already planned this remainder; not reopening again", ticket.pk)
+        return False
+    return True
+
+
+def preview_remainder_hold(ticket: Ticket, reading: MergedPrReading) -> str | None:
+    listing = _remainder_listing(reading)
+    with transaction.atomic():
+        locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+        return locked.state if _can_hold_locked(locked, listing, settled=True) else None
+
+
 def hold_for_remainder(
     ticket: Ticket, reading: MergedPrReading, *, merged_pr: str, settled: bool = False
 ) -> "Task | None":
@@ -195,25 +219,18 @@ def hold_for_remainder(
     ``work_started`` through the transition it already has. The stamp keeps the board's
     per-tick reconcile from merging the same pull request again.
     """
-    listing = f"Open after that merge ({len(reading.unmet)}):\n" + "\n".join(f"- {item}" for item in reading.unmet)
+    listing = _remainder_listing(reading)
     intent = (
         f"{merged_pr} merged without closing the issue. Start the remainder on a fresh branch from the default "
         f"branch; the merged one has landed.\n{listing}"
     )
-    settled_states = {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED}
     try:
         with transaction.atomic():
             if settled:
                 ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
-            holdable = ticket.state in (
-                settled_states if settled else _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
-            )
-            if not holdable or ticket.role != Ticket.Role.AUTHOR:
+            if not _can_hold_locked(ticket, listing, settled=settled):
                 return None
-            if ticket.tasks.filter(phase="planning", execution_reason__endswith=listing).exists():
-                logger.info("partial merge: ticket %s already planned this remainder; not reopening again", ticket.pk)
-                return None
-            if ticket.state in _REOPEN_FROM or (settled and ticket.state in settled_states):
+            if settled or ticket.state in _REOPEN_FROM:
                 ticket.reopen()
             elif ticket.state in _REWORK_FROM:
                 ticket.rework()
