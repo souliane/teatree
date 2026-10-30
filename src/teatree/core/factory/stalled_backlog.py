@@ -24,11 +24,12 @@ predicate owns what "stranded" means.
 import logging
 from datetime import timedelta
 
+from django.db.models import Exists, Max, OuterRef, Subquery
 from django.utils import timezone
 
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
-from teatree.core.factory.parked_tickets import silent_freeze_tasks
-from teatree.core.models import Ticket
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
+from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.utils.throttled_log import warn_throttled
 
@@ -42,10 +43,22 @@ logger = logging.getLogger(__name__)
 
 def stranded_ticket_count() -> int:
     """Tickets in WORK_STARTED whose newest task FAILED outside the window, with none in flight."""
-    cutoff = timezone.now() - STALLED_BACKLOG_WINDOW
-    return sum(
-        task.ticket.state == Ticket.State.WORK_STARTED and task.created_at is not None and task.created_at < cutoff
-        for task in silent_freeze_tasks()
+    own_tasks = Task.objects.filter(ticket_id=OuterRef("pk"))
+    newest = own_tasks.order_by("-created_at", "-pk")
+    return (
+        Ticket.objects.filter(state=Ticket.State.WORK_STARTED)
+        .annotate(
+            newest_task_at=Max("tasks__created_at"),
+            newest_task_status=Subquery(newest.values("status")[:1]),
+            newest_task_reason=Subquery(newest.values("execution_reason")[:1]),
+            newest_task_failure_kind=Subquery(newest.values("failure_kind")[:1]),
+        )
+        .filter(newest_task_at__lt=timezone.now() - STALLED_BACKLOG_WINDOW)
+        .filter(newest_task_status=Task.Status.FAILED)
+        .exclude(Exists(own_tasks.filter(status__in=Task.Status.active())))
+        .exclude(newest_task_reason__contains=HALT_STAMP)
+        .exclude(newest_task_failure_kind=FailureKind.CANCELLED)
+        .count()
     )
 
 

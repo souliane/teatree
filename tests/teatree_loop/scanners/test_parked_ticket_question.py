@@ -34,6 +34,8 @@ class ParkedTicketQuestionTest(TestCase):
         jobs[0].scanner.scan()
         row = DeferredQuestion.objects.get()
         assert row.evidence["decision"] == "irreversible"
+        assert "created over two weeks ago" in row.question
+        assert "created over two weeks ago" in row.evidence["checked"][0]
         assert "Retire them" in row.options_json
         assert "issues/" not in str(row.evidence)
 

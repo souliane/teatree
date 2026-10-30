@@ -20,7 +20,7 @@ from teatree.core.models.known_issue import KnownIssue
 
 AGED_PARK = timedelta(days=14)
 PARKED_MARKER_PREFIX = "parked-tickets:"
-_QUESTION = "Should I retire the tickets that have been stopped for over two weeks?"
+_QUESTION = "Should I retire tickets whose failed newest tasks were created over two weeks ago?"
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +69,7 @@ def parked_ticket_signals() -> SignalCollection:
                 fingerprint="parked-tickets-await-owner",
                 severity=KnownIssue.Severity.WARNING,
                 kind="parked_tickets",
-                summary=f"{count} tickets remain parked for over 14 days after failed tasks",
+                summary=f"{count} tickets have failed newest tasks created over 14 days ago",
             ),
         )
     )
@@ -89,7 +89,7 @@ def ask_owner_about_parked(tasks: list[Task]) -> DeferredQuestion | None:
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
         checked=(
-            f"{len(tasks)} tickets have had no successor for more than two weeks.",
+            f"{len(tasks)} tickets have a failed newest task created over two weeks ago.",
             f"Recorded causes include {cause_text}.",
         ),
         blocker="Retiring a ticket ends its current work record.",

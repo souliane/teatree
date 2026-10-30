@@ -29,6 +29,18 @@ class TestStrandedTicketCount(TestCase):
         Task.objects.update(execution_reason=HALT_STAMP)
         assert stranded_ticket_count() == 0
 
+    def test_newest_task_uses_creation_time_before_primary_key(self) -> None:
+        self._queued(1)
+        ticket = Ticket.objects.get()
+        later_pk = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=later_pk.pk).update(created_at=timezone.now() - timedelta(hours=4))
+        assert stranded_ticket_count() == 1
+
+    def test_synthetic_ticket_still_counts_as_a_stalled_lane(self) -> None:
+        self._queued(1)
+        Ticket.objects.update(issue_url="loop://test")
+        assert stranded_ticket_count() == 1
+
     def test_a_recent_failure_is_still_in_flight(self) -> None:
         # The window exists so a retry that has not been requeued yet never counts.
         self._queued(2, age=timedelta(minutes=5))
