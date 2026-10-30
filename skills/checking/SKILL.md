@@ -181,7 +181,7 @@ Keep references clickable when surfacing them to the user — link a ticket/PR i
 
 ## The daily follow-up routine
 
-Fetch all "Not started" issues assigned to the current user, then implement each one sequentially using the full delivery cycle (code, test, push, PR) — the cycle itself is the single one documented in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Workflow. Interactive followup runs that cycle in the main conversation; see § Rules for the sequential-only constraint and how it relates to the batch-mode singleton sub-agent exception.
+Fetch all "Not started" issues assigned to the current user, then implement each one sequentially using the full delivery cycle (code, test, push, PR) — the cycle itself is the single one documented in [`../wip/SKILL.md`](../wip/SKILL.md) § Workflow. Interactive followup runs that cycle in the main conversation; see § Rules for the sequential-only constraint and how it relates to the batch-mode singleton sub-agent exception.
 
 ### Periodic Mode
 
@@ -289,7 +289,7 @@ If the project uses an external tracker (e.g., Notion), update the ticket status
 
 If not found in the external tracker, log a warning but continue — not all tickets have an entry.
 
-**b. Run the full per-ticket delivery cycle.** The delivery cycle (intake → implementation → testing → delivery) is documented once in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Workflow and is not restated here — followup runs the same cycle. The two skills differ only in how the cycle is hosted: batch mode delegates each ticket to a singleton delivery sub-agent (its § Rules "Singleton delivery sub-agent" exception), whereas interactive followup runs the cycle in the main conversation per the constraint in § Rules below.
+**b. Run the full per-ticket delivery cycle.** The delivery cycle (intake → implementation → testing → delivery) is documented once in [`../wip/SKILL.md`](../wip/SKILL.md) § Workflow and is not restated here — followup runs the same cycle. The two skills differ only in how the cycle is hosted: batch mode delegates each ticket to a singleton delivery sub-agent (its § Rules "Singleton delivery sub-agent" exception), whereas interactive followup runs the cycle in the main conversation per the constraint in § Rules below.
 
 **c. Report result** before moving to the next ticket:
 
@@ -429,15 +429,11 @@ Internally the command:
 
 **During long sessions:** Also re-run data sync after significant events (ticket completed, PR pushed, context switch) — don't wait for the next explicit `/t3:checking` invocation.
 
-### `followup.json` Schema
-
-See [`references/followup-schema.md`](references/followup-schema.md) for the full cache schema at `$T3_DATA_DIR/followup.json`.
-
 ### Rules
 
 #### Interactive mode (default)
 
-- **Sequential only.** Interactive followup runs each ticket's delivery cycle in the main conversation and does not delegate ticket implementation to sub-agents — the [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations" default applies here. The batch-mode singleton delivery sub-agent (the explicit exception documented in that same section and in [`../t3:wip/SKILL.md`](../t3:wip/SKILL.md) § Rules) is the deliberate carve-out for unattended batch runs, not for interactive followup; the two are not in conflict because they apply to different hosting modes.
+- **Sequential only.** Interactive followup runs each ticket's delivery cycle in the main conversation and does not delegate ticket implementation to sub-agents — the [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations" default applies here. The batch-mode singleton delivery sub-agent (the explicit exception documented in that same section and in [`../wip/SKILL.md`](../wip/SKILL.md) § Rules) is the deliberate carve-out for unattended batch runs, not for interactive followup; the two are not in conflict because they apply to different hosting modes.
 - **Never start without user approval.** Always show the confirmation table first.
 - **Always pre-fetch external context.** Read all specs before starting implementation.
 - **Always run scope analysis.** The issue tracker project ≠ the implementation repo.
