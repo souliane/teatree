@@ -276,7 +276,7 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
 
 
 def _run_coordinator_actions(task: Task, result: AgentResultBlob, *, phase: str) -> list[str]:
-    """The receipt lines of the actions the answering agent proposed and code ran; a failure costs only the receipt."""
+    """Owner-visible outcomes of the answering agent's proposed actions."""
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
         return []
     try:

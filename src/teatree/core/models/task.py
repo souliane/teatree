@@ -483,8 +483,6 @@ class Task(models.Model):
         separate ``lifecycle visit-phase`` CLI call. The phase is normalized
         so the loop path and the CLI path write the same canonical token.
         """
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
-
         if not self.phase:
             return
         # #755: resolve a guaranteed-non-empty attribution identity,

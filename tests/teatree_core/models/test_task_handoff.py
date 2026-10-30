@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import NoPlanArtifactError, TaskMintRefusedError
 from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from teatree.core.models.task_handoff import (
     RESUME_ANSWER_PREFIX,
@@ -302,6 +302,16 @@ class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):
 
 
 class TestResumeNeedsAPlan(TestCase):
+    def test_existing_child_cannot_resume_a_conversation_build_task(self) -> None:
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding", parent_task=parked
+        )
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket"):
+            schedule_resume(parked, answer="continue")
+
     def test_resuming_an_implementing_task_on_an_unplanned_ticket_is_refused(self) -> None:
         ticket = Ticket.objects.create()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")

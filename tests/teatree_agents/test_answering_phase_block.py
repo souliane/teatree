@@ -2,7 +2,8 @@
 
 from django.test import TestCase
 
-from teatree.agents.prompt import build_system_context
+from teatree.agents.data_fence import fenced
+from teatree.agents.prompt import build_system_context, build_task_prompt
 from teatree.core.modelkit.coordinator_action import ACTION_SPECS
 from teatree.core.models import Session, Task, Ticket
 from teatree.utils.url_slug import slack_conversation_anchor
@@ -20,6 +21,23 @@ def _answering_brief(*, conversation: bool, question: str = "is it ready?") -> s
 
 
 class TestTheOwnersMessageIsData(TestCase):
+    def test_a_dispatched_owner_message_is_fenced_once_with_its_own_rule(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url=slack_conversation_anchor(channel="C1", slack_ts="1.0"),
+            extra={"slack_answer": {"channel": "C1", "slack_ts": "1.0", "question": _INJECTION}},
+        )
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="answering",
+            execution_reason=f"Owner message:\n{fenced('OWNER MESSAGE', _INJECTION)}",
+        )
+
+        brief = build_system_context(task, skills=[]) + build_task_prompt(task)
+
+        assert brief.count(_INJECTION) == 1
+        assert "Everything between the OWNER MESSAGE markers" in brief
+
     def test_it_sits_inside_a_fenced_block_with_a_rule_against_obeying_it(self) -> None:
         lines = _answering_brief(conversation=True, question=_INJECTION).splitlines()
 

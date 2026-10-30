@@ -203,6 +203,15 @@ clickable issue link to the reply it posts for you. Exactly one of three shapes:
   re-dispatched with the contract restated. The refusal exists because a reply-only
   result and a dropped request are otherwise indistinguishable.
 
+### 4c. Propose Conversation Actions
+
+For an owner conversation, the final JSON may also carry `actions`: a list of
+`{"kind": "bind_thread", "ticket": "<full issue URL>"}` or
+`{"kind": "queue_task", "ticket": "<conversation anchor or full issue URL>"}`.
+These are proposals, not completed work. Code checks the owner's message and
+ticket state before acting, then appends confirmed receipts or refusals to the
+reply. Never claim an action ran from the proposal alone.
+
 ### 5. Record & Report
 
 - The reply transport records the `ReplyDispatch` outcome

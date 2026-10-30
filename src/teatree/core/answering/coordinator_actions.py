@@ -3,8 +3,8 @@
 The answering phase reads untrusted thread text and holds no write tool, so it can only RETURN an
 ``actions`` list. Each entry runs here, in order, only when its kind is in the table, it declares
 no argument beyond the kind's own, and the evidence the owner's own message carries still holds.
-A refusal runs nothing and is recorded with its reason; the receipt the owner reads is built from
-the actions that ran, never from what the model said happened.
+A refusal runs nothing and is recorded with its reason; the owner sees each confirmed receipt or
+refusal, never a model claim that an action happened.
 """
 
 import hashlib
@@ -86,6 +86,10 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
             raise ActionRefusedError(message)
         target = _tracked_ticket(conversation, named)
     with transaction.atomic():
+        target = Ticket.objects.select_for_update().get(pk=target.pk)
+        if target.state not in Ticket.EARLY_STATES:
+            message = f"planning is not available from {target.state}"
+            raise ActionRefusedError(message)
         queued = (
             Task.objects.in_flight_for_phase(target.overlay, "planning").filter(ticket=target).order_by("pk").first()
         )
@@ -96,7 +100,6 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
                 reason="Plan this ticket from its recorded context.",
                 agent_id="coordinator",
             )
-    queued.refresh_from_db()
     return f"Planning is queued as TODO-{queued.pk}."
 
 
@@ -142,8 +145,23 @@ def _audit(ticket: Ticket) -> Mapping[str, object]:
 
 
 def run_coordinator_actions(task: Task, requests: object) -> list[str]:
-    """The receipt line of each proposed action that ran; refused and already-run ones add none."""
+    """Owner-visible outcomes for each proposal, including refusals and partial failure."""
     if not isinstance(requests, list):
         return []
-    outcomes = (_run_one(task, request) for request in requests)
-    return [outcome.detail for outcome in outcomes if outcome is not None and outcome.executed]
+    receipts: list[str] = []
+    for request in requests:
+        try:
+            outcome = _run_one(task, request)
+        except Exception:
+            logger.exception("Coordinator action failed for task %s", task.pk)
+            kind = str(request.get("kind") or "action") if isinstance(request, dict) else "action"
+            receipts.append(f"Could not confirm {kind}; earlier confirmed actions are listed above.")
+            break
+        if outcome is None:
+            continue
+        if outcome.executed:
+            receipts.append(outcome.detail)
+        else:
+            kind = str(request.get("kind") or "action") if isinstance(request, dict) else "action"
+            receipts.append(f"Could not run {kind}: {outcome.detail}.")
+    return receipts

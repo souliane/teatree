@@ -133,6 +133,36 @@ class TestTheCoordinatorsActionsRunFromTheClosedTable(TestCase):
             "no open tracked ticket matches it",
         ]
 
+    def test_queue_task_refuses_a_ticket_past_planning(self) -> None:
+        Ticket.objects.filter(pk=self.work.pk).update(state=Ticket.State.TESTED)
+
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        assert not Task.objects.filter(ticket=self.work, phase="planning").exists()
+        assert "planning is not available from tested" in self.backend.replies[0][2]
+
+    def test_an_action_refusal_is_stated_to_the_owner(self) -> None:
+        self._record(_bind(ticket=_WORK_URL, channel="C-eng"))
+
+        assert "Could not run bind_thread: bind_thread takes no channel" in self.backend.replies[0][2]
+
+    def test_a_later_action_failure_keeps_the_earlier_receipt(self) -> None:
+        requests = [
+            {"kind": "bind_thread", "ticket": _WORK_URL},
+            {"kind": "queue_task", "ticket": self.task.ticket.issue_url},
+        ]
+
+        with mock.patch(
+            "teatree.core.answering.coordinator_actions.enqueue_phase_task", side_effect=RuntimeError("db down")
+        ):
+            self._record({"answer": {"text": "Done."}, "actions": requests})
+
+        assert self._bound_to() == self.work.pk
+        reply = self.backend.replies[0][2]
+        assert f"Bound this thread to <{_WORK_URL}|#4084>." in reply
+        assert "Could not confirm queue_task" in reply
+        assert not Task.objects.filter(ticket_id=self.conversation_id, phase="planning").exists()
+
     def test_queue_task_refuses_a_task_outside_a_conversation(self) -> None:
         session = Session.objects.create(ticket=self.work, overlay="t3-teatree", agent_id="answering")
         self.task = Task.objects.create(ticket=self.work, session=session, phase="answering")
