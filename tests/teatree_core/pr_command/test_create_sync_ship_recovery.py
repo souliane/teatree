@@ -10,6 +10,8 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.gates import pr_budget_gate
+from teatree.core.gates.pr_budget_forge import reset_forge_pr_budget_cache
+from teatree.core.management.commands._ship import gates as ship_gates_mod
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.runners.ship import ShipExecutor
 
@@ -19,6 +21,62 @@ pytestmark = pytest.mark.usefixtures("readable_ship_tree")
 
 
 class TestSyncShipRecovery(TestCase):
+    def test_retry_adopts_marker_when_forge_lists_the_pr(self) -> None:
+        ticket = _shippable_ticket()
+        ticket.issue_url = "https://github.com/acme/backend/issues/123"
+        ticket.save()
+        host = _code_host()
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+        host.list_my_prs.return_value = []
+
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch.object(ship_gates_mod.git, "remote_slug", return_value="acme/backend"),
+            patch.object(ship_gates_mod, "_resolve_host_for_repo", return_value=host),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+        ):
+            first = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+            ticket.refresh_from_db()
+            assert ticket.extra["unverified_pr_by_branch"]["feature-branch"] == _PR_URL
+            push.reset_mock()
+            host.list_my_prs.return_value = [{"html_url": _PR_URL, "body": "Closes #123"}]
+            host.get_pr_open_state.return_value = PrOpenState.OPEN
+            reset_forge_pr_budget_cache()
+            retry = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert first["ok"] is False
+        assert retry["ok"] is True
+        assert retry["detail"] == _PR_URL
+        push.assert_not_called()
+        host.create_pr.assert_called_once()
+        assert PullRequest.objects.filter(ticket=ticket, url=_PR_URL).exists()
+
+    def test_unconfirmed_marker_does_not_refuse_retry_before_executor(self) -> None:
+        ticket = _shippable_ticket()
+        ticket.issue_url = "https://github.com/acme/backend/issues/124"
+        ticket.save()
+        host = _code_host()
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+        host.list_my_prs.return_value = []
+
+        with (
+            _ship_externals(host) as push,
+            _gates_pass(),
+            patch.object(ship_gates_mod.git, "remote_slug", return_value="acme/backend"),
+            patch.object(ship_gates_mod, "_resolve_host_for_repo", return_value=host),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+        ):
+            call_command("pr", "create", str(ticket.pk), sync=True)
+            host.list_my_prs.return_value = [{"html_url": _PR_URL, "body": "Closes #124"}]
+            reset_forge_pr_budget_cache()
+            retry = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert retry["ok"] is False
+        assert "max_open_prs_per_repo_per_ticket" not in str(retry["detail"])
+        assert push.call_count == 2
+        assert host.create_pr.call_count == 2
+
     def _assert_external_failure_is_structured(self, error: Exception, *, during_push: bool = False) -> None:
         ticket = _shippable_ticket()
         host = _code_host()
@@ -127,6 +185,36 @@ class TestSyncShipRecovery(TestCase):
         assert result["ok"] is False
         assert "verify-by-re-read" in str(result["detail"])
         assert "recording failed" in str(result["detail"])
+
+    def test_recording_retry_success_reports_original_failure(self) -> None:
+        ticket = _shippable_ticket()
+        host = _code_host()
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+        original_record = ShipExecutor.record_opened_pr
+        calls = 0
+        record_error = OperationalError("first recording locked")
+
+        def record_after_transient_failure(executor: ShipExecutor) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise record_error
+            original_record(executor)
+
+        with (
+            _ship_externals(host),
+            _gates_pass(),
+            patch.object(ShipExecutor, "record_opened_pr", autospec=True, side_effect=record_after_transient_failure),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert result["ok"] is False
+        assert calls == 2
+        assert "verify-by-re-read" in str(result["detail"])
+        assert "first recording locked" in str(result["detail"])
+        assert "recording it failed" not in str(result["detail"])
+        ticket.refresh_from_db()
+        assert ticket.extra["unverified_pr_by_branch"]["feature-branch"] == _PR_URL
 
     def test_retry_adopts_pr_when_recording_fails_once_after_create(self) -> None:
         ticket = _shippable_ticket()

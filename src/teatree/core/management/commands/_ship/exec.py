@@ -119,7 +119,7 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
 
 def _ship_exception_detail(executor: ShipExecutor, opened_pr_url: str, failed_detail: str, exc: Exception) -> str:
     if failed_detail:
-        return f"{failed_detail}; recording it failed: {exc}"
+        return f"{failed_detail}; recovery recording completed after: {exc}"
     if opened_pr_url:
         return f"PR {opened_pr_url} opened but the FSM advance failed: {exc}"
     if executor.opened_pr_url:
