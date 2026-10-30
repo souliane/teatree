@@ -63,6 +63,13 @@ class TestStrandedTicketCount(TestCase):
         Ticket.objects.update(issue_url="loop://test")
         assert stranded_ticket_count() == 1
 
+    def test_an_aged_halted_failure_on_a_synthetic_ticket_keeps_counting_because_no_card_covers_it(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        Task.objects.update(execution_reason=HALT_STAMP)
+        for ticket in Ticket.objects.all():
+            Ticket.objects.filter(pk=ticket.pk).update(issue_url=f"loop://test/{ticket.pk}")
+        assert stranded_ticket_count() == 2
+
     def test_a_recent_failure_is_still_in_flight(self) -> None:
         # The window exists so a retry that has not been requeued yet never counts.
         self._queued(2, age=timedelta(minutes=5))

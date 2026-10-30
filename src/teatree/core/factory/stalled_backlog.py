@@ -33,7 +33,7 @@ from django.db.models import Exists, Max, OuterRef, Subquery
 from django.utils import timezone
 
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
-from teatree.core.factory.parked_tickets import aged_parked_ticket_ids
+from teatree.core.factory.parked_tickets import aged_parked_tasks
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
@@ -64,7 +64,7 @@ def stranded_ticket_count() -> int:
         .filter(newest_task_at__lt=now - STALLED_BACKLOG_WINDOW)
         .filter(newest_task_status=Task.Status.FAILED)
         .exclude(Exists(own_tasks.filter(status__in=Task.Status.active())))
-        .exclude(pk__in=aged_parked_ticket_ids())
+        .exclude(pk__in=[task.ticket_id for task in aged_parked_tasks()])
         .exclude(newest_task_failure_kind=FailureKind.CANCELLED)
         .count()
     )

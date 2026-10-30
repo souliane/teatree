@@ -73,6 +73,12 @@ class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
             resolved_via=self.model.ResolvedVia.SLACK, answer_text__in=answers
         )
 
+    def retired_by_age_ceiling(self) -> Self:
+        """Rows the age backstop dismissed unanswered: a non-decision, so the signal they covered may be asked again."""
+        return self.filter(
+            dismissed_at__isnull=False, audits__action="dismissed", audits__resolver_id="age_ceiling"
+        ).distinct()
+
     def release_markers(self) -> int:
         """Free these rows' dedupe markers so the signal they covered is asked again as a fresh question."""
         return self.update(dedupe_marker=Concat(Value(RELEASED_MARKER_PREFIX), "dedupe_marker"))

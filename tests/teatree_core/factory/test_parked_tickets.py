@@ -71,7 +71,7 @@ class ParkedTicketSelectionTest(TestCase):
         self._failed(reason=HALT_STAMP)
         self._failed(kind=FailureKind.CANCELLED)
         (summary,) = self._parked_signals()
-        assert summary.startswith("2 tickets")
+        assert summary.startswith("2 tickets have ")
         assert "created over 14 days ago" in summary
         assert "await your decision" not in summary
 
@@ -84,4 +84,4 @@ class ParkedTicketSelectionTest(TestCase):
         assert self._parked_signals() == []
         self._failed(reason=HALT_STAMP)
         (summary,) = self._parked_signals()
-        assert summary.startswith("1 tickets")
+        assert summary.startswith("1 ticket has ")

@@ -10,7 +10,7 @@ from django.db.models import QuerySet
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.factory.parked_tickets import TaskPair, aged_parked_tasks, still_parked, task_pair
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_card_title
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.known_issue import KnownIssue
@@ -22,6 +22,10 @@ KEEP_ANSWER = "Keep them parked"
 _QUESTION = "Should I retire tickets whose failed newest tasks were created over two weeks ago?"
 _QUOTED_TITLES = 3
 logger = logging.getLogger(__name__)
+
+
+def _tickets_have(count: int) -> str:
+    return "1 ticket has" if count == 1 else f"{count} tickets have"
 
 
 def awaiting_decision(tasks: list[Task]) -> list[Task]:
@@ -39,7 +43,7 @@ def parked_ticket_signals() -> SignalCollection:
                 fingerprint="parked-tickets-await-owner",
                 severity=KnownIssue.Severity.WARNING,
                 kind="parked_tickets",
-                summary=f"{count} tickets have failed newest tasks created over 14 days ago",
+                summary=f"{_tickets_have(count)} failed newest tasks created over 14 days ago",
             ),
         )
     )
@@ -54,20 +58,29 @@ def parked_marker(tasks: list[Task]) -> str:
 
 
 def _quoted_titles(tasks: list[Task]) -> str:
-    titles = [title for task in tasks if (title := task.ticket.short_description) and not internal_shorthand(title)]
+    titles = [title for task in tasks if (title := safe_card_title(task.ticket.short_description, ""))]
     shown = "; ".join(titles[:_QUOTED_TITLES])
     return f"{shown}; and {len(titles) - _QUOTED_TITLES} more" if len(titles) > _QUOTED_TITLES else shown
 
 
+def _shown_card_pending() -> bool:
+    return (
+        DeferredQuestion.owner_pending()
+        .filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX)
+        .exclude(slack_ts="")
+        .exists()
+    )
+
+
 def ask_owner_about_parked(tasks: list[Task]) -> DeferredQuestion | None:
-    if not tasks:
+    if not tasks or _shown_card_pending():
         return None
     causes = Counter((task.failure_kind or "unclassified").replace("_", " ") for task in tasks)
     cause_text = ", ".join(f"{count} {cause}" for cause, count in causes.most_common(3))
     card = QuestionCard(
         decision=OwnerDecision.IRREVERSIBLE,
         checked=(
-            f"{len(tasks)} tickets have a failed newest task created over two weeks ago.",
+            f"{_tickets_have(len(tasks))} a failed newest task created over two weeks ago.",
             f"Recorded causes include {cause_text}.",
         ),
         blocker="Retiring a ticket ends its current work record.",
@@ -113,16 +126,17 @@ def ruled_pairs(answer: str) -> set[TaskPair]:
 
 
 def release_undecided_answers() -> None:
-    """Ask again after an answer that decided nothing: given elsewhere than Slack, or not one of the two options."""
+    """Ask again after a non-decision: a stray answer or an age-ceiling retirement."""
     cards = DeferredQuestion.objects.filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX)
     cards.answered_without_deciding((RETIRE_ANSWER, KEEP_ANSWER)).release_markers()
+    DeferredQuestion.objects.filter(pk__in=cards.retired_by_age_ceiling().values("pk")).release_markers()
 
 
 def settle_changed_parked_cards(awaiting: list[Task]) -> None:
-    """Dismiss every pending card that no longer describes *awaiting*, freeing its marker for a later return."""
+    """Dismiss every unshown pending card that no longer describes *awaiting*, freeing its marker for a later return."""
     current = parked_marker(awaiting) if awaiting else ""
     stale = list(
-        DeferredQuestion.owner_pending()
+        DeferredQuestion.unmirrored_pending()
         .filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX)
         .exclude(dedupe_marker=current)
     )
@@ -133,11 +147,11 @@ def settle_changed_parked_cards(awaiting: list[Task]) -> None:
 
 def apply_retire_answers(aged: list[Task]) -> int:
     """Retire the tickets each not-yet-applied "Retire them" answer listed, once, and count them."""
-    ruled: set[TaskPair] = set()
+    retired = 0
     for question in _owner_answers(RETIRE_ANSWER).filter(applied_at__isnull=True):
-        if question.mark_applied():
-            ruled |= _card_pairs(question)
-    return _retire_parked(ruled, aged)
+        retired += _retire_parked(_card_pairs(question), aged)
+        question.mark_applied()
+    return retired
 
 
 def _retire_parked(pairs: set[TaskPair], aged: list[Task]) -> int:
@@ -145,11 +159,14 @@ def _retire_parked(pairs: set[TaskPair], aged: list[Task]) -> int:
     for task in aged:
         if task_pair(task) not in pairs:
             continue
+        ticket = Ticket.objects.get(pk=task.ticket_id)
+        if not still_parked(ticket, task.pk):
+            continue
+        unshipped = unshipped_work_paths(ticket)
         with transaction.atomic():
             ticket = Ticket.objects.select_for_update().get(pk=task.ticket_id)
             if not still_parked(ticket, task.pk):
                 continue
-            unshipped = unshipped_work_paths(ticket)
             ticket.ignore()
             ticket.save(update_fields=["state", "extra"])
             escalate_unshipped_work_once(ticket, paths=unshipped)

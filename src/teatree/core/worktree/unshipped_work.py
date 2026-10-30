@@ -3,7 +3,7 @@
 import logging
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_card_title
 from teatree.core.models import Ticket, ticket_worktree_checks
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -26,8 +26,9 @@ def unshipped_work_paths(ticket: Ticket) -> list[str]:
 def escalate_unshipped_work_once(ticket: Ticket, *, paths: list[str]) -> None:
     if not paths:
         return
+    question = "Should I save the unfinished work from a retired ticket to a pull request?"
     DeferredQuestion.record(
-        "Should I save the unfinished work from a retired ticket to a pull request?",
+        question,
         session_id="",
         dedupe_marker=UNSHIPPED_WORK_MARKER.format(pk=ticket.pk),
         card=QuestionCard(
@@ -39,5 +40,6 @@ def escalate_unshipped_work_once(ticket: Ticket, *, paths: list[str]) -> None:
                 CardOption("Save it", "I open a pull request so the work is not lost.", recommended=True),
                 CardOption("Discard it", "I delete the changes for good."),
             ),
-        ),
+            subject=f"ticket:{ticket.pk}",
+        ).with_quote(question, safe_card_title(ticket.short_description, "")),
     )

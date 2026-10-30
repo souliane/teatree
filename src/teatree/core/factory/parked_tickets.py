@@ -39,10 +39,6 @@ def _aged_parked_queryset(now: datetime | None = None) -> QuerySet[Task]:
     )
 
 
-def aged_parked_ticket_ids() -> QuerySet[Task]:
-    return _aged_parked_queryset().values("ticket_id")
-
-
 def _deliverable(tasks: Iterable[Task]) -> list[Task]:
     return [task for task in tasks if not is_synthetic_ticket_url(task.ticket.issue_url)]
 
