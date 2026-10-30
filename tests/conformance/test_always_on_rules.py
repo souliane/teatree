@@ -63,13 +63,13 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
                 "fixed in code, gates or intake, not only noted. The retrospective and the dreaming pass are where "
                 "every waste is recorded with what it cost and turned into such a fix, and the whole codebase is "
                 "shaped to make the waste impossible: before work starts, check what is already in flight (open pull "
-                "requests, started tickets, stale branches, existing plans and reviews) and reuse it. When something "
+                "requests, existing tickets, stale branches, existing plans and reviews) and reuse it. When something "
                 "has to be discarded, investigate first (compare by content against the default branch, because squash "
                 "merges hide ancestry), never repeat a check or run that was already done, and take the smallest "
                 "action that settles the question. The owner's energy counts as much as any of these: never make him "
                 "repeat himself, redo a step, decode shorthand or read what a link already says. Only the owner can "
-                "approve an exception, explicitly and for the action he names; spend he has already configured (an "
-                "API-key fallback, a budget) needs no asking, going beyond it does."
+                "approve an exception to this rule, explicitly and for the action he names; spend he has already "
+                "configured (an API-key fallback, a budget) needs no asking; going beyond it does."
             ),
         ),
         (
