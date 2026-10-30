@@ -89,6 +89,23 @@ class TestExtractMergeResult:
             extract_merge_result(str(repo), base="main", head="docs-only", into=str(destination))
         assert (destination / "kept").read_text(encoding="utf-8") == "work"
 
+    def test_into_receives_the_extract_and_keeps_what_the_caller_had_there(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        destination = tmp_path / "out"
+        destination.mkdir()
+        (destination / "kept").write_text("work", encoding="utf-8")
+
+        extract = extract_merge_result(str(repo), base="main", head="docs-only", into=str(destination))
+
+        assert extract.path == str(destination)
+        assert (destination / "guide.md").read_text(encoding="utf-8") == "v2\n"
+        assert (destination / "kept").read_text(encoding="utf-8") == "work"
+        assert not list(scratch.iterdir())
+
     def test_the_extract_carries_both_sides_of_the_merge(self, repo: Path, tmp_path: Path) -> None:
         extract = extract_merge_result(str(repo), base="main", head="docs-only", into=str(tmp_path / "out"))
 

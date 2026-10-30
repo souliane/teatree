@@ -9,18 +9,19 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.retention.run_scratch_sweep import sweep_run_scratch
+from teatree.core.retention.run_scratch_sweep import RUN_SCRATCH_MAX_AGE_SECONDS, sweep_run_scratch
 
 _OLD = time.time() - 4 * 60 * 60
+_AGE_MARGIN_SECONDS = 120
 
 
-def _aged(root: Path, name: str, *, payload: bytes = b"data") -> Path:
+def _aged(root: Path, name: str, *, payload: bytes = b"data", mtime: float = _OLD) -> Path:
     target = root / name
     target.mkdir()
     file = target / "payload"
     file.write_bytes(payload)
-    os.utime(file, (_OLD, _OLD))
-    os.utime(target, (_OLD, _OLD))
+    os.utime(file, (mtime, mtime))
+    os.utime(target, (mtime, mtime))
     return target
 
 
@@ -69,6 +70,86 @@ def test_sweep_removes_only_aged_unused_named_families(tmp_path: Path) -> None:
     assert (root / "t3-verify-gates-bad-suffix").is_dir()
     assert (root / "t3-merge-tree-ijklmnop").is_symlink()
     assert (root / "t3-verify-gates-qrstuvwx").is_file()
+
+
+def test_sweep_separates_just_idle_enough_from_just_too_recent(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _pid(proc, "123", cwd=tmp_path)
+    now = time.time()
+    too_recent = _aged(root, "t3-verify-gates-abcdefgh", mtime=now - RUN_SCRATCH_MAX_AGE_SECONDS + _AGE_MARGIN_SECONDS)
+    idle_enough = _aged(root, "t3-merge-tree-abcdefgh", mtime=now - RUN_SCRATCH_MAX_AGE_SECONDS - _AGE_MARGIN_SECONDS)
+
+    result = sweep_run_scratch(root, proc_root=proc)
+
+    assert result.refusal == ""
+    assert too_recent.is_dir()
+    assert not idle_enough.exists()
+
+
+def test_sweep_keeps_a_directory_a_reviewer_touched_an_hour_ago(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _pid(proc, "123", cwd=tmp_path)
+    touched_an_hour_ago = _aged(root, "t3-verify-gates-abcdefgh", mtime=time.time() - 60 * 60)
+    abandoned = _aged(root, "t3-merge-tree-abcdefgh")
+
+    result = sweep_run_scratch(root, proc_root=proc)
+
+    assert result.refusal == ""
+    assert touched_an_hour_ago.is_dir()
+    assert not abandoned.exists()
+
+
+def test_sweep_keeps_a_directory_whose_process_works_in_a_subdirectory(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    held = _aged(root, "t3-verify-gates-abcdefgh")
+    nested = held / "pkg" / "deep"
+    nested.mkdir(parents=True)
+    for aged in (nested, nested.parent, held):
+        os.utime(aged, (_OLD, _OLD))
+    unheld = _aged(root, "t3-merge-tree-abcdefgh")
+    _pid(proc, "123", cwd=nested)
+
+    result = sweep_run_scratch(root, proc_root=proc)
+
+    assert result.refusal == ""
+    assert held.is_dir()
+    assert not unheld.exists()
+
+
+def test_aged_symlink_and_plain_file_named_like_a_family_are_never_touched(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _pid(proc, "123", cwd=tmp_path)
+    target = _aged(tmp_path, "elsewhere")
+    link = root / "t3-merge-tree-abcdefgh"
+    link.symlink_to(target, target_is_directory=True)
+    os.utime(link, (_OLD, _OLD), follow_symlinks=False)
+    plain = root / "t3-verify-gates-abcdefgh"
+    plain.write_bytes(b"file")
+    os.utime(plain, (_OLD, _OLD))
+    control = _aged(root, "t3-merge-tree-ijklmnop")
+
+    result = sweep_run_scratch(root, proc_root=proc)
+
+    assert (result.refusal, result.removed) == ("", 1)
+    assert not control.exists()
+    assert link.is_symlink()
+    assert (target / "payload").is_file()
+    assert plain.is_file()
+    assert "could not remove run scratch" not in caplog.text
 
 
 @pytest.mark.parametrize("holder", ["cwd", "cmdline", "environ"])

@@ -11,10 +11,11 @@ import datetime as _dt
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
@@ -33,6 +34,7 @@ from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.mechanical_plan import GIB, persist_plan
 from teatree.loop.scanners.artifact_eviction import ArtifactEvictionScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
 from teatree.loops.timer_chains import MIN_TICK_DEADLINE_SECONDS
@@ -320,6 +322,24 @@ class BoundedPassTests(TestCase):
         assert "not this venue's" not in recorded, "a row resolved to a venue checkout IS this venue's"
 
 
+def _aged_run_dir(root: Path, name: str, *, payload: bytes = b"12345") -> Path:
+    candidate = root / name
+    candidate.mkdir()
+    file = candidate / "payload"
+    file.write_bytes(payload)
+    old = time.time() - 4 * 60 * 60
+    os.utime(file, (old, old))
+    os.utime(candidate, (old, old))
+    return candidate
+
+
+def _sweeping_against(proc_root: Path) -> Callable[..., RunScratchSweepResult]:
+    def sweep(scan_root: Path, *, deadline: float) -> RunScratchSweepResult:
+        return sweep_run_scratch(scan_root, proc_root=proc_root, deadline=deadline)
+
+    return sweep
+
+
 @override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend"}})
 class _SweepFixture(TestCase):
     def setUp(self) -> None:
@@ -424,48 +444,101 @@ class UnattendedHousekeepingTests(_SweepFixture):
         assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
         assert "worker scratch" in plan
 
-    def test_worker_sweep_reclaims_old_run_scratch_and_reports_bytes(self) -> None:
-        root = self.workspace / "run-scratch"
-        root.mkdir()
-        candidate = root / "t3-verify-gates-abcdefgh"
-        candidate.mkdir()
-        payload = candidate / "payload"
-        payload.write_bytes(b"12345")
-        old = time.time() - 4 * 60 * 60
-        os.utime(payload, (old, old))
-        os.utime(candidate, (old, old))
-        proc = self.workspace / "proc"
-        pid = proc / "123"
+    def _synthetic_proc(self) -> Path:
+        pid = self.workspace / "proc" / "123"
         pid.mkdir(parents=True)
         (pid / "cwd").symlink_to(self.workspace)
         (pid / "cmdline").write_bytes(b"sleep\x001\x00")
         (pid / "environ").write_bytes(b"")
+        return pid.parent
 
-        def pinned_proc(scan_root: Path, *, deadline: float) -> RunScratchSweepResult:
-            return sweep_run_scratch(scan_root, proc_root=proc, deadline=deadline)
+    def _run_scratch_root(self, name: str) -> Path:
+        root = self.workspace / name
+        root.mkdir()
+        return root.resolve()
 
+    def _worker_sweep(
+        self,
+        roots: tuple[Path, ...],
+        *,
+        run_scratch: Callable[..., RunScratchSweepResult] | list[RunScratchSweepResult | Exception],
+        role: str = "worker",
+    ) -> tuple[str, MagicMock]:
         generic = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        environment = {"TEATREE_ROLE": role, "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": os.pathsep.join(map(str, roots))}
         with (
-            patch.dict(os.environ, {"TEATREE_ROLE": "worker", "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": str(root)}),
-            patch(f"{_SWEEP}.sweep_run_scratch", side_effect=pinned_proc),
+            patch.dict(os.environ, environment),
+            patch(f"{_SWEEP}.sweep_run_scratch", side_effect=run_scratch) as run_scratch_sweep,
             patch(f"{_SWEEP}.sweep_scratch", return_value=generic),
         ):
             plan = self._sweep()
+        return plan, run_scratch_sweep
 
+    def test_worker_sweep_reclaims_old_run_scratch_and_reports_bytes(self) -> None:
+        root = self._run_scratch_root("run-scratch")
+        payload = b"12345"
+        candidate = _aged_run_dir(root, "t3-verify-gates-abcdefgh", payload=payload)
+
+        with patch(f"{_SWEEP}.persist_plan", wraps=persist_plan) as persisted:
+            plan, _ = self._worker_sweep((root,), run_scratch=_sweeping_against(self._synthetic_proc()))
+
+        free_plan = persisted.call_args.args[1]
         assert not candidate.exists()
         assert "run scratch: freed 5 bytes" in plan
+        assert free_plan.reclaimed_gb == pytest.approx(len(payload) / GIB)
+        assert free_plan.reclaimed_gb > 0
 
-    def test_non_worker_leaves_run_scratch_untouched(self) -> None:
-        root = self.workspace / "run-scratch"
-        root.mkdir()
-        candidate = root / "t3-verify-gates-abcdefgh"
-        candidate.mkdir()
-        old = time.time() - 4 * 60 * 60
-        os.utime(candidate, (old, old))
-        with patch.dict(os.environ, {"TEATREE_ROLE": "admin", "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": str(root)}):
-            self._sweep()
+    def test_a_service_that_is_not_the_worker_leaves_run_scratch_untouched(self) -> None:
+        root = self._run_scratch_root("run-scratch")
+        proc_sweep = _sweeping_against(self._synthetic_proc())
+        for role in ("admin", ""):
+            candidate = _aged_run_dir(root, "t3-verify-gates-abcdefgh")
+            with self.subTest(role=role):
+                _, run_scratch_sweep = self._worker_sweep((root,), run_scratch=proc_sweep, role=role)
 
+                run_scratch_sweep.assert_not_called()
+                assert candidate.is_dir()
+            self._worker_sweep((root,), run_scratch=proc_sweep)
+            assert not candidate.exists(), "control: the worker role removes the same directory"
+
+    def test_a_failing_run_scratch_sweep_is_reported_and_the_pass_continues(self) -> None:
+        first, second = self._run_scratch_root("first"), self._run_scratch_root("second")
+
+        plan, _ = self._worker_sweep(
+            (first, second), run_scratch=[RuntimeError("boom"), RunScratchSweepResult(freed_bytes=7, removed=1)]
+        )
+
+        assert f"FAILED run scratch {first} — see logs" in plan
+        assert f"run scratch: freed 7 bytes across 1 dirs at {second}" in plan
+        assert "- worker scratch " in plan, "the generic scratch sweep after it still ran"
+
+    def test_a_run_scratch_refusal_is_reported_and_keeps_the_directory(self) -> None:
+        root = self._run_scratch_root("run-scratch")
+        candidate = _aged_run_dir(root, "t3-verify-gates-abcdefgh")
+        empty_proc = self.workspace / "empty-proc"
+        empty_proc.mkdir()
+
+        plan, _ = self._worker_sweep((root,), run_scratch=_sweeping_against(empty_proc))
+
+        assert f"SKIP run scratch {root} — process table has no numeric pids" in plan
         assert candidate.is_dir()
+        self._worker_sweep((root,), run_scratch=_sweeping_against(self._synthetic_proc()))
+        assert not candidate.exists(), "control: a readable process table removes the same directory"
+
+    def test_an_exhausted_budget_defers_the_remaining_run_scratch_roots(self) -> None:
+        first, second = self._run_scratch_root("first"), self._run_scratch_root("second")
+        now = [0.0]
+
+        def slow_first_root(_scan_root: Path, *, deadline: float) -> RunScratchSweepResult:
+            now[0] = deadline + 1
+            return RunScratchSweepResult()
+
+        with patch.object(time, "monotonic", side_effect=lambda: now[0]):
+            plan, run_scratch_sweep = self._worker_sweep((first, second), run_scratch=slow_first_root)
+
+        assert f"run scratch: freed 0 bytes across 0 dirs at {first}" in plan
+        assert "DEFER run scratch — pass budget exhausted" in plan
+        assert [call.args[0] for call in run_scratch_sweep.call_args_list] == [first]
 
     def test_a_service_that_is_not_the_worker_never_sweeps_scratch(self) -> None:
         for role in ("admin", ""):

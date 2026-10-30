@@ -1,17 +1,20 @@
 import contextlib
 import os
 import select
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import FrameType
 from unittest.mock import patch
 
 import pytest
 
-from teatree.utils.run_scratch import run_scratch_dir
+from teatree.utils.run_scratch import remove_tree, run_scratch_dir
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
@@ -36,17 +39,24 @@ def test_signal_interrupts_and_restores_handler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signum: signal.Signals
 ) -> None:
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    previous = signal.getsignal(signum)
+
+    def sentinel(_signum: int, _frame: FrameType | None) -> None:
+        pytest.fail("the previous handler ran instead of the interrupt")
 
     def interrupt() -> None:
         with run_scratch_dir("t3-probe-") as root:
             (root / "payload").write_bytes(b"data")
             signal.raise_signal(signum)
 
-    with pytest.raises(KeyboardInterrupt):
-        interrupt()
+    ambient = signal.signal(signum, sentinel)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            interrupt()
+        restored = signal.getsignal(signum)
+    finally:
+        signal.signal(signum, signal.SIG_DFL if ambient is None else ambient)
 
-    assert signal.getsignal(signum) == previous
+    assert restored is sentinel
     assert not list(tmp_path.glob("t3-probe-*"))
 
 
@@ -119,11 +129,32 @@ def test_read_only_and_unlistable_subtrees_are_removed(tmp_path: Path, monkeypat
     assert not list(tmp_path.glob("t3-probe-*"))
 
 
+def test_removal_never_follows_a_symlink_out_of_a_read_only_subtree(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True)
+    (outside / "keep").write_bytes(b"data")
+    (outside / "sub").chmod(0o755)
+    outside.chmod(0o750)
+    tree = tmp_path / "tree"
+    (tree / "sealed").mkdir(parents=True)
+    (tree / "sealed" / "link").symlink_to(outside, target_is_directory=True)
+    (tree / "sealed").chmod(0o555)
+
+    with patch("teatree.utils.run_scratch.shutil.rmtree", wraps=shutil.rmtree) as rmtree:
+        remove_tree(tree)
+
+    assert rmtree.call_count == 2, "control: the read-only retry ran"
+    assert not tree.exists()
+    assert (outside / "keep").read_bytes() == b"data"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o750
+    assert stat.S_IMODE((outside / "sub").stat().st_mode) == 0o755
+
+
 _WRITING_CHILD = 'echo $$ >&2; exec 2>/dev/null; while :; do echo x >> "$1/log"; sleep 0.02; done'
 
 _LIVE_CHILD_PARENT = f"""
 from teatree.utils.run import run_streamed
-from teatree.utils.run_scratch import run_scratch_dir
+from teatree.utils.run_scratch import remove_tree, run_scratch_dir
 
 with run_scratch_dir("t3-probe-") as root:
     print(root, flush=True)
