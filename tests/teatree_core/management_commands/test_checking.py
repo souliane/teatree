@@ -313,7 +313,8 @@ class TestCheckingShow:
         text = _call("checking", "brief", "--this-overlay", "--no-advance")
 
         assert len(text.splitlines()) <= 12
-        assert text.count("Held pull request:") <= 2
+        assert text.count("Held pull request:") == 2
+        assert "and 10 more held pull requests" in text
 
     def test_show_returns_terse_text_and_advances_marker(self, checkpoint_file: Path) -> None:
         _merged_ticket()

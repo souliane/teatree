@@ -14,11 +14,9 @@ Six report groups with these scopes:
 * **In-flight** — the latest :class:`TicketTransition` per ticket inside the
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
-
 * **Needs you** — live owner waits, independent of the report window.
 * **Triage suggestions** — pending assessor recommendations, listed for review
     without counting them as owner decisions.
-
 * **Metered** — one row per ticket with metered attempts inside the window,
     showing the attempt count and estimated total cost.
 * **Remaining** — live work, queue, holds, and measured ETA ranges; independent
@@ -378,7 +376,6 @@ def _accumulate_overlays(
     overlay_windows: dict[str, tuple[datetime, datetime]],
     overlay_configs: dict[str, tuple[str, list[str]]],
 ) -> AccumulatedRows:
-
     merged_entries: list[tuple[datetime, CheckItem]] = []
     merged_rows: list[StatusMergeRow] = []
     in_flight_items: list[CheckItem] = []
@@ -391,7 +388,6 @@ def _accumulate_overlays(
         code_host, overlay_repos = overlay_configs.get(overlay_name, ("", []))
         scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos)
         overlay_tag = f"[{overlay_name}]"
-
         scoped = scoped_merge_audits(since=window[0], now=window[1], scope=scope)
         merged_rows.extend((audit, repo_slug, code_host) for audit, repo_slug in scoped)
         merged_entries.extend(merged_entries_from_qs(scope=scope, overlay_tag=overlay_tag, scoped=scoped))
@@ -404,7 +400,6 @@ def _accumulate_overlays(
         in_flight_items.extend(new_in_flight)
 
     merged_entries.sort(key=operator.itemgetter(0), reverse=True)
-
     return merged_entries, merged_rows, in_flight_items, earliest_since
 
 
@@ -528,7 +523,6 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
 def _needs_you_group(*, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
-
     items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name))
     items.extend(_eval_measurement_items(now=now))
     return CheckGroup(title="Needs you", items=items[:cap], total=len(items))

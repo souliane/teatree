@@ -12,13 +12,11 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-
 Before gathering, ``show`` and ``brief`` reconcile owner questions with recorded
 answers and may resume parked tasks. Only the default path writes a checkpoint
 marker. ``shoot`` posts Slack questions and records delivery state.
 The report is routed through the machine-output seam — JSON on stdout under
 ``--json``, the terse human view on stderr — and returned as the typed payload.
-
 """
 
 import hashlib
@@ -44,8 +42,8 @@ from teatree.core.checking import (
     gather_checking_report,
 )
 from teatree.core.checking_report.slack import ShootReportDict, shoot_questions
-from teatree.core.checking_report.status import plain_title
-from teatree.core.checking_types import CheckItem, OwnerWaitItem
+from teatree.core.checking_report.status import markdown_link, plain_title
+from teatree.core.checking_types import CheckItem, OwnerWaitItem, RemainingGroup
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -57,6 +55,8 @@ from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+_BRIEF_HELD_CAP = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,12 +98,12 @@ def _listener_stale(beat: ListenerBeat | None, *, now: float) -> bool:
 
 
 def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
-    lines: list[str] = []
-    for group in groups:
-        if group.title == "Remaining":
-            lines.extend(
-                f"Held pull request: [{plain_title(item.title)}]({item.url})" for item in group.critical_items[:2]
-            )
+    held = [item for group in groups if isinstance(group, RemainingGroup) for item in group.critical_items]
+    lines = [
+        f"Held pull request: {markdown_link(plain_title(item.title), item.url)}" for item in held[:_BRIEF_HELD_CAP]
+    ]
+    if hidden := max(0, len(held) - _BRIEF_HELD_CAP):
+        lines[-1] = f"{lines[-1]} · and {hidden} more held pull requests"
     return lines
 
 
@@ -250,7 +250,7 @@ class Command(MachineOutputCommand):
         stale = _listener_stale(read_heartbeat(), now=time.time())
         result = shoot_questions(overlay=overlay, listener_stale=stale)
         self.print_result = False
-        human = "\n".join(f"[{card['label']}]({card['permalink']})" for card in result["cards"])
+        human = "\n".join(markdown_link(card["label"], card["permalink"]) for card in result["cards"])
         if result["reason"]:
             human = f"{result['reason']}\n{human}"
         if result["remaining"]:

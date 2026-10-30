@@ -474,7 +474,6 @@ def drain_unmirrored_deferred_questions(
     waiting on an owner decision needs the card as soon as it is recorded.
     """
     rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)
-
     if not rows:
         return 0, 0
 

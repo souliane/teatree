@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Literal, TypedDict, cast
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q
 from django.utils import timezone
 
@@ -16,6 +17,7 @@ from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worker_generation import WorkerGeneration, WorkerGenerationQuerySet
+from teatree.core.overlay_loader import get_overlay
 from teatree.core.ref_render import short_title
 from teatree.core.review.mr_ci_state import ci_state_from_status
 from teatree.core.review.mr_triage import CiState
@@ -31,7 +33,8 @@ FEATURE_CAP = 8
 UNDEPLOYED_CARRYOVER_WINDOW = timedelta(days=7)
 _CLICKABLE_SCHEMES = ("https://", "http://")
 logger = logging.getLogger(__name__)
-_NUMBERED_WORD = re.compile(r"(?<!\w)(?:#?\d+|v\d+)(?!\w)", re.IGNORECASE)
+_NUMBERED_WORD = re.compile(r"(?<!\w)(?:#?\d+|v\d+)(?:\.\d+)*(?!\w)", re.IGNORECASE)
+_LINK_LABEL_BRACKET = re.compile(r"([\[\]])")
 _DIGIT_RUN = re.compile(r"\d{2,}")
 _LANE_TITLE_PATTERNS = (
     ("Multi-user", re.compile(r"\b(?:multi[- ]user|tenant sharing)\b", re.IGNORECASE)),
@@ -74,7 +77,7 @@ class FeatureLink:
         return {"label": self.label, "url": self.url, "state": self.state}
 
     def render(self) -> str:
-        return f"[{self.label}]({self.url})" if self.url else self.label
+        return markdown_link(self.label, self.url) if self.url else self.label
 
 
 @dataclass(slots=True)
@@ -157,6 +160,11 @@ class StatusByFeature:
             names = _render_links(self.not_yet_deployed, 3)
             lines.append(f"Not yet deployed ({self.deploy_state}): {names}")
         return lines
+
+
+def markdown_link(label: str, url: str) -> str:
+    escaped = _LINK_LABEL_BRACKET.sub(r"\\\1", label)
+    return f"[{escaped}]({url})"
 
 
 def plain_title(title: str) -> str:
@@ -348,6 +356,13 @@ def _add_open_prs(block_for: Callable[[Ticket | None], FeatureBlock], overlay_na
     return represented
 
 
+def _overlay_code_host(overlay_name: str) -> str:
+    try:
+        return get_overlay(overlay_name).config.code_host or ""
+    except ImproperlyConfigured:
+        return ""
+
+
 def _carryover_merges(
     block_for: Callable[[Ticket | None], FeatureBlock],
     *,
@@ -371,8 +386,7 @@ def _carryover_merges(
         if state is True:
             continue
         ticket = cast("Ticket", audit.clear.ticket)
-        code_host = "gitlab" if "gitlab.com" in ticket.issue_url else "github"
-        url = pr_url_for(ticket, repo_slug=slug, pr_id=audit.clear.pr_id, code_host=code_host)
+        url = pr_url_for(ticket, repo_slug=slug, pr_id=audit.clear.pr_id, code_host=_overlay_code_host(ticket.overlay))
         link = FeatureLink(label=_pr_label(ticket, url), url=url)
         block = block_for(ticket)
         block.earlier_undeployed.append(link)

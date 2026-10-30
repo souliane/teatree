@@ -2,18 +2,21 @@
 
 import re
 import subprocess
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.checking import CheckingReport, gather_checking_report
-from teatree.core.checking_report.status import UNDEPLOYED_CARRYOVER_WINDOW, plain_title
+from teatree.core.checking_report.status import UNDEPLOYED_CARRYOVER_WINDOW, FeatureLink, plain_title
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
@@ -54,6 +57,11 @@ def _two_commit_checkout() -> Generator[tuple[str, str]]:
         head = run_strict(repo=repo, args=["rev-parse", "HEAD"])
         with patch("teatree.core.checking_report.status.teatree_source_root", return_value=Path(repo)):
             yield parent, head
+
+
+def _unknown_overlay(name: str) -> NoReturn:
+    msg = f"Overlay {name!r} not found"
+    raise ImproperlyConfigured(msg)
 
 
 class CheckInFeatureStatusTestCase(TestCase):
@@ -373,6 +381,38 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert plain_title("Fix S3 bucket policy") == "Fix S3 bucket policy"
         assert plain_title("IPv6 routing") == "IPv6 routing"
         assert plain_title("Fix SHA256 digest") == "Fix SHA digest"
+
+    def test_version_numbers_leave_no_stray_punctuation(self) -> None:
+        assert plain_title("Support Python 3.13 in the factory") == "Support Python in the factory"
+        assert plain_title("Release notes for v2.1.4") == "Release notes for"
+
+    def test_link_label_brackets_do_not_break_the_markdown_link(self) -> None:
+        link = FeatureLink(label="Fix [draft] flow", url="https://example.com/p")
+
+        assert link.render() == r"[Fix \[draft\] flow](https://example.com/p)"
+
+    def _earlier_undeployed_urls(self, overlay_lookup: Callable[[str], object]) -> list[str]:
+        serving_sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/920", state=Ticket.State.DELIVERED)
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=921, merged_sha="a" * 40
+        )
+        audit.merged_at = timezone.now() - timedelta(days=2)
+        audit.save(update_fields=["merged_at"])
+
+        with patch("teatree.core.checking_report.status.get_overlay", new=overlay_lookup):
+            return [item.url for item in self._report().status_by_feature.not_yet_deployed]
+
+    def test_earlier_undeployed_merge_link_follows_the_overlay_code_host(self) -> None:
+        urls = self._earlier_undeployed_urls(lambda _name: SimpleNamespace(config=SimpleNamespace(code_host="gitlab")))
+
+        assert urls == ["https://gitlab.com/souliane/teatree/-/merge_requests/921"]
+
+    def test_earlier_undeployed_merge_link_defaults_to_github_when_the_overlay_is_unknown(self) -> None:
+        urls = self._earlier_undeployed_urls(_unknown_overlay)
+
+        assert urls == ["https://github.com/souliane/teatree/pull/921"]
 
     def test_red_pull_request_survives_feature_cap(self) -> None:
         for number in range(8):
