@@ -84,3 +84,16 @@ class OperatorGrantTestCase(TestCase):
             grant.token_for("approve", "org/repo!8", "gitlab:alice", key=self.key)
         with pytest.raises(PermissionError):
             grant.token_for("approve", "org/repo!7", "gitlab:bob", key=self.key)
+
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:bob")
+        with pytest.raises(PermissionError, match="does not belong"):
+            grant.token_for("approve", "org/repo!7", "gitlab:bob", key=self.key)
+
+        grant.scope = "read_user"
+        with pytest.raises(PermissionError, match="approval scope"):
+            grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)
+
+        grant.scope = "api"
+        grant.expires_at = timezone.now() - timedelta(seconds=1)
+        with pytest.raises(PermissionError, match="cannot authorize"):
+            grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)

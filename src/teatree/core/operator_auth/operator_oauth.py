@@ -49,7 +49,7 @@ class _PendingLogin(TypedDict):
 
 class OperatorOAuthUnavailableError(RuntimeError):
     def __init__(self, forge: str) -> None:
-        super().__init__(f"operator {forge} grant unavailable; run `t3 login {forge}`")
+        super().__init__(f"operator {forge} grant unavailable; run `t3 login {forge} --approvals`")
 
 
 def _app(forge: str) -> dict[str, str]:
@@ -238,13 +238,14 @@ _LOGIN_FAILURES = (
 )
 
 
-def _login_refusal(forge: str, exc: Exception) -> HttpResponse:
+def _login_refusal(forge: str, exc: Exception, *, purpose: str) -> HttpResponse:
     if isinstance(exc, IntegrityError):
         return HttpResponseForbidden("forge handle already belongs to another approved account")
     if isinstance(exc, MasterKeySourceError):
         message = f"operator grants are sealed under the installation master key, which is unavailable ({exc}); "
         return HttpResponse(message + "create it as deploy/README.md describes", status=503)
-    return HttpResponse(f"operator OAuth login failed: {type(exc).__name__}; run `t3 login {forge}`", status=502)
+    remedy = f"t3 login {forge}" if purpose == "login" else f"t3 login {forge} --approvals"
+    return HttpResponse(f"operator OAuth login failed: {type(exc).__name__}; run `{remedy}`", status=502)
 
 
 @require_GET
@@ -263,7 +264,7 @@ def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
         external_id, handle = _forge_identity(forge, app, tokens.access_token)
         user = _admit_forge_account(forge, external_id, handle)
     except _LOGIN_FAILURES as exc:
-        return _login_refusal(forge, exc)
+        return _login_refusal(forge, exc, purpose=pending["purpose"])
     if user is None:
         return HttpResponseForbidden("forge account needs administrator approval before sign-in")
     return _complete_authorization(request, forge, pending, tokens, user)
@@ -280,7 +281,7 @@ def _complete_authorization(
         try:
             OperatorGrant.objects.store(user=user, forge=forge, tokens=tokens, key=master_key_source().load())
         except _LOGIN_FAILURES as exc:
-            return _login_refusal(forge, exc)
+            return _login_refusal(forge, exc, purpose="approvals")
         return redirect(pending["next"])
     if pending.get("purpose") != "login":
         return HttpResponseForbidden("operator OAuth purpose invalid")

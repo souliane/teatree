@@ -38,12 +38,13 @@ def login(
         _record_browse_url(url)
     else:
         url = f"{_NATIVE_ADMIN_URL}{path}"
+        probe_url = f"{_NATIVE_ADMIN_URL}/admin/login/" if approvals else url
         try:
-            response = client_for_url(url).get(url, headers={}, timeout=5)
+            response = client_for_url(probe_url).get(probe_url, headers={}, timeout=5)
         except httpx.HTTPError as exc:
             typer.echo(f"Admin is not reachable; start `t3 admin`: {type(exc).__name__}", err=True)
             raise typer.Exit(code=1) from exc
-        if not response.is_redirect:
+        if not (response.is_success if approvals else response.is_redirect):
             typer.echo("Admin did not start OAuth; check the app configuration.", err=True)
             raise typer.Exit(code=1)
         webbrowser.open(url)
@@ -71,7 +72,7 @@ def logout(
             raise typer.Exit(code=1)
         grant = grants.select_related("user").first()
     if grant is None:
-        typer.echo(f"No {provider} grant for this operator; run `t3 login {provider}`.", err=True)
+        typer.echo(f"No {provider} grant for this operator; run `t3 login {provider} --approvals`.", err=True)
         raise typer.Exit(code=1)
     try:
         revoke_operator_grant(grant.user, provider)

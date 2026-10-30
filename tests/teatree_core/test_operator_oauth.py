@@ -14,7 +14,11 @@ from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OperatorGrant, OperatorIdentity, SealedSecret, Ticket
 from teatree.core.models.operator_grant import OperatorGrantTokens
-from teatree.core.operator_auth.operator_oauth import operator_access_token, revoke_operator_grant
+from teatree.core.operator_auth.operator_oauth import (
+    OperatorOAuthUnavailableError,
+    operator_access_token,
+    revoke_operator_grant,
+)
 from teatree.utils.master_key import MasterKeySourceError
 from teatree.utils.sealing import MasterKey
 from teatree.utils.secrets import SecretStoreError
@@ -242,6 +246,42 @@ class OperatorOAuthTestCase(TestCase):
         assert grant.reveal(self.key).refresh_token == "refresh-secret"
         assert b"refresh-secret" not in bytes(grant.ciphertext)
         assert post.call_args.kwargs["data"]["code"] == "approval-code"
+
+    def test_approval_consent_without_master_key_reports_remedy_and_stores_nothing(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        self.client.force_login(user)
+        with self._forge_account(
+            {"id": 123, "login": "alice"}, key_error=MasterKeySourceError("test", "is unavailable")
+        ):
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 503
+        assert b"master key" in response.content
+        assert not OperatorGrant.objects.exists()
+
+    def test_approval_consent_without_refresh_grant_stores_nothing(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        self.client.force_login(user)
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            post.return_value = httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+                json={"access_token": "access-secret", "expires_in": 3600},
+            )
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 403
+        assert b"refresh grant" in response.content
+        assert not OperatorGrant.objects.exists()
+
+    def test_missing_grant_names_the_approval_consent_command(self) -> None:
+        assert "t3 login gitlab --approvals" in str(OperatorOAuthUnavailableError("gitlab"))
 
     def test_approval_consent_refuses_a_different_signed_in_operator(self) -> None:
         alice = self._invited_github_operator("alice", "123")
