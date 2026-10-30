@@ -233,7 +233,7 @@ class EvalRunRecord(models.Model):
 
     @property
     def measured_nothing(self) -> bool:
-        return self.total > 0 and self.executed == 0
+        return self.executed == 0
 
     @property
     def models(self) -> list[str]:

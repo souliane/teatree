@@ -141,6 +141,23 @@ class TestEvalLocalPhase(TestCase):
         assert "lane unavailable" in task.attempts.latest("pk").error
         assert "lane unavailable" in run.results.first().terminal_reason
 
+    def test_unstartable_lane_records_the_selected_shard_as_unmeasured(self) -> None:
+        task = self._task()
+        catalog = type("Completed", (), {"returncode": 0, "stdout": "alpha\n", "stderr": ""})()
+
+        with (
+            patch("teatree.agents.eval_local_phase.run_allowed_to_fail", return_value=catalog),
+            patch("teatree.agents.eval_local_phase.spawn_session_leader", side_effect=FileNotFoundError("t3 missing")),
+        ):
+            result = run_deterministic_phase(task)
+
+        assert result is not None
+        assert result["exit_code"] == "1"
+        run = EvalRunRecord.objects.get(suite=f"eval_local:{task.pk}")
+        assert run.total == 1
+        assert run.measured_nothing
+        assert "t3 missing" in run.results.first().terminal_reason
+
     def test_unrelated_run_cannot_make_a_failed_lane_measured(self) -> None:
         task = self._task()
 
@@ -180,7 +197,7 @@ class TestEvalLocalPhase(TestCase):
         assert result["exit_code"] == "1"
         run = EvalRunRecord.objects.latest("pk")
         assert run.total == 0
-        assert not run.measured_nothing
+        assert run.measured_nothing
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
 

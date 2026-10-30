@@ -710,15 +710,15 @@ class TestAllOverlaysAggregation(CheckingTestBase):
             )
         assert any(item.label == "evals" and "measured nothing" in item.detail for item in report.needs_you.items)
 
-    def test_unread_eval_source_does_not_break_check_in(self) -> None:
+    def test_unread_eval_source_is_visible_in_check_in(self) -> None:
         with patch("teatree.core.checking.eval_measurement_signal", side_effect=RuntimeError("unread")):
             report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
             global_report = gather_all_overlays_report(
                 overlay_windows={self.OVERLAY: (self.since, self.now)},
                 overlay_configs={self.OVERLAY: ("github", ["acme/widgets"])},
             )
-        assert not any(item.label == "evals" for item in report.needs_you.items)
-        assert not any(item.label == "evals" for item in global_report.needs_you.items)
+        assert any(item.label == "evals" and "unread" in item.detail for item in report.needs_you.items)
+        assert any(item.label == "evals" and "unread" in item.detail for item in global_report.needs_you.items)
 
     def _ticket_b(self, *, number: int = 99, state: str = Ticket.State.REVIEW_REQUESTED) -> Ticket:
         return Ticket.objects.create(

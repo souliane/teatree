@@ -510,5 +510,5 @@ def _eval_measurement_items(*, now: datetime) -> list[CheckItem]:
         signal = eval_measurement_signal(now)
     except Exception:
         logger.exception("Could not read behavioral eval measurement for check-in")
-        return []
+        return [CheckItem(label="evals", url="", detail="behavioral eval measurement unread")]
     return [CheckItem(label="evals", url="", detail=signal.summary)] if signal is not None else []

@@ -172,6 +172,18 @@ class TestHistoryCommand(TestCase):
         assert payload["runs"][0]["executed"] == 0
         assert payload["runs"][0]["measured_nothing"] is True
 
+    def test_empty_catalog_run_is_reported_as_measured_nothing(self) -> None:
+        EvalRunRecord.objects.record(model="subscription_oauth", suite="eval_local:1")
+
+        text_result = CliRunner().invoke(app, ["eval", "history"])
+        json_result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+
+        assert text_result.exit_code == 0
+        assert "MEASURED NOTHING: 0 of 0 graded" in text_result.output
+        assert json_result.exit_code == 0
+        payload = json.loads(json_result.output[json_result.output.index("{") : json_result.output.rindex("}") + 1])
+        assert payload["runs"][0]["measured_nothing"] is True
+
     def test_history_model_filter_scopes_runs(self) -> None:
         self._record(model="haiku")
         self._record(model="sonnet")

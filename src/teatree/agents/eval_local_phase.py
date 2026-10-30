@@ -109,13 +109,18 @@ def run_eval_local(task: Task) -> str:
         _record_unmeasured(selected, reason=msg, suite=suite)
         raise RuntimeError(msg) from exc
     prior_pk = EvalRunRecord.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
-    child_exit, stdout, stderr = _run_child(task, shard, selected, env)
+    try:
+        child_exit, stdout, stderr = _run_child(task, shard, selected, env)
+    except OSError as exc:
+        msg = f"measured nothing: eval lane unavailable: {redact_secrets(str(exc))}"
+        _record_unmeasured(selected, reason=msg, suite=suite)
+        raise RuntimeError(msg) from exc
     detail = redact_secrets((stderr or stdout).strip())[-1000:]
     run = EvalRunRecord.objects.filter(pk__gt=prior_pk, suite=suite).order_by("-pk").first()
     if run is None:
         reason = f"eval lane exited {child_exit} without a recorded run: {detail}".rstrip(": ")
         run = _record_unmeasured(selected, reason=reason, suite=suite)
-    if run.measured_nothing or run.total == 0:
+    if run.measured_nothing:
         msg = f"measured nothing: 0 of {run.total} scenarios graded (child exit {child_exit}): {detail}".rstrip(": ")
         raise RuntimeError(msg)
     if pinned.returncode:

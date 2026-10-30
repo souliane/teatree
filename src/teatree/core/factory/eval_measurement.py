@@ -34,7 +34,7 @@ def eval_measurement_signal(now: datetime) -> HealthSignal | None:
             severity=KnownIssue.Severity.CRITICAL,
             summary=f"behavioral evals measured nothing within {critical_after.days} days",
         )
-    if latest.measured_nothing or latest.total == 0:
+    if latest.measured_nothing:
         return HealthSignal(
             fingerprint="eval-local-measured-nothing",
             kind="eval_measurement",
