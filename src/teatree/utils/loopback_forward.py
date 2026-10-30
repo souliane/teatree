@@ -79,11 +79,11 @@ while True:
 # itself is installed on a named volume this one-off does not mount, so stdlib only.
 _FORWARDER_SOURCE = """\
 import socket, subprocess, sys, threading
-def relay(conn, bridge):
+def relay(conn: socket.socket, bridge: str) -> None:
     child = subprocess.Popen(
         ["docker", "exec", "-i", {container!r}, "python3", "-c", bridge],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    def upstream():
+    def upstream() -> None:
         try:
             while True:
                 chunk = conn.recv({size})
@@ -110,7 +110,7 @@ def relay(conn, bridge):
     finally:
         conn.close()
         child.terminate()
-def accept(listener, bridge):
+def accept(listener: socket.socket, bridge: str) -> None:
     while True:
         client, _peer = listener.accept()
         threading.Thread(target=relay, args=(client, bridge), daemon=True).start()
