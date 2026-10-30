@@ -842,3 +842,30 @@ class CheckInFeatureStatusTestCase(TestCase):
 
     def test_pr_inventory_older_than_half_an_hour_is_ignored(self) -> None:
         assert self._approved_pr_state_with_inventory_age(31) == "tests status unknown"
+
+    def test_failed_ancestry_read_degrades_deployment_to_unknown(self) -> None:
+        with (
+            _two_commit_checkout() as (serving_sha, merged_sha),
+            patch(
+                "teatree.core.checking_report.status.run_with_status",
+                return_value=CompletedProcess(["git", "rev-list"], 1, "", "fatal: bad object"),
+            ),
+        ):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/590")
+            MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
+            status = self._report().status_by_feature
+
+        assert status.deploy_state == "unknown"
+
+    def test_feature_with_an_older_undeployed_merge_is_not_live_when_its_recent_merge_is(self) -> None:
+        with _two_commit_checkout() as (serving_sha, undeployed_sha):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/591")
+            MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=serving_sha)
+            self._merge_days_ago(ticket, slug="souliane/teatree", pr_id=593, sha=undeployed_sha)
+
+            status = self._report().status_by_feature
+
+        assert status.features[0].live == "partly"
+        assert status.deploy_state == "waiting"
