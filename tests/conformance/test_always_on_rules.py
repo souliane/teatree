@@ -10,7 +10,7 @@ _RULES_FILE = _REPO_ROOT / "skills" / "rules" / "RULES.md"
 
 _TITLES = (
     "Nothing may endanger security or leak",
-    "Do not waste work, time, tokens, money or the owner's energy",
+    "Do not waste work, time, tokens, money or the owner's energy, and build the system so that waste cannot happen",
     "The owner reaches the factory only through the messaging channels",
     "Drive owner interaction toward zero",
     "A thread with the owner opens with enough context, then stays the one place for that work",
@@ -55,13 +55,21 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
         (
             1,
             (
-                "1. **Do not waste work, time, tokens, money or the owner's energy:** investigate before discarding "
-                "anything (compare by content against the default branch, because squash merges hide ancestry), never "
-                "repeat a check or run that was already done, take the smallest action that settles the question, and "
-                "reuse existing tickets, plans and reviews. The owner's energy counts as much as any of these: never "
-                "make him repeat himself, redo a step, decode shorthand or read what a link already says. "
-                "Spend the owner has already configured (an API-key fallback, a budget) needs no asking; "
-                "going beyond it does."
+                "1. **Do not waste work, time, tokens, money or the owner's energy, and build the system so that waste "
+                "cannot happen:** the point is prevention in the design, not asking first. Two pieces of work that "
+                "will conflict (one built on a stale base, one on an issue the factory does not know about, one that "
+                "repeats what another already covers), a check or run done twice, a review or merge thrown away by a "
+                "later push: each is a defect of the system, not bad luck, and each one found gets its root cause "
+                "fixed in code, gates or intake, not only noted. The retrospective and the dreaming pass are where "
+                "every waste is recorded with what it cost and turned into such a fix, and the whole codebase is "
+                "shaped to make the waste impossible: before work starts, check what is already in flight (open pull "
+                "requests, started tickets, stale branches, existing plans and reviews) and reuse it. When something "
+                "has to be discarded, investigate first (compare by content against the default branch, because squash "
+                "merges hide ancestry), never repeat a check or run that was already done, and take the smallest "
+                "action that settles the question. The owner's energy counts as much as any of these: never make him "
+                "repeat himself, redo a step, decode shorthand or read what a link already says. Only the owner can "
+                "approve an exception, explicitly and for the action he names; spend he has already configured (an "
+                "API-key fallback, a budget) needs no asking, going beyond it does."
             ),
         ),
         (
