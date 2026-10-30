@@ -64,10 +64,15 @@ def fetch_assigned_issues(
         result.issues_found += 1
         repo_path = extract_issue_repo_path(issue_url)
         repo_short = repo_path.rsplit("/", maxsplit=1)[-1] if repo_path else ""
+        author = issue.get("author")
+        author_handle = author.get("username") if isinstance(author, dict) else None
+        requester_key = f"gitlab:{author_handle}" if isinstance(author_handle, str) and author_handle else ""
 
         existing = Ticket.objects.matching_issue(issue_url).first()
         if existing is not None:
-            if reconcile_tracked_issue(existing, issue, repo_short):
+            requester_updated = existing.record_requester(requester_key) if requester_key else False
+            issue_updated = reconcile_tracked_issue(existing, issue, repo_short)
+            if requester_updated or issue_updated:
                 result.tickets_updated += 1
             continue
 
@@ -76,7 +81,7 @@ def fetch_assigned_issues(
         if not policy.admits(labels):
             continue
         issue_title = str(issue.get("title", ""))
-        Ticket.objects.create(
+        ticket = Ticket.objects.create(
             issue_url=issue_url,
             repos=[repo_short] if repo_short else [],
             extra={"issue_title": issue_title},
@@ -84,6 +89,8 @@ def fetch_assigned_issues(
             overlay=overlay_name,
             kind=classify_ticket_kind(labels=labels, title=issue_title),
         )
+        if requester_key:
+            ticket.record_requester(requester_key)
         result.tickets_created += 1
 
 

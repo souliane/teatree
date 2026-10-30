@@ -459,3 +459,7 @@ class GitLabAPI(GitLabHTTPClient):
     @staticmethod
     def current_branch(repo_dir: str = ".") -> str:
         return git.current_branch(repo=repo_dir)
+
+
+class GitLabOAuthAPI(GitLabAPI):
+    oauth = True

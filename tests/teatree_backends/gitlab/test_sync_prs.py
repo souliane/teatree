@@ -151,3 +151,31 @@ class MrTitleCardTestCase(TestCase):
         upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
         ticket.refresh_from_db()
         assert ticket.short_description == "Operator's wording"
+
+
+class MrRequesterTestCase(TestCase):
+    def test_unlinked_mr_records_its_author_once(self) -> None:
+        url = "https://gitlab.example/org/repo/-/merge_requests/150"
+        raw = {"web_url": url, "iid": 150, "draft": True, "author": {"username": "ALIce"}}
+        context = _PRContext(raw=raw, repo_short="repo", client=GitLabWire({}), project=None)
+        upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+        ticket = Ticket.objects.get(issue_url=url)
+        assert ticket.requested_by == "gitlab:alice"
+
+        raw["author"] = {"username": "Bob"}
+        upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "gitlab:alice"
+
+    def test_linked_mr_does_not_replace_issue_requester(self) -> None:
+        issue_url = "https://gitlab.example/org/repo/-/issues/150"
+        raw = {
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/151",
+            "iid": 151,
+            "draft": True,
+            "description": f"Closes {issue_url}",
+            "author": {"username": "MrAuthor"},
+        }
+        context = _PRContext(raw=raw, repo_short="repo", client=GitLabWire({}), project=None)
+        upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+        assert Ticket.objects.get(issue_url=issue_url).requested_by == ""

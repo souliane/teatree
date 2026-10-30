@@ -3,7 +3,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -16,6 +15,7 @@ from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner
 from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _UNVERIFIED_REASON = "Forge facts not verified by a recent tick"
 

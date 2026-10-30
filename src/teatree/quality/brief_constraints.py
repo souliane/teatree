@@ -26,7 +26,7 @@ class ConstraintViolation:
     detail: str
 
 
-_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
+_NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;:\n]{0,120})", re.IGNORECASE)
 _POSITIVE_QUOTA = re.compile(r"^(?:(?:exactly|at\s+least|at\s+most)\s+)?(?:one|[1-9]\d*)\b", re.IGNORECASE)
 _MEMBER_ROW = re.compile(r"^[ \t]*(?:[-*][ \t]+)?M\d+[ \t]+#(?P<number>\d+)\b[^\n]*$", re.MULTILINE)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)

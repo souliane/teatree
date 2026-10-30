@@ -28,6 +28,11 @@ def test_describing_the_constraint_grammar_does_not_activate_its_examples() -> N
     assert {item.kind for item in extract_constraints("Constraints: (no migration)")} == {"no_migration"}
 
 
+def test_colon_separates_a_negative_instruction_from_its_explanation() -> None:
+    assert extract_constraints("No RunPython: the column default IS the data migration.") == ()
+    assert {item.kind for item in extract_constraints("No migration: use the existing schema.")} == {"no_migration"}
+
+
 def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
