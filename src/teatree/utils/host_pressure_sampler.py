@@ -9,7 +9,6 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-from teatree.utils.host_os import proc_reads_the_host
 from teatree.utils.host_pressure import MAX_AGE_SECONDS, feed_path, load_feed
 from teatree.utils.throttled_log import warn_throttled
 
@@ -69,8 +68,6 @@ class HostSampler:
         return reading
 
     def publish_if_due(self, *, now: float | None = None) -> None:
-        if not proc_reads_the_host():
-            return
         moment = time.time() if now is None else now
         target = self.path or feed_path()
         current, _ = load_feed(target, moment)

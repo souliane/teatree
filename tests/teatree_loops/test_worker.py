@@ -184,7 +184,6 @@ def test_supervisor_poll_produces_headless_linux_feed(monkeypatch: pytest.Monkey
     (proc / "vmstat").write_text("pswpin 0\npswpout 0\n")
     (proc / "loadavg").write_text("1.0 0.5 0.25 1/100 100\n")
     target = tmp_path / "host-pressure.json"
-    monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
     monkeypatch.setattr(os, "cpu_count", lambda: 8)
     sampler = HostSampler(proc_root=proc, path=target)
     worker, _, _ = _make_worker(
@@ -194,29 +193,6 @@ def test_supervisor_poll_produces_headless_linux_feed(monkeypatch: pytest.Monkey
     worker.run()
 
     assert read_host_pressure(path=target) is not None
-
-
-def test_supervisor_poll_does_not_overwrite_darwin_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # A fully populated proc root: the sampler could publish if the non-Linux guard let it, so this
-    # test fails without the guard (an empty root would make it pass either way).
-    proc = tmp_path / "proc"
-    proc.mkdir()
-    (proc / "meminfo").write_text("MemAvailable: 8388608 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
-    (proc / "vmstat").write_text("pswpin 0\npswpout 0\n")
-    (proc / "loadavg").write_text("1.0 0.5 0.25 1/100 100\n")
-    target = tmp_path / "host-pressure.json"
-    target.write_bytes(b"host feed")
-    monkeypatch.setenv("TEATREE_HOST_OS", "Darwin")
-    monkeypatch.setattr(os, "cpu_count", lambda: 8)
-    worker, _, _ = _make_worker(
-        script=[False],
-        sleep=lambda _seconds: None,
-        publish_host_pressure=HostSampler(proc_root=proc, path=target).publish_if_due,
-    )
-
-    worker.run()
-
-    assert target.read_bytes() == b"host feed"
 
 
 def test_supervisor_reclaims_dead_owner_leases_each_poll() -> None:
@@ -300,7 +276,6 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
 def test_default_worker_seam_publishes_host_pressure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "host-pressure.json"
     monkeypatch.setenv("T3_HOST_PRESSURE_PATH", str(target))
-    monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
 
     WorkerSeams().publish_host_pressure()
 
