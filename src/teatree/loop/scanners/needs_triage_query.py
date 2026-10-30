@@ -115,8 +115,8 @@ def needs_triage_issues(
 ) -> list[RawAPIDict]:
     """Open ``needs-triage`` issues by label for owned repos, or by assignee.
 
-    The single fan-out both the disposition and the assessor scanner consume: it
-    The assessor reads every labeled issue in its owned repositories. The
+    The single fan-out both the disposition and the assessor scanner consume. The
+    assessor reads every labeled issue in its owned repositories. The
     disposition scanner reads only assigned issues. Both paths keep only open
     issues carrying :data:`~teatree.core.models.NEEDS_TRIAGE_LABEL` and dedupe by URL.
     """

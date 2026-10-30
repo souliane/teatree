@@ -102,8 +102,9 @@ class KnownIssueManager(models.Manager["KnownIssue"]):
         return row
 
     def record_reactive(self, signal: "HealthSignal") -> "KnownIssue":
-        row = self.record_signal(signal)
-        self.filter(pk=row.pk).update(auto_resolve=False)
+        with transaction.atomic():
+            row = self.record_signal(signal)
+            self.filter(pk=row.pk).update(auto_resolve=False)
         return row
 
     def resolve_fingerprint(self, fingerprint: str) -> int:

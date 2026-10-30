@@ -34,3 +34,19 @@ class TestNudgeForDreamGaps(TestCase):
         ):
             assert nudge_for_dream_gaps() is False
         assert not Task.objects.filter(phase=BACKLOG_SWEEP_PHASE).exists()
+
+    def test_a_minted_sweep_waiting_for_admission_is_reported_as_nudged(self) -> None:
+        queue_task = PhaseCadence.queue_task
+
+        def queue_then_withhold_admission(cadence: PhaseCadence, **kwargs: str) -> Task | None:
+            task = queue_task(cadence, **kwargs)
+            Task.objects.filter(pk=task.pk).update(admitted_at=None)
+            return task
+
+        with (
+            patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
+            patch.object(PhaseCadence, "queue_task", queue_then_withhold_admission),
+            patch("teatree.loop.scanners.phase_cadence.pending_admission_reason", return_value="machine HALT"),
+        ):
+            assert nudge_for_dream_gaps() is True
+        assert Task.objects.filter(phase=BACKLOG_SWEEP_PHASE, admitted_at__isnull=True).count() == 1

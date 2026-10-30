@@ -254,9 +254,6 @@ STATUSLINE_DROP_KINDS: frozenset[str] = frozenset(
         "triage_assessor.held",
         "architectural_review.not_due",
         "eval_local.not_due",
-        "scanning_news.not_due",
-        "backlog_sweep.not_due",
-        "dogfood_smoke.not_due",
         "triage_assessor.not_due",
     }
 )

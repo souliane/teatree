@@ -136,9 +136,7 @@ class ArchitecturalReviewScanner:
             return cadence.hold("task was not created", kind="architectural_review.held", retry=True)
         task.refresh_from_db(fields=["admitted_at"])
         if task.admitted_at is None:
-            held = self._held_signal(task, cadence)
-            if held:
-                return held
+            return self._held_signal(task, cadence)
         cadence.resolve_hold()
         cadence.resolve_not_due()
         return [
