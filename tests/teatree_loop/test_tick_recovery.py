@@ -6,6 +6,7 @@ both self-heal from the loop tick, never only from an explicit ``t3 recover``.
 """
 
 import os
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
@@ -92,6 +93,20 @@ class TestReapStaleTaskClaims(TestCase):
             assert "recovery:boot_sweeps" in errors
             _reap_stale_task_claims({})
             assert boot.call_count == 2
+
+    def test_a_stamp_from_the_future_does_not_silence_the_prelude(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_text(str(time.time() + 3600), encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+            ):
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert float(stamp.read_text(encoding="utf-8")) < time.time() + 60
 
     def test_non_numeric_stamp_is_rewritten_so_the_throttle_recovers(self) -> None:
         with TemporaryDirectory() as root:

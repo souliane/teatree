@@ -6,6 +6,8 @@ memory to apply these rules; this module is the canonical structural fix.
 
 from collections.abc import Iterable
 
+import pytest
+
 from teatree.config import cold_reader
 from teatree.core.review.review_candidate import (
     _is_self_authored,
@@ -382,6 +384,18 @@ class TestSkipSelfAuthorAcrossIdentities:
             "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "present"}],
         }
         assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    @pytest.mark.parametrize(
+        ("identity", "note_login"), [("Alice-Reviewer", "alice-reviewer"), ("alice-reviewer", "ALICE-Reviewer")]
+    )
+    def test_self_note_login_compare_ignores_case_on_both_sides(self, identity: str, note_login: str) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": note_login}, "system": False, "body": "present"}],
+        }
+        reasons = should_review_candidate_reasons(mr, current_user="someone-else", self_identities=(identity,))
+        assert "has_self_note" in reasons
 
     def test_declared_bot_note_counts_as_self_note(self, monkeypatch) -> None:
         monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {"gitlab.com": ["factory-bot"]})
