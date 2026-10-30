@@ -47,6 +47,7 @@ from teatree.agents.review_envelope_recorder import (
 from teatree.agents.review_request_recorder import record_returned_review_request
 from teatree.agents.runner_result import ResultEnvelopeError
 from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
+from teatree.agents.sweep_proposals_recorder import record_returned_sweep_proposals
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -227,7 +228,10 @@ def record_result_envelope(
         return _record_failure(task, error=checked.error, result=result, usage=usage)
 
     server_side_error = _record_returned_envelopes(
-        task, result, phase=phase, executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness)
+        task,
+        result,
+        phase=phase,
+        executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness),
     )
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
@@ -466,6 +470,7 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         and (
             record_returned_review_request(task, result, phase=phase)
             or record_returned_ship_readiness(task, result, phase=phase)
+            or record_returned_sweep_proposals(task, result, phase=phase)
         )
     )
     return draft_error or record_returned_directive_interpretation(task, result)

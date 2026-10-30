@@ -13,6 +13,7 @@ These tests pin the fix at four levels the audit prescribed:
 """
 
 from datetime import datetime, timedelta
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,7 @@ from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.factory.factory_signal_queries import S1Evidence, compute_s1, current_window
 from teatree.core.factory.factory_signals import SignalStatus, first_try_green_rate
 from teatree.core.models import RedMrFixAttempt
 from teatree.loop.dispatch import _dispatch_one
@@ -199,6 +201,44 @@ class TestClaimRedMrFixHardening(TestCase):
         assert RedMrFixAttempt.objects.count() == 0
 
 
+class TestHumanNoteActivityClaims(TestCase):
+    URL = "https://gitlab.example/org/repo/-/merge_requests/91"
+
+    def _payload(self, head: str, note_id: int) -> dict[str, object]:
+        return {
+            "url": self.URL,
+            "head_sha": head,
+            "fix_kind": RedMrFixAttempt.Kind.REVIEW_FINDINGS,
+            "activity_key": note_id,
+        }
+
+    def test_same_note_is_not_reclaimed_after_push(self) -> None:
+        assert claim_red_mr_fix(self._payload("a" * 40, 42)) is True
+        assert claim_red_mr_fix(self._payload("b" * 40, 42)) is False
+
+    def test_head_finding_dispatches_on_new_head_with_old_note(self) -> None:
+        first = self._payload("a" * 40, 42)
+        second = {**self._payload("b" * 40, 42), "head_finding": True}
+        assert claim_red_mr_fix(first) is True
+        assert claim_red_mr_fix(first) is False
+        assert claim_red_mr_fix(second) is True
+        assert claim_red_mr_fix(second) is False
+
+    def test_new_person_note_claims_again_on_same_head(self) -> None:
+        assert claim_red_mr_fix(self._payload("a" * 40, 42)) is True
+        assert claim_red_mr_fix(self._payload("a" * 40, 43)) is True
+        assert claim_red_mr_fix(self._payload("a" * 40, 42)) is False
+        assert RedMrFixAttempt.objects.filter(pr_url=self.URL, kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS).count() == 3
+
+    def test_older_note_on_new_head_does_not_reclaim(self) -> None:
+        assert claim_red_mr_fix(self._payload("a" * 40, 43)) is True
+        assert claim_red_mr_fix(self._payload("b" * 40, 42)) is False
+
+    def test_unrepresentable_head_does_not_claim(self) -> None:
+        assert claim_red_mr_fix(self._payload("a" * 65, 42)) is False
+        assert RedMrFixAttempt.objects.count() == 0
+
+
 class TestS1LiveWriterEndToEnd(TestCase):
     """(d) A scanned + claimed red PR feeds S1: counted NOT first-try-green, status OK.
 
@@ -239,6 +279,21 @@ class TestS1LiveWriterEndToEnd(TestCase):
         assert reading.status != SignalStatus.INSTRUMENTATION_GAP
         assert reading.sample_size == 5
         assert reading.value == pytest.approx(0.8)
+
+    def test_review_cursor_is_not_counted_as_a_fix_attempt(self) -> None:
+        now = timezone.now()
+        self._seed_merges(now, range(901, 906))
+        assert (
+            RedMrFixAttempt.claim_activity(
+                pr_url=f"https://github.com/{self.SLUG}/pull/901", head_sha="a" * 40, note_id=42
+            )
+            is not None
+        )
+
+        measured_at = timezone.now()
+        measured = compute_s1(current_window(measured_at, 14), "", measured_at)
+
+        assert cast("S1Evidence", measured.evidence)["fix_attempts_in_window"] == 1
 
     def test_dead_recorder_stays_instrumentation_gap_control(self) -> None:
         # Control twin: no red rows at all (a genuinely silent recorder) still

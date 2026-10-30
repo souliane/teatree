@@ -37,6 +37,53 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_conditional_migration_allowance_is_not_an_absolute_constraint() -> None:
+    constraints = extract_constraints("No new setting and no migration unless a member's own issue requires one.")
+    assert {item.kind for item in constraints} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("No new setting unless a migration is required.")} == set()
+    assert {item.kind for item in extract_constraints("No migration, no new setting unless X requires one.")} == {
+        "no_migration"
+    }
+
+
+def test_a_positive_migration_quota_after_no_setting_is_not_a_migration_ban() -> None:
+    constraints = extract_constraints("No new setting, exactly one migration 0034, no lint suppression.")
+    assert {item.kind for item in constraints} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("No new setting and no migration.")} == {
+        "no_setting",
+        "no_migration",
+    }
+
+
+def test_a_member_row_does_not_impose_its_limit_on_the_whole_umbrella() -> None:
+    plan = (
+        "M1 #5743: record a late attempt. No migration.\n"
+        "M13 #5698: activity key needs one migration.\n"
+        "6. ACCEPTANCE CRITERIA: no new setting, exactly one migration."
+    )
+    assert {item.kind for item in extract_constraints(plan, own_issue_number="5791")} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("M1 #5791: No migration.", own_issue_number="5791")} == {
+        "no_migration"
+    }
+
+
+def test_a_ban_after_unless_is_still_a_ban() -> None:
+    for text in (
+        "No migration unless required and no setting.",
+        "Do not add a migration unless required, and do not add a setting.",
+    ):
+        assert {item.kind for item in extract_constraints(text)} == {"no_setting"}, text
+
+
+def test_a_quota_word_in_the_object_of_the_negative_keyword_is_still_a_ban() -> None:
+    for text in ("No 2 migrations.", "Without one migration."):
+        assert {item.kind for item in extract_constraints(text)} == {"no_migration"}, text
+
+
+def test_member_rows_are_kept_when_the_ticket_has_no_own_issue_number() -> None:
+    assert {item.kind for item in extract_constraints("M1 #5791: No migration.")} == {"no_migration"}
+
+
 def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
     text = (
         'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'

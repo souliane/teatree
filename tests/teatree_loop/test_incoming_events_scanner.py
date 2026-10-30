@@ -26,6 +26,35 @@ def _event(*, source: str, body: str, key: str, **payload_extras: object) -> Inc
 
 
 class TestIncomingEventsScanner(TestCase):
+    def test_gitlab_automation_note_is_processed_before_parent_or_route(self) -> None:
+        for login in ("PROJECT_2_BOT_ABC", ""):
+            with self.subTest(login=login):
+                event = IncomingEvent.objects.create(
+                    source=IncomingEvent.Source.GITLAB,
+                    event_name="note",
+                    actor=login,
+                    channel_ref="org/repo",
+                    parent_ts="parent",
+                    body="please fix this",
+                    payload_json={
+                        "object_kind": "note",
+                        "object_attributes": {"url": "https://gitlab.example/org/repo/-/merge_requests/4"},
+                        "user": {"username": login},
+                    },
+                    idempotency_key=f"gitlab:automation:{login}",
+                )
+                with (
+                    patch.object(IncomingEventsScanner, "_resolve_parent_text") as parent,
+                    patch("teatree.loop.scanners.incoming_events.classify_event") as classify,
+                    patch("teatree.loop.scanners.incoming_events.route_event") as route,
+                ):
+                    assert IncomingEventsScanner().scan() == []
+                event.refresh_from_db()
+                assert event.processed_at is not None
+                parent.assert_not_called()
+                classify.assert_not_called()
+                route.assert_not_called()
+
     def test_marks_record_only_events_as_processed(self) -> None:
         event = _event(
             source=IncomingEvent.Source.CI,

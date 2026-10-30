@@ -23,6 +23,7 @@ from teatree.config import worker_is_quiescing
 from teatree.core.admission.generation_admission import generation_admission_refusal, reopen_own_stranded_drain
 from teatree.core.process_freshness import code_behind_schema as _process_code_behind_schema
 from teatree.core.schema_readiness import schema_admission_block_reason, schema_readiness_gate_enabled
+from teatree.request_cache import request_scope
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ def drain_block_reason() -> str:
     return generation_admission_refusal()
 
 
+@request_scope()
 def claim_admission_block_reason() -> str:
     """Why NO task may be claimed right now, or ``""`` to admit — the ONE admission composition.
 

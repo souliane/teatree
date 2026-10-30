@@ -19,7 +19,7 @@ self-approves its own MR.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -127,10 +127,18 @@ class TestPrSweepSoloOverlayGate(TestCase):
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_full_overlay_enables_solo_bypass(self) -> None:
+    def test_full_overlay_with_human_approval_keeps_clear_path(self) -> None:
         _stage_config(self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
+        assert scanner is not None
+        assert scanner.solo_overlay is False
+
+    def test_full_overlay_with_only_review_exempt_repos_can_use_solo_path(self) -> None:
+        _stage_config(self.monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
+        with patch("teatree.core.review.repo_exemption.review_exempt_patterns", return_value=("acme/repo",)):
+            scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
 
@@ -170,8 +178,8 @@ class TestPrSweepSoloOverlayGate(TestCase):
         """``full`` autonomy alone keeps the human in the merge loop (#3630).
 
         The merge gate is no longer tier-governed, so ``full`` resolves it to its
-        default ``true``. The single-author bypass still arms (``solo_overlay``) yet
-        the cold-review auto-dispatch must NOT — the human stays in the merge loop, so
+        default ``true``. The single-author bypass and cold-review auto-dispatch stay off,
+        so the human stays in the merge loop and
         the agent must not auto-dispatch its own review. This is the case that catches
         a regression silently arming a human-approval overlay.
         """
@@ -179,7 +187,7 @@ class TestPrSweepSoloOverlayGate(TestCase):
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
-        assert scanner.solo_overlay is True
+        assert scanner.solo_overlay is False
         assert scanner.auto_review_dispatch is False
         assert scanner.review_dispatcher is None
 

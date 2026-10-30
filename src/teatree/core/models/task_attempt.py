@@ -36,8 +36,6 @@ CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
-# Stamped in no-op recovery summaries; read by doctor duplicate-execution and skill-gap checks.
-NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
 PARK_ERROR_Q = reduce(or_, (models.Q(error__startswith=prefix) for prefix in PARK_ERROR_PREFIXES))

@@ -1,5 +1,6 @@
 """The claim composition refuses every claim while the fleet admits no work."""
 
+import importlib.metadata
 import itertools
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -98,6 +99,23 @@ class TestAFleetVerdictNobodyCanConfirmRefuses(TestCase):
             pytest.raises(RuntimeError, match=r"CoreConfig\.ready"),
         ):
             claim_admission_block_reason()
+
+
+class TestClaimAdmissionSharesOverlayDiscovery(TestCase):
+    def test_one_admission_read_scans_installed_overlays_once(self) -> None:
+        real_entry_points = importlib.metadata.entry_points
+        scans = 0
+
+        def counting_entry_points(**kwargs: str) -> object:
+            nonlocal scans
+            if kwargs.get("group") == "teatree.overlays":
+                scans += 1
+            return real_entry_points(**kwargs)
+
+        with patch("importlib.metadata.entry_points", side_effect=counting_entry_points):
+            claim_admission_block_reason()
+
+        assert scans == 1
 
 
 class TestAStopBetweenTheProbeAndTheClaimWinsNoClaim(TestCase):

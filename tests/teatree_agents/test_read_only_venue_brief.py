@@ -29,6 +29,7 @@ from teatree.agents.read_only_venue_brief import (
     TICKET_CONTEXT_CAP_BYTES,
     ReadOnlyFacts,
     _issue,
+    _list_sweep_issues,
     read_only_system_context,
 )
 from teatree.agents.runner_preparation import PreparedRun
@@ -66,6 +67,62 @@ _TRIAGE_REASON = (
 _UMBRELLA_DIRECTIVE_URL = "https://github.com/souliane/teatree/issues/3009#directive=3"
 _DIRECTIVE_REASON = "You are the teatree directive INTERPRETER (read-only).\nDirective (verbatim):\nnever retry a hold"
 _BODY = "## Problem\nThe planner needs the body.\n"
+
+
+def test_workflow_authored_issue_in_owner_repo_is_self_in_sweep_index() -> None:
+    repo = "owner/example-repo"
+    url = f"https://github.com/{repo}/issues/1"
+    host = SimpleNamespace(
+        get_repo=lambda *, repo: {"name": repo},
+        list_repo_open_issues=lambda *, repo: [
+            {"html_url": url, "title": "Workflow work", "body": None, "user": {"login": "github-actions[bot]"}}
+        ],
+        current_user=lambda: "owner",
+    )
+    provider = SimpleNamespace(get_code_host_for_url=lambda _overlay, _url: host)
+    overlay = SimpleNamespace(
+        provisioning=SimpleNamespace(repo_clone_url=lambda _repo: f"https://github.com/{repo}.git")
+    )
+
+    with (
+        patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
+        patch("teatree.agents.read_only_venue_brief.matching_clone", return_value=None),
+    ):
+        rows = _list_sweep_issues(overlay, (repo,))
+
+    assert rows == [(url, "Workflow work", "", True)]
+
+
+class TestReadOnlySweepFailures(TestCase):
+    def test_sweep_brief_does_not_fetch_without_a_target_checkout(self) -> None:
+        ticket = Ticket.objects.create(issue_url="backlog-sweep://t3-teatree", overlay="t3-teatree")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        with (
+            patch("teatree.agents.read_only_venue_brief._sweep_issue_facts", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target") as fetch,
+        ):
+            ReadOnlyFacts.gather(task, None)
+        fetch.assert_not_called()
+
+    def test_sweep_overlay_lookup_failure_becomes_a_brief_refusal(self) -> None:
+        ticket = Ticket.objects.create(issue_url="backlog-sweep://t3-teatree", overlay="t3-teatree")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", side_effect=RuntimeError("offline")),
+            pytest.raises(HarnessFallbackError, match="owned issue repositories could not be read"),
+        ):
+            ReadOnlyFacts.gather(task, None)
 
 
 def test_read_only_directive_advertises_only_worker_handled_mailbox_tools() -> None:

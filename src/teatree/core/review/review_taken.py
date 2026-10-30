@@ -9,20 +9,17 @@ engaged and the factory must not add a second one. Reads go through the resolved
 """
 
 import logging
-import re
 from collections.abc import Iterable
 from enum import StrEnum
 from typing import cast
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
-
-#: GitLab project/group access tokens act as ``project_<id>_bot_<hash>`` users.
-_ACCESS_TOKEN_BOT = re.compile(r"(?:^|_)bot(?:_|$)")
 
 
 class ReviewTaken(StrEnum):
@@ -32,7 +29,7 @@ class ReviewTaken(StrEnum):
 
 
 def is_bot_author(username: str, *, user_type: str = "") -> bool:
-    return user_type.lower() == "bot" or username.endswith("[bot]") or bool(_ACCESS_TOKEN_BOT.search(username))
+    return ForgeActors().is_automation(username, user_type=user_type)
 
 
 def _note_author(note: RawAPIDict) -> tuple[str, str]:
@@ -47,11 +44,11 @@ def _note_author(note: RawAPIDict) -> tuple[str, str]:
     return ("", "")
 
 
-def _human_note_by_other(note: RawAPIDict, own: set[str]) -> bool:
+def _human_note_by_other(note: RawAPIDict, own: set[str], actors: ForgeActors) -> bool:
     if bool(note.get("system")):
         return False
     name, kind = _note_author(note)
-    return bool(name) and name not in own and not is_bot_author(name, user_type=kind)
+    return name.casefold() not in own and not actors.is_automation(name, user_type=kind)
 
 
 def review_taken_by_other(
@@ -84,8 +81,9 @@ def review_taken_by_other(
         return ReviewTaken.UNKNOWN
     if approvals.get("approved_by"):
         return ReviewTaken.TAKEN
-    own = {identity for identity in self_identities if identity}
-    if any(isinstance(note, dict) and _human_note_by_other(note, own) for note in notes):
+    own = {identity.casefold() for identity in self_identities if identity}
+    actors = ForgeActors.for_url(pr_url)
+    if any(isinstance(note, dict) and _human_note_by_other(note, own, actors) for note in notes):
         return ReviewTaken.TAKEN
     return ReviewTaken.FREE
 

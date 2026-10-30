@@ -17,7 +17,16 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.models import MergeAudit, MergeClear, SelfImproveFiring
+from teatree.core.models import (
+    CriticVerdict,
+    DeferredQuestion,
+    MergeAudit,
+    MergeClear,
+    SelfImproveFiring,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.loop.self_improve.actions import run_action_ladder
 from teatree.loop.self_improve.detectors import ForgottenMergeDetector
@@ -60,6 +69,97 @@ def _stale(pr_id: int, *, hours: float = 1.0) -> MergeClear:
 
 
 class ForgottenMergeDetectorTests(TestCase):
+    def _critic_held_clear(self, pr_id: int) -> tuple[MergeClear, Ticket, CriticVerdict]:
+        clear = _stale(pr_id)
+        ticket = Ticket.objects.create()
+        MergeClear.objects.filter(pk=clear.pk).update(ticket=ticket)
+        verdict = CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha=clear.reviewed_sha,
+            grader_identity="critic",
+            items=[{"slug": "test_value", "status": "fail", "citation": "test evidence"}],
+        )
+        return clear, ticket, verdict
+
+    def test_fresh_exact_head_critic_refusal_suppresses_forgotten_merge(self) -> None:
+        self._critic_held_clear(206)
+        assert _detector().detect() == []
+
+    def test_old_unattended_refusal_and_changed_head_still_report(self) -> None:
+        clear, _, verdict = self._critic_held_clear(207)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        assert len(_detector().detect()) == 1
+
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now())
+        MergeClear.objects.filter(pk=clear.pk).update(reviewed_sha="a" * 40)
+        assert len(_detector().detect()) == 1
+
+        MergeClear.objects.filter(pk=clear.pk).update(reviewed_sha=verdict.head_sha)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(
+            items=[
+                {"slug": "test_value", "status": "pass", "citation": "tests pass"},
+                {"slug": "cleanliness", "status": "pass", "citation": "diff reviewed"},
+            ]
+        )
+        assert len(_detector().detect()) == 1
+
+    def test_active_coding_or_open_owner_question_keeps_old_refusal_held(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(208)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        coding = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        assert _detector().detect() == []
+
+        coding.status = Task.Status.FAILED
+        coding.save(update_fields=["status"])
+        assert len(_detector().detect()) == 1
+
+        question = DeferredQuestion.objects.create(
+            question="Approve the held fix?", audience=DeferredQuestion.Audience.OWNER_QUESTION, parked_task=coding
+        )
+        assert _detector().detect() == []
+        question.answered_at = timezone.now()
+        question.save(update_fields=["answered_at"])
+        assert len(_detector().detect()) == 1
+
+    def test_pending_debugging_fix_round_keeps_old_refusal_held(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(210)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        fix_round = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="debugging")
+        assert _detector().detect() == []
+        fix_round.status = Task.Status.FAILED
+        fix_round.save(update_fields=["status"])
+        assert len(_detector().detect()) == 1
+
+    def test_a_non_failed_later_coding_or_debugging_task_keeps_old_refusal_held(self) -> None:
+        pr_id = 300
+        for phase in ("coding", "debugging"):
+            for status in (Task.Status.PENDING, Task.Status.CLAIMED, Task.Status.COMPLETED):
+                pr_id += 1
+                with self.subTest(phase=phase, status=status):
+                    _, ticket, verdict = self._critic_held_clear(pr_id)
+                    CriticVerdict.objects.filter(pk=verdict.pk).update(
+                        recorded_at=timezone.now() - dt.timedelta(hours=2)
+                    )
+                    task = Task.objects.create(
+                        ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase
+                    )
+                    Task.objects.filter(pk=task.pk).update(status=status)
+                    assert _detector().detect() == []
+
+    def test_a_task_older_than_the_refusal_does_not_hold_it(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(320)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        earlier = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.filter(pk=earlier.pk).update(created_at=timezone.now() - dt.timedelta(hours=3))
+        assert len(_detector().detect()) == 1
+
+    def test_a_non_coding_later_task_does_not_hold_the_refusal(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(321)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        assert len(_detector().detect()) == 1
+
     def test_fires_when_smell_present(self) -> None:
         """CLEAR issued > 30 min ago whose PR is still OPEN ⇒ forgotten merge."""
         _stale(200)

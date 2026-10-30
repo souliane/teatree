@@ -90,7 +90,8 @@ def list_project_prs(client: GitLabAPI, project: ProjectInfo | None, *, state: s
         params.append(f"state={state_filter(state)}")
     if author:
         params.append(f"author_username={quote_plus(author)}")
-    return client.get_json_paginated(f"projects/{project.project_id}/merge_requests?{'&'.join(params)}")
+    endpoint = f"projects/{project.project_id}/merge_requests?{'&'.join(params)}"
+    return client.get_json_paginated(endpoint, require_list=True)
 
 
 def list_project_merged_prs_since(

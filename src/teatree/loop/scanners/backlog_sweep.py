@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
+from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE, SWEEP_ASK_GATE_MARKER
 from teatree.core.models.consolidated_memory import ConsolidatedMemory
 from teatree.core.models.dream_gap_ledger import pending_entries, umbrella_ticket
 from teatree.core.models.dream_gap_offer import mark_offered
@@ -201,7 +201,7 @@ class BacklogSweepScanner:
         )
         if self.require_approval:
             return (
-                f"{base} | ASK-GATE: do NOT mass-close issues unattended — record each fold "
+                f"{base} | {SWEEP_ASK_GATE_MARKER} do NOT mass-close issues unattended — record each fold "
                 "proposal with its citation and surface the batch for explicit user approval; "
                 "a standalone row is retired only after its fold is verified, and that "
                 "retirement MUST go through `t3 <overlay> ticket bulk-close --ids <ids> --confirm <ids>` "
@@ -218,7 +218,7 @@ class BacklogSweepScanner:
         by_cluster = {row.cluster_key: row for row in rows}
         lines = []
         for entry in pending:
-            lines.append(f"- {entry.get('gap_key', '')}: {entry.get('title', '')}")
+            lines.append(f"- {entry.get('gap_key', '')}: {' '.join(str(entry.get('title', '')).split())}")
             lines.extend(_gap_detail_lines(by_cluster.get(entry.get("cluster_key", ""))))
         detail_lines = "\n".join(lines)
         remaining = max(0, (total_pending if total_pending is not None else len(pending)) - len(pending))

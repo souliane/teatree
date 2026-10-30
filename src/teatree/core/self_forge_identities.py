@@ -151,6 +151,11 @@ def issue_author_is_self(author: str, identities: Iterable[str]) -> bool:
     return author.strip().casefold() in {name.strip().casefold() for name in identities if name and name.strip()}
 
 
+def issue_is_self_authored(issue: object, issue_url: str, identities: set[str]) -> bool:
+    author = issue_author_login(issue)
+    return issue_author_is_self(author, identities) or _is_own_repo_workflow_bot(author, issue_url, identities)
+
+
 def require_self_authored_issue(*, host: CodeHostBackend, issue_url: str) -> RawAPIDict:
     """Re-read *issue_url* and return it, or raise :class:`ExternalIssueRefusedError`.
 
@@ -169,7 +174,7 @@ def require_self_authored_issue(*, host: CodeHostBackend, issue_url: str) -> Raw
         raise ExternalIssueRefusedError(issue_url, "", f"the forge did not return the issue ({detail})")
     author = issue_author_login(fresh)
     identities = self_identity_set(issue_url, host=host)
-    if not (issue_author_is_self(author, identities) or _is_own_repo_workflow_bot(author, issue_url, identities)):
+    if not issue_is_self_authored(fresh, issue_url, identities):
         raise ExternalIssueRefusedError(issue_url, author, NOT_SELF_AUTHORED_REASON)
     return fresh
 
@@ -193,6 +198,7 @@ __all__ = [
     "declared_identities_for_url",
     "issue_author_is_self",
     "issue_author_login",
+    "issue_is_self_authored",
     "require_self_authored_issue",
     "self_identity_set",
 ]

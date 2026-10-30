@@ -71,7 +71,11 @@ from teatree.agents.runner_route_recording import park_after_route_failure as _p
 from teatree.agents.runner_route_recording import park_until as _park_until
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import park_if_worker_skill_roots_empty, staged_skills_or_refusal
+from teatree.agents.runner_skill_staging import (
+    park_if_worker_skill_roots_empty,
+    read_only_sweep_skills_or_refusal,
+    staged_skills_or_refusal,
+)
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
@@ -513,6 +517,12 @@ def _preflight(
     dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
     if isinstance(dispatch, TaskAttempt):
         return dispatch
+
+    if phase == "backlog_sweep" and dispatch.harness.capabilities.read_only_venue:
+        selected = read_only_sweep_skills_or_refusal(task, overlay_skill_metadata, stage_skills)
+        if isinstance(selected, TaskAttempt):
+            return selected
+        skills = selected
 
     return _Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
 

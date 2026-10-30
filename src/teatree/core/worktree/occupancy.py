@@ -41,7 +41,7 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 
 import logging
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -52,6 +52,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
+from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.checkout_exit import CheckoutExit, CheckoutExitScope, checkout_exit_scope
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import (
@@ -99,7 +100,9 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait: bool = True) -> CheckoutExit:
+def _settle_checkout_exit(
+    task: Task, worktree: Worktree, *, attest: bool, wait: bool = True, namespace: str = ""
+) -> CheckoutExit:
     """Finish owned processes when requested, then check release and attestation evidence."""
     path = Path(worktree.worktree_path)
     if wait and finish_owned_checkout_processes(path):
@@ -107,7 +110,14 @@ def _settle_checkout_exit(task: Task, worktree: Worktree, *, attest: bool, wait:
     table = read_process_table(exclude_ancestors=True)
     if table.usable and table.holds(path):
         return _defer_checkout_exit(task, worktree, attest=attest, cause="process_table")
-    if not (attest and table.usable and not table.eviction_refuse_reason() and writes_checkout(task)):
+    custody = Custody.from_extra(worktree.get_extra())
+    nested_writer = bool(namespace or (custody and custody.tenures and custody.tenures[-1].namespace))
+    if not (
+        attest
+        and table.usable
+        and not table.eviction_refuse_reason(nested_writer=nested_writer)
+        and writes_checkout(task)
+    ):
         return CheckoutExit(release=True)
     return CheckoutExit(release=True, attested_state=_exit_digest(task, path))
 
@@ -139,12 +149,19 @@ def _defer_checkout_exit(
 
 
 def _prepare_task_checkout_exit(
-    task: Task, *, attest: bool, wait: bool, holder: str, holder_session: str
+    task: Task, *, attest: bool, wait: bool, holder_identity: tuple[str, str], namespace: str = ""
 ) -> CheckoutExit | None:
+    holder, holder_session = holder_identity
     if (holder, holder_session) != (task_holder_id(task), task.claimed_by_session):
         return None
     row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
-    return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait)
+    if row is None and writes_checkout(task):
+        try:
+            renew_ticket_checkout(task.ticket, holder=holder, holder_session=holder_session)
+        except WorktreeOccupancyLostError:
+            return None
+        row = held_dispatch_checkout(task.ticket, holder=holder, holder_session=holder_session)
+    return None if row is None else _settle_checkout_exit(task, row, attest=attest, wait=wait, namespace=namespace)
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
@@ -166,7 +183,9 @@ def _release_if_finished_task(worktree: Worktree) -> None:
     release(worktree, holder=current.holder, holder_session=current.holder_session)
 
 
-def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str, scope: CheckoutExitScope) -> None:
+def _finish_task_checkout(
+    ticket: "Ticket", *, holder: str, holder_session: str, scope: CheckoutExitScope, namespace: str = ""
+) -> None:
     row = held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session)
     if row is None:
         return
@@ -183,7 +202,7 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
     cancelled = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
     reaped = task.status == Task.Status.FAILED and task.failure_kind == FailureKind.LEASE_EXPIRED
     attests = parked or (scope.verified_run and not (cancelled or reaped))
-    settled = scope.settled or _settle_checkout_exit(task, row, attest=attests, wait=not cancelled)
+    settled = scope.settled or _settle_checkout_exit(task, row, attest=attests, wait=not cancelled, namespace=namespace)
     if not settled.release:
         logger.warning(
             "Keeping checkout %s occupied after task %s: its processes are still live", row.worktree_path, task.pk
@@ -199,16 +218,31 @@ def _finish_task_checkout(ticket: "Ticket", *, holder: str, holder_session: str,
 
 
 @contextmanager
-def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str) -> Generator[None]:
+def _held_checkout(ticket: "Ticket", *, holder: str, holder_session: str, namespace: str = "") -> Generator[None]:
     with checkout_exit_scope(
         lambda task, attest, wait: _prepare_task_checkout_exit(
-            task, attest=attest, wait=wait, holder=holder, holder_session=holder_session
+            task, attest=attest, wait=wait, holder_identity=(holder, holder_session), namespace=namespace
         )
     ) as scope:
         try:
             yield
         finally:
-            _finish_task_checkout(ticket, holder=holder, holder_session=holder_session, scope=scope)
+            pk = _task_pk_from_holder(holder)
+            task = Task.objects.filter(pk=pk).first() if pk is not None else None
+            terminal = task is not None and task.status in Task.Status.terminal()
+            should_renew = task is None or (
+                writes_checkout(task)
+                and (
+                    not terminal
+                    or held_dispatch_checkout(ticket, holder=holder, holder_session=holder_session) is not None
+                )
+            )
+            if should_renew:
+                with suppress(WorktreeOccupancyLostError):
+                    renew_ticket_checkout(ticket, holder=holder, holder_session=holder_session)
+            _finish_task_checkout(
+                ticket, holder=holder, holder_session=holder_session, scope=scope, namespace=namespace
+            )
 
 
 @contextmanager
@@ -251,7 +285,7 @@ def occupy_ticket_checkout(
             lease_seconds=lease_seconds,
             tenure=TenureOptions(namespace=namespace),
         )
-    with _held_checkout(ticket, holder=holder, holder_session=holder_session):
+    with _held_checkout(ticket, holder=holder, holder_session=holder_session, namespace=namespace):
         yield path
 
 

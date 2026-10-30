@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from teatree.config import cold_reader
 from teatree.core.review.review_taken import ReviewTaken, is_bot_author, review_taken_by_other
 from teatree.types import RawAPIDict
 
@@ -62,6 +63,16 @@ class TestReviewTakenByOther:
     def test_github_human_comment_takes_the_review(self) -> None:
         host = _Host(notes=[{"user": {"login": "carol", "type": "User"}, "body": "nit"}])
         assert review_taken_by_other(MR, self_identities=SELF, host=host) is ReviewTaken.TAKEN
+
+    def test_own_notes_match_whatever_the_login_case(self) -> None:
+        for identities, author in ((("Alice",), "alice"), (("alice",), "ALICE")):
+            host = _Host(notes=[_note(author)])
+            assert review_taken_by_other(MR, self_identities=identities, host=host) is ReviewTaken.FREE
+
+    def test_a_declared_bot_note_does_not_take_the_review(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {"gitlab.com": ["Declared-Helper"]})
+        host = _Host(notes=[_note("declared-helper")])
+        assert review_taken_by_other(MR, self_identities=("alice",), host=host) is ReviewTaken.FREE
 
     def test_any_approval_takes_the_review_even_the_owners(self) -> None:
         host = _Host(approved_by=["alice"])
