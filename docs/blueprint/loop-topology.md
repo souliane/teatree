@@ -2,6 +2,8 @@
 
 Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5.6. The umbrella retired/subsumed paragraphs stay top-level (they satisfy doc-alignment tests). The deep mechanics — scanners, dispatch, multi-overlay/multi-host scanning, statusline rendering, mode + training-wheel, the mode posture — live here. Cross-references `BLUEPRINT §5.6`, `§5.6.1`, `§5.6.2`, `§5.6.3` resolve here.
 
+`pending_pr_drain` asks the owner once when an obligation passes the overdue threshold, including obligations already thousands of attempts old; a Slack answer to stop reminders discharges the row and leaves the branch alone. The hourly housekeeping loop asks once about tickets explicitly parked for more than fourteen days and consumes the owner's retire-or-keep answer. A retired ticket returns its issue to intake without rewriting branch work.
+
 Each tick runs three stages:
 
 1. **Scan** — pure-Python scanners under `teatree.loop.scanners` collect signals from external sources in parallel. Deterministic, mockable, integration-tested against stubbed backends; they never invoke Claude.

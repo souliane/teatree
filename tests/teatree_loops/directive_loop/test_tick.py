@@ -86,6 +86,16 @@ def _tick(**kw: object) -> object:
 
 
 class TestIntakeBranches(TestCase):
+    def test_dismissed_clarification_rejects_the_current_generation(self) -> None:
+        directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
+        directive.mark_clarifying()
+        question = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")
+        DeferredQuestion.consume(question.pk, dismissed_reason="unanswered after repeated owner notices")
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        directive.refresh_from_db()
+        assert result.action == "rejected"
+        assert directive.state == Directive.State.REJECTED
+
     def test_captured_dispatches_the_interpreter(self) -> None:
         Directive.objects.capture("do X", source=Directive.Source.CLI)
         result = run_tick(settings=_open_settings(), seams=_seams())
@@ -157,6 +167,21 @@ class TestIntakeBranches(TestCase):
 
 
 class TestExecutionBranches(TestCase):
+    def test_ignored_mechanism_rejects_and_releases_the_execution_head(self) -> None:
+        first = _admitted()
+        second = _admitted()
+        run_tick(settings=_open_settings(), seams=_seams())
+        first.refresh_from_db()
+        assert first.state == Directive.State.IMPLEMENTING
+        Ticket.objects.filter(pk=first.ticket_id).update(state=Ticket.State.IGNORED)
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        first.refresh_from_db()
+        assert result.action == "rejected"
+        assert first.state == Directive.State.REJECTED
+        run_tick(settings=_open_settings(), seams=_seams())
+        second.refresh_from_db()
+        assert second.state == Directive.State.IMPLEMENTING
+
     def test_admitted_setting_policy_gate_implements(self) -> None:
         _admitted()
         assert _tick().action == "implementing"
@@ -426,6 +451,19 @@ class TestRatifyBackpressure(TestCase):
         run_tick(settings=_open_settings(), seams=_seams())
         # The second tick adds nothing: the first tick's questions are still unanswered.
         assert Directive.objects.filter(state=Directive.State.RATIFY_PENDING).count() == MAX_OPEN_RATIFY_QUESTIONS
+
+    def test_dismissed_questions_release_slots_in_the_same_pass(self) -> None:
+        for n in range(MAX_OPEN_RATIFY_QUESTIONS):
+            self._interpreted(f"old {n}")
+        run_tick(settings=_open_settings(), seams=_seams())
+        for directive in Directive.objects.filter(state=Directive.State.RATIFY_PENDING):
+            assert directive.ratify_question is not None
+            DeferredQuestion.consume(directive.ratify_question.pk, dismissed_reason="unanswered")
+        younger = self._interpreted("new decision")
+        run_tick(settings=_open_settings(), seams=_seams())
+        younger.refresh_from_db()
+        assert younger.state == Directive.State.RATIFY_PENDING
+        assert Directive.objects.filter(state=Directive.State.REJECTED).count() == MAX_OPEN_RATIFY_QUESTIONS
 
     def test_answering_a_question_frees_a_slot_for_the_next_directive(self) -> None:
         for n in range(10):

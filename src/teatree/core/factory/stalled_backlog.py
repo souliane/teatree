@@ -21,40 +21,53 @@ Separated from :mod:`teatree.core.factory.operational_health` the way
 predicate owns what "stranded" means.
 """
 
+import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
-if TYPE_CHECKING:
-    from teatree.core.models.task import Task
-    from teatree.core.models.ticket import Ticket
+from teatree.core.factory.health_signal import HealthSignal, SignalCollection
+from teatree.core.factory.parked_tickets import silent_freeze_tasks
+from teatree.core.models import Ticket
+from teatree.core.models.known_issue import KnownIssue
+from teatree.utils.throttled_log import warn_throttled
 
 #: A ticket whose newest task FAILED this long ago, with nothing pending or claimed, has
 #: no execution path left — long enough that a retry in flight never trips it.
 STALLED_BACKLOG_WINDOW = timedelta(hours=2)
 #: One stranded ticket is churn; several at once is the dispatch lane itself being down.
 STALLED_BACKLOG_THRESHOLD = 3
+logger = logging.getLogger(__name__)
 
 
 def stranded_ticket_count() -> int:
     """Tickets in WORK_STARTED whose newest task FAILED outside the window, with none in flight."""
-    from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
-    from django.db.models import Exists, Max, OuterRef, Subquery  # noqa: PLC0415 — deferred with the app registry above
+    cutoff = timezone.now() - STALLED_BACKLOG_WINDOW
+    return sum(
+        task.ticket.state == Ticket.State.WORK_STARTED and task.created_at is not None and task.created_at < cutoff
+        for task in silent_freeze_tasks()
+    )
 
-    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-    task_model = cast("type[Task]", apps.get_model("core", "Task"))
-    own_tasks = task_model.objects.filter(ticket=OuterRef("pk"))
-    return (
-        ticket_model.objects.filter(state=ticket_model.State.WORK_STARTED)
-        .annotate(
-            newest_task_at=Max("tasks__created_at"),
-            # The NEWEST status, not "has a failed task": a later completion retires the failure.
-            newest_task_status=Subquery(own_tasks.order_by("-created_at", "-pk").values("status")[:1]),
+
+def _stalled_backlog_signals() -> SignalCollection:
+    try:
+        stalled = stranded_ticket_count()
+    except Exception:  # noqa: BLE001 — a failed health read must not auto-resolve an existing issue
+        warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
+        return SignalCollection(unread=("_stalled_backlog_signals",))
+    if stalled < STALLED_BACKLOG_THRESHOLD:
+        return SignalCollection()
+    hours = int(STALLED_BACKLOG_WINDOW.total_seconds() // 3600)
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="stalled-backlog",
+                severity=KnownIssue.Severity.CRITICAL,
+                kind="stalled_backlog",
+                summary=(
+                    f"{stalled} tickets stranded in started — newest task failed over {hours}h ago "
+                    "and nothing is pending or claimed; the dispatch lane is not running"
+                ),
+            ),
         )
-        # The window is what separates a stranded ticket from one whose retry is in flight.
-        .filter(newest_task_at__lt=timezone.now() - STALLED_BACKLOG_WINDOW)
-        .filter(newest_task_status=task_model.Status.FAILED)
-        .exclude(Exists(own_tasks.filter(status__in=task_model.Status.active())))
-        .count()
     )

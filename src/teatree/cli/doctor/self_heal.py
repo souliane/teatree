@@ -405,7 +405,7 @@ def _check_stale_loop_timer() -> bool:
 
 
 def _check_failed_tasks_on_live_tickets() -> bool:
-    """FAIL when a live ticket's NEWEST task is FAILED — work that died with no successor.
+    """FAIL on silent freezes and WARN on explicitly parked newest task failures.
 
     The decision rule (souliane/teatree#4357): a non-terminal ticket whose newest task
     FAILED and which nothing re-dispatched is either re-dispatched or explicitly parked,
@@ -425,24 +425,18 @@ def _check_failed_tasks_on_live_tickets() -> bool:
     ``auto:<branch>``) is ordinary work and still counts.
     """
     try:
-        from django.db.models import OuterRef, Subquery  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        from teatree.core.forge_url import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
-            is_synthetic_ticket_url,
+        from teatree.core.factory.parked_tickets import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            parked_failed_tasks,
+            silent_freeze_tasks,
         )
-        from teatree.core.models import Task, Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        terminal = set(Ticket._SETTLED_STATES) | {Ticket.State.RETRO_RECORDED}  # noqa: SLF001 — the model's SSOT terminal set
-        newest_status = Subquery(Task.objects.filter(ticket=OuterRef("pk")).order_by("-pk").values("status")[:1])
-        frozen = (
-            Ticket.objects.exclude(state__in=terminal)
-            .annotate(newest_task_status=newest_status)
-            .filter(newest_task_status=Task.Status.FAILED)
-        )
-        numbers = sorted({ticket.ticket_number for ticket in frozen if not is_synthetic_ticket_url(ticket.issue_url)})
+        numbers = sorted({task.ticket.ticket_number for task in silent_freeze_tasks()})
+        parked_count = len(parked_failed_tasks())
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Failed-task-on-live-ticket check crashed: {exc.__class__.__name__}: {exc}")
         return True
+    if parked_count:
+        typer.echo(f"WARN  {parked_count} ticket(s) are explicitly parked after a failed task.")
     if not numbers:
         return True
     listed = ", ".join(f"#{number}" for number in numbers)

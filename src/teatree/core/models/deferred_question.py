@@ -19,7 +19,7 @@ question) as the same primitive.
 
 import logging
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 from django.db import DatabaseError, models, transaction
 from django.db.models import F, Max
@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 class DeferredQuestionError(ValueError):
     """A :class:`DeferredQuestion` was rejected at record time — contract failed."""
+
+
+class PrivateQuestionContext(TypedDict, total=False):
+    task_pairs: list[list[int]]
 
 
 class DeferredQuestion(models.Model):
@@ -200,6 +204,7 @@ class DeferredQuestion(models.Model):
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
+        private_context: PrivateQuestionContext | None = None,
     ) -> "DeferredQuestion":
         """Record a guarded question; matching action cards alone may use reserved action markers."""
         clean_question = question.strip()
@@ -242,7 +247,10 @@ class DeferredQuestion(models.Model):
                 parked_task=parked_task,
                 task_session=task_session,
                 audience=cls.Audience.INTERNAL if card is None else cls.Audience.OWNER_QUESTION,
-                evidence={} if card is None else card.to_evidence(),
+                evidence={
+                    **({} if card is None else card.to_evidence()),
+                    **({"private_context": private_context} if private_context else {}),
+                },
             )
             transaction.on_commit(
                 partial(

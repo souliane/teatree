@@ -6,6 +6,7 @@ into work. These turn a standing finding into one deduped question the owner can
 
 from typing import TYPE_CHECKING
 
+from teatree.loop.scanners.parked_ticket_question import ParkedTicketQuestionScanner
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ def _build_jobs(
         _ScannerJob(scanner=OverrideLiftScanner(), overlay=""),
         _ScannerJob(scanner=InertGateQuestionScanner(), overlay=""),
         _ScannerJob(scanner=StaleControlDbQuestionScanner(), overlay=""),
+        _ScannerJob(scanner=ParkedTicketQuestionScanner(), overlay=""),
         _ScannerJob(scanner=CiOauthPoolReconcileScanner(), overlay=""),
     ]
     self_update = _self_update_scanner()

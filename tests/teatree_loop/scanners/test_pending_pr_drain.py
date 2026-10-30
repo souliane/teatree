@@ -11,9 +11,11 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.models import PendingPullRequest
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.loop.scanners import PendingPrDrainScanner
 from tests.teatree_core.cleanup._shared import _run_git
@@ -45,6 +47,47 @@ def _first_push_repo(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 class PendingPrDrainScannerTestCase(TestCase):
+    def test_far_overdue_obligation_gets_one_owner_card_with_plain_cause(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=4386)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        scanner.scan()
+        row = DeferredQuestion.objects.get()
+        assert row.evidence["decision"] == "irreversible"
+        assert "remote" in row.evidence["why"]
+        assert branch not in str(row.evidence)
+        assert str(repo) not in str(row.evidence)
+
+    def test_owner_stop_reminding_discharges_but_local_answer_does_not(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=4386)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        DeferredQuestion.objects.update(
+            answered_at=timezone.now(), answer_text="Stop reminding", resolved_via=DeferredQuestion.ResolvedVia.LOCAL
+        )
+        scanner.scan()
+        assert PendingPullRequest.objects.filter(branch=branch).exists()
+        DeferredQuestion.objects.update(resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        scanner.scan()
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
+    def test_keep_trying_leaves_obligation_and_does_not_ask_again(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        DeferredQuestion.objects.update(
+            answered_at=timezone.now(), answer_text="Keep trying", resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        scanner.scan()
+        assert PendingPullRequest.objects.filter(branch=branch).exists()
+        assert DeferredQuestion.objects.count() == 1
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path

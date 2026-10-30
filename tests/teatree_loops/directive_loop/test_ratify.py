@@ -183,6 +183,16 @@ class TestPayloadVisibleRatification(TestCase):
 
 
 class TestTryAdmit(TestCase):
+    def test_dismissed_ratification_rejects_without_admitting(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        DeferredQuestion.consume(question.pk, dismissed_reason="unanswered after repeated owner notices")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "rejected"
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.REJECTED
+        assert "unanswered" in directive.decision_reason
+
     def test_pending_while_the_question_is_unanswered(self) -> None:
         directive = _interpreted_directive()
         ask_ratification(directive)

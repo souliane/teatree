@@ -6,6 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_WINDOW, stranded_ticket_count
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -22,6 +23,11 @@ class TestStrandedTicketCount(TestCase):
     def test_a_failed_task_outside_the_window_is_stranded(self) -> None:
         self._queued(2)
         assert stranded_ticket_count() == 2
+
+    def test_a_parked_failed_task_is_not_a_silent_freeze(self) -> None:
+        self._queued(2)
+        Task.objects.update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 0
 
     def test_a_recent_failure_is_still_in_flight(self) -> None:
         # The window exists so a retry that has not been requeued yet never counts.

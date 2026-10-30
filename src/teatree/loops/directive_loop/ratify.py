@@ -115,6 +115,9 @@ def try_admit(directive: Directive) -> str:
     human's words.
     """
     question = directive.ratify_question
+    if question is not None and question.answered_at is None and question.dismissed_at is not None:
+        directive.reject(f"ratification not answered: {question.dismissed_reason}")
+        return "rejected"
     if question is None or question.answered_at is None:
         return "pending"
     if not question.answered_on_owner_channel:

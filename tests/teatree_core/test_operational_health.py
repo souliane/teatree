@@ -364,18 +364,24 @@ class TestStalledBacklogCollector:
     """Folding the stranded count into a signal; the predicate is tested beside its module."""
 
     def test_at_the_threshold_it_raises_a_named_critical(self) -> None:
-        with patch.object(operational_health, "stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD):
+        with patch(
+            "teatree.core.factory.stalled_backlog.stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD
+        ):
             signals = _stalled_backlog_signals().signals
         assert [s.fingerprint for s in signals] == ["stalled-backlog"]
         assert signals[0].severity == KnownIssue.Severity.CRITICAL
         assert str(STALLED_BACKLOG_THRESHOLD) in signals[0].summary
 
     def test_below_the_threshold_is_churn_not_a_signal(self) -> None:
-        with patch.object(operational_health, "stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD - 1):
+        with patch(
+            "teatree.core.factory.stalled_backlog.stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD - 1
+        ):
             assert _stalled_backlog_signals().signals == ()
 
     def test_an_unreadable_source_names_itself_rather_than_reporting_clear(self) -> None:
-        with patch.object(operational_health, "stranded_ticket_count", side_effect=OperationalError("no such table")):
+        with patch(
+            "teatree.core.factory.stalled_backlog.stranded_ticket_count", side_effect=OperationalError("no such table")
+        ):
             assert _stalled_backlog_signals() == SignalCollection(unread=("_stalled_backlog_signals",))
 
 
