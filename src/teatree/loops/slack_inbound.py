@@ -70,6 +70,7 @@ def record_and_wake_slack_answer(overlay: str, event: dict) -> None:
     Nothing is posted to Slack here.
     """
     if _is_from_someone_else(overlay, event):
+        logger.info("Ignored non-owner or unverified Slack event for overlay %s (type=%s)", overlay, event.get("type"))
         return
     recorded = record_slack_dm(overlay, event)
     if event.get("channel_type") == "im" and is_on_behalf_posted(event) and not recorded:

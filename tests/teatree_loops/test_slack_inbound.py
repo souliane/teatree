@@ -135,6 +135,18 @@ class TestRecordThenWake(django.test.TestCase):
             self._queued_wakes(),
         ) == (0, 0, 0, 0)
 
+    def test_a_non_owner_drop_is_logged_without_message_text(self) -> None:
+        event = {**_DM, "user": "U_COLLEAGUE", "text": "private message"}
+
+        with (
+            patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend),
+            self.assertLogs("teatree.loops.slack_inbound", level="INFO") as logs,
+        ):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+
+        assert any("non-owner" in line for line in logs.output)
+        assert all("private message" not in line for line in logs.output)
+
     def test_a_blank_owner_id_drops_every_event_type(self) -> None:
         self.backend.user_id = ""
         for label, event in {**_FROM_A_COLLEAGUE, "owner-shaped dm": dict(_DM)}.items():

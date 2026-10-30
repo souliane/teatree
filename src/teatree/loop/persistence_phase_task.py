@@ -62,8 +62,8 @@ def create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str)
     """
     from teatree.core.models.session import Session  # noqa: PLC0415 — lazy: avoids the models import cycle
 
-    refuse_unplanned_mint(ticket, phase=phase)
     refuse_conversation_mint(ticket, phase=phase)
+    refuse_unplanned_mint(ticket, phase=phase)
     with transaction.atomic():
         in_flight = Task.objects.in_flight_for_phase(ticket.overlay, phase).filter(ticket=ticket).order_by("pk").first()
         if in_flight is not None:

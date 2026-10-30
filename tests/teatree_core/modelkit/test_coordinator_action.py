@@ -7,6 +7,7 @@ import pytest
 from teatree.core.modelkit.coordinator_action import (
     ACTION_SPECS,
     ALLOWED_DESTINATIONS,
+    ActionDestination,
     ActionSpec,
     CoordinatorActionKind,
     action_refusal,
@@ -31,6 +32,19 @@ class TestEveryKindIsBoundedByTheOwnersLimits:
 
 
 class TestTheRuntimeCheckRefuses:
+    def test_a_declared_destination_outside_the_owner_boundary(self) -> None:
+        kind = CoordinatorActionKind.QUEUE_TASK
+        outside = ActionSpec(
+            destination=ActionDestination.COLLEAGUE_MESSAGE,
+            crosses=frozenset(),
+            arguments=ACTION_SPECS[kind].arguments,
+        )
+
+        with patch.dict(ACTION_SPECS, {kind: outside}):
+            refusal = action_refusal(kind, {"ticket": "https://github.com/o/r/issues/1"})
+
+        assert "outside the owner's thread" in refusal
+
     def test_an_unknown_kind(self) -> None:
         assert "unknown action kind" in action_refusal("send_dm_to_colleague", {})
 

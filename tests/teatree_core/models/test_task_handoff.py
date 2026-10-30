@@ -35,6 +35,7 @@ from teatree.core.models.task_handoff import (
     resume_on_answer,
     schedule_resume,
 )
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests._owner_channel import OWNER_CARD, owner_stop
 from tests.factories import planned_ticket
 
@@ -332,6 +333,16 @@ class TestAnOwnerActionCardResumesNothing(TestCase):
                 assert answered is not None
 
                 assert (resume_on_answer(answered, task) is not None) == resumes
+
+    def test_an_answer_kept_for_a_conversation_build_task_mints_no_resume(self) -> None:
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        row = DeferredQuestion.record("Which approach?", parked_task=task, card=OWNER_CARD)
+        answered = row.apply_answer("Use the smaller fix", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        assert answered is not None
+        assert resume_on_answer(answered, task) is None
+        assert not task.child_tasks.exists()
 
 
 class TestAnOverCapParentResumesFresh(TestCase):

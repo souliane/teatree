@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.agents.data_fence import fenced
 from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.models import Session, SessionCommand, Task, ThreadBinding, Ticket
 from teatree.core.models.question_text import question_fingerprint
@@ -298,7 +299,7 @@ def dispatch_work(
 
 def _execution_reason(reading: InboundReading, *, slack_ts: str, text: str) -> str:
     summary = f"\nInterpreted as: {reading.work_summary}" if reading.work_summary else ""
-    return f"[{reading.intent}] Owner Slack message at ts={slack_ts}: {text}{summary}"
+    return f"[{reading.intent}] Owner Slack message at ts={slack_ts}:\n{fenced('OWNER MESSAGE', text)}{summary}"
 
 
 def _active_tasks(overlay: str) -> list[Task]:

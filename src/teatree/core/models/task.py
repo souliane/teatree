@@ -425,8 +425,6 @@ class Task(models.Model):
         # phase is a short verb ("review"/"code"/...) must advance the
         # FSM too, not just record the session visit (#750). Raw
         # comparison silently desynced ticket.state from visited_phases.
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
-
         phase = normalize_phase(self.phase)
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
         # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
@@ -447,6 +445,8 @@ class Task(models.Model):
         # let both completions read the same stale state and both fire.
         with transaction.atomic():
             ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)
+            if phase == "planning" and ticket.is_conversation():
+                return False
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER
@@ -623,8 +623,8 @@ class Task(models.Model):
         The parent can wait for all children by querying ``child_tasks``. An implementing
         phase on a ticket with no plan decision raises ``NoPlanArtifactError`` and spawns nothing.
         """
-        refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
         refuse_conversation_mint(self.ticket, phase=phase or self.phase)
+        refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
         children = []
         for repo in repos:
             child = Task.objects.create(

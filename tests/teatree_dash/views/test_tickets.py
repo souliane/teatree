@@ -16,7 +16,8 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.dash.task_actions import enqueue_buttons
 from teatree.dash.ticket_detail import legal_transition_names
-from tests.factories import TaskFactory, TicketFactory
+from teatree.utils.url_slug import slack_conversation_anchor
+from tests.factories import TaskFactory, TicketFactory, record_test_plan
 
 State = Ticket.State
 
@@ -278,6 +279,18 @@ class TaskEnqueuePostTestCase(TestCase):
         response = self._post("coding")
         assert response.status_code == 400
         assert "plan_missing" in response.content.decode()
+        assert not Task.objects.filter(ticket=self.ticket).exists()
+
+    def test_a_planned_conversation_build_request_is_a_refusal(self) -> None:
+        self.ticket.issue_url = slack_conversation_anchor(channel="D1", slack_ts="1.0")
+        self.ticket.state = State.PLAN_RECORDED
+        self.ticket.save(update_fields=["issue_url", "state"])
+        record_test_plan(self.ticket)
+
+        response = self._post("coding")
+
+        assert response.status_code == 400
+        assert "conversation_ticket" in response.content.decode()
         assert not Task.objects.filter(ticket=self.ticket).exists()
 
     def test_a_known_phase_outside_the_ticket_fsm_is_refused(self) -> None:

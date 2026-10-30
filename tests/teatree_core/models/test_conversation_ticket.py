@@ -1,17 +1,22 @@
 """A Slack conversation ticket: recognised by its anchor, kept while alive, barred from build phases (#5685)."""
 
 from datetime import timedelta
+from io import StringIO
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.core.models import NoPlanArtifactError, ThreadBinding, Ticket
 from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT, CONVERSATION_REFUSED_PREFIX
 from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_enqueue import enqueue_phase_task
+from teatree.core.models.task_handoff import schedule_resume
+from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests.factories import record_test_plan
 
@@ -94,6 +99,81 @@ class TestConversationInUse(TestCase):
 
 
 class TestBuildPhasesAreRefusedOnAConversation(TestCase):
+    def test_a_planning_task_can_complete_without_minting_build_work(self) -> None:
+        ticket = _conversation()
+        task = enqueue_phase_task(ticket=ticket, phase="planning", reason="Plan it.")
+        record_test_plan(ticket)
+
+        task.complete()
+
+        task.refresh_from_db()
+        ticket.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+
+    def test_unplanned_conversation_build_refusal_names_the_conversation(self) -> None:
+        ticket = _conversation()
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            enqueue_phase_task(ticket=ticket, phase="coding", reason="build it")
+
+    def test_scheduler_refuses_conversation_build_work(self) -> None:
+        ticket = _conversation()
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            ticket.schedule_coding()
+
+        assert not Task.objects.filter(ticket=ticket).exists()
+
+    def test_child_mint_refuses_conversation_build_work(self) -> None:
+        ticket = _conversation()
+        parent = enqueue_phase_task(ticket=ticket, phase="planning", reason="Plan it.")
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            parent.spawn_child_tasks(["repo"], phase="coding")
+
+        assert not parent.child_tasks.exists()
+
+    def test_resume_refuses_a_preexisting_build_task_on_conversation(self) -> None:
+        ticket = _conversation()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        parent = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            schedule_resume(parent, answer="continue")
+
+        assert not parent.child_tasks.exists()
+
+    def test_loop_mint_refuses_conversation_build_work(self) -> None:
+        ticket = _conversation()
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket: refusing a coding task"):
+            create_phase_task(ticket, phase="coding", agent_id="coding", reason="build it")
+
+        assert not Task.objects.filter(ticket=ticket).exists()
+
+    def test_an_existing_build_task_cannot_dispatch_on_a_conversation(self) -> None:
+        ticket = _conversation()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        refusal = pre_harness_refusal(task, phase="coding")
+
+        assert refusal is not None
+        assert refusal.startswith(CONVERSATION_REFUSED_PREFIX)
+
+    def test_cli_create_reports_the_conversation_refusal(self) -> None:
+        ticket = _conversation()
+        errors = StringIO()
+
+        with pytest.raises(SystemExit) as raised:
+            call_command("tasks", "create", str(ticket.pk), phase="coding", reason="build it", stderr=errors)
+
+        assert raised.value.code == 1
+        assert CONVERSATION_REFUSED_PREFIX in errors.getvalue()
+        assert not Task.objects.filter(ticket=ticket).exists()
+
     def test_coding_testing_and_shipping_are_refused_with_the_typed_reason(self) -> None:
         ticket = _conversation()
         record_test_plan(ticket)

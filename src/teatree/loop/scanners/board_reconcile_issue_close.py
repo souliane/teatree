@@ -23,6 +23,8 @@ worktree holds uncommitted tracked changes raises ONE durable question naming th
 import logging
 from typing import TYPE_CHECKING
 
+from django.db.models import Q
+from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.backends.issue_close import IssueCloseVerdict
@@ -30,6 +32,7 @@ from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
@@ -61,8 +64,9 @@ def closed_issue_transitions(
     a pre-ship state — would be re-probed and could be retired in the same tick that
     resurrected it. One rule per row per run.
     """
-    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models import Task, ThreadBinding, Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
+    since = timezone.now() - CONVERSATION_QUIET_LIMIT
     candidates = without_voided(
         scoped(
             Ticket.objects.filter(state__in=Ticket.pre_ship_states())
@@ -74,7 +78,20 @@ def closed_issue_transitions(
         .exclude(pk__in=already_moved)
         .order_by("-pk")
     )
-    candidates = [ticket for ticket in candidates if not ticket.conversation_in_use()]
+    conversation_ids = {ticket.pk for ticket in candidates if ticket.is_conversation()}
+    occupied_conversation_ids: set[int] = set()
+    if conversation_ids:
+        occupied_conversation_ids.update(
+            Task.objects.filter(ticket_id__in=conversation_ids)
+            .filter(Q(status__in=Task.Status.active()) | Q(created_at__gte=since))
+            .values_list("ticket_id", flat=True)
+        )
+        occupied_conversation_ids.update(
+            ThreadBinding.objects.filter(ticket_id__in=conversation_ids, created_at__gte=since).values_list(
+                "ticket_id", flat=True
+            )
+        )
+    candidates = [ticket for ticket in candidates if ticket.pk not in occupied_conversation_ids]
     probed = candidates[: max(probe_budget, 0)]
     if len(probed) < len(candidates):
         logger.warning(

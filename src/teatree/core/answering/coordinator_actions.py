@@ -38,9 +38,15 @@ class ActionOutcome:
 
 
 def _owner_message(conversation: Ticket) -> str:
-    extra = conversation.extra if isinstance(conversation.extra, dict) else {}
-    origin = extra.get("slack_answer")
-    return str(origin.get("question") or "") if isinstance(origin, dict) else ""
+    return str(conversation.slack_answer_context().get("question") or "")
+
+
+def _tracked_ticket(conversation: Ticket, named: str) -> Ticket:
+    target = Ticket.objects.in_flight(conversation.overlay).filter(reference_issue_q(named)).order_by("-pk").first()
+    if target is None or not target.is_admissible():
+        message = "no open tracked ticket matches it"
+        raise ActionRefusedError(message)
+    return target
 
 
 def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
@@ -52,10 +58,7 @@ def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
     if named not in find_forge_refs(_owner_message(conversation)):
         message = "the owner's message does not name that ticket"
         raise ActionRefusedError(message)
-    target = Ticket.objects.in_flight(conversation.overlay).filter(reference_issue_q(named)).order_by("-pk").first()
-    if target is None or not target.is_admissible():
-        message = "no open tracked ticket matches it"
-        raise ActionRefusedError(message)
+    target = _tracked_ticket(conversation, named)
     with transaction.atomic():
         bindings = ThreadBinding.objects.select_for_update().filter(ticket=conversation)
         if not bindings.exists():
@@ -77,16 +80,11 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
     if named == conversation.issue_url:
         target = conversation
     else:
-        extra = conversation.extra if isinstance(conversation.extra, dict) else {}
-        origin = extra.get("slack_answer")
-        recorded = str(origin.get("work_issue_url") or "") if isinstance(origin, dict) else ""
+        recorded = str(conversation.slack_answer_context().get("work_issue_url") or "")
         if named != recorded and named not in find_forge_refs(_owner_message(conversation)):
             message = "the conversation does not identify that work ticket"
             raise ActionRefusedError(message)
-        target = Ticket.objects.in_flight(conversation.overlay).filter(reference_issue_q(named)).order_by("-pk").first()
-        if target is None or not target.is_admissible():
-            message = "no open tracked ticket matches it"
-            raise ActionRefusedError(message)
+        target = _tracked_ticket(conversation, named)
     with transaction.atomic():
         queued = (
             Task.objects.in_flight_for_phase(target.overlay, "planning").filter(ticket=target).order_by("pk").first()

@@ -266,8 +266,8 @@ class TicketSchedulingModel(TicketFacet):
         if require_author and self.role != self.Role.AUTHOR:
             msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
             raise InvalidTransitionError(msg)
-        refuse_unplanned_mint(self, phase=phase)
         refuse_conversation_mint(self, phase=phase)
+        refuse_unplanned_mint(self, phase=phase)
         if gate is not None:
             get_gate(gate)(self)
         with transaction.atomic():

@@ -187,7 +187,7 @@ class TicketIntrospectionModel(TicketFacet):
 
     def owes_no_work(self) -> bool:
         """Whether this conversation row was opened by a message recorded as asking for nothing to be built."""
-        return self.is_conversation() and self._slack_answer().get("implies_work") is False
+        return self.is_conversation() and self.slack_answer_context().get("implies_work") is False
 
     def conversation_in_use(self) -> bool:
         """Whether a conversation row still has a live task or a recent thread, so no sweep may retire it."""
@@ -208,7 +208,7 @@ class TicketIntrospectionModel(TicketFacet):
         for, so every surface that reports one has to show that text or the report
         names a number nobody can act on.
         """
-        recorded = str(self._slack_answer().get("question") or "")
+        recorded = str(self.slack_answer_context().get("question") or "")
         return recorded or self.short_description or "(no recorded text)"
 
     def work_placed_elsewhere(self) -> bool:
@@ -217,9 +217,9 @@ class TicketIntrospectionModel(TicketFacet):
         A Slack lane's bookkeeping row is non-admissible by design, so admissibility alone
         cannot tell a dropped request from a handled one — this stamp is the difference.
         """
-        return bool(self._slack_answer().get("work_issue_url"))
+        return bool(self.slack_answer_context().get("work_issue_url"))
 
-    def _slack_answer(self) -> SlackAnswerContext:
+    def slack_answer_context(self) -> SlackAnswerContext:
         extra = self.extra if isinstance(self.extra, dict) else {}
         origin = extra.get("slack_answer")
         return cast("SlackAnswerContext", origin) if isinstance(origin, dict) else SlackAnswerContext()

@@ -62,8 +62,8 @@ def enqueue_phase_task(
     if not reason.strip():
         msg = "a non-blank reason is required — it is the prompt body the worker receives."
         raise TaskEnqueueError(msg)
-    refuse_unplanned_mint(ticket, phase=phase)
     refuse_conversation_mint(ticket, phase=phase)
+    refuse_unplanned_mint(ticket, phase=phase)
     session = ticket.resolve_phase_session(agent_id=agent_id)
     return Task.objects.create(
         ticket=ticket,

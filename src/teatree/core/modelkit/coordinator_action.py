@@ -22,9 +22,10 @@ class ActionDestination(StrEnum):
 
     OWNER_THREAD = "owner_thread"
     BOUND_TICKET = "bound_ticket"
+    COLLEAGUE_MESSAGE = "colleague_message"
 
 
-ALLOWED_DESTINATIONS = frozenset(ActionDestination)
+ALLOWED_DESTINATIONS = frozenset({ActionDestination.OWNER_THREAD, ActionDestination.BOUND_TICKET})
 
 
 @dataclass(frozen=True, slots=True)

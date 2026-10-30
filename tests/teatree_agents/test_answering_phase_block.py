@@ -46,5 +46,12 @@ class TestOnlyTheClosedActionTableIsOffered(TestCase):
         assert all(f'"{argument}"' in brief for spec in ACTION_SPECS.values() for argument in spec.arguments)
         assert "you cannot act" in brief
 
+    def test_the_brief_says_what_each_action_does_and_where_its_url_comes_from(self) -> None:
+        brief = _answering_brief(conversation=True)
+
+        assert "bind_thread moves this Slack thread" in brief
+        assert "queue_task queues planning" in brief
+        assert "full forge URL from the owner's message" in brief
+
     def test_a_task_on_no_conversation_is_offered_no_actions(self) -> None:
         assert '"kind"' not in _answering_brief(conversation=False)

@@ -71,6 +71,18 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
     def _ticket(self, *, state: str = Ticket.State.PLAN_RECORDED, url: str = "", **kwargs: object) -> Ticket:
         return Ticket.objects.create(overlay="t3-teatree", state=state, issue_url=url or _ISSUE, **kwargs)
 
+    def test_recent_conversation_rows_do_not_add_queries_per_row(self) -> None:
+        for number in range(5):
+            ticket = self._ticket(url=slack_conversation_anchor(channel="D1", slack_ts=f"{number}.0"))
+            ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts=f"{number}.0")
+
+        with self.assertNumQueries(4):
+            transitions, reads = board_reconcile_issue_close.closed_issue_transitions(
+                overlay="t3-teatree", dry_run=True, probe_budget=0
+            )
+
+        assert (transitions, reads) == ([], 0)
+
     def test_the_pk632_shape_is_retired_carrying_the_close_reason(self) -> None:
         """#4711's regression row: planned, author, issue CLOSED not_planned."""
         ticket = self._ticket()

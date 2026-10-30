@@ -144,13 +144,13 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
+    refuse_conversation_mint(task.ticket, phase=task.phase)
     existing = task.child_tasks.filter(
         status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
     ).first()
     if existing is not None:
         return existing
     refuse_unplanned_mint(task.ticket, phase=task.phase)
-    refuse_conversation_mint(task.ticket, phase=task.phase)
     last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
     session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
