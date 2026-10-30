@@ -6,7 +6,7 @@ from django.utils import timezone
 from teatree.core.factory.operational_health import collect_signals
 from teatree.core.factory.parked_tickets import aged_parked_tasks, silent_freeze_tasks
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 
 
 class ParkedTicketSelectionTest(TestCase):
@@ -34,6 +34,28 @@ class ParkedTicketSelectionTest(TestCase):
         self._failed(reason=HALT_STAMP, age_days=1)
         Task.objects.create(ticket=superseded.ticket, session=superseded.session, status=Task.Status.PENDING)
         assert aged_parked_tasks() == []
+
+    def test_a_ticket_in_review_is_not_parked(self) -> None:
+        task = self._failed(reason=HALT_STAMP)
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.REVIEW_REQUESTED)
+        assert aged_parked_tasks() == []
+
+    def test_a_ticket_with_an_open_pull_request_is_not_parked(self) -> None:
+        task = self._failed(reason=HALT_STAMP)
+        PullRequest.objects.create(ticket=task.ticket, url="https://example.com/pull/1", repo="o/r", iid="1")
+        assert aged_parked_tasks() == []
+
+    def test_a_failed_ticket_in_review_stays_a_silent_freeze(self) -> None:
+        task = self._failed()
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.REVIEW_REQUESTED)
+        assert [row.pk for row in silent_freeze_tasks()] == [task.pk]
+
+    def test_a_ticket_whose_pull_request_closed_is_parked_again(self) -> None:
+        task = self._failed(reason=HALT_STAMP)
+        PullRequest.objects.create(
+            ticket=task.ticket, url="https://example.com/pull/1", repo="o/r", iid="1", state=PullRequest.State.CLOSED
+        )
+        assert [row.pk for row in aged_parked_tasks()] == [task.pk]
 
     def test_synthetic_ticket_is_not_deliverable_work(self) -> None:
         task = self._failed(reason=HALT_STAMP)

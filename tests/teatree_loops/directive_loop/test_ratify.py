@@ -18,6 +18,7 @@ from teatree.core.models import DeferredQuestion, Directive, IncomingEvent
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.core.models.provenance import Provenance
+from teatree.core.owner_dm_sweep import run_sweep
 from teatree.loops.directive_loop.ratify import (
     RatificationVerdict,
     ask_ratification,
@@ -183,6 +184,18 @@ class TestPayloadVisibleRatification(TestCase):
 
 
 class TestTryAdmit(TestCase):
+    def test_the_hourly_sweep_keeps_every_directives_ratify_question_open(self) -> None:
+        directives = [_interpreted_directive() for _ in range(3)]
+        for directive in directives:
+            ask_ratification(directive)
+
+        assert run_sweep().resolved == 0
+
+        for directive in directives:
+            directive.refresh_from_db()
+            assert try_admit(directive) == "pending"
+            assert directive.state == Directive.State.RATIFY_PENDING
+
     def test_dismissed_ratification_rejects_without_admitting(self) -> None:
         directive = _interpreted_directive()
         question = ask_ratification(directive)

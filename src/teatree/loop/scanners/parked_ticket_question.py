@@ -4,10 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from teatree.core.factory.parked_tickets import (
+    KEEP_ANSWER,
     PARKED_MARKER_PREFIX,
+    RETIRE_ANSWER,
     aged_parked_tasks,
     ask_owner_about_parked,
-    retire_answered_parked,
+    owner_ruled_pairs,
+    retire_parked,
+    task_pair,
 )
 from teatree.core.models import Task
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -20,12 +24,14 @@ class ParkedTicketQuestionScanner:
     tasks: Callable[[], list[Task]] = aged_parked_tasks
 
     def scan(self) -> list[ScanSignal]:
-        answered = DeferredQuestion.objects.filter(
-            dedupe_marker__startswith=PARKED_MARKER_PREFIX, answered_at__isnull=False
+        aged = self.tasks()
+        answered = list(
+            DeferredQuestion.objects.filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX, answered_at__isnull=False)
         )
-        for question in answered:
-            retire_answered_parked(question)
+        retire = {pair for question in answered for pair in owner_ruled_pairs(question, RETIRE_ANSWER)}
+        keep = {pair for question in answered for pair in owner_ruled_pairs(question, KEEP_ANSWER)}
+        retire_parked(retire, aged)
         if DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=PARKED_MARKER_PREFIX).exists():
             return []
-        ask_owner_about_parked(self.tasks())
+        ask_owner_about_parked([task for task in aged if task_pair(task) not in retire | keep])
         return []

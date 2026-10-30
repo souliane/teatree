@@ -75,6 +75,27 @@ class PendingPrDrainScannerTestCase(TestCase):
         scanner.scan()
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
+    def test_card_is_settled_when_another_path_discharges_the_obligation(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+        PendingPullRequest.objects.discharge(repo_path=str(repo), branch=branch)
+        scanner.scan()
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_card_is_settled_when_the_checkout_is_gone(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.filter(branch=branch).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+        scanner = PendingPrDrainScanner()
+        scanner.scan()
+        shutil.rmtree(repo)
+        scanner.scan()
+        assert not DeferredQuestion.owner_pending().exists()
+
     def test_keep_trying_leaves_obligation_and_does_not_ask_again(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)
         call_command("pr", "ensure-pr", repo=str(repo), branch=branch)

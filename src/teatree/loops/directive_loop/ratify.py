@@ -68,6 +68,7 @@ def _ratify_card(directive: Directive, *, why: str) -> QuestionCard:
         blocker="Only the owner can approve a change to how the factory works.",
         why=why,
         options=options,
+        subject=directive.card_subject,
     )
     event = directive.source_event
     if (
@@ -112,7 +113,8 @@ def try_admit(directive: Directive) -> str:
     answer decided nothing — undecidable, or not given on an owner channel — so a
     fresh question replaces it and the directive holds), or ``"pending"`` (no answer
     yet). The single :meth:`Directive.admit` call site — a denial rejects with the
-    human's words.
+    human's words, and a question dismissed unanswered (aged out, never answered)
+    rejects with the dismissal reason so the directive does not hold a slot forever.
     """
     question = directive.ratify_question
     if question is not None and question.answered_at is None and question.dismissed_at is not None:

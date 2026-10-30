@@ -5,8 +5,9 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.factory.parked_tickets import AGED_PARK
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_WINDOW, stranded_ticket_count
-from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -24,9 +25,23 @@ class TestStrandedTicketCount(TestCase):
         self._queued(2)
         assert stranded_ticket_count() == 2
 
-    def test_a_parked_failed_task_is_not_a_silent_freeze(self) -> None:
+    def test_a_recent_halted_failure_still_counts_toward_a_dead_lane(self) -> None:
         self._queued(2)
         Task.objects.update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 2
+
+    def test_a_halted_failure_leaves_the_count_once_the_owner_is_asked(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        Task.objects.update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 0
+
+    def test_an_aged_failure_nobody_parked_keeps_counting(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        assert stranded_ticket_count() == 2
+
+    def test_a_cancelled_failure_is_a_decision_not_a_stranding(self) -> None:
+        self._queued(2)
+        Task.objects.update(failure_kind=FailureKind.CANCELLED)
         assert stranded_ticket_count() == 0
 
     def test_newest_task_uses_creation_time_before_primary_key(self) -> None:

@@ -59,6 +59,8 @@ def stop_reminding_if_answered(row: PendingPullRequest) -> bool:
     return True
 
 
-def settle_stuck_pr_notice(row_pk: int) -> None:
-    for question in DeferredQuestion.owner_pending().filter(dedupe_marker=f"{MARKER_PREFIX}{row_pk}"):
+def settle_discharged_stuck_pr_notices() -> None:
+    owed_markers = [f"{MARKER_PREFIX}{pk}" for pk in PendingPullRequest.objects.values_list("pk", flat=True)]
+    discharged = DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=MARKER_PREFIX)
+    for question in discharged.exclude(dedupe_marker__in=owed_markers):
         question.mark_stale("the pull-request obligation was settled", resolver_id="pending_pr_settled")

@@ -41,7 +41,7 @@ class PendingPrDrainScanner:
         from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
         from teatree.core.worktree.stuck_pr_notice import (  # noqa: PLC0415 — owner cards use ORM at tick time
             ask_owner_about_stuck_pr,
-            settle_stuck_pr_notice,
+            settle_discharged_stuck_pr_notices,
             stop_reminding_if_answered,
         )
 
@@ -51,15 +51,11 @@ class PendingPrDrainScanner:
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
-        for pk, _branch, _path in retired:
-            settle_stuck_pr_notice(pk)
         for row in PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit]:
             stop_reminding_if_answered(row)
         owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
         discharged = sum(1 for row in owed if self._drain_one(row))
-        for row in owed:
-            if not PendingPullRequest.objects.filter(pk=row.pk).exists():
-                settle_stuck_pr_notice(row.pk)
+        settle_discharged_stuck_pr_notices()
         for row in PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit]:
             ask_owner_about_stuck_pr(row)
         if discharged:

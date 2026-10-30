@@ -14,6 +14,7 @@ caller FAILS the interpret task — the loop redispatches rather than record gar
 A task with no dispatch row, or a result without the envelope, is a no-op (``""``).
 """
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
@@ -103,7 +104,8 @@ def _record_clarifications(directive: Directive, questions: list[str]) -> str:
 
     Every question is checked before any is recorded, so a refusal leaves no half-asked set behind.
     """
-    cards = [(question, _CLARIFICATION_CARD.with_quote(question, directive.raw_text)) for question in questions]
+    card = replace(_CLARIFICATION_CARD, subject=directive.card_subject)
+    cards = [(question, card.with_quote(question, directive.raw_text)) for question in questions]
     if problems := [problem for question, card in cards for problem in card.problems(question)]:
         return f"directive clarification refused: {'; '.join(problems)}"
     for index, (question, card) in enumerate(cards):

@@ -1,11 +1,10 @@
 from datetime import timedelta
-from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.parked_ticket_question import ParkedTicketQuestionScanner
 from teatree.loops.housekeeping.loop import MINI_LOOP
@@ -56,14 +55,37 @@ class ParkedTicketQuestionTest(TestCase):
 
     def test_retirement_rechecks_the_newest_task_after_selection(self) -> None:
         ticket, stale_task = self._parked()
-        scanner = ParkedTicketQuestionScanner()
-        scanner.scan()
+        ParkedTicketQuestionScanner().scan()
         self._answer("Retire them")
         Task.objects.create(ticket=ticket, session=stale_task.session, status=Task.Status.PENDING)
-        with patch("teatree.core.factory.parked_tickets.aged_parked_tasks", return_value=[stale_task]):
-            scanner.scan()
+        ParkedTicketQuestionScanner(tasks=lambda: [stale_task]).scan()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_retirement_rechecks_for_an_open_pull_request_after_selection(self) -> None:
+        ticket, stale_task = self._parked()
+        ParkedTicketQuestionScanner().scan()
+        self._answer("Retire them")
+        PullRequest.objects.create(ticket=ticket, url="https://example.com/pull/1", repo="o/r", iid="1")
+        ParkedTicketQuestionScanner(tasks=lambda: [stale_task]).scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_keep_them_parked_is_remembered_per_ticket(self) -> None:
+        kept, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Keep them parked")
+        scanner.scan()
+        assert DeferredQuestion.objects.count() == 1
+        _newer, newer_task = self._parked()
+        scanner.scan()
+        asked = DeferredQuestion.objects.order_by("pk").last()
+        assert asked is not None
+        assert asked.evidence["private_context"]["task_pairs"] == [[newer_task.ticket_id, newer_task.pk]]
+        assert DeferredQuestion.objects.count() == 2
+        kept.refresh_from_db()
+        assert kept.state == Ticket.State.WORK_STARTED
 
     def test_other_answer_and_local_channel_leave_tickets_parked(self) -> None:
         ticket, _ = self._parked()
