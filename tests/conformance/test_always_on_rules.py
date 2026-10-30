@@ -68,7 +68,7 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
                 "merges hide ancestry), never repeat a check or run that was already done, and take the smallest "
                 "action that settles the question. The owner's energy counts as much as any of these: never make him "
                 "repeat himself, redo a step, decode shorthand or read what a link already says. Only the owner can "
-                "approve an exception to this rule, explicitly and for the action he names; spend he has already "
+                "approve an exception to this rule, explicitly and for the action he names. Spend he has already "
                 "configured (an API-key fallback, a budget) needs no asking; going beyond it does."
             ),
         ),
