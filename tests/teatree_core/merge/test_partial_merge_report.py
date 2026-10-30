@@ -109,15 +109,17 @@ class TestPartialMergeReport(TestCase):
         assert result["matches"] == [
             {
                 "ticket_id": ticket.pk,
+                "state": Ticket.State.MERGED,
                 "issue_url": ticket.issue_url,
                 "pr_url": "https://github.com/souliane/teatree/pull/860",
+                "link": "partial",
                 "unmet": ["finish the report"],
             }
         ]
         assert result["unreadable"] == []
         assert json.loads(output.getvalue()) == result
 
-    def test_closed_issue_and_completed_latest_merge_are_excluded(self) -> None:
+    def test_closed_issue_is_excluded_and_closing_latest_merge_is_listed(self) -> None:
         closed = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/4242",
@@ -145,7 +147,43 @@ class TestPartialMergeReport(TestCase):
         ):
             result = cast("dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report"))
 
-        assert result == {"matches": [], "unreadable": []}
+        assert result == {
+            "matches": [
+                {
+                    "ticket_id": completed.pk,
+                    "state": Ticket.State.MERGED,
+                    "issue_url": completed.issue_url,
+                    "pr_url": "https://github.com/souliane/teatree/pull/861",
+                    "link": "closing",
+                    "unmet": [],
+                }
+            ],
+            "unreadable": [],
+        }
+
+    def test_lists_part_of_without_declared_remainder_and_unclaimed_issue_boxes(self) -> None:
+        bare = _merged_ticket(5666, 860)
+        boxed = _merged_ticket(4795, 861)
+        boxed.state = Ticket.State.RETRO_RECORDED
+        boxed.save(update_fields=["state"])
+        delivered = _merged_ticket(6000, 862)
+        delivered.state = Ticket.State.DELIVERED
+        delivered.save(update_fields=["state"])
+
+        def issue(url: str) -> dict[str, str]:
+            body = "## Acceptance\n- [ ] Finish the audit\n- [x] Land the parser"
+            return {"state": "open", "body": body if url.endswith("4795") else ""}
+
+        result = _report(
+            gh=_pr_bodies({"860": "Part of #5666", "861": "Part of #4795", "862": "Independent change"}),
+            issue=issue,
+        )
+
+        assert [(row["ticket_id"], row["state"], row["link"], row["unmet"]) for row in result["matches"]] == [
+            (bare.pk, Ticket.State.MERGED, "partial", []),
+            (boxed.pk, Ticket.State.RETRO_RECORDED, "partial", ["Finish the audit"]),
+            (delivered.pk, Ticket.State.DELIVERED, "none", []),
+        ]
 
     def test_an_unordered_last_merge_is_reported_as_unreadable(self) -> None:
         ticket = Ticket.objects.create(
@@ -164,6 +202,20 @@ class TestPartialMergeReport(TestCase):
         )
 
         result = cast("dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report"))
+
+        assert result == {
+            "matches": [],
+            "unreadable": [{"ticket_id": ticket.pk, "reason": "last merged pull request unknown"}],
+        }
+
+    def test_a_ticket_without_a_merged_pull_request_is_unreadable(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+
+        result = cast("_Report", call_command("ticket", "partial-merge-report"))
 
         assert result == {
             "matches": [],
@@ -229,6 +281,14 @@ class TestPartialMergeReport(TestCase):
             ],
         }
 
+    def test_a_malformed_issue_response_is_unreadable(self) -> None:
+        ticket = _merged_ticket(4242, 859)
+
+        with patch.object(github_client.GitHubCodeHost, "get_issue", return_value=None):
+            result = cast("_Report", call_command("ticket", "partial-merge-report"))
+
+        assert result["unreadable"] == [{"ticket_id": ticket.pk, "reason": "issue state unreadable"}]
+
     def test_a_pull_request_body_the_forge_does_not_return_is_one_unreadable_row(self) -> None:
         silent = _merged_ticket(4242, 859)
         readable = _merged_ticket(4243, 860)
@@ -241,6 +301,17 @@ class TestPartialMergeReport(TestCase):
 
         assert result["unreadable"] == [{"ticket_id": silent.pk, "reason": "pull request body unreadable"}]
         assert [row["ticket_id"] for row in result["matches"]] == [readable.pk]
+
+    def test_a_pull_request_read_exception_is_an_unreadable_row(self) -> None:
+        ticket = _merged_ticket(4242, 859)
+
+        with (
+            patch.object(github_client.GitHubCodeHost, "get_issue", return_value={"state": "open", "body": ""}),
+            patch.object(github_client.GitHubCodeHost, "fetch_pr_message", side_effect=RuntimeError("offline")),
+        ):
+            result = cast("_Report", call_command("ticket", "partial-merge-report"))
+
+        assert result["unreadable"] == [{"ticket_id": ticket.pk, "reason": "pull request body unreadable"}]
 
     def test_the_overlay_option_limits_the_report_to_that_overlays_tickets(self) -> None:
         _merged_ticket(4242, 859)
@@ -268,13 +339,13 @@ class TestPartialMergeReport(TestCase):
 
         pr_url = "https://github.com/souliane/teatree/pull/860"
         assert stderr.getvalue().splitlines() == [
-            f"ticket {partial.pk} {partial.issue_url} — {pr_url}: finish the report, wire the docs",
+            f"ticket {partial.pk} (merged, partial) {partial.issue_url} — {pr_url}: finish the report, wire the docs",
             f"ticket {unreadable.pk}: unreadable (issue state unreadable)",
         ]
 
-    def test_the_human_output_says_so_when_no_merged_ticket_declares_a_remainder(self) -> None:
+    def test_the_human_output_says_so_when_no_settled_ticket_has_an_open_issue(self) -> None:
         stderr = StringIO()
 
         _report(gh=_pr_bodies({}), issue=_open_issue, stderr=stderr)
 
-        assert stderr.getvalue().strip() == "no merged tickets with a declared remainder"
+        assert stderr.getvalue().strip() == "no settled tickets with an open issue"

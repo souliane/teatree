@@ -28,6 +28,8 @@ from teatree.utils.url_slug import repo_namespaced_key
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from teatree.core.models import Task
+
 logger = logging.getLogger(__name__)
 
 _ISSUE_REF = r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)"
@@ -184,8 +186,10 @@ def _branches_bound_to_merged_prs(ticket: Ticket) -> list[tuple[str, str]]:
     return [("pr_url_by_branch", branch) for branch, url in bound.items() if url in merged_urls]
 
 
-def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: str) -> bool:
-    """Keep *ticket* out of ``merged`` and queue one planning task for the declared remainder; ``True`` when held.
+def hold_for_remainder(
+    ticket: Ticket, reading: MergedPrReading, *, merged_pr: str, settled: bool = False
+) -> "Task | None":
+    """Queue one planning task for a merged PR's remainder.
 
     Planning completes only from an early state, so a shipped or coded ticket goes back to
     ``work_started`` through the transition it already has. The stamp keeps the board's
@@ -196,25 +200,30 @@ def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: s
         f"{merged_pr} merged without closing the issue. Start the remainder on a fresh branch from the default "
         f"branch; the merged one has landed.\n{listing}"
     )
-    holdable = ticket.state in _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
-    if not holdable or ticket.role != Ticket.Role.AUTHOR:
-        return False
-    if ticket.tasks.filter(phase="planning", execution_reason__endswith=listing).exists():
-        logger.info("partial merge: ticket %s already planned this remainder; not reopening again", ticket.pk)
-        return False
+    settled_states = {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED}
     try:
         with transaction.atomic():
-            if ticket.state in _REOPEN_FROM:
+            if settled:
+                ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
+            holdable = ticket.state in (
+                settled_states if settled else _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
+            )
+            if not holdable or ticket.role != Ticket.Role.AUTHOR:
+                return None
+            if ticket.tasks.filter(phase="planning", execution_reason__endswith=listing).exists():
+                logger.info("partial merge: ticket %s already planned this remainder; not reopening again", ticket.pk)
+                return None
+            if ticket.state in _REOPEN_FROM or (settled and ticket.state in settled_states):
                 ticket.reopen()
             elif ticket.state in _REWORK_FROM:
                 ticket.rework()
             stamp_reopened_over(ticket)
             ticket.save()
             ticket.merge_extra(pop_keys=_branches_bound_to_merged_prs(ticket))
-            ticket.begin_planning(intent=intent)
+            task = ticket.begin_planning(intent=intent)
     except (InvalidTransitionError, TransitionNotAllowed):
         logger.warning("partial merge: ticket %s could not be held; treating the merge as complete", ticket.pk)
         ticket.refresh_from_db()
-        return False
+        return None
     ticket.refresh_from_db()
-    return True
+    return task
