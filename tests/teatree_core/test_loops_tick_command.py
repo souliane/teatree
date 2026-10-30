@@ -330,40 +330,42 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         assert Loop.objects.get(name="eval_local").last_run_at is not None
 
     def test_empty_triage_keeps_anchor_until_next_cadence(self) -> None:
-        host = Mock()
-        host.list_labeled_issues.return_value = []
-        scanner = TriageAssessorScanner(
-            host=cast("CodeHostBackend", host),
-            overlay_name="t3-teatree",
-            identities=("operator",),
-            repo_slugs=("souliane/teatree",),
-        )
         prompt = Prompt.objects.create(name="triage-cadence-prompt", body="test")
-        Loop.objects.get_or_create(name="triage_assessor", defaults={"delay_seconds": 3600, "prompt": prompt})
-        Loop.objects.filter(name="triage_assessor").update(delay_seconds=3600, last_run_at=None)
-        mini = MiniLoop(
-            name="triage_assessor",
-            default_cadence_seconds=3600,
-            build_jobs=lambda **_: [_ScannerJob(scanner=scanner, overlay="")],
-            periodic_phase="triage_assessing",
-        )
-        with (
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
-            patch.object(LoopLease.objects, "acquire", return_value=True),
-            patch.object(LoopLease.objects, "release"),
-            patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
-            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
-            patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
-            patch("teatree.loop.tick.render_phase"),
-            patch("teatree.loop.tick.scan_phase", side_effect=TestPeriodicLoopHandover._scan_inline),
-        ):
-            _run(loop="triage_assessor")
-            claimed_at = Loop.objects.get(name="triage_assessor").last_run_at
-            _run(loop="triage_assessor")
+        for repo_slugs in (("souliane/teatree",), ()):
+            with self.subTest(repo_slugs=repo_slugs):
+                host = Mock()
+                host.list_labeled_issues.return_value = []
+                scanner = TriageAssessorScanner(
+                    host=cast("CodeHostBackend", host),
+                    overlay_name="t3-teatree",
+                    identities=("operator",),
+                    repo_slugs=repo_slugs,
+                )
+                Loop.objects.get_or_create(name="triage_assessor", defaults={"delay_seconds": 3600, "prompt": prompt})
+                Loop.objects.filter(name="triage_assessor").update(delay_seconds=3600, last_run_at=None)
+                mini = MiniLoop(
+                    name="triage_assessor",
+                    default_cadence_seconds=3600,
+                    build_jobs=lambda _scanner=scanner, **_: [_ScannerJob(scanner=_scanner, overlay="")],
+                    periodic_phase="triage_assessing",
+                )
+                with (
+                    patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+                    patch.object(LoopLease.objects, "acquire", return_value=True),
+                    patch.object(LoopLease.objects, "release"),
+                    patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+                    patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+                    patch("teatree.loops.loop_table.iter_loops", return_value=(mini,)),
+                    patch("teatree.loop.tick.render_phase"),
+                    patch("teatree.loop.tick.scan_phase", side_effect=TestPeriodicLoopHandover._scan_inline),
+                ):
+                    _run(loop="triage_assessor")
+                    claimed_at = Loop.objects.get(name="triage_assessor").last_run_at
+                    _run(loop="triage_assessor")
 
-        assert claimed_at is not None
-        assert Loop.objects.get(name="triage_assessor").last_run_at == claimed_at
-        host.list_labeled_issues.assert_called_once()
+                assert claimed_at is not None
+                assert Loop.objects.get(name="triage_assessor").last_run_at == claimed_at
+                assert host.list_labeled_issues.call_count == (1 if repo_slugs else 0)
 
     def test_named_non_retry_returns_keep_all_periodic_anchors(self) -> None:
         phases = {
