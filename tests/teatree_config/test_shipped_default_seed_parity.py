@@ -1,48 +1,16 @@
-# test-path: cross-cutting — reads deploy/entrypoint.sh alongside the config layer.
-"""Pin each shipped default to the seeder that already carries the right value.
-
-A default every install has to correct is the wrong default, and the correction hides it:
-the seeder wins on a real box, so the shipped literal rots unread. Both keys here had
-drifted that way — `provision_ram_ceiling_percent` shipped 85 while `deploy/entrypoint.sh`
-seeded 75 on every deploy, and `active_loop_schedule` shipped `""` while
-`preset_seed.DEFAULT_ACTIVE_SCHEDULE` pinned `standard` on every fresh box.
-
-Each test pairs the shipped value with its seeder AND with the decided literal, so
-reverting either half turns this suite red.
-"""
+"""Pin shipped loop defaults to the seeds that materialize them."""
 
 import re
 import tomllib
 from pathlib import Path
 
 from teatree.config.resolution import effective_default
-from teatree.config.settings import UserSettings
 from teatree.loops.preset_seed import DEFAULT_ACTIVE_SCHEDULE
 from teatree.loops.registry import iter_loops
 
-ENTRYPOINT = Path(__file__).resolve().parents[2] / "deploy" / "entrypoint.sh"
 DEFAULTS = Path(__file__).resolve().parents[2] / "src" / "teatree" / "config" / "defaults.toml"
 
-RAM_CEILING_PERCENT = 75
 ACTIVE_SCHEDULE = "standard"
-
-
-def _entrypoint_seed(key: str) -> str:
-    match = re.search(rf"^\s*seed_setting\s+{re.escape(key)}\s+(\S+)\s*$", ENTRYPOINT.read_text("utf-8"), re.MULTILINE)
-    assert match, f"deploy/entrypoint.sh no longer seeds {key} — the parity below pins nothing"
-    return match.group(1)
-
-
-class TestProvisionRamCeilingPercent:
-    def test_the_shipped_default_is_the_decided_ceiling(self) -> None:
-        assert effective_default("provision_ram_ceiling_percent") == RAM_CEILING_PERCENT
-
-    def test_the_in_code_default_agrees_so_no_approval_is_owed(self) -> None:
-        # Equal to the shipped value is what keeps the seed from pinning against a later default.
-        assert UserSettings().provision_ram_ceiling_percent == RAM_CEILING_PERCENT
-
-    def test_the_deploy_seed_agrees_with_the_shipped_default(self) -> None:
-        assert int(_entrypoint_seed("provision_ram_ceiling_percent")) == RAM_CEILING_PERCENT
 
 
 class TestActiveLoopScheduleShipsUnsetAndIsMaterialisedBySeed:

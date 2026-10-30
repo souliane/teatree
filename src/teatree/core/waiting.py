@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.modelkit.owner_decision import owner_kept_decision
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OWNER_RAISABLE_DECISIONS, owner_kept_decision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeClear
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 _QUESTION_REF_LEN = 60
 _MINUTES_PER_HOUR = 60
 _HOURS_PER_DAY = 24
+REVIEW_REQUEST_MAX_AGE = timedelta(days=14)
 
 
 class WaitingKind(enum.StrEnum):
@@ -91,7 +92,7 @@ def format_age(age: timedelta) -> str:
 
 
 def gather_waiting(overlay: str) -> list[WaitingEntry]:
-    """Return every entry currently waiting on the user, scoped by *overlay*."""
+    """Return the full factory waiting inventory, scoped by *overlay*."""
     now = timezone.now()
     return [
         *_question_entries(now),
@@ -99,6 +100,28 @@ def gather_waiting(overlay: str) -> list[WaitingEntry]:
         *_review_request_entries(now, overlay),
         *_manual_entries(now),
     ]
+
+
+def gather_owner_waiting() -> list[WaitingEntry]:
+    """Return only unresolved decisions addressed to the owner."""
+    now = timezone.now()
+    entries: list[WaitingEntry] = []
+    for question in DeferredQuestion.owner_pending():
+        card = QuestionCard.from_row(question.evidence, question.options_json)
+        if card is None or card.decision not in OWNER_RAISABLE_DECISIONS:
+            continue
+        entries.append(
+            WaitingEntry(
+                kind=WaitingKind.QUESTION,
+                ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
+                age=now - question.created_at,
+                url=card.subject,
+                row_id=question.pk,
+                owner_only=owner_kept_decision(card.decision)
+                or question.dedupe_marker.startswith(HELD_PR_MARKER_PREFIX),
+            )
+        )
+    return entries
 
 
 def _question_entries(now: datetime) -> list[WaitingEntry]:
@@ -182,7 +205,9 @@ def _has_covering_clear(pr: PullRequest, context: "SupersedeContext") -> bool:
 
 
 def _review_request_entries(now: datetime, overlay: str) -> list[WaitingEntry]:
-    qs = ReviewAssignment.objects.filter(state=ReviewAssignment.State.PENDING)
+    qs = ReviewAssignment.objects.filter(
+        state=ReviewAssignment.State.PENDING, observed_at__gte=now - REVIEW_REQUEST_MAX_AGE
+    )
     if overlay:
         qs = qs.filter(overlay__in=[overlay, ""])
     return [

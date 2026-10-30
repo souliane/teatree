@@ -176,7 +176,7 @@ class _FakeHost:
 
 
 class OwnAuthorIdentityResolutionTests(TestCase):
-    """``_own_author_identity`` mirrors ``ReviewerPrsScanner._resolve_identities``."""
+    """``_own_author_identity`` mirrors ``scanners.base.resolve_identities``."""
 
     def test_factory_wires_configured_owner_aliases_into_the_seeding_guard(self) -> None:
         messaging = _FakeMessaging()

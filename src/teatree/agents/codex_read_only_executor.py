@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 EXECUTOR_SERVICE: Final = "teatree-ro-executor"
 _VERDICT_PHASES: Final = frozenset({"planning", "reviewing", "critic_reviewing"})
 #: Phases whose executor run returns a draft or a readiness result; the worker alone posts, requests or ships it.
-DRAFT_PHASES: Final = frozenset({"answering", "requesting_review", "shipping"})
+DRAFT_PHASES: Final = frozenset({"answering", "backlog_sweep", "requesting_review", "shipping"})
 #: Phases whose executor run returns a typed envelope the worker records; the recorder is the one the worker lane uses.
 _ENVELOPE_PHASES: Final = frozenset({"scoping", "triage_assessing", "directive_interpreting"})
 EXECUTOR_PHASES: Final = _VERDICT_PHASES | _ENVELOPE_PHASES | DRAFT_PHASES

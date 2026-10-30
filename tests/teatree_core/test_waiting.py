@@ -4,15 +4,17 @@ from dataclasses import replace
 from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 
 from teatree.core.checking import owner_wait_items
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.waiting_item import WaitingItem
-from teatree.core.waiting import WaitingKind, format_age, gather_waiting
+from teatree.core.waiting import WaitingKind, format_age, gather_owner_waiting, gather_waiting
 from tests._owner_channel import OWNER_DECISION, owner_card
 
 
@@ -23,6 +25,30 @@ def _kinds(overlay: str = "") -> list[str]:
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestGatherWaiting:
+    def test_owner_list_excludes_factory_waits_and_legacy_cards(self) -> None:
+        owner = DeferredQuestion.record("May I change the design?", card=owner_card())
+        DeferredQuestion.objects.create(question="Legacy?", audience=DeferredQuestion.Audience.OWNER_QUESTION)
+        DeferredQuestion.record("Internal repair?", card=None)
+        WaitingItem.objects.add("Review the queue")
+
+        assert [entry.row_id for entry in gather_owner_waiting()] == [owner.pk]
+
+    def test_owner_list_excludes_legacy_scope_and_marks_a_held_pr_owner_only(self) -> None:
+        legacy = DeferredQuestion.objects.create(
+            question="Which product scope?",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            evidence=owner_card(OwnerDecision.PRODUCT_SCOPE).to_evidence(),
+            options_json=owner_card(OwnerDecision.PRODUCT_SCOPE).options_json(),
+        )
+        held = DeferredQuestion.record(
+            "May I release this held pull request?",
+            card=owner_card(),
+            dedupe_marker=f"{HELD_PR_MARKER_PREFIX}one",
+        )
+
+        assert [(entry.row_id, entry.owner_only) for entry in gather_owner_waiting()] == [(held.pk, True)]
+        assert legacy.pk not in [entry.row_id for entry in gather_owner_waiting()]
+
     def test_empty_when_nothing_pending(self) -> None:
         assert gather_waiting("") == []
 
@@ -82,9 +108,22 @@ class TestGatherWaiting:
         assert [e.kind for e in entries] == [WaitingKind.REVIEW_REQUEST]
         assert entries[0].url == "https://github.com/o/r/pull/7"
 
-        [item] = owner_wait_items(overlay_slug="teatree")
-        assert item.label.startswith("[teatree] ")
-        assert item.detail == "waiting now"
+        assert owner_wait_items(overlay_slug="teatree") == []
+
+    def test_review_request_older_than_two_weeks_expires_from_waiting_inventory(self) -> None:
+        assignment = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url="https://github.com/o/r/pull/7",
+                user_id="u1",
+                channel="C1",
+                slack_ts="1.1",
+                trigger="reaction",
+                overlay="teatree",
+            )
+        )
+        ReviewAssignment.objects.filter(pk=assignment.pk).update(observed_at=timezone.now() - timedelta(days=15))
+
+        assert WaitingKind.REVIEW_REQUEST not in _kinds("teatree")
 
     def test_approved_pr_without_clear_is_merge_authorization(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", issue_url="https://x/41")
@@ -97,8 +136,7 @@ class TestGatherWaiting:
         entries = gather_waiting("teatree")
         assert [e.kind for e in entries] == [WaitingKind.MERGE_AUTHORIZATION]
         assert entries[0].url == "https://github.com/o/r/pull/9"
-        [item] = owner_wait_items(overlay_slug="teatree")
-        assert item.label.startswith("[teatree] ")
+        assert owner_wait_items(overlay_slug="teatree") == []
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

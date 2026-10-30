@@ -23,7 +23,7 @@ from teatree.agents.envelope_contract import (
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
 from teatree.core.modelkit import question_card
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models import Session, Task, Ticket
 
@@ -33,7 +33,7 @@ _VERIFICATION_PHASE = "reviewing"
 
 def _contract_example(text: str) -> dict[str, object]:
     """The JSON example embedded in the contract block of *text*."""
-    marker = "Minimal valid envelope for this phase — copy this shape exactly:"
+    marker = "Minimal valid envelope for this phase"
     block = text.split(CONTRACT_HEADING, 1)[1].split(marker, 1)[1]
     start = block.index("{")
     decoded, _ = json.JSONDecoder().raw_decode(block, start)
@@ -68,10 +68,10 @@ class TestEnvelopeContractText(SimpleTestCase):
             for field in required_evidence_for_phase(phase):
                 assert f"`{field}`" in text, (phase, field)
 
-    def test_every_phase_names_the_five_owner_decision_kinds(self) -> None:
+    def test_every_phase_names_the_raisable_owner_decision_kinds(self) -> None:
         text = "\n".join(envelope_contract_lines(_WORK_PHASE))
         assert "`user_input_kind`" in text
-        for decision in OwnerDecision:
+        for decision in OWNER_RAISABLE_DECISIONS:
             assert decision.value in text
 
     def test_an_owner_stop_needs_the_checked_facts_and_everything_else_is_decided(self) -> None:
@@ -137,6 +137,15 @@ class TestEnvelopeContractText(SimpleTestCase):
     def test_example_uses_only_schema_declared_keys(self) -> None:
         for phase in ("coding", "reviewing", "shipping"):
             assert set(envelope_example(phase)) <= set(allowed_keys()), phase
+
+    def test_sweep_example_requires_the_window_urls(self) -> None:
+        text = "\n".join(envelope_contract_lines("backlog_sweep", read_only_venue=True))
+        example = _contract_example(text)
+        proposals = example["sweep_proposals"]
+
+        assert isinstance(proposals, dict)
+        assert proposals["examined"] == ["<every issue URL in ISSUE WINDOW>"]
+        assert "replace the placeholder" in text
 
 
 class TestReviewVerdictMustDiscloseTheHeadItBoundTo(SimpleTestCase):

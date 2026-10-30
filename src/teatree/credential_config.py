@@ -86,10 +86,6 @@ LIST_SETTING: dict[TokenKind, str] = {
     TokenKind.OAUTH: "anthropic_oauth_pass_paths",
     TokenKind.API_KEY: "anthropic_api_key_pass_paths",
 }
-_CREDENTIAL_CLASS: dict[TokenKind, type[Credential]] = {
-    TokenKind.OAUTH: AnthropicSubscriptionCredential,
-    TokenKind.API_KEY: AnthropicApiKeyCredential,
-}
 
 
 class AllTokensExhaustedError(CredentialError):
@@ -132,7 +128,7 @@ class PassPathSelector:
         exhausted verdict, and the reactive writer is what keeps those rows current. Raises
         :class:`AllTokensExhaustedError` when every account reads freshly exhausted.
         """
-        configured = self._configured_paths(kind, scope)
+        configured = self.configured_paths(kind, scope)
         fell_back_across_scopes = False
         if not configured:
             configured = self.all_configured_paths(kind)
@@ -224,7 +220,7 @@ class PassPathSelector:
         return usable[0] if usable else None
 
     @staticmethod
-    def _configured_paths(kind: TokenKind, scope: str) -> list[str]:
+    def configured_paths(kind: TokenKind, scope: str) -> list[str]:
         """The candidate list for *kind*, overlay scope then global (overlay wins whole)."""
         setting = LIST_SETTING[kind]
         stored = ConfigSetting.objects.get_effective(setting, scope=scope)
@@ -275,6 +271,37 @@ def _as_path_list(stored: object) -> list[str]:
 
 
 _SELECTOR = PassPathSelector()
+
+
+def routed_oauth_paths(scope: str | None) -> list[str]:
+    everywhere = _SELECTOR.all_configured_paths(TokenKind.OAUTH)
+    if scope is None:
+        return everywhere
+    preferred = _SELECTOR.configured_paths(TokenKind.OAUTH, scope)
+    return list(dict.fromkeys([*preferred, *everywhere]))
+
+
+def routed_oauth_health(paths: list[str], *, now: dt.datetime) -> bool | None:
+    prober = AccountProber(reader=read_rate_limits, secret_reader=read_pass)
+    unreadable = False
+    healthy = False
+    for path in paths:
+        try:
+            reading = prober.read(path)
+        except Exception:
+            logger.warning("OAuth health probe raised for %s", path, exc_info=True)
+            unreadable = True
+            continue
+        if reading is None:
+            unreadable = True
+            continue
+        if not reading.verified or reading.utilization_5h is None or reading.utilization_7d is None:
+            unreadable = True
+            continue
+        AnthropicTokenUsage.objects.record(path, reading, now=now)
+        if not reading.is_exhausted:
+            healthy = True
+    return True if healthy else None if unreadable else False
 
 
 def oauth_lane_available(*, scope: str = GLOBAL_SCOPE) -> bool:

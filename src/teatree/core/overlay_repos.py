@@ -28,10 +28,12 @@ def owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
     if overlay is None:
         return ()
     slugs: list[str] = []
+    seen: set[str] = set()
     for value in (*overlay.review.merge_candidate_repo_slugs(), *overlay.metadata.get_followup_repos()):
         slug = normalize_repo_slug(value)
-        if slug and slug not in slugs:
+        if slug and slug.casefold() not in seen:
             slugs.append(slug)
+            seen.add(slug.casefold())
     return tuple(slugs)
 
 

@@ -11,7 +11,7 @@ The runner is pure orchestration over an injectable :class:`SmokeStep`
 list — production wiring runs ``t3 <overlay> workspace ticket /
 worktree provision / start / ready / worktree teardown``
 and friends; tests inject in-memory fakes. Each step has a per-step
-time budget (default 60s); exceeding it categorises the run as
+time budget (default 30s); exceeding it categorises the run as
 :attr:`SmokeOutcomeKind.TIMEOUT` so the failure DM names the hung step.
 A step also carries its own env overlay, which is how the sequence
 reproduces the multi-overlay resolution failure fixed earlier: the
@@ -42,6 +42,10 @@ OVERLAY_ENV_VAR = "T3_OVERLAY_NAME"
 #: static list built before any step runs, so no step can name that path yet — the
 #: placeholder is bound by :func:`run_smoke` once the creating step has succeeded.
 WORKTREE_PATH_PLACEHOLDER = "<worktree-path>"
+
+#: Compose down 30s + reap hook (list 30 + remove 60, containers then images) = 210s, plus CLI overhead.
+#: Holds only for an overlay that implements the reap hook and a compose project nobody else shares.
+TEARDOWN_TIMEOUT_SECONDS = 240
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +97,7 @@ class SmokeStep:
 
     name: str
     command: tuple[str, ...]
-    timeout_seconds: int = 60
+    timeout_seconds: int = 30
     #: Vars removed from this step's child env — how the smoke reproduces the
     #: bare-``get_overlay()`` failure mode fixed earlier (see :data:`OVERLAY_ENV_VAR`).
     env_unset: frozenset[str] = frozenset()
@@ -288,7 +292,7 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
     unset_overlay = frozenset({OVERLAY_ENV_VAR})
     at_worktree = ("--path", WORKTREE_PATH_PLACEHOLDER)
     return [
-        SmokeStep(name="workspace_ticket", command=ticket_command, timeout_seconds=180),
+        SmokeStep(name="workspace_ticket", command=ticket_command, timeout_seconds=95),
         SmokeStep(name="env_show", command=("t3", overlay, "env", "show", *at_worktree)),
         SmokeStep(name="worktree_provision", command=("t3", overlay, "worktree", "provision", *at_worktree)),
         SmokeStep(
@@ -306,16 +310,20 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
         SmokeStep(
             name="worktree_start",
             command=("t3", overlay, "worktree", "start", *at_worktree),
-            timeout_seconds=120,
+            timeout_seconds=65,
             env_unset=unset_overlay,
         ),
         SmokeStep(
             name="worktree_ready",
             command=("t3", overlay, "worktree", "ready", *at_worktree),
-            timeout_seconds=120,
+            timeout_seconds=65,
             env_unset=unset_overlay,
         ),
-        SmokeStep(name="worktree_teardown", command=("t3", overlay, "worktree", "teardown", *at_worktree)),
+        SmokeStep(
+            name="worktree_teardown",
+            command=("t3", overlay, "worktree", "teardown", *at_worktree),
+            timeout_seconds=TEARDOWN_TIMEOUT_SECONDS,
+        ),
     ]
 
 
@@ -429,6 +437,7 @@ def report_summary(report: SmokeReport) -> str:
 __all__ = [
     "OVERLAY_ENV_VAR",
     "STEP_OUTCOME_KIND",
+    "TEARDOWN_TIMEOUT_SECONDS",
     "WORKTREE_PATH_PLACEHOLDER",
     "SmokeOutcomeKind",
     "SmokeReport",

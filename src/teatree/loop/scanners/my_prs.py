@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Protocol
@@ -10,20 +11,22 @@ from urllib.parse import urlsplit
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
 from teatree.core.review.pr_inventory import PrInventoryEntry
 from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, approvals_text, my_pr_next_task, threads_label
 from teatree.core.review.review_candidate import author_username
-from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.base import ScanSignal, SignalPayload, resolve_identities
 from teatree.loop.scanners.pr_findings import (
     CriticFindingReader,
     FindingDisposition,
     ReviewVerdictReader,
     disposition_for_author,
+    human_open_thread_activity,
     unaddressed_review_findings,
 )
 from teatree.loop.scanners.pr_payload import head_sha
-from teatree.loop.url_specificity import best_url_match_specificity
+from teatree.loop.url_specificity import url_claimed
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import pr_ref_from_url
@@ -171,7 +174,7 @@ class MyPrsScanner:
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
-        authors = self._resolve_identities()
+        authors = resolve_identities(self.host, self.identities)
         if not authors:
             return []
         prs, complete = self._collect_unique_prs(authors)
@@ -259,16 +262,28 @@ class MyPrsScanner:
         """
         notes_count = _int_field(pr, "user_notes_count", "review_comments")
         url = str(base_payload.get("url") or "")
+        activity_key = 0
+        if getattr(self.host, "forge", "") == "gitlab" and pr.get("user_notes_count") != 0:
+            activity = self._gitlab_review_activity(url)
+            if activity is not None:
+                notes_count, activity_key = activity
+            else:
+                notes_count = 0
         sha = str(base_payload.get("head_sha") or "")
         critic_unmet = self.critic_reader.unmet_for(url=url, head_sha=sha) if self.critic_reader is not None else False
+        verdict_state = self._verdict_state(url=url, head_sha=sha)
         if not unaddressed_review_findings(
-            verdict_state=self._verdict_state(url=url, head_sha=sha),
+            verdict_state=verdict_state,
             notes_count=notes_count,
             critic_unmet=critic_unmet,
         ):
             return None
         author = author_username(pr)
         payload: SignalPayload = {**base_payload, "draft_count": notes_count, "author": author}
+        if critic_unmet or verdict_state is HeadVerdictState.HOLD:
+            payload["head_finding"] = True
+        if activity_key:
+            payload["activity_key"] = activity_key
         if disposition_for_author(author, self_identities=identities) is FindingDisposition.POST:
             return ScanSignal(
                 kind="my_pr.draft_notes",
@@ -285,6 +300,29 @@ class MyPrsScanner:
             payload=payload,
         )
 
+    def _gitlab_review_activity(self, url: str) -> tuple[int, int] | None:
+        ref = pr_ref_from_url(url)
+        if ref is None:
+            logger.warning("my_prs could not parse GitLab MR %s; no note-driven run", url)
+            return None
+        unreadable = object()
+        discussions: object = unreadable
+        with suppress(Exception):
+            project = self.host.get_repo(repo=ref.slug)
+            if not isinstance(project.get("id"), int):
+                logger.warning("my_prs could not resolve GitLab MR %s; no note-driven run", url)
+                return None
+            discussions = self.host.list_pr_discussions(repo=ref.slug, pr_iid=ref.pr_id)
+        if discussions is unreadable:
+            logger.warning("my_prs could not read review discussions for %s; no note-driven run", url)
+            return None
+        activity = (
+            human_open_thread_activity(discussions, ForgeActors.for_url(url)) if isinstance(discussions, list) else None
+        )
+        if activity is None:
+            logger.warning("my_prs received incomplete review discussions for %s; no note-driven run", url)
+        return activity
+
     def _verdict_state(self, *, url: str, head_sha: str) -> HeadVerdictState | None:
         if self.verdict_reader is None:
             return None
@@ -296,33 +334,7 @@ class MyPrsScanner:
         return self.ci_enricher.status_for(url=url, head_sha=head_sha)
 
     def _url_allowed(self, url: str) -> bool:
-        """Drop a PR whose URL is outside the overlay's repo prefixes (#1015, #1324).
-
-        When ``allowed_url_prefixes`` is empty the scanner is single-overlay
-        (or legacy multi-overlay) and emits every PR it sees. When non-empty,
-        only URLs claimed by one of the prefixes survive — sibling MRs from
-        another overlay's repos are dropped at the scanner boundary so they
-        never reach the per-overlay statusline zone.
-
-        Prefix shapes are interpreted by
-        :func:`teatree.loop.url_specificity.url_match_specificity` — plain
-        prefixes match ``startswith``, wildcard ``host/*/repo/`` prefixes
-        match across any owner segment (#1324).
-
-        When a competing overlay's claim is **more specific** (longer
-        non-wildcard prefix) than every claim this scanner holds, the URL
-        is dropped so the sibling overlay's scanner emits the PR under its
-        own ``[overlay]`` zone instead of this scanner stealing it (#1324).
-        """
-        if not self.allowed_url_prefixes:
-            return True
-        if not url:
-            return False
-        own = best_url_match_specificity(url, self.allowed_url_prefixes)
-        if own == 0:
-            return False
-        competing = best_url_match_specificity(url, self.competing_url_prefixes)
-        return competing <= own
+        return url_claimed(url, self.allowed_url_prefixes, self.competing_url_prefixes)
 
     def _write_complete_inventory(self, signals: list[ScanSignal], *, complete: bool) -> None:
         if not complete:
@@ -401,17 +413,6 @@ class MyPrsScanner:
         host_hash = sha256(host_key.encode()).hexdigest()[:16]
         scope_hash = sha256((prefixes or host_key).encode()).hexdigest()[:16]
         return f"own:{self.overlay_name}:{host_hash}:{scope_hash}"
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        # Multi-identity wins: caller supplied an explicit alias set, use it
-        # verbatim so a misconfigured ``current_user`` (wrong PAT scope, or a
-        # token whose `/user` differs from the human's preferred handle)
-        # doesn't silently re-collapse the query. Empty falls back to the
-        # legacy single-user contract.
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _collect_unique_prs(self, authors: tuple[str, ...]) -> tuple[list[RawAPIDict], bool]:
         """Union PRs across *authors*, deduped by URL.

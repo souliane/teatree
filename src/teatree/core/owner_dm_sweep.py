@@ -6,7 +6,6 @@ point the resurfacing guarantee is worthless. So this pass reads the same
 :mod:`teatree.core.owner_threads` queue the resurfacing side reads, and closes only what
 it can decide DETERMINISTICALLY:
 
-*   the owner already replied in the thread;
 *   the thread's subject is closed (its pull request merged, its ticket landed);
 *   the thread duplicates an older thread that is still open.
 
@@ -34,7 +33,6 @@ from teatree.url_classify import find_forge_refs
 
 logger = logging.getLogger(__name__)
 
-_OWNER_REPLIED = "the owner already replied in this thread"
 _SUBJECT_CLOSED = "the thread's subject is closed"
 _DUPLICATE = "duplicate of an older thread that is still open"
 
@@ -43,12 +41,9 @@ _DUPLICATE = "duplicate of an older thread that is still open"
 class SweepSeams:
     """Injectable probes so the pass is exercisable without Slack or a forge.
 
-    ``owner_replied`` needs a live Slack read and is ``None`` when no messaging backend
-    is wired — the rule is then skipped rather than guessed. ``subject_closed`` defaults
-    to :func:`subject_closed_locally`, which costs nothing.
+    ``subject_closed`` defaults to :func:`subject_closed_locally`, which costs nothing.
     """
 
-    owner_replied: Callable[[OwnerThread], bool] | None = None
     subject_closed: Callable[[str], bool] | None = None
 
 
@@ -78,7 +73,7 @@ def run_sweep(
     reasons: list[str] = []
     for thread in threads:
         reason = _resolution_reason(thread, still_open, seams=resolved_seams, now=now)
-        if reason is None or not resolve_owner_thread(thread, reason=reason):
+        if reason is None or not resolve_owner_thread(thread, reason=reason, resolver_id="dm_sweep"):
             still_open.append(thread)
             continue
         reasons.append(reason)
@@ -102,8 +97,6 @@ def _resolution_reason(
     """
     if not thread.auto_resolvable(now=now):
         return None
-    if seams.owner_replied is not None and seams.owner_replied(thread):
-        return _OWNER_REPLIED
     closed = seams.subject_closed or subject_closed_locally
     if closed(thread.question.question):
         return _SUBJECT_CLOSED

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, resolve_identities
 from teatree.loop.scanners.forge_readback import issue_number
 from teatree.loop.scanners.needs_triage_query import _issue_body, _issue_title, _issue_url, needs_triage_issues
 from teatree.types import RawAPIDict
@@ -121,7 +121,7 @@ class IssueDispositionScanner:
     name: str = "issue_disposition"
 
     def scan(self) -> list[ScanSignal]:
-        assignees = self._resolve_identities()
+        assignees = resolve_identities(self.host, self.identities)
         if not assignees or self.repo_slugs == ():
             return []
         signals: list[ScanSignal] = []
@@ -204,12 +204,6 @@ class IssueDispositionScanner:
         if not paths or not repo:
             return ""
         return "obsolete" if all(self.path_exists(repo, path) is False for path in paths) else ""
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _needs_triage_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
         return needs_triage_issues(self.host, assignees, repo_slugs=self.repo_slugs or ())

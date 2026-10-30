@@ -11,7 +11,6 @@ import re
 from unittest import mock
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import resolve, reverse
 
 from teatree.config.cold_defaults import DEFAULTS_TOML
@@ -46,6 +45,7 @@ from teatree.dash.views.settings import (
     settings_readouts,
 )
 from tests.teatree_dash._overlay_venue import core_overlay_only
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
 _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
@@ -59,9 +59,9 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: read PER SCOPE that every cell in that column resolves from. Constant in the number of
 #: SETTINGS — the grid renders N scopes per row, so a per-cell read would be exactly the N+1
 #: these pins exist to catch — and it grows only with the number of scopes.
-_PAGE_QUERIES = 7
-_PANE_QUERIES = 4
-_READOUTS_QUERIES = 3
+_PAGE_QUERIES = 9
+_PANE_QUERIES = 6
+_READOUTS_QUERIES = 5
 
 
 def _section_slug(key: str) -> str:
@@ -676,16 +676,16 @@ class TestShippedDefaultColumn(TestCase):
         assert "differs from default" in row
 
     def test_an_override_renders_the_differing_verdict(self) -> None:
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        body = self._body("provision_ram_ceiling_percent")
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 42)
+        body = self._body("provision_slow_threshold_seconds")
         assert "differs from default" in body
         assert "default-differs" in body
 
     def test_the_verdict_is_never_colour_alone(self) -> None:
         # Each coloured span carries a text icon AND its own words, so the verdict survives
         # greyscale, colour blindness, and a screen reader.
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        body = self._body("provision_ram_ceiling_percent")
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 42)
+        body = self._body("provision_slow_threshold_seconds")
         for css_class, icon, words in (
             ("default-match", "&#10003;", "same as default"),
             ("default-differs", "&#9679;", "differs from default"),

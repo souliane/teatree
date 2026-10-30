@@ -8,22 +8,7 @@ import pytest
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering_classification import _ClassifiedActions
 from teatree.loop.rendering_items import _PRRef
-from teatree.loop.rendering_permalinks import (
-    _slack_permalink,
-    build_review_post_permalinks,
-    enrich_pr_refs_with_permalinks,
-)
-
-
-class TestSlackPermalinkBuilder:
-    def test_builds_canonical_archive_url(self) -> None:
-        assert _slack_permalink("C9", "1779.0001") == "https://slack.com/archives/C9/p17790001"
-
-    def test_empty_channel_collapses_to_empty(self) -> None:
-        assert _slack_permalink("", "1779.0001") == ""
-
-    def test_empty_ts_collapses_to_empty(self) -> None:
-        assert _slack_permalink("C9", "") == ""
+from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
 
 
 class TestBuildReviewPostPermalinksNoUrls:

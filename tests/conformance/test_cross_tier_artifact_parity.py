@@ -89,7 +89,7 @@ NOT_A_CROSS_TIER_MIRROR: dict[str, str] = {
 #: ``test_every_covered_artifact_has_a_both_tier_test`` verifies the claim.
 PARITY_LANE_ROSTER: dict[str, str] = {
     "loop-registry.json": "tests/test_session_start_bootstrap_hook.py",
-    "tick-meta.json": "tests/test_hook_router_cadence_hook.py",
+    "tick-meta.json": "tests/test_statusline_shell_parity.py",
     "skill-metadata.json": "tests/test_skill_metadata_cache_parity.py",
     "statusline.txt": "tests/test_statusline_shell_parity.py",
     "host-projection.json": "tests/test_statusline_shell_parity.py",

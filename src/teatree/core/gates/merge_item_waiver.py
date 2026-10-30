@@ -46,7 +46,7 @@ def request_merge_item_waiver(ticket: Ticket, *, slug: str, reason: str) -> Defe
     title = safe_ticket_card_title(ticket.short_description, ticket.extra, "this ticket")
     question = f"Should I accept the merge critic's {label} finding for {title}?"
     card = QuestionCard(
-        decision=OwnerDecision.PRODUCT_SCOPE,
+        decision=OwnerDecision.ARCHITECTURE,
         checked=(
             f"Only the {label} assessment would be waived for this ticket.",
             "Deterministic, security and leak checks remain required.",

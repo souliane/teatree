@@ -54,7 +54,7 @@ from teatree.core.review.mr_triage import (
 )
 from teatree.core.review.repo_exemption import is_review_exempt, review_exempt_patterns
 from teatree.core.review.work_group import GENERIC_SCOPES, group_members
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, resolve_identities
 from teatree.loop.scanners.my_prs import CiEnricher, _str_field
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.scanners.repository_scope import RepositoryScope
@@ -203,7 +203,7 @@ class MrTriageScanner:
         """Every in-scope open merge request with the ladder's verdict, decided one at a time."""
         if self._scope.refuses():
             return
-        authors = self._resolve_identities()
+        authors = resolve_identities(self.host, self.identities)
         if not authors:
             return
         survey = self._survey(authors)
@@ -358,12 +358,6 @@ class MrTriageScanner:
             slack_thread_ts=""
         )
         return {row.mr_url: row for row in rows}
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _collect(self, authors: tuple[str, ...]) -> dict[str, RawAPIDict]:
         """Every open merge request the operator authored, keyed by URL — the whole listing, which grouping needs."""

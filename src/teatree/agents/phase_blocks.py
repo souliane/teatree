@@ -29,7 +29,7 @@ from teatree.agents.envelope_contract import (
     FIX_RECORD_REVIEW_LINES,
     FIX_RECORD_REVIEW_NO_RED_LINES,
 )
-from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
+from teatree.agents.read_only_draft_blocks import BACKLOG_SWEEP_LINES, REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.gates.repro_gate import failing_run_required
@@ -486,7 +486,6 @@ _FIXING_PHASES = frozenset({"coding", "debugging"})
 _WORKER_EXECUTION_COMMANDS = {
     "bughunt": "Inspect and reproduce candidates before reporting each finding.",
     "dogfood_smoke": "Run `t3 dogfood overlay-provision-smoke` for the configured overlay and report its result.",
-    "eval_local": "Run `t3 eval run` for the configured local evaluation and report its result.",
 }
 
 
@@ -513,6 +512,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 
 #: The read-only executor gets its survey in the task message, in full, so its planning block carries none.
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
+    "backlog_sweep": lambda _task: BACKLOG_SWEEP_LINES,
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
     "answering": lambda task: answering_phase_lines(task, read_only_venue=True),

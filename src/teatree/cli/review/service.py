@@ -48,7 +48,6 @@ from teatree.cli.review.forge_target import read_token, resolve_base_url
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
-    on_behalf_gate_active,
     publish_or_blocked,
     publish_or_blocked_issue,
 )
@@ -72,7 +71,6 @@ if TYPE_CHECKING:
 # pattern keeps working after the impl bodies moved to
 # :mod:`teatree.cli.review.post_impl` (#1280).
 _find_added_line = find_added_line
-_on_behalf_gate_active = on_behalf_gate_active
 _resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
@@ -91,8 +89,11 @@ class ReviewService:
     :mod:`teatree.cli.review.forge_target`.
     """
 
-    def __init__(self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "") -> None:
+    def __init__(
+        self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "", oauth: bool = False
+    ) -> None:
         self.token = token
+        self.oauth = oauth
         self.repo = repo
         # Injected forge handle. ``None`` (every production caller) keeps the lazy
         # build in :meth:`_get_api`; a test passes its own double here instead of
@@ -115,9 +116,17 @@ class ReviewService:
     def _get_api(self) -> "GitLabAPI":
         if self._api is not None:
             return self._api
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.backends.gitlab.api import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            GitLabAPI,
+            GitLabOAuthAPI,
+        )
 
-        return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
+        api_type = GitLabOAuthAPI if self.oauth else GitLabAPI
+        return api_type(token=self.token, base_url=self._resolve_base_url())
+
+    @property
+    def api(self) -> "GitLabAPI":
+        return self._get_api()
 
     def _resolve_base_url(self) -> str:
         """The GitLab API base URL this service's posts are addressed to."""
@@ -525,19 +534,6 @@ class ReviewService:
         return "\n".join(lines), 0
 
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
-        """Approve an MR — refuses unless the identity has already reviewed it.
-
-        Returns (message, exit_code). The review-first precondition encodes
-        the approve-on-review doctrine: an approval cannot be recorded
-        without a prior reviewing footprint from the same identity.
-
-        Gated by the active posture: an approval is
-        an outward post on the user's identity, so it routes through the
-        same recorded-approval gate every other on-behalf method uses. Gate
-        ON + no recorded :class:`OnBehalfApproval` matching
-        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
-        effect; gate ON + recorded row → consume single-use and proceed.
-        """
         blocked = check_on_behalf(repo, mr, "approve")
         if blocked:
             return blocked, 1
@@ -546,28 +542,19 @@ class ReviewService:
         if error:
             return error, 1
         if not reviewed:
-            msg = (
-                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
-                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
-                "`post-comment`) first, then approve."
+            message = (
+                f"Refusing to approve !{mr}: review before approve — no review note authored by your identity "
+                "exists on this MR yet. Post a review (`t3 review post-comment`) first, then approve."
             )
-            return msg, 1
+            return (
+                message,
+                1,
+            )
         from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
-        """Revoke this identity's approval on an MR. Returns (message, exit_code).
-
-        No review-first precondition — removing an approval is the safe
-        direction and must always be reachable.
-
-        Gated by the active posture: an unapproval
-        is still a colleague-visible post on the user's identity, so it
-        routes through the same recorded-approval gate as ``approve`` (and
-        every other on-behalf method). The recorded row scopes to
-        ``(<repo>!<mr>, "unapprove")``.
-        """
         blocked = check_on_behalf(repo, mr, "unapprove")
         if blocked:
             return blocked, 1

@@ -23,8 +23,16 @@
       "name": "checking",
       "subcommands": [
         {
-          "help": "Print a terse, grouped, clickable report of changes since the last check",
+          "help": "Post or nudge waiting owner questions through the existing Slack drains",
+          "name": "shoot"
+        },
+        {
+          "help": "Reconcile owner questions and print a terse, grouped, clickable report of changes since the last check",
           "name": "show"
+        },
+        {
+          "help": "Print the one-screen status while keeping full groups in the returned payload",
+          "name": "brief"
         }
       ]
     },
@@ -722,6 +730,10 @@
           "name": "dm"
         },
         {
+          "help": "Post a deduped answer in the owner's existing Slack thread",
+          "name": "reply"
+        },
+        {
           "help": "Count bot messages in the owner DM by UTC day and ledger class",
           "name": "census"
         },
@@ -871,6 +883,14 @@
       "name": "questions",
       "subcommands": [
         {
+          "help": "Reuse an exact owner answer for the same architecture question from an operator session",
+          "name": "coordinate"
+        },
+        {
+          "help": "Count the owner cards that have a Slack mirror, grouped by creation day and kind",
+          "name": "measure"
+        },
+        {
           "help": "Record a question by hand \u2014 the agent-facing capture surface",
           "name": "record"
         },
@@ -883,7 +903,7 @@
           "name": "answer"
         },
         {
-          "help": "Dismiss pending questions without answering them",
+          "help": "Dismiss pending questions without answering them; live owner limits require a direct owner command",
           "name": "dismiss"
         },
         {
@@ -927,6 +947,11 @@
     {
       "help": "Report (and optionally recover) work stranded by an outage.",
       "name": "recover",
+      "subcommands": []
+    },
+    {
+      "help": "Preview or repair legacy self-improve planning wedges.",
+      "name": "repair_self_improve_wedges",
       "subcommands": []
     },
     {
@@ -1280,6 +1305,10 @@
           "name": "context"
         },
         {
+          "help": "Reopen a settled ticket whose issue has an open remainder",
+          "name": "unsettle"
+        },
+        {
           "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
           "name": "show"
         },
@@ -1372,7 +1401,7 @@
           "name": "fix-record-override"
         },
         {
-          "help": "List merged tickets whose open issue has a declared remainder",
+          "help": "List settled tickets whose issue is still open",
           "name": "partial-merge-report"
         },
         {
@@ -1463,7 +1492,7 @@
       "name": "waiting",
       "subcommands": [
         {
-          "help": "List everything currently waiting on the user",
+          "help": "List owner decisions, or the full factory inventory with --all",
           "name": "list"
         },
         {

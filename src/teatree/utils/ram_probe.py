@@ -1,4 +1,4 @@
-"""Host RAM-utilisation probe, shared by the self-improve budget gate and the provisioning admission gate.
+"""Host RAM and CPU sizing probes.
 
 Mirrors the same probe shape ``hooks/scripts/statusline.sh`` uses (``sysctl``
 on macOS, ``/proc/meminfo`` on Linux). Dependency-free so a missing optional
@@ -94,56 +94,16 @@ def _macos_page_size(vm_stat_output: str) -> int:
 
     Not a constant: Apple Silicon uses 16384-byte pages where Intel used 4096,
     and ``vm_stat`` reports page COUNTS. Assuming 4 KiB on an arm64 Mac scales
-    the reclaimable total (free + inactive pages) down 4x, so a 24 GiB host with
-    ~7 GB free reads back as ~93% used instead of ~70%. That phantom pressure
-    made :func:`teatree.core.gates.provision_admission_gate.check_provision_admission`
-    hold every ``worktree start`` against its 85% ceiling. ``vm_stat`` states the
-    real size on its first line, so read it rather than guess.
+    the reclaimable total (free + inactive + purgeable + speculative pages) down 4x, so a 24 GiB
+    host can falsely appear to have less than 4 GiB available. ``vm_stat`` states the real size on
+    its first line, so read it rather than guess.
 
-    The 4096 fallback keeps an unparsable header on the historical arithmetic
+    The 4096 fallback keeps an unparsable header on conservative arithmetic
     instead of raising — consistent with this module degrading rather than
     crashing a caller.
     """
     match = _VM_STAT_PAGE_SIZE_RE.search(vm_stat_output)
     return int(match.group(1)) if match else _DEFAULT_PAGE_SIZE
-
-
-def _macos_ram_used_percent() -> float:
-    """Read mac RAM use via ``sysctl`` + ``vm_stat`` (mirrors statusline.sh)."""
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
-
-    sysctl = shutil.which("sysctl")
-    vm_stat = shutil.which("vm_stat")
-    if not sysctl or not vm_stat:
-        return 0.0
-    try:
-        total = int(run_checked([sysctl, "-n", "hw.memsize"], timeout=2).stdout.strip())
-        if total <= 0:
-            return 0.0
-        stat = run_checked([vm_stat], timeout=2).stdout
-    except (CommandFailedError, ValueError, OSError, TimeoutError):
-        return 0.0
-    page_size, free_pages, inactive_pages = _macos_page_size(stat), 0, 0
-    for line in stat.splitlines():
-        if line.startswith("Pages free:"):
-            free_pages = int(line.split(":")[1].strip().rstrip("."))
-        elif line.startswith("Pages inactive:"):
-            inactive_pages = int(line.split(":")[1].strip().rstrip("."))
-    used = total - (free_pages + inactive_pages) * page_size
-    return max(0.0, min(100.0, used * 100.0 / total))
-
-
-def _linux_ram_used_percent() -> float:
-    """Read Linux RAM use via ``/proc/meminfo`` (mirrors statusline.sh)."""
-    info = _linux_meminfo()
-    total = info.get("MemTotal", 0)
-    avail = info.get("MemAvailable", 0)
-    if total <= 0:
-        return 0.0
-    used = total - avail
-    return max(0.0, min(100.0, used * 100.0 / total))
 
 
 def _linux_meminfo(path: "str | None" = None, *, trace: "dict[str, int | str] | None" = None) -> "dict[str, int]":
@@ -181,21 +141,6 @@ def linux_mem_available_kb(path: "str | None" = None) -> "int | None":
     probe fire a CRITICAL freeing pass — the opposite of fail-safe (#4104).
     """
     return _linux_meminfo(path).get("MemAvailable")
-
-
-def read_ram_used_percent() -> float:
-    """Best-effort read of system RAM utilisation percent (0-100).
-
-    Callers inject a known value in tests via their own seam (e.g.
-    ``precheck_budget(ram_used_percent=...)``, ``check_provision_admission(ram_used_percent=...)``)
-    — this function is only consulted when no explicit sample is provided.
-    """
-    system = platform.system()
-    if system == "Darwin":
-        return _macos_ram_used_percent()
-    if system == "Linux":
-        return _linux_ram_used_percent()
-    return 0.0
 
 
 def host_total_ram_mib() -> int:
@@ -263,7 +208,7 @@ def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> in
 
 
 def _macos_available_ram_mib() -> int:
-    """Reclaimable mac RAM (MiB) from ``vm_stat``'s free + inactive pages; ``0`` on failure."""
+    """Available mac RAM (MiB) from free, inactive, purgeable, and speculative pages."""
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
@@ -275,13 +220,16 @@ def _macos_available_ram_mib() -> int:
         stat = run_checked([vm_stat], timeout=2).stdout
     except (CommandFailedError, OSError, TimeoutError):
         return 0
-    page_size, pages = _macos_page_size(stat), 0
+    page_size = _macos_page_size(stat)
+    pages = {"Pages free": 0, "Pages inactive": 0, "Pages purgeable": 0, "Pages speculative": 0}
     for line in stat.splitlines():
-        if line.startswith(("Pages free:", "Pages inactive:")):
-            digits = line.split(":")[1].strip().rstrip(".")
+        name, _, value = line.partition(":")
+        if name in pages:
+            digits = value.strip().rstrip(".")
             if digits.isdigit():
-                pages += int(digits)
-    return max(0, pages * page_size // (1024 * 1024))
+                pages[name] = int(digits)
+    reclaimable = sum(pages.values())
+    return reclaimable * page_size // (1024 * 1024)
 
 
 def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" = None) -> "int | None":
@@ -336,11 +284,6 @@ def _cgroup_v2_cpu_quota() -> "int | None":
     if quota <= 0 or period <= 0:
         return None
     return max(1, -(-quota // period))  # ceil division, floored at 1
-
-
-def cgroup_cpu_quota() -> "int | None":
-    """The CPU quota alone, without a process-affinity or physical-core cap."""
-    return _cgroup_v2_cpu_quota()
 
 
 def available_cpu_count() -> int:
@@ -578,14 +521,12 @@ __all__ = [
     "DockerWorkerSizing",
     "WorkerSizing",
     "available_cpu_count",
-    "cgroup_cpu_quota",
     "cgroup_file",
     "cgroup_v1_memory_mib",
     "cgroup_v2_memory_mib",
     "default_provision_concurrency",
     "host_total_ram_mib",
     "linux_mem_available_kb",
-    "read_ram_used_percent",
 ]
 
 

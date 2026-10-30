@@ -84,7 +84,6 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         for phase, command in (
             ("bughunt", "reproduce"),
             ("dogfood_smoke", "t3 dogfood overlay-provision-smoke"),
-            ("eval_local", "t3 eval run"),
         ):
             with self.subTest(phase=phase):
                 brief = "\n".join(phase_specific_lines(_task(phase), []))

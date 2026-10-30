@@ -23,8 +23,9 @@ resolves somewhere else — i.e. an auto-isolated worktree. In a primary clone (
 in an explicit ``XDG_DATA_HOME`` sandbox, which is a deliberate whole-install
 sandbox) the default connection already IS the canonical DB, no second alias is
 registered, and :meth:`ConfigSettingRouter._pinned_alias` returns ``None``: the
-router is inert and every existing entry point, test included, keeps its single
-connection.
+router is inert for routing and every existing entry point, test included, keeps its single
+connection. ``db_for_write`` on the config models still refuses a review or critic session's write to the
+live DB (:func:`~teatree.config.write_authority.review_write_refusal`), registered alias or not.
 
 Migrations never run against the alias — :meth:`ConfigSettingRouter.allow_migrate`
 returns ``False`` for it. That is the whole point of the isolation: worktree code

@@ -1,4 +1,4 @@
-"""``t3 peer`` — the verbs that open the forwards the Compare Instances page reads through.
+"""``t3 peer`` — the verbs that open a peer dashboard for signed-in snapshot export.
 
 The page computed each peer's tunnel command and printed it for someone to paste. These
 verbs are the execution that was missing; what is pinned here is that they resolve every

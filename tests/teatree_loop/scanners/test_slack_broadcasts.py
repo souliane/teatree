@@ -20,9 +20,13 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from django.core.cache import cache
+from django.test import TestCase
 
 from teatree.backends.gitlab import http_client as gitlab_http
+from teatree.core.models import ScannedBroadcast
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
@@ -219,3 +223,134 @@ class TestPerChannelIsolation:
 
         assert fetch.seen == ["C_A", "C_B"]
         assert len([s for s in signals if s.kind == "slack.review_intent"]) == 2
+
+
+class TestUnreadableBroadcastLinks(TestCase):
+    def test_unreadable_project_does_not_hide_readable_link_and_backs_off(self) -> None:
+        unreadable = "https://gitlab.example.com/team/inaccessible/-/merge_requests/72"
+        seen: list[str] = []
+
+        def classify(urls: Sequence[str]) -> list[MrState]:
+            assert len(urls) == 1
+            url = urls[0]
+            seen.append(url)
+            if url == unreadable:
+                response = httpx.Response(404, request=httpx.Request("GET", url))
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise ScannerError(
+                        scanner="slack_broadcasts", error_class=ScannerErrorClass.UNKNOWN, detail=str(exc)
+                    ) from exc
+            return [MrState(url=url, merged=False, approved=False)]
+
+        scanner = SlackBroadcastsScanner(
+            backend=_FakeBackend(),
+            channels=["C_A"],
+            fetch_channel_history=_ChannelHistory(
+                by_channel={"C_A": [_msg(f"review {_GITHUB_PR} {unreadable}", "72.1")]}
+            ),
+            classify_mrs=classify,
+        )
+
+        first = scanner.scan()
+        second = scanner.scan()
+
+        assert seen == [_GITHUB_PR, unreadable, _GITHUB_PR]
+        for signals in (first, second):
+            assert [signal.kind for signal in signals].count("slack.review_intent") == 1
+            health = [signal for signal in signals if signal.kind == "slack.broadcast_unreadable_links"]
+            assert len(health) == 1
+            assert health[0].payload["repositories"] == {"team/inaccessible": 1}
+            assert dispatch(health)[0].zone == "action_needed"
+
+    def test_link_is_retried_after_backoff_and_a_success_clears_the_warning(self) -> None:
+        url = "https://gitlab.example.com/team/recovered/-/merge_requests/75"
+        attempts = 0
+
+        def classify(urls: Sequence[str]) -> list[MrState]:
+            nonlocal attempts
+            assert urls == [url]
+            attempts += 1
+            if attempts == 1:
+                response = httpx.Response(404, request=httpx.Request("GET", url))
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise ScannerError(
+                        scanner="slack_broadcasts", error_class=ScannerErrorClass.UNKNOWN, detail=str(exc)
+                    ) from exc
+            return [MrState(url=url, merged=True, approved=True)]
+
+        scanner = SlackBroadcastsScanner(
+            backend=_FakeBackend(),
+            channels=["C_A"],
+            fetch_channel_history=_ChannelHistory(by_channel={"C_A": [_msg(f"merged {url}", "75.1")]}),
+            classify_mrs=classify,
+        )
+
+        first = scanner.scan()
+        cache.clear()
+        with patch.object(SlackBroadcastsScanner, "_react_done"):
+            second = scanner.scan()
+
+        assert attempts == 2
+        assert [signal.kind for signal in first] == ["slack.broadcast_unreadable_links"]
+        assert not any(signal.kind == "slack.broadcast_unreadable_links" for signal in second)
+        assert ScannedBroadcast.objects.get(channel="C_A", slack_ts="75.1").classification == "all_merged"
+
+    def test_unreadable_link_cannot_complete_all_merged(self) -> None:
+        unreadable = "https://gitlab.example.com/team/hidden/-/merge_requests/73"
+
+        def classify(urls: Sequence[str]) -> list[MrState]:
+            assert len(urls) == 1
+            url = urls[0]
+            if url == unreadable:
+                response = httpx.Response(403, request=httpx.Request("GET", url))
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise ScannerError(
+                        scanner="slack_broadcasts", error_class=ScannerErrorClass.AUTH, detail=str(exc)
+                    ) from exc
+            return [MrState(url=url, merged=True, approved=True)]
+
+        scanner = SlackBroadcastsScanner(
+            backend=_FakeBackend(),
+            channels=["C_A"],
+            fetch_channel_history=_ChannelHistory(
+                by_channel={"C_A": [_msg(f"merged {_GITHUB_PR} {unreadable}", "73.1")]}
+            ),
+            classify_mrs=classify,
+        )
+
+        signals = scanner.scan()
+
+        assert ScannedBroadcast.objects.get(channel="C_A", slack_ts="73.1").classification == "pending"
+        assert [signal.kind for signal in signals] == ["slack.broadcast_unreadable_links"]
+
+    def test_scope_and_server_failures_still_raise(self) -> None:
+        for status, body in ((401, "token expired"), (403, "missing_scope: api"), (500, "server error")):
+            with self.subTest(status=status):
+                unreadable = f"https://gitlab.example.com/team/fault/-/merge_requests/{status}"
+
+                def classify(urls: Sequence[str], status: int = status, body: str = body) -> list[MrState]:
+                    assert len(urls) == 1
+                    response = httpx.Response(status, text=body, request=httpx.Request("GET", urls[0]))
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        raise ScannerError(
+                            scanner="slack_broadcasts", error_class=ScannerErrorClass.AUTH, detail=str(exc)
+                        ) from exc
+                    return []
+
+                scanner = SlackBroadcastsScanner(
+                    backend=_FakeBackend(),
+                    channels=["C_A"],
+                    fetch_channel_history=_ChannelHistory(by_channel={"C_A": [_msg(f"review {unreadable}", "74.1")]}),
+                    classify_mrs=classify,
+                )
+
+                with pytest.raises(ScannerError):
+                    scanner.scan()

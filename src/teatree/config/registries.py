@@ -41,6 +41,7 @@ from typing import Any, cast
 from teatree.config.agent_enums import AgentHarness
 from teatree.config.agent_spawn import parse_phase_harness_entry, parse_skill_models
 from teatree.config.declaration import Category
+from teatree.config.operator_oauth_apps import parse_operator_oauth_apps
 from teatree.config.setting_parsers import (
     _parse_private_repos,
     _parse_strict_bool,
@@ -161,6 +162,13 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
         _parse_registry_dict,
         default={},
         help="extra banned-term groups, each name mapped to its own term list",
+        stored=dict[str, Any],
+        category=Category.SECRET,
+    ),
+    "operator_oauth_apps": ColdHookSetting(
+        parse_operator_oauth_apps,
+        default={},
+        help="GitHub and GitLab OAuth app IDs, callback URLs, and client-secret pass entry names",
         stored=dict[str, Any],
         category=Category.SECRET,
     ),

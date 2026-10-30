@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from django.db import OperationalError, ProgrammingError
 
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.scan_deadline import current_scan_deadline
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -50,7 +51,7 @@ class DeferredQuestionPosterScanner:
         try:
             self.settle()
             mirrored, total = drain_unmirrored_deferred_questions(
-                overlay=self.overlay, backend=self.backend, user_id=self.user_id
+                overlay=self.overlay, backend=self.backend, user_id=self.user_id, deadline=current_scan_deadline()
             )
         except (OperationalError, ProgrammingError):
             logger.info("DeferredQuestionPosterScanner: DeferredQuestion unavailable (DB not migrated yet) — skipping")

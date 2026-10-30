@@ -109,6 +109,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("loop preset show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
+    Capability("teatree questions measure", json_output=True, exit_codes=("0", "2")),
     Capability(
         "teatree questions reachability",
         json_output=True,
@@ -213,7 +214,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         "teatree ticket partial-merge-report",
         json_output=True,
         exit_codes=("0",),
-        note="--json emits merged tickets with an open issue and a declared remainder, plus unreadable rows; read-only",
+        note="--json emits settled tickets with an open issue, PR link wording and unreadable rows; read-only",
+    ),
+    Capability(
+        "teatree ticket unsettle",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="Reopen a settled author ticket with an open remainder; --dry-run checks without writing; "
+        "refuses closed issues and closing-keyword PRs",
     ),
     Capability(
         "teatree ticket settle-holds",
@@ -314,6 +322,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
+    Capability("teatree checking brief", json_output=False, exit_codes=("0",)),
+    Capability("teatree checking shoot", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree e2e lanes", json_output=True, exit_codes=("0",), note="--json emits the {lane: [spec]} CI matrix"
     ),

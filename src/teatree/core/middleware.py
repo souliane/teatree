@@ -1,63 +1,74 @@
 """Project middleware for the teatree admin dashboard."""
 
+import hashlib
 from contextlib import AbstractContextManager, ExitStack
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
-from django.contrib.auth import get_user_model, login
+from django.conf import settings
+from django.contrib.auth.views import redirect_to_login
 from django.db import connections
+from django.http import HttpResponse, HttpResponseBadRequest
 
 from teatree import request_cache
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from django.http import HttpRequest, HttpResponse
+    from django.http import HttpRequest
 
-_MODEL_BACKEND = "django.contrib.auth.backends.ModelBackend"
-# The operator-observability surfaces the loopback auto-login covers: the Django
-# admin and the `teatree.dash` dashboard (#3162). Both ride the same `t3 admin`
-# gunicorn process behind the same loopback bind + SSH tunnel, so the same
-# auto-login safety boundary applies to both prefixes.
-_AUTOLOGIN_PREFIXES = ("/admin/", "/dash/")
-_LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
+_PUBLIC_PATHS = frozenset({"/login/", "/admin/login/", "/favicon.ico", "/hooks/gitlab/", "/hooks/github/"})
 
 
-class LocalAdminAutoLoginMiddleware:
-    """Auto-authenticate the loopback admin dashboard as the superuser.
+class PortCookieIsolationMiddleware:
+    def __init__(self, get_response: "Callable[[HttpRequest], HttpResponse]") -> None:
+        self.get_response = get_response
 
-    Teatree's admin is a single-operator dashboard reached over a loopback bind
-    + SSH tunnel (``cli/admin.py`` and the headless deploy), so a login prompt
-    is pure friction — a lost password locks the owner out of their own tool. An
-    unauthenticated request under one of :data:`_AUTOLOGIN_PREFIXES` (``/admin/``
-    or the ``teatree.dash`` dashboard at ``/dash/``, #3162) is logged in as the
-    first superuser when:
+    def __call__(self, request: "HttpRequest") -> "HttpResponse":
+        host = request.get_host()
+        try:
+            port = urlsplit(f"//{host}").port
+        except ValueError:
+            return HttpResponseBadRequest("invalid Host port")
+        if port is None:
+            return self.get_response(request)
+        suffix = hashlib.sha256(host.casefold().encode()).hexdigest()[:10]
+        names = {
+            settings.SESSION_COOKIE_NAME: f"{settings.SESSION_COOKIE_NAME}_{suffix}",
+            settings.CSRF_COOKIE_NAME: f"{settings.CSRF_COOKIE_NAME}_{suffix}",
+        }
+        for base, isolated in names.items():
+            request.COOKIES.pop(base, None)
+            if isolated in request.COOKIES:
+                request.COOKIES[base] = request.COOKIES[isolated]
+        response = self.get_response(request)
+        for base, isolated in names.items():
+            if base not in response.cookies:
+                continue
+            original = response.cookies[base]
+            response.cookies[isolated] = original.value
+            for attribute, value in original.items():
+                if value:
+                    response.cookies[isolated][attribute] = value
+            del response.cookies[base]
+        return response
 
-    * the request originates from loopback (``127.0.0.1`` / ``::1``).
 
-    The loopback check is the hard security boundary — auto-login NEVER fires for
-    a non-loopback request — so a non-loopback deployment
-    of the admin cannot silently open it. This is deliberately decoupled from
-    ``DEBUG``: the admin now mounts and serves independent of ``DEBUG``, so the
-    old ``DEBUG`` gate would have been meaningless. Place this after
-    ``AuthenticationMiddleware`` so ``request.user`` is already resolved.
-    """
+class OperatorLoginRequiredMiddleware:
+    """Require a staff session for dashboard routes, including redirect views."""
 
     def __init__(self, get_response: "Callable[[HttpRequest], HttpResponse]") -> None:
         self.get_response = get_response
 
     def __call__(self, request: "HttpRequest") -> "HttpResponse":
-        if (
-            request.path.startswith(_AUTOLOGIN_PREFIXES)
-            and not request.user.is_authenticated
-            and request_is_loopback(request)
-        ):
-            superuser = get_user_model().objects.filter(is_superuser=True).first()
-            if superuser is not None:
-                # `backend=` is Django's documented way to name the auth backend for a
-                # user fetched outside `authenticate()`; assigning `user.backend` is the
-                # same thing done through an attribute Django synthesises and no stub declares.
-                login(request, superuser, backend=_MODEL_BACKEND)
-        return self.get_response(request)
+        if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/login/local/", "/login/oauth/")):
+            return self.get_response(request)
+        if request.user.is_authenticated and request.user.is_staff:
+            return self.get_response(request)
+        destination = redirect_to_login(request.get_full_path(), login_url="/login/")
+        if request.headers.get("HX-Request") == "true":
+            return HttpResponse(status=401, headers={"HX-Redirect": destination.headers["Location"]})
+        return destination
 
 
 # The statement prefixes that leave the database unchanged. Anything else — an
@@ -104,18 +115,3 @@ def _invalidate_on_write(
     if not sql.lstrip().upper().startswith(_READ_ONLY_STATEMENTS):
         request_cache.invalidate()
     return result
-
-
-def request_is_loopback(request: "HttpRequest") -> bool:
-    """Whether the request's client address is a loopback address.
-
-    Reads ``REMOTE_ADDR`` (the real peer address), never a forwarded header — a
-    ``X-Forwarded-For: 127.0.0.1`` from a non-loopback client cannot spoof it.
-    The hardcoded loopback set IS the boundary; it is deliberately NOT widened by
-    ``settings.INTERNAL_IPS``, so this superuser-auth gate stays decoupled from a
-    debug-toolbar knob (a non-loopback IP added there for debugging could never
-    widen who is auto-logged-in). A published bridge port NATs the source to the
-    docker gateway, so the deploy binds the admin to a real loopback interface
-    (host networking) to keep this a genuine ``127.0.0.1`` behind the SSH tunnel.
-    """
-    return request.META.get("REMOTE_ADDR", "") in _LOOPBACK_IPS

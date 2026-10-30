@@ -45,7 +45,7 @@ def _is_dm(event: dict) -> bool:
 
 def _is_from_someone_else(overlay: str, event: dict) -> bool:
     recorder = _dm_recorder(overlay)
-    return recorder is not None and not recorder.is_from_owner(event)
+    return recorder is not None and not recorder.is_from_operator(event)
 
 
 def record_slack_dm(overlay: str, event: dict) -> bool:
@@ -66,7 +66,8 @@ def record_and_wake_slack_answer(overlay: str, event: dict) -> None:
     Recording FIRST is what makes the wake worth firing: the answer cycle reads
     ``PendingChatInjection.loop_unreplied()``, so a wake that lands before the row
     finds an empty queue and stops without re-arming. An event of ANY type identified as coming from someone
-    other than the owner, or from nobody when no owner id is configured, records no row and wakes nothing.
+    other than the owner or a registered operator, or from nobody when no owner id is configured, records no row
+    and wakes nothing.
     Nothing is posted to Slack here.
     """
     if _is_from_someone_else(overlay, event):

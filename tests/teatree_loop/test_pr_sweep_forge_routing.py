@@ -221,11 +221,27 @@ class TestForgeRouting(TestCase):
 class TestGitLabListIsLoudNotEmpty(TestCase):
     """An unreadable project is an error; only a RESOLVED project answers "none"."""
 
-    def test_an_unresolvable_project_raises_instead_of_reporting_no_open_mrs(self) -> None:
-        host = FakeCodeHost(repo={"error": "Could not resolve project: acme-eng/platform/widget-api"})
+    def test_a_non_404_project_error_still_raises(self) -> None:
+        host = FakeCodeHost(repo={"error": "unauthorized"})
         with patch.object(GlabPrApiClient, "_backend", return_value=host), pytest.raises(ScannerError) as caught:
             GlabPrApiClient().list_open_prs(slug=_GITLAB_SLUG)
         assert caught.value.error_class is ScannerErrorClass.AUTH
+
+    def test_a_404_project_is_skipped_without_hiding_the_next_repository(self) -> None:
+        host = FakeCodeHost(mrs=[_mr()])
+        missing = {"error": f"Could not resolve project: {_GITLAB_SLUG}"}
+        with (
+            patch.object(GlabPrApiClient, "_backend", return_value=host),
+            patch.object(FakeCodeHost, "get_repo", side_effect=[missing, {"id": 77}]),
+            patch("teatree.loop.scanners.pr_sweep_gitlab.logger.warning") as warning,
+        ):
+            client = GlabPrApiClient()
+            assert client.list_open_prs(slug=_GITLAB_SLUG) == []
+            second = client.list_open_prs(slug=_GITLAB_SLUG)
+        assert len(second) == 1
+        assert second[0].number == _MR_IID
+        warning.assert_called_once()
+        assert _GITLAB_SLUG in str(warning.call_args)
 
     def test_a_resolved_project_with_no_open_mrs_is_a_plain_empty_list(self) -> None:
         with patch.object(GlabPrApiClient, "_backend", return_value=FakeCodeHost(mrs=[])):
@@ -234,6 +250,13 @@ class TestGitLabListIsLoudNotEmpty(TestCase):
     def test_a_401_is_reported_as_an_auth_failure(self) -> None:
         response = httpx.Response(401, request=httpx.Request("GET", "https://gitlab.com"))
         host = FakeCodeHost(raises=httpx.HTTPStatusError("unauthorized", request=response.request, response=response))
+        with patch.object(GlabPrApiClient, "_backend", return_value=host), pytest.raises(ScannerError) as caught:
+            GlabPrApiClient().list_open_prs(slug=_GITLAB_SLUG)
+        assert caught.value.error_class is ScannerErrorClass.AUTH
+
+    def test_a_403_is_reported_as_an_auth_failure(self) -> None:
+        response = httpx.Response(403, request=httpx.Request("GET", "https://gitlab.com"))
+        host = FakeCodeHost(raises=httpx.HTTPStatusError("forbidden", request=response.request, response=response))
         with patch.object(GlabPrApiClient, "_backend", return_value=host), pytest.raises(ScannerError) as caught:
             GlabPrApiClient().list_open_prs(slug=_GITLAB_SLUG)
         assert caught.value.error_class is ScannerErrorClass.AUTH

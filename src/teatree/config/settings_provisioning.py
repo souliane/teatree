@@ -176,16 +176,6 @@ class _ProvisioningSettings:
         default_factory=list,
         spec=SettingSpec(help="repos that may carry only one branch at a time", parse=_parse_str_list),
     )
-    # RAM-used-percent ceiling above which a new provision is HELD (queued,
-    # not started) rather than admitted, so a cold multi-repo provision never
-    # pushes the host into OOM. 75 rather than the self-improve budget gate's
-    # ``DEFAULT_RAM_USED_CEILING_PCT`` (85): provisioning arrives in bursts a
-    # per-sample gate reads too late, and every live box already pins 75.
-    # Per-overlay overridable.
-    provision_ram_ceiling_percent: int = setting(
-        75,
-        spec=SettingSpec(help="percent of RAM provisioning may consume before it backs off", parse=_parse_strict_int),
-    )
     # A provision whose total duration exceeds this many seconds fires a
     # best-effort out-of-band user alert — a regression in provisioning speed
     # must never be silently absorbed. Per-overlay overridable.

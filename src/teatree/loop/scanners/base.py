@@ -6,8 +6,10 @@ note, webhook trigger) or hand off to a phase agent.
 """
 
 import datetime as dt
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import httpx
 
@@ -16,6 +18,9 @@ from teatree.backends.github.api import run_gh_unchecked
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.types import ScannerError, ScannerErrorClass
 from teatree.utils.run import CompletedProcess
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
 
 __all__ = [
     "PartialScanError",
@@ -27,6 +32,7 @@ __all__ = [
     "classify_gh_stderr",
     "classify_http_error",
     "hours_since",
+    "resolve_identities",
     "run_gh",
     "run_gh_for_slug",
 ]
@@ -50,13 +56,34 @@ def hours_since(earlier: dt.datetime, *, now: dt.datetime) -> float:
     return (now - earlier).total_seconds() / 3600.0
 
 
+def recent_iso_stamp(value: object, *, now: dt.datetime, window: dt.timedelta) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return dt.datetime.fromisoformat(value) > now - window
+    except (TypeError, ValueError):
+        return False
+
+
+def resolve_identities(host: "CodeHostBackend", identities: Sequence[str]) -> tuple[str, ...]:
+    """The forge handles a scan queries: the configured aliases verbatim, else the host's current user.
+
+    Explicit aliases win so a misconfigured ``current_user`` (wrong PAT scope, or a token whose
+    ``/user`` differs from the human's preferred handle) cannot silently collapse the query.
+    """
+    if identities:
+        return tuple(dict.fromkeys(identities))
+    user = host.current_user()
+    return (user,) if user else ()
+
+
 def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     """Classify a non-zero ``gh`` stderr into a :class:`ScannerErrorClass` (#1287).
 
     The classifier reads gh's well-known error wording: auth-required
     prompts (``gh auth login``, ``GH_TOKEN``, ``Bad credentials``, ``401``),
-    GitHub rate-limit messages (``API rate limit exceeded``, ``rate
-    limit``, ``secondary rate limit``), and network failures (``dial
+    GitHub rate-limit messages (``rate limit``), pooled ``gh api`` headers
+    (``remaining=0``, ``retry-after=`` on HTTP 403/429), and network failures (``dial
     tcp``, ``no such host``, ``Could not resolve``). Anything else falls
     through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
     surfaces the failure rather than masking it.
@@ -66,11 +93,16 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     """
     lower = stderr.lower()
     rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
-    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
+    auth_markers = ("gh auth login", "gh_token", "bad credentials")
     network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
-    if any(marker in lower for marker in rate_limit_markers):
+    status = re.search(r"\bhttp ([1-5]\d\d)\b", lower)
+    rate_limited_status = status is not None and status.group(1) in {"403", "429"}
+    if any(marker in lower for marker in rate_limit_markers) or (
+        rate_limited_status and ("remaining=0" in lower or "retry-after=" in lower)
+    ):
         return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower for marker in auth_markers):
+    auth_text = re.sub(r"\b(?:remaining|retry-after)=\d+\b", "", lower)
+    if any(marker in auth_text for marker in auth_markers) or re.search(r"(?<![\w:])401(?!\w|:\w)", auth_text):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK

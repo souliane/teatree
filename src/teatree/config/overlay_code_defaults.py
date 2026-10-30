@@ -57,7 +57,6 @@ PROMOTED_OVERLAY_CODE_DEFAULT_KEYS: frozenset[str] = frozenset(
         "review_skill_alternates",
         "architectural_review_skill",
         "scanning_news_skill",
-        "eval_local_skill",
         "backlog_sweep_skill",
         "dogfood_smoke_skill",
         "mr_title_regex",

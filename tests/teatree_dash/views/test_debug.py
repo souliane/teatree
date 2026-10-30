@@ -2,11 +2,11 @@
 
 from unittest.mock import patch
 
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.agents.terminal_launcher import LaunchResult
 from teatree.dash.commands import CommandBusyError, CommandResult
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class CommandRunViewTestCase(TestCase):
@@ -60,7 +60,7 @@ class CommandRunViewTestCase(TestCase):
         assert "already running" in resp.content.decode()
 
     def test_csrf_enforced(self) -> None:
-        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client = self.csrf_client()
         resp = csrf_client.post(self.url, {"command": "doctor"})
         assert resp.status_code == 403
 
@@ -87,3 +87,20 @@ class DebugSessionViewTestCase(TestCase):
         ):
             resp = self.client.post(self.url, {})
         assert resp.status_code == 400
+
+    def test_launch_shows_tunnel_hint_without_auditing_secret_path(self) -> None:
+        secret = "unguessable-test-path"
+        launch_url = f"http://127.0.0.1:8804/{secret}/"
+        with (
+            patch(
+                "teatree.dash.views.debug.launch_web_session",
+                return_value=LaunchResult(launch_url=launch_url, pid=42, port=8804),
+            ),
+            self.assertLogs("teatree.dash.audit", level="INFO") as logs,
+        ):
+            resp = self.client.post(self.url, {})
+        body = resp.content.decode()
+        assert launch_url in body
+        assert "ssh -L 8804:127.0.0.1:8804" in body
+        assert secret not in " ".join(logs.output)
+        assert "port=8804" in " ".join(logs.output)

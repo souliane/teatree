@@ -1,3 +1,4 @@
+from teatree.core.modelkit.task_failure_taxonomy import NOOP_OVER_COMPLETED_MARKER
 from teatree.core.models.agent_route_availability import AgentRouteAvailability
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick, AnthropicActivePickManager
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, AnthropicTokenUsageManager
@@ -38,6 +39,7 @@ from teatree.core.models.errors import (
     NoCurrentPlanError,
     NoPlanArtifactError,
     QualityGateError,
+    TaskMintRefusedError,
 )
 from teatree.core.models.eval_run import (
     CostRegression,
@@ -85,6 +87,8 @@ from teatree.core.models.merge_void import MergeVoid
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
+from teatree.core.models.operator_grant import OperatorGrant
+from teatree.core.models.operator_identity import OperatorIdentity
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.outer_loop_experiment import (
     OuterLoopExperiment,
@@ -133,7 +137,7 @@ from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
 from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import NOOP_OVER_COMPLETED_MARKER, TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.thread_binding import SessionCommand, ThreadBinding
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
@@ -287,6 +291,8 @@ __all__ = [
     "OnBehalfApproval",
     "OnBehalfApprovalError",
     "OnBehalfAudit",
+    "OperatorGrant",
+    "OperatorIdentity",
     "OutboundClaim",
     "OuterLoopExperiment",
     "OuterLoopExperimentError",
@@ -362,6 +368,7 @@ __all__ = [
     "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
+    "TaskMintRefusedError",
     "ThreadBinding",
     "Ticket",
     "TicketArtifacts",

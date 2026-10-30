@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.loop.owner_identity import configured_owner_id, sent_by_owner
+from teatree.loop.owner_identity import configured_owner_id, sent_by_operator, sent_by_owner
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.types import RawAPIDict
@@ -117,8 +117,9 @@ class SlackMentionsScanner:
         Returns whether the JSONL queue yielded anything (so :meth:`scan`
         commits the backing file only after persisting) plus the records
         belonging to a SIBLING overlay, which :meth:`scan` hands back to the
-        queue for that overlay's own scanner. An event the owner did not send is
-        dropped, so no colleague's mention or DM reaches a signal or a row.
+        queue for that overlay's own scanner. A mention the owner did not send, or a DM neither
+        the owner nor a registered operator sent, is dropped, so no colleague's mention or DM reaches
+        a signal or a row.
         ``reaction_added`` events land in ``slack-reactions.jsonl`` (drained by
         ``SlackReviewIntentScanner``, #1047) and never reach here.
         """
@@ -137,11 +138,9 @@ class SlackMentionsScanner:
                 continue
             event = queued.get("event", {})
             event_type = event.get("type", "")
-            if not sent_by_owner(event, owner):
-                continue
-            if event_type == "app_mention":
+            if event_type == "app_mention" and sent_by_owner(event, owner):
                 mentions.append(event)
-            elif event_type == "message" and event.get("channel_type", "") == "im":
+            elif event_type == "message" and event.get("channel_type", "") == "im" and sent_by_operator(event, owner):
                 dms.append(event)
                 dm_records.append(queued)
         return drained_any, foreign, dm_records

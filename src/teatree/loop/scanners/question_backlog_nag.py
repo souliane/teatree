@@ -8,6 +8,7 @@ from django.db import OperationalError, ProgrammingError
 
 from teatree.core import notify_question_drains
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.scan_deadline import current_scan_deadline
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -28,7 +29,7 @@ class QuestionBacklogNagScanner:
     def scan(self) -> list[ScanSignal]:
         try:
             bumped, pending = notify_question_drains.reask_escalated_questions(
-                overlay=self.overlay, backend=self.backend, user_id=self.user_id
+                overlay=self.overlay, backend=self.backend, user_id=self.user_id, deadline=current_scan_deadline()
             )
         except (OperationalError, ProgrammingError):
             logger.info("QuestionBacklogNagScanner: DeferredQuestion unavailable (DB not migrated yet) — skipping")

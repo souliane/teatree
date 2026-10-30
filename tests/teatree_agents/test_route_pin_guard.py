@@ -65,7 +65,6 @@ class TestRoutePinGuard(TestCase):
         for phase, skill in (
             ("bughunt", "debug"),
             ("dogfood_smoke", "dogfooding"),
-            ("eval_local", "running-evals"),
         ):
             with self.subTest(phase=phase):
                 task = Task.objects.create(ticket=self.ticket, session=self.session, phase=phase)

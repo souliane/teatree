@@ -24,6 +24,7 @@ from teatree.core.cycle_time import (
     merged_pull_request_seconds,
     open_pull_requests,
     percentile,
+    phase_gap_seconds,
     transition_distribution,
     transition_trend,
 )
@@ -128,6 +129,9 @@ class CycleTimeView:
     wait_headers: tuple[str, ...]
     pr_median: str
     pr_merged_count: int
+    phase_gap_median: str
+    phase_gap_max: str
+    phase_gap_count: int
     open_prs: tuple[OpenPullRequestRow, ...]
     open_pr_red_hours: float
 
@@ -146,6 +150,7 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
     since = now - timedelta(days=window_days)
     stats = transition_distribution(since=since)
     merged = merged_pull_request_seconds(since=since, until=now)
+    phase_gaps = phase_gap_seconds(since=since, until=now)
     open_rows = open_pull_requests(now=now)
     timelines = build_ticket_timelines(_recently_active_ticket_ids(since))
     ordered = sorted(timelines.values(), key=lambda line: line.ended_at or since, reverse=True)
@@ -182,6 +187,9 @@ def build_cycle_time_view(*, window_days: int = DEFAULT_WINDOW_DAYS) -> CycleTim
         wait_headers=tuple(WAIT_LABELS[cause] for cause in WAIT_CAUSES),
         pr_median=_humanize_duration(percentile(merged, 0.5)) if merged else "—",
         pr_merged_count=len(merged),
+        phase_gap_median=_humanize_duration(percentile(phase_gaps, 0.5)) if phase_gaps else "—",
+        phase_gap_max=_humanize_duration(max(phase_gaps)) if phase_gaps else "—",
+        phase_gap_count=len(phase_gaps),
         open_pr_red_hours=OPEN_PR_RED_HOURS,
         open_prs=tuple(
             OpenPullRequestRow(

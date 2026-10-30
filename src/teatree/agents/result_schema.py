@@ -22,8 +22,10 @@ from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_draft import (
     REVIEW_REQUEST_SCHEMA_PROPERTY,
     SHIP_READINESS_SCHEMA_PROPERTY,
+    SWEEP_PROPOSALS_SCHEMA_PROPERTY,
     ReviewRequestDraft,
     ShipReadiness,
+    SweepProposals,
 )
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_review import (
@@ -158,6 +160,7 @@ class AgentResult(OwnerStop, total=False):
     ticket_sweep: TicketSweepEvidence
     review_request: ReviewRequestDraft
     ship_readiness: ShipReadiness
+    sweep_proposals: SweepProposals
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -375,6 +378,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
         "ship_readiness": SHIP_READINESS_SCHEMA_PROPERTY,
+        "sweep_proposals": SWEEP_PROPOSALS_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",
@@ -420,12 +424,13 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   summary-only run is a silently-dropped scan (#9), refused here.
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
-#: - ``backlog_sweep``: a ``ticket_sweep`` naming the run the sweep opened and
+#: - ``backlog_sweep``: Claude returns a ``ticket_sweep`` naming the run the sweep opened and
 #:   closed (#162 Rule 4). The metric the owner reads is "each sweep tends to zero
 #:   changes", and a count the sweeping agent types into its own envelope measures
 #:   nothing — a skipped sweep and a clean backlog both report ``0``. The run row is
 #:   the measurement; :mod:`teatree.agents.ticket_sweep_recorder` checks the envelope
-#:   against it.
+#:   against it. The executor returns ``sweep_proposals`` instead; the worker
+#:   checks it through ``result_schema_draft`` and records the measured run.
 #:
 #: ``fix_record`` is deliberately ABSENT from this map: it is conditional on the
 #: TICKET's kind, not the phase, so requiring it here would refuse every non-fix

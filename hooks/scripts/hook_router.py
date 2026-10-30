@@ -458,40 +458,6 @@ _read_lines = read_lines
 _append_line = append_line
 
 
-# ── Loop tick-staleness window ──────────────────────────────────────
-
-_LOOP_CADENCE_DEFAULT = 720
-
-
-def _loop_cadence_seconds() -> int:
-    """Resolve the loop cadence the same way ``t3 loop`` does (#1036).
-
-    Routes through the shared ``teatree.config.cadence_seconds()`` resolver
-    (``T3_LOOP_CADENCE`` env first, then the DB-home ``loop_cadence_seconds``
-    setting) so the hook's tick-staleness window can never diverge from the real
-    slot cadence. Best-effort: if
-    ``teatree`` is not importable in this hook process, fall back to the env-only
-    read.
-    """
-    try:
-        with _teatree_src_on_path():
-            from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: cold-hook import
-
-            return cadence_seconds()
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
-
-
-def _tick_meta_stale() -> bool:
-    xdg = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
-    meta = Path(xdg) / "teatree" / "tick-meta.json"
-    if not meta.is_file():
-        return True
-    cadence = _loop_cadence_seconds()
-    age = int(time.time()) - int(meta.stat().st_mtime)
-    return age > cadence * 2
-
-
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 #
 # The gate blocks Bash/Edit/Write until every suggested-but-unloaded

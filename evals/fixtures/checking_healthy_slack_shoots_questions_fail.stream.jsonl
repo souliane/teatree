@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-checking_healthy_slack_shoots_questions-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll ask the waiting question here in the client."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should the release go out today?", "header": "Release", "options": [{"label": "yes", "description": "ship it today"}, {"label": "no", "description": "hold until tomorrow"}]}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

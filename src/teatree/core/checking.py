@@ -5,7 +5,7 @@ from existing rows, with ``to_dict()`` (JSON) and ``to_terse()`` (human)
 renderers. Every query here is read-only — the gatherer never transitions a
 :class:`Ticket` nor writes any row.
 
-Four delta groups scoped to the window ``[since, now)`` and one live group:
+Six report groups with these scopes:
 
 * **Merged** — a :class:`MergeAudit` joined to its :class:`MergeClear`, merged
     inside the window. The clickable reference prefers an exact stored PR URL on
@@ -14,11 +14,9 @@ Four delta groups scoped to the window ``[since, now)`` and one live group:
 * **In-flight** — the latest :class:`TicketTransition` per ticket inside the
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
-* **Needs you** — all four live waiting kinds (NOT window-bounded: a
-    pending wait still needs the user however old it is) plus failed
-    ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
-    proxy for "blocked" — core makes no live forge calls; an overlay opts into
-    richer signals via :meth:`OverlayBase.get_checking_sources`.
+* **Needs you** — live owner waits, independent of the report window.
+* **Triage suggestions** — pending assessor recommendations, listed for review
+    without counting them as owner decisions.
 * **Metered** — one row per ticket with metered attempts inside the window,
     showing the attempt count and estimated total cost.
 * **Remaining** — live work, queue, holds, and measured ETA ranges; independent
@@ -32,6 +30,7 @@ inline tag in its detail so the reader can tell provenance. The global owner
 waiting gather runs exactly once, so a pending question never appears twice.
 """
 
+import logging
 import operator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,13 +41,13 @@ from django.db.models import Count, Max, Sum
 from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
-    failed_attempts,
     merged_entries_from_qs,
-    merged_group_from_qs,
     motion_for_overlay,
+    scoped_merge_audits,
     ticket_url,
 )
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_report.status import StatusByFeature, StatusByFeatureDict, build_feature_status
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
@@ -58,17 +57,24 @@ from teatree.core.checking_types import (
     RemainingGroup,
     RemainingGroupDict,
 )
+from teatree.core.factory.eval_measurement import eval_measurement_signal
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.merge_clear import MergeAudit
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.waiting import WaitingKind, format_age, gather_waiting
+from teatree.core.waiting import WaitingKind, format_age, gather_owner_waiting
+
+logger = logging.getLogger(__name__)
 
 CheckItemDict = checking_types.CheckItemDict
+type StatusMergeRow = tuple[MergeAudit, str, str]
+type AccumulatedRows = tuple[list[tuple[datetime, CheckItem]], list[StatusMergeRow], list[CheckItem], datetime | None]
 
 
 def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
-    waits = sorted(gather_waiting(overlay), key=lambda entry: entry.age, reverse=True)
+    waits = sorted(gather_owner_waiting(), key=lambda entry: entry.age, reverse=True)
     items: list[OwnerWaitItem] = []
     for wait in waits:
         question = wait.kind == WaitingKind.QUESTION
@@ -99,15 +105,37 @@ def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitI
     return items
 
 
+def pending_triage_items(*, overlay: str = "") -> list[CheckItem]:
+    rows = PendingTriageRecommendation.objects.filter(status=PendingTriageRecommendation.Status.PENDING)
+    if overlay:
+        rows = rows.filter(overlay__in=(overlay, ""))
+    return [
+        CheckItem(
+            label="Triage recommendation",
+            url=row.issue_url,
+            title=row.title or "Issue awaiting triage",
+            detail="review before acting",
+        )
+        for row in rows
+    ]
+
+
+def _triage_suggestions_group(*, overlay_name: str, cap: int) -> CheckGroup:
+    items = pending_triage_items(overlay=overlay_name)
+    return CheckGroup(title="Triage suggestions", items=items[:cap], total=len(items))
+
+
 def internal_escalation_count() -> int:
     return DeferredQuestion.internal_pending().count()
 
 
 class CheckingReportDict(TypedDict):
+    status_by_feature: StatusByFeatureDict
     since: str
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    triage_suggestions: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
@@ -115,11 +143,13 @@ class CheckingReportDict(TypedDict):
 
 
 class AllOverlaysReportDict(TypedDict):
+    status_by_feature: StatusByFeatureDict
     all_overlays: list[str]
     earliest_since: str
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
+    triage_suggestions: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
@@ -134,7 +164,9 @@ class CheckingReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    triage_suggestions: CheckGroup
     metered: CheckGroup
+    status_by_feature: StatusByFeature = field(default_factory=StatusByFeature)
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
@@ -144,14 +176,16 @@ class CheckingReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.triage_suggestions, self.metered]
 
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
+            status_by_feature=self.status_by_feature.to_dict(),
             since=self.since.isoformat(),
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            triage_suggestions=self.triage_suggestions.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
@@ -172,10 +206,11 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
+        status = self.status_by_feature.render()
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations and not status:
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
-        lines = [header]
+        lines = [*status, header]
         for group in groups:
             lines.extend(group.render(cap=cap))
         if self.internal_escalations:
@@ -198,7 +233,9 @@ class AllOverlaysReport:
     merged: CheckGroup
     in_flight: CheckGroup
     needs_you: CheckGroup
+    triage_suggestions: CheckGroup
     metered: CheckGroup
+    status_by_feature: StatusByFeature = field(default_factory=StatusByFeature)
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
@@ -208,15 +245,17 @@ class AllOverlaysReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.triage_suggestions, self.metered]
 
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
+            status_by_feature=self.status_by_feature.to_dict(),
             all_overlays=self.all_overlays,
             earliest_since=self.earliest_since.isoformat(),
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
+            triage_suggestions=self.triage_suggestions.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
@@ -236,9 +275,10 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
+        status = self.status_by_feature.render()
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations and not status:
             return f"Nothing since {stamp}."
-        lines = [f"Since {stamp} · all overlays"]
+        lines = [*status, f"Since {stamp} · all overlays"]
         for group in groups:
             lines.extend(group.render(cap=cap))
         if self.internal_escalations:
@@ -282,10 +322,10 @@ def gather_all_overlays_report(
     The global waiting gather runs exactly ONCE — pending questions are not
     scoped per overlay, so repeating the gather would duplicate them.
 
-    Overlay-scoped items (merged, in-flight, failed attempts) have their
+    Overlay-scoped items (merged and in-flight) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
     """
-    merged_entries, in_flight_items, failed_items, earliest_since = _accumulate_overlays(
+    merged_entries, merged_rows, in_flight_items, earliest_since = _accumulate_overlays(
         overlay_windows=overlay_windows, overlay_configs=overlay_configs
     )
     in_flight_items.sort(
@@ -293,8 +333,10 @@ def gather_all_overlays_report(
         reverse=True,
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
-    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug)]
-    needs_you_items.extend(failed_items)
+    needs_you_items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug))
+    needs_you_items.extend(
+        _eval_measurement_items(now=max((window[1] for window in overlay_windows.values()), default=datetime.now(UTC)))
+    )
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
         _metered_entries(since=since, now=now, overlay_name=name, overlay_tag=f"[{name}]", cap=cap)
@@ -305,6 +347,7 @@ def gather_all_overlays_report(
     return AllOverlaysReport(
         all_overlays=list(overlay_windows),
         earliest_since=effective_since,
+        status_by_feature=build_feature_status(merged=merged_rows, overlay_names=list(overlay_windows)),
         merged=CheckGroup(
             title="Merged",
             items=[item for _, item in merged_entries[:cap]],
@@ -312,6 +355,7 @@ def gather_all_overlays_report(
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        triage_suggestions=_triage_suggestions_group(overlay_name="", cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=CheckGroup(
             title="Metered",
@@ -331,12 +375,11 @@ def _accumulate_overlays(
     *,
     overlay_windows: dict[str, tuple[datetime, datetime]],
     overlay_configs: dict[str, tuple[str, list[str]]],
-) -> tuple[list[tuple[datetime, CheckItem]], list[CheckItem], list[CheckItem], datetime | None]:
+) -> AccumulatedRows:
     merged_entries: list[tuple[datetime, CheckItem]] = []
+    merged_rows: list[StatusMergeRow] = []
     in_flight_items: list[CheckItem] = []
-    failed_items: list[CheckItem] = []
     seen_in_flight: set[int] = set()
-    seen_failed: set[int] = set()
     earliest_since: datetime | None = None
 
     for overlay_name, window in overlay_windows.items():
@@ -345,21 +388,19 @@ def _accumulate_overlays(
         code_host, overlay_repos = overlay_configs.get(overlay_name, ("", []))
         scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos)
         overlay_tag = f"[{overlay_name}]"
-        merged_entries.extend(
-            merged_entries_from_qs(since=window[0], now=window[1], scope=scope, overlay_tag=overlay_tag)
-        )
-        new_in_flight, new_failed = motion_for_overlay(
+        scoped = scoped_merge_audits(since=window[0], now=window[1], scope=scope)
+        merged_rows.extend((audit, repo_slug, code_host) for audit, repo_slug in scoped)
+        merged_entries.extend(merged_entries_from_qs(scope=scope, overlay_tag=overlay_tag, scoped=scoped))
+        new_in_flight = motion_for_overlay(
             window=window,
             overlay_name=overlay_name,
             overlay_tag=overlay_tag,
             seen_in_flight=seen_in_flight,
-            seen_failed=seen_failed,
         )
         in_flight_items.extend(new_in_flight)
-        failed_items.extend(new_failed)
 
     merged_entries.sort(key=operator.itemgetter(0), reverse=True)
-    return merged_entries, in_flight_items, failed_items, earliest_since
+    return merged_entries, merged_rows, in_flight_items, earliest_since
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -388,11 +429,17 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
     merged group to ticket-bearing CLEARs only (the back-compat behaviour).
     """
     scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos or [])
+    scoped = scoped_merge_audits(since=since, now=now, scope=scope)
     return CheckingReport(
         since=since,
-        merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
+        merged=_merged_group(scope=scope, cap=cap, scoped=scoped),
+        status_by_feature=build_feature_status(
+            merged=[(audit, repo_slug, code_host) for audit, repo_slug in scoped],
+            overlay_names=[overlay_name] if overlay_name else [],
+        ),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
-        needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        needs_you=_needs_you_group(now=now, overlay_name=overlay_name, cap=cap),
+        triage_suggestions=_triage_suggestions_group(overlay_name=overlay_name, cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         remaining=gather_remaining(
@@ -441,9 +488,9 @@ def _metered_group(*, since: datetime, now: datetime, overlay_name: str, cap: in
     return CheckGroup(title="Metered", items=[item for _, item in entries], total=total)
 
 
-def _merged_group(*, since: datetime, now: datetime, scope: _MergedScope, cap: int) -> CheckGroup:
-    items, total = merged_group_from_qs(since=since, now=now, scope=scope, cap=cap, overlay_tag="")
-    return CheckGroup(title="Merged", items=items, total=total)
+def _merged_group(*, scope: _MergedScope, cap: int, scoped: list[tuple[MergeAudit, str]]) -> CheckGroup:
+    entries = merged_entries_from_qs(scope=scope, scoped=scoped)
+    return CheckGroup(title="Merged", items=[item for _, item in entries[:cap]], total=len(entries))
 
 
 def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
@@ -474,24 +521,17 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
     return CheckGroup(title="In-flight", items=items[:cap], total=len(items))
 
 
-def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
+def _needs_you_group(*, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     overlay_slug = overlay_name or "<overlay>"
-    items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
-
-    failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
-    seen_tickets: set[int] = set()
-    for attempt in failed:
-        tick = attempt.task.ticket
-        if tick.pk in seen_tickets:
-            continue
-        seen_tickets.add(tick.pk)
-        items.append(
-            CheckItem(
-                label=f"#{tick.ticket_number}",
-                url=ticket_url(tick),
-                detail="failed agent run",
-                title=tick.short_description,
-            ),
-        )
-
+    items: list[CheckItem] = list(owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name))
+    items.extend(_eval_measurement_items(now=now))
     return CheckGroup(title="Needs you", items=items[:cap], total=len(items))
+
+
+def _eval_measurement_items(*, now: datetime) -> list[CheckItem]:
+    try:
+        signal = eval_measurement_signal(now)
+    except Exception:
+        logger.exception("Could not read behavioral eval measurement for check-in")
+        return [CheckItem(label="evals", url="", detail="behavioral eval measurement unread")]
+    return [CheckItem(label="evals", url="", detail=signal.summary)] if signal is not None else []

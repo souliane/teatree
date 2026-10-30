@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from django.test import Client, TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting
@@ -23,6 +22,7 @@ from teatree.provisioning.skills_cli import (
 )
 from teatree.skill_support.demands import SkillDemand
 from teatree.skill_support.inventory import EmbeddedSkillClosure, SkillDeclaration, SkillIdentity, SkillInventory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 def _state(tmp_path: Path) -> DashboardState:
@@ -262,6 +262,6 @@ class SkillsPageTestCase(TestCase):
         assert b"skill was removed and excluded, but the cached inventory is stale" in response.content
 
     def test_remove_requires_csrf(self) -> None:
-        client = Client(enforce_csrf_checks=True)
+        client = self.csrf_client()
         response = client.post(reverse("dash:skills_remove", args=["codex", "optional"]))
         assert response.status_code == 403

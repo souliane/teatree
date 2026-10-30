@@ -98,6 +98,10 @@ class JobsForDomainPartitionTestCase(TestCase):
             owned |= {_signature(j) for j in jobs_for_domain(domain, backend, all_backends=(backend,))}
         assert not legacy <= owned
 
+    def test_ticket_domain_runs_queued_task_revalidation(self) -> None:
+        names = {job.scanner.name for job in jobs_for_domain(Domain.TICKETS, self._backend())}
+        assert "queued_task_freshness" in names
+
     def test_dispatch_domain_returns_global_set(self) -> None:
         backend = self._backend()
         dispatch_jobs = jobs_for_domain(Domain.DISPATCH, backend)
@@ -106,6 +110,7 @@ class JobsForDomainPartitionTestCase(TestCase):
             "owner_actions",
             "pending_tasks",
             "pending_pr_drain",
+            "stuck_checkout_recheck",
             "incoming_events",
             "outbound_audit",
             "undelivered_notify",

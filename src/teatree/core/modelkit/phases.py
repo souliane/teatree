@@ -28,6 +28,7 @@ from teatree.config.phase_names import _PHASE_ALIASES, REVIEW_PHASES, normalize_
 #: hand-maintained set (``Session._REQUIRED_PHASES``) must be validated
 #: against so the two cannot drift silently (#782).
 CANONICAL_PHASES: frozenset[str] = frozenset(_PHASE_ALIASES)
+SWEEP_ASK_GATE_MARKER = "ASK-GATE:"
 
 # Canonical phase -> the ``Ticket`` FSM transition method that records it.
 _CANONICAL_TO_TRANSITION: dict[str, str] = {

@@ -68,9 +68,6 @@ class _ModeHarnessSettings:
     scanning_news_skill: str = setting(
         "scanning-news", spec=SettingSpec(help="skill the news scanning loop runs", parse=_parse_strict_str)
     )
-    eval_local_skill: str = setting(
-        "running-evals", spec=SettingSpec(help="skill the local eval loop runs", parse=_parse_strict_str)
-    )
     backlog_sweep_skill: str = setting(
         "sweeping-tickets", spec=SettingSpec(help="skill the backlog sweep loop runs", parse=_parse_strict_str)
     )

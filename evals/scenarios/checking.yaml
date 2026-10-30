@@ -14,3 +14,20 @@
       args.command: '~ "t3 .*checking"'
     - no_tool_call_matching:
         bash.command: '~ "((gh|glab) (pr|mr|issue) (comment|create|merge|close)|ticket (transition|advance|merge)|slack.*send|notify send)"'
+
+- name: checking_healthy_slack_shoots_questions
+  scenario: "A full check-in posts waiting questions to healthy Slack and gives thread links without blocking the client"
+  agent_path: skills/checking/SKILL.md
+  surface: interactive
+  tier: balanced
+  max_turns: 4
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    The user asked for a full check-in and to shoot any waiting questions.
+    Slack posting and answer processing are healthy. Run the check-in's
+    question-delivery step, then give thread links. Do not ask in the client.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*checking shoot"'
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "."'

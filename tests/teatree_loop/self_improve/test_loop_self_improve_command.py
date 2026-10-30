@@ -26,6 +26,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.gates.t3_master_gate import T3MasterGate
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
@@ -54,7 +55,7 @@ def _reads_open() -> object:
 class LoopSelfImproveCommandTests(TestCase):
     """End-to-end coverage for the ``loop_self_improve`` mgmt command.
 
-    Pin the RAM probe to a deterministic low value so the budget gate
+    Pin the machine probe to a deterministic healthy value so the budget gate
     never skips the cycle just because the host happens to be loaded —
     same seam used by :mod:`tests.teatree_loop.self_improve.test_budget`.
     """
@@ -62,8 +63,8 @@ class LoopSelfImproveCommandTests(TestCase):
     def setUp(self) -> None:
         super().setUp()
         self._ram_patch = patch(
-            "teatree.loop.self_improve.budget._read_ram_used_percent",
-            return_value=10.0,
+            "teatree.loop.self_improve.budget._read_machine_signal",
+            return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
         )
         self._ram_patch.start()
         self.addCleanup(self._ram_patch.stop)

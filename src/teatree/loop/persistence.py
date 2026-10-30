@@ -27,6 +27,7 @@ from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 from teatree.loop.scanners.head_lineage import review_head_is_carried
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -160,6 +161,10 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         issue_url=issue_url,
         defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
+    author = payload.get("author")
+    forge = forge_from_remote(issue_url)
+    if forge and isinstance(author, str) and author.strip():
+        ticket.record_requester(f"{forge}:{author.strip()}")
     raw_issue = payload.get("raw")
     if isinstance(raw_issue, dict):
         updated_extra = nit_ticket_extra(ticket.extra, raw_issue)

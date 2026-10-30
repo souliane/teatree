@@ -82,6 +82,9 @@ from django.db import models
 
 from teatree.failure_signatures import HARNESS_CRASH_MARKERS, outage_signature_in_text
 
+# Recovery summary marker read by doctor duplicate-execution and skill-gap checks.
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
+
 STALE_ERROR_AFTER = timedelta(days=2)
 
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.
@@ -131,9 +134,11 @@ PUSH_OWNERSHIP_VENUE_FAULT = "result_error: push ownership gate could not authen
 
 #: The producer and the recovery classifier share these prefixes so their wording cannot drift.
 OWNER_STOP_REFUSAL_PREFIX = "owner stop card refused: "
+EVAL_MEASUREMENT_ABSENT_MARKER = "eval_measurement_absent:"
 MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
+SWEEP_PROPOSALS_REFUSAL_PREFIX = "sweep_proposals_refused: "
 
 
 class FailureKind(models.TextChoices):
@@ -313,6 +318,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.HEAD_SUPERSEDED, (NIT_HEAD_MOVED,)),
     (FailureKind.RECORDING_REFUSED, (COMMENT_CHECK_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
+    (FailureKind.RECORDING_REFUSED, (SWEEP_PROPOSALS_REFUSAL_PREFIX,)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
     # Ahead of SUPERSEDED: the reasons are tested by CONTAINMENT and "head_superseded: "
@@ -335,6 +341,10 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # After the park row: a parked budget stop is a usage window, a terminal one a drained credential.
     (FailureKind.CREDENTIAL_EXHAUSTED, ("provider_budget:",)),
     (FailureKind.OUTAGE, ("outage_death:",)),
+    (
+        FailureKind.UNCLASSIFIED,
+        (EVAL_MEASUREMENT_ABSENT_MARKER, "result_error: measured nothing:", "RuntimeError: measured nothing:"),
+    ),
     (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
@@ -377,9 +387,9 @@ def classify_failure(error: str) -> str:
     stored nothing, which is a defect in that path rather than a property of the failure,
     and naming it is what makes it findable instead of invisible.
 
-    An unmatched non-blank reason is :attr:`FailureKind.UNCLASSIFIED` — deliberately NOT
-    environmental, so an unrecognised failure is never presented as a harness fault the
-    operator can dismiss.
+    An unmatched non-blank reason, or a known failure without a dedicated persisted kind,
+    is :attr:`FailureKind.UNCLASSIFIED` — deliberately NOT environmental, so it cannot
+    be presented as a harness fault the operator can dismiss.
     """
     haystack = error.casefold().strip()
     if not haystack:

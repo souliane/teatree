@@ -91,7 +91,7 @@ def _clarifying_questions(envelope: dict) -> list[str]:
 
 
 _CLARIFICATION_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("The interpreter could not turn the directive into one mechanism as worded.",),
     blocker="Only the owner can say what was meant.",
     why="The directive can be read more than one way, so nothing is built yet.",

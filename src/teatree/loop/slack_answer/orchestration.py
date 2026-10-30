@@ -154,6 +154,7 @@ class WorkOrigin:
     coalesced_ts: tuple[str, ...]
     text: str
     thread_root: str = ""
+    sender_id: str = ""
 
     @classmethod
     def of_unit(cls, unit: "_Unit") -> "WorkOrigin":
@@ -164,6 +165,7 @@ class WorkOrigin:
             coalesced_ts=tuple(row.slack_ts for row in unit.rows),
             text=unit.text,
             thread_root=unit.lead.thread_ts,
+            sender_id=unit.lead.user_id,
         )
 
 
@@ -278,6 +280,8 @@ def dispatch_work(
             extra[_SLACK_ANSWER_KEY] = prior
             ticket.extra = extra
             ticket.save(update_fields=["extra"])
+        if origin.sender_id:
+            ticket.record_requester(f"slack:{origin.sender_id}")
         session = Session.objects.create(ticket=ticket, overlay=overlay, agent_id=DISPATCH_PHASE)
         task = Task.objects.create(
             ticket=ticket,

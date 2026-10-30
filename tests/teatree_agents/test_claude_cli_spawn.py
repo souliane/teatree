@@ -9,6 +9,7 @@ environment — the only oracle that cannot be satisfied by an argv the kernel w
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,12 @@ def _options(append: str) -> ClaudeAgentOptions:
 def _exec_payload(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
     """Hand the kernel the real argv (binary swapped for a harmless one) plus the real env."""
     return subprocess.run([_HARMLESS_BINARY, *argv[1:]], env=dict(child_env(_options(""))), check=False)
+
+
+def test_claude_test_child_inherits_only_isolated_control_db(tmp_path: Path) -> None:
+    assert Path(os.environ["T3_CONTROL_DB_DIR"]) == tmp_path / "isolated-control-db"
+    assert child_env(_options(""))["T3_CONTROL_DB_DIR"] == os.environ["T3_CONTROL_DB_DIR"]
+    assert "T3_CONFIG_DB" not in child_env(_options(""))
 
 
 class TestPreparedSpawnMovesThePromptOffArgv:

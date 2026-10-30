@@ -360,7 +360,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
-| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and the active mode's `egress` posture for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and the active mode's `egress` posture for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass only when human approval is not required or every swept repository is review-exempt; `notify` keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
 | `wip` | Bounded-WIP throughput dial `slow < medium < full < boost`: how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
@@ -383,7 +383,6 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `review_nag_reask_mention` | Followup-loop fallback when no engaged reviewer maps safely to one active Slack user. A Slack user-group id renders as a group mention; a handle resolves through `usergroups.list` (the bot needs `usergroups:read`) to a group mention, else through the user directory to a user mention, never a user id inside a group mention. Empty or unresolved fallback holds the re-ask instead of posting without a mention. A PERSONAL key, so it never ships in `defaults.toml`. |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |
-| `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `running-evals`) |
 | `dogfood_smoke_skill` | Override which skill the dogfood-smoke scanner dispatches (default `dogfooding`). Every loop-skill default must name a shipped skill: setup refuses a headless box whose demanded skills are not loadable |
 | `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `sweeping-tickets`) |
 | `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep row retirements (default `true`). When on, the dispatched skill records each fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing, and routes every retirement through the gated `ticket bulk-close`. Per-overlay overridable. |
@@ -398,7 +397,6 @@ The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
-| `provision_ram_ceiling_percent` | #2949: RAM-used-percent ceiling above which a new worktree provision is HELD (queued, not started) rather than admitted (default `75`) — tighter than the self-improve budget gate's `DEFAULT_RAM_USED_CEILING_PCT` (85) because provisioning arrives in bursts a per-sample gate reads too late. A held request drains automatically once RAM frees, bounded by an internal max-hold ceiling. Per-overlay overridable; enforced by `teatree.core.gates.provision_admission_gate`. |
 | `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
 | `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker also runs one executor per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned), one for architectural review, and one per maintenance seat. Cheap classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
@@ -1127,26 +1125,18 @@ never moves; a refused write answers 400 carrying that same row plus its reason.
 keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
 
 **Comparing instances** (`/dash/settings/compare/`). This box beside every other one, showing
-what actually differs and what an import would do with each row. Reading peers and loading
-records are read-only; an eligible cell in THIS box's column is editable through the same
-writer as its primary editor. A column reaches the page by one of TWO routes, and they produce
-the same `core.settings.settings_peers.PeerSnapshot`, so the comparison has one set of rules rather
-than two.
+what actually differs and what an import would do with each row. Loading records is read-only;
+an eligible cell in THIS box's column is editable through the same writer as its primary editor.
+Every entry in the `peer_instances` registry appears as an import-required row. Live fetching is
+disabled because every dashboard API requires a signed-in staff session. No peer credential or
+credential route is configured for comparison. The operator signs in to each peer, downloads its
+snapshot, then imports the file here or through `t3 settings compare --snapshot`.
 
-* **Fetched from a live peer.** Every entry in the `peer_instances` registry is fetched over
-    httpx from its own loopback-bound `/dash/settings/snapshot.json`, reached through an
-    `ssh -L` tunnel the operator already holds open. No instance publishes a port and no
-    `ALLOWED_HOSTS` entry is added for this — the route sits behind the same
-    `require_loopback_or_staff` gate every other dash view carries. The snapshot PATH is
-    derived from the URLconf (`settings_peers.snapshot_url`), so the two ends cannot drift. A
-    peer that does not answer is listed with its REASON rather than dropped: a comparison
-    missing one box reads as agreement between the boxes that did answer.
 * **Loaded from a saved snapshot file** (`core.settings.settings_files`). The page's one POST carries
     snapshot documents — picked files (`snapshot_files`, several at a time) or JSON pasted into
-    `snapshot_json` for the operator who holds the document in a terminal on the far side of a
-    tunnel. Each becomes one more column under the identical rules. This is the only route to
-    the three columns a live fetch can never produce: a box whose tunnel is not up, a box that
-    is gone, and THIS box as it stood at an earlier date.
+    `snapshot_json` for the operator who holds the document in a terminal. Each becomes one
+    more column under the identical rules, including a box that is gone and THIS box as it
+    stood at an earlier date.
 
 **A loaded column is a RECORD and says so.** Its heading carries the snapshot's own
 `captured_at` (`PeerSnapshot.origin is SnapshotOrigin.FILE`, rendered as "record of …" in the
@@ -1161,8 +1151,7 @@ answers 400 only when NOTHING loaded, so a mis-picked file cannot hide the compa
 produced.
 
 Snapshots produced by this release use format version 2. Older instances that read only
-version 1 refuse a version 2 capture when loading a v2 file; a live peer fetch checks the
-format only. Upgrade the receiving instance before loading that capture. This applies
+version 1 refuse a version 2 capture when loading a v2 file. Upgrade the receiving instance before loading that capture. This applies
 during a mixed-version rollout, even though this release still reads saved version 1 files.
 
 **Only the local column can write.** An eligible settings cell uses
@@ -1177,7 +1166,7 @@ plain-text 400; `compare-cell-status.js` stamps that reason while `hx-swap="none
 cell. Neither surface can look saved when its write was refused.
 
 **Saving this box's snapshot.** `GET /dash/settings/snapshot.json?download=1` is the SAME
-payload the peer fetch reads, with a Content-Disposition filename built from the instance's own
+payload a signed-in operator can import elsewhere, with a Content-Disposition filename built from the instance's own
 label and its capture date (`core.settings.settings_files.snapshot_filename`). The flag changes the header and
 nothing else — one `core.settings_snapshot.build_snapshot` builder, one read-only GET route.
 `build_snapshot(label, note)` takes no `include_private` parameter and emits
@@ -1190,11 +1179,11 @@ to `instance`); names travel, because the comparison is keyed on scope keys, ent
 nested keys. The download is linked from both the settings page and the comparison page.
 
 **An older record stays comparable — that is the point of the file route.** The no-opinion rule
-(`core.settings.settings_compare`) holds for a loaded column exactly as for a live one: no row for a key
+(`core.settings.settings_compare`) holds for a loaded column: no row for a key
 in a scope, no rows in that scope at all, and a key the box's code never declared all
 canonicalise to `ABSENT` and compare EQUAL, so whatever today's code declares and an older
 capture never did is silence rather than drift — a missing key costs no row per scope, a missing
-scope costs no row per key. And a record never decides whether the LIVE boxes may be diffed:
+scope costs no row per key. A dated record never decides whether this instance and another imported record may be diffed:
 `core.settings.settings_compat` reads agreement across the live columns alone and reports a record's
 differing fingerprint as `CompatRow.dated` at INFO severity — shown, marked, never blocking. A
 schema difference between "then" and "now" is the record's AGE, not two boxes running different

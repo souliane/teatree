@@ -123,7 +123,7 @@ def test_host_phase_policy_still_enforces_read_only_through_the_sandbox() -> Non
 
 
 @pytest.mark.usefixtures("in_container")
-@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke"])
 def test_container_execution_phase_lifts_only_the_mutation_denials(phase: str) -> None:
     denied = sdk_disallowed_tools_for_phase(phase)
     lifted = codex_worker_denials(denied, phase)
@@ -141,7 +141,7 @@ def test_container_read_only_phase_keeps_every_denial() -> None:
 
 
 @pytest.mark.usefixtures("on_host")
-@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke"])
 def test_host_execution_phase_keeps_every_denial(phase: str) -> None:
     denied = sdk_disallowed_tools_for_phase(phase)
 

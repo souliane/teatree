@@ -23,6 +23,7 @@ points that keep the no-orphan invariant:
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -31,6 +32,7 @@ from django.db.models import QuerySet
 from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.forge_push import VERIFY_TIMEOUT_SECONDS
+from teatree.core.gates.forge_scan_index import active_branch_scan_index, branch_scan_scope
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base, pr_from_branch_would_be_empty
@@ -110,6 +112,12 @@ def _origin_default_branch_target(repo: str) -> str:
 
 
 def _orphan_status_on_origin(repo: str, branch: str) -> BranchStatus:
+    index = active_branch_scan_index()
+    if index is not None:
+        on_origin = index.origin_has_branch(repo, branch, timeout=VERIFY_TIMEOUT_SECONDS)
+        if on_origin is None:
+            return BranchStatus.REMOTE_UNKNOWN
+        return BranchStatus.PUSHED_ORPHAN if on_origin else BranchStatus.UNPUSHED_ORPHAN
     try:
         result = run_with_status(
             repo=repo,
@@ -228,11 +236,17 @@ def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchRep
             continue
         keys.append((str(repo_main), wt.branch))
     reports: list[BranchReport] = []
-    with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as pool:
-        for report in pool.map(_classify_closing_connections, dict.fromkeys(keys)):
-            if report.status is BranchStatus.BRANCH_MISSING:
-                logger.warning("orphan scan: branch missing for %s@%s — skipping", report.repo, report.branch)
-                continue
-            if report.is_orphan:
-                reports.append(report)
+    with branch_scan_scope():
+        scan_context = copy_context()
+
+        def classify_in_context(key: tuple[str, str]) -> BranchReport:
+            return scan_context.copy().run(_classify_closing_connections, key)
+
+        with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as pool:
+            for report in pool.map(classify_in_context, dict.fromkeys(keys)):
+                if report.status is BranchStatus.BRANCH_MISSING:
+                    logger.warning("orphan scan: branch missing for %s@%s — skipping", report.repo, report.branch)
+                    continue
+                if report.is_orphan:
+                    reports.append(report)
     return reports

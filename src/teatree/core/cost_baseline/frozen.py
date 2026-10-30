@@ -23,9 +23,6 @@ from teatree.core.cost_baseline.aggregate import UsageStats
 #: The committed freeze, resolved from this module so the package stays relocatable.
 FROZEN_BASELINE_PATH = Path(__file__).resolve().parent / "pre_opus5.yaml"
 
-#: The one :class:`UsageStats` metric that is a count rather than a measurement.
-_INT_METRICS = frozenset({"attempts"})
-
 
 class BaselineError(ValueError):
     """A malformed or absent baseline file — a typo'd metric, a truncated table."""

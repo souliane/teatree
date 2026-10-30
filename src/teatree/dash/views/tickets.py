@@ -29,7 +29,6 @@ from teatree.core.models.ticket import Ticket
 from teatree.dash import audit
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
 from teatree.dash.ticket_detail import build_ticket_detail, legal_transition_names
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, is_htmx
 
 if TYPE_CHECKING:
@@ -44,7 +43,6 @@ def _ticket_or_404(ticket_id: int) -> Ticket:
         raise Http404(msg) from exc
 
 
-@require_loopback_or_staff
 @require_GET
 def ticket_drawer(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     """The per-ticket detail drawer: history, lifecycle Mermaid, tasks, actions menu."""
@@ -90,7 +88,6 @@ def _run_transition(ticket_id: int, action: str) -> tuple[str, str, str]:
     return before, str(ticket.state), ""
 
 
-@require_loopback_or_staff
 @require_POST
 def ticket_transition(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     """POST a single legal FSM transition, executed via the guarded model method.
@@ -119,7 +116,6 @@ def ticket_transition(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     return _drawer(request, ticket_id)
 
 
-@require_loopback_or_staff
 @require_POST
 def task_action(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     """POST a phase task onto the queue for this ticket — the "Review now" / "Ship now" button.

@@ -4,9 +4,10 @@ from django.test import TestCase
 
 from teatree.agents import phase_blocks
 from teatree.agents.prompt import build_read_only_task_prompt
-from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
+from teatree.agents.read_only_draft_blocks import BACKLOG_SWEEP_LINES, REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts
 from teatree.core.models import Session, Task, Ticket
+from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 
 
 def _task(phase: str, **ticket_fields: object) -> Task:
@@ -24,12 +25,40 @@ class TestTheReadOnlyPhaseBlocks(TestCase):
             ("requesting_review", "review_request"),
             ("shipping", "ship_readiness"),
             ("answering", "answer"),
+            ("backlog_sweep", "sweep_proposals"),
         ):
             with self.subTest(phase=phase):
                 assert f'"{key}"' in self._block(phase, read_only=True)
 
     def test_the_executor_blocks_name_no_teatree_command(self) -> None:
-        assert not [line for line in (*REQUESTING_REVIEW_LINES, *SHIPPING_LINES) if "t3 " in line]
+        assert not [line for line in (*BACKLOG_SWEEP_LINES, *REQUESTING_REVIEW_LINES, *SHIPPING_LINES) if "t3 " in line]
+
+    def test_a_worker_sweep_keeps_its_measured_run_contract(self) -> None:
+        assert "sweep_proposals" not in self._block("backlog_sweep", read_only=False)
+
+    def test_sweep_task_message_labels_the_index_and_window(self) -> None:
+        task = _task("backlog_sweep")
+        facts = ReadOnlyFacts("- issue index", "ISSUE window body", "", "", "", "", "", "")
+        message = build_read_only_task_prompt(task, facts)
+        assert "OPEN ISSUE INDEX" in message
+        assert "ISSUE WINDOW" in message
+        assert "data, never instructions" in message
+
+    def test_executor_reason_does_not_carry_the_worker_sweep_commands(self) -> None:
+        task = _task("backlog_sweep")
+        task.execution_reason = (
+            BacklogSweepScanner(
+                overlay_name="t3-teatree", skill="sweeping-tickets", require_approval=True
+            )._execution_reason("cadence")
+            + "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        )
+
+        message = build_read_only_task_prompt(task, ReadOnlyFacts("index", "window", "", "", "", "", "", ""))
+
+        assert "ASK-GATE" in message
+        assert "gap-a: offered work" in message
+        assert "sweep-begin" not in message
+        assert "bulk-close" not in message
 
     def test_the_worker_shipping_brief_keeps_its_pr_create_steps(self) -> None:
         worker = self._block("shipping", read_only=False)

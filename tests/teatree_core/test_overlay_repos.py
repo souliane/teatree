@@ -28,6 +28,11 @@ class TestOwnedRepoSlugs:
 
         assert owned_repo_slugs(overlay) == ("acme/app",)
 
+    def test_case_variants_name_one_owned_repo(self) -> None:
+        overlay = _overlay(merge_candidates=["Acme/App"], followup=["acme/app"])
+
+        assert owned_repo_slugs(overlay) == ("Acme/App",)
+
     def test_urls_are_normalised_down_to_owner_slash_repo(self) -> None:
         overlay = _overlay(merge_candidates=["https://github.com/acme/app"], followup=[])
 

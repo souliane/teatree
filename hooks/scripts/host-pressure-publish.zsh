@@ -25,6 +25,8 @@ vm_data="$(vm_stat)" || exit 1
 page_size=""
 free_pages=""
 inactive_pages=""
+purgeable_pages=0
+speculative_pages=0
 swapins=""
 swapouts=""
 for line in "${(@f)vm_data}"; do
@@ -41,6 +43,14 @@ for line in "${(@f)vm_data}"; do
             inactive_pages="${line##* }"
             inactive_pages="${inactive_pages%.}"
             ;;
+        'Pages purgeable:'*)
+            purgeable_pages="${line##* }"
+            purgeable_pages="${purgeable_pages%.}"
+            ;;
+        'Pages speculative:'*)
+            speculative_pages="${line##* }"
+            speculative_pages="${speculative_pages%.}"
+            ;;
         'Swapins:'*)
             swapins="${line##* }"
             swapins="${swapins%.}"
@@ -52,6 +62,7 @@ for line in "${(@f)vm_data}"; do
     esac
 done
 [[ "$page_size" =~ '^[0-9]+$' && "$free_pages" =~ '^[0-9]+$' && "$inactive_pages" =~ '^[0-9]+$' ]] || exit 1
+[[ "$purgeable_pages" =~ '^[0-9]+$' && "$speculative_pages" =~ '^[0-9]+$' ]] || exit 1
 
 # Occupancy says nothing current on macOS: swap stays allocated long after the pressure
 # that filled it. Paging activity and the kernel's own pressure verdict do.
@@ -68,7 +79,8 @@ target="$data_dir/host-pressure.json"
 temporary="$target.$$"
 trap 'rm -f -- "$temporary"' EXIT
 epoch="$(date +%s)"
-ram_mib=$(( (free_pages + inactive_pages) * page_size / 1048576 ))
+reclaimable_pages=$(( free_pages + inactive_pages + purgeable_pages + speculative_pages ))
+ram_mib=$(( reclaimable_pages * page_size / 1048576 ))
 activity=""
 if [[ -n "$swap_pages" ]]; then
     activity=",\"swap_pages\":$swap_pages"

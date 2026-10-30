@@ -27,6 +27,7 @@ _SCANNED_ONCE: ContextVar[tuple[list[tuple[EntryPoint, ...]], Lock] | None] = Co
 )
 
 
+@cached_per_request
 def overlay_entry_points() -> tuple[EntryPoint, ...]:
     """The installed ``teatree.overlays`` entry points; one scan per shared scope."""
     scope = _SCANNED_ONCE.get()

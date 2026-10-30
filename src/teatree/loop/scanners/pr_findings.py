@@ -45,13 +45,17 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
+from operator import itemgetter
 from typing import Protocol, override
 
 from teatree.core.gates.merge_quality_gate import unmet_items
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.review.forge_actors import ForgeActors
 from teatree.core.review.review_candidate import author_is_self
+from teatree.core.review.verdict_findings import MARKER_PREFIX
+from teatree.types import RawAPIDict
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -153,6 +157,34 @@ def unaddressed_review_findings(
     return notes_count > 0
 
 
+def human_open_thread_activity(discussions: list[RawAPIDict], actors: ForgeActors) -> tuple[int, int] | None:
+    count = 0
+    latest_human_note_id = 0
+    for discussion in discussions:
+        if not isinstance(discussion, dict) or not isinstance(notes := discussion.get("notes"), list):
+            return None
+        if not notes or any(not isinstance(note, dict) or not isinstance(note.get("id"), int) for note in notes):
+            return None
+        if not any(note.get("resolvable") is True for note in notes) or any(
+            note.get("resolved") is True for note in notes
+        ):
+            continue
+        latest = max(notes, key=itemgetter("id"))
+        author = latest.get("author")
+        login = author.get("username") if isinstance(author, dict) else ""
+        user_type = author.get("type") if isinstance(author, dict) else ""
+        body = latest.get("body")
+        if actors.is_automation(
+            login if isinstance(login, str) else "",
+            user_type=user_type if isinstance(user_type, str) else "",
+            system=latest.get("system") is True,
+        ) or (isinstance(body, str) and (MARKER_PREFIX in body or "[gate:" in body)):
+            continue
+        count += 1
+        latest_human_note_id = max(latest_human_note_id, latest["id"])
+    return count, latest_human_note_id
+
+
 __all__ = [
     "CriticFindingReader",
     "FindingDisposition",
@@ -160,5 +192,6 @@ __all__ = [
     "RecordedVerdictReader",
     "ReviewVerdictReader",
     "disposition_for_author",
+    "human_open_thread_activity",
     "unaddressed_review_findings",
 ]

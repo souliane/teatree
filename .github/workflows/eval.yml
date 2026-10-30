@@ -103,8 +103,8 @@
 # PUBLISH + FAILURE NOTIFICATION (souliane/teatree#2704)
 #   After the shard fan-out, the `publish` job merges every shard's SANITIZED
 #   summary (`eval-summary-*` — counts + a scenario|lane|verdict|trials|cost table, NO
-#   transcript) into the public dashboard `docs/evals/index.md` and pushes it to
-#   main; that push triggers `docs.yml`, which serves the dashboard on Pages. The
+#   transcript) into the historical dashboard `docs/evals/weekly.md` and opens a
+#   PR against main; merging it triggers `docs.yml`, which serves it on Pages. The
 #   private per-trial transcripts stay in the `eval-report-*` artifacts.
 #   A red weekly run needs no extra alerting plumbing: GitHub's NATIVE
 #   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
@@ -783,7 +783,7 @@ jobs:
   # worth publishing) but is SKIPPED when prepare gated the eval out — otherwise it
   # would download zero summaries and commit a zero-row dashboard over the real one.
   # It downloads only the `eval-summary-*` artifacts (NEVER the private transcripts),
-  # merges them via scripts/eval/merge_summaries.py into docs/evals/index.md, writes
+  # merges them via scripts/eval/merge_summaries.py into docs/evals/weekly.md, writes
   # the same content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits
   # it on a dedicated branch and opens (or updates) a PR against main, mirroring the
   # `uv-lock-upgrade.yml` weekly-refresh precedent: main's branch protection requires
@@ -893,8 +893,8 @@ jobs:
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
             --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
-            --out docs/evals/index.md
-          cat docs/evals/index.md | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
+            --out docs/evals/weekly.md
+          cat docs/evals/weekly.md | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
       # Commit the dashboard ONLY when it changed (an unchanged file is a clean
       # no-op — no empty commit, no PR) and open (or update) a PR against main —
       # main's branch protection requires PRs + required status checks, so a direct
@@ -913,13 +913,13 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet -- docs/evals/index.md; then
+          if git diff --quiet -- docs/evals/weekly.md; then
             echo "Dashboard unchanged — nothing to commit."
             exit 0
           fi
           BRANCH="docs/eval-dashboard-refresh-$(date -u +%Y-%W)"
           git checkout -B "$BRANCH"
-          git add docs/evals/index.md
+          git add docs/evals/weekly.md
           git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
           git push --force-with-lease origin "$BRANCH"
           # Open a PR if one does not already exist for this branch.

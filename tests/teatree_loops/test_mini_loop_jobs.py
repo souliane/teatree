@@ -68,6 +68,7 @@ class TestDispatchLoopBuildJobs:
             "outbound_audit",
             "owner_actions",
             "pending_pr_drain",
+            "stuck_checkout_recheck",
             "undelivered_notify",
             "deferred_question_poster",
             "question_backlog_nag",
@@ -116,7 +117,7 @@ class TestEvalLocalLoopBuildJobs:
 
         from teatree.loop.scanners.eval_local import EvalLocalScanner  # noqa: PLC0415
 
-        fake = EvalLocalScanner(overlay_name="t3-teatree", skill="running-evals")
+        fake = EvalLocalScanner(overlay_name="t3-teatree")
         with patch("teatree.loop.global_scanner_factories._eval_local_scanner", return_value=fake):
             jobs = EVAL_LOCAL_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
@@ -133,6 +134,10 @@ class TestHousekeepingLoopBuildJobs:
     def test_runs_with_no_backends(self) -> None:
         jobs = HOUSEKEEPING_LOOP.build_jobs()
         assert isinstance(jobs, list)
+        assert HOUSEKEEPING_LOOP.default_cadence_seconds == 3600
+        assert [(job.scanner.name, job.overlay) for job in jobs if job.scanner.name == "dead_worktree_rows"] == [
+            ("dead_worktree_rows", "")
+        ]
 
     def test_runs_with_backends(self, stub_backend: Any) -> None:
         jobs = HOUSEKEEPING_LOOP.build_jobs(backends=[stub_backend])

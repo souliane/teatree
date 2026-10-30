@@ -945,6 +945,13 @@ assert_core_source() {
     }
 }
 
+if [ "$ROLE" != init ] && [ -n "${GITLAB_TOKEN:-}" ]; then
+    "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m teatree.hooks.bot_push_gate --verify-ambient || {
+        echo "entrypoint: withholding an unverified runtime GitLab token; declare the bot identity before enabling GitLab writes" >&2
+        unset GITLAB_TOKEN TEATREE_GITLAB_TOKEN
+    }
+fi
+
 case "$ROLE" in
 init)
     init_preflight
@@ -1068,7 +1075,6 @@ init)
     # reflects the real host instead of a baked-in cap. `t3 doctor --repair` clears
     # ONLY a stale ENTRYPOINT-seeded pin, never an operator's deliberate one (#3434).
     seed_setting provision_max_concurrency 0
-    seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
     # Clear any drain-set quiescing flag so the FRESH worker RESUMES admission after a
     # rolling deploy (drain-then-deploy). This is a HARD `set false`, NOT a provenance

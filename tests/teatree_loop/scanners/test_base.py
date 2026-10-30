@@ -10,12 +10,12 @@ own ``tests/teatree_loop/test_*_scanner.py``.
 """
 
 import datetime as dt
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
-from teatree.loop.scanners.base import hours_since, run_gh_for_slug
+from teatree.loop.scanners.base import hours_since, resolve_identities, run_gh_for_slug
 
 
 class TestHoursSince:
@@ -32,6 +32,29 @@ class TestHoursSince:
     def test_zero_when_earlier_is_now(self) -> None:
         now = dt.datetime(2026, 6, 16, 12, 0, tzinfo=dt.UTC)
         assert hours_since(now, now=now) == pytest.approx(0.0)
+
+
+class TestResolveIdentities:
+    def test_configured_aliases_are_deduplicated_in_first_seen_order(self) -> None:
+        host = Mock()
+        assert resolve_identities(host, ("alice", "bob", "alice")) == ("alice", "bob")
+
+    def test_configured_aliases_win_over_the_host_user(self) -> None:
+        host = Mock()
+        host.current_user.return_value = "token-owner"
+
+        assert resolve_identities(host, ("alice",)) == ("alice",)
+        host.current_user.assert_not_called()
+
+    def test_no_aliases_falls_back_to_the_host_user(self) -> None:
+        host = Mock()
+        host.current_user.return_value = "token-owner"
+        assert resolve_identities(host, ()) == ("token-owner",)
+
+    def test_no_aliases_and_an_empty_host_user_resolves_to_no_identity(self) -> None:
+        host = Mock()
+        host.current_user.return_value = ""
+        assert resolve_identities(host, ()) == ()
 
 
 def test_slug_routing_rejects_missing_credentials_without_ambient_gh() -> None:
