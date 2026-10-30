@@ -77,6 +77,13 @@ class _RenderContext:
     status_lines: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _GatheredReport:
+    payload: CheckingReportDict | AllOverlaysReportDict
+    groups: list[CheckGroup]
+    context: _RenderContext
+
+
 def _stamp(when: datetime) -> str:
     local = timezone.localtime(when) if timezone.is_aware(when) else when
     return local.strftime("%H:%M")
@@ -310,11 +317,27 @@ class Command(MachineOutputCommand):
         _validate_since(flags.since)
         live_owner_questions()
 
-        if this_overlay:
-            return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
-        return self._show_all_overlays(now=now, flags=flags)
+        gathered = (
+            self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
+            if this_overlay
+            else self._show_all_overlays(now=now, flags=flags)
+        )
+        self.print_result = False
+        emit(
+            gathered.payload,
+            json_output=flags.json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_groups_tables(
+                gathered.groups,
+                context=gathered.context,
+                internal_escalations=gathered.payload["internal_escalations"],
+                brief=flags.brief,
+            ),
+        )
+        return gathered.payload
 
-    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> CheckingReportDict:
+    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> _GatheredReport:
         """Single-overlay path (``--this-overlay`` or backward-compat)."""
         window_start = resolve_window_start(since=flags.since, now=now)
         report = gather_checking_report(
@@ -341,9 +364,9 @@ class Command(MachineOutputCommand):
         if not flags.since and not flags.no_advance and delivered:
             advance_checkpoint_monotonic(now)
         context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
-        return self._emit(report.to_dict(), groups, context=context, flags=flags)
+        return _GatheredReport(report.to_dict(), groups, context)
 
-    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> AllOverlaysReportDict:
+    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> _GatheredReport:
         """All-overlays path (default): aggregate every configured overlay."""
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
@@ -383,30 +406,7 @@ class Command(MachineOutputCommand):
                 advance_checkpoint_monotonic(now, path)
 
         context = _RenderContext(header=header, stamp=stamp, status_lines=report.status_by_feature.render())
-        return self._emit(report.to_dict(), groups, context=context, flags=flags)
-
-    def _emit[ReportT: (CheckingReportDict, AllOverlaysReportDict)](
-        self,
-        payload: ReportT,
-        groups: list[CheckGroup],
-        *,
-        context: _RenderContext,
-        flags: _ShowFlags,
-    ) -> ReportT:
-        self.print_result = False
-        emit(
-            payload,
-            json_output=flags.json_output,
-            out=cast("IO[str]", self.stdout),
-            err=cast("IO[str]", self.stderr),
-            human=_render_groups_tables(
-                groups,
-                context=context,
-                internal_escalations=payload["internal_escalations"],
-                brief=flags.brief,
-            ),
-        )
-        return payload
+        return _GatheredReport(report.to_dict(), groups, context)
 
     @staticmethod
     def _resolve_code_host() -> str:

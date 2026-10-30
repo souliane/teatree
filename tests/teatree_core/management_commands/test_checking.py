@@ -49,6 +49,7 @@ _SHA = "b" * 40
 def checkpoint_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     target = tmp_path / "checking_checkpoint_test.json"
     monkeypatch.setattr("teatree.core.checkpoint.checkpoint_path", lambda *_a, **_k: target)
+    monkeypatch.setattr("teatree.core.management.commands.checking.checkpoint_path", lambda *_a, **_k: target)
     return target
 
 
