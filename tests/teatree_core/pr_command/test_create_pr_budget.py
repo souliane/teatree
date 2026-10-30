@@ -20,7 +20,7 @@ from teatree.core.management.commands._ship import gates as ship_gates_mod
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate
 from teatree.core.models import PullRequest, Ticket, Worktree
 
-from ._shared import _MOCK_OVERLAY, _shippable_ticket
+from ._shared import _MOCK_OVERLAY, _PR_URL, _code_host, _gates_pass, _ship_externals, _shippable_ticket
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -118,3 +118,32 @@ class TestPrCreatePrBudgetWiring(TestCase):
         assert "max_open_prs_per_repo_per_ticket" in str(result.get("error"))
         assert f"{_SLUG}/pull/1" in str(result.get("error"))
         assert ticket.state != Ticket.State.PR_OPENED
+
+    def test_merged_first_pr_does_not_block_a_followup_branch(self) -> None:
+        ticket = _shippable_ticket()
+        first_url = "https://github.com/acme/backend/pull/6"
+        ticket.merge_extra(merge_into_dicts={"pr_url_by_branch": {"first-branch": first_url}})
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=first_url,
+            repo="acme/backend",
+            iid="6",
+            overlay=ticket.overlay,
+            state=PullRequest.State.MERGED,
+        )
+        host = _code_host()
+        host.list_my_prs.return_value = []
+
+        with (
+            _ship_externals(host),
+            _gates_pass(),
+            patch.object(ship_gates_mod.git, "remote_slug", return_value="acme/backend"),
+            patch.object(ship_gates_mod, "_resolve_host_for_repo", return_value=host),
+            patch.object(pr_budget_gate, "resolve_pr_budget", return_value=1),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk), sync=True))
+
+        assert result["ok"] is True
+        assert result["detail"] == _PR_URL
+        host.create_pr.assert_called_once()
+        assert PullRequest.objects.filter(ticket=ticket, url=_PR_URL).exists()
