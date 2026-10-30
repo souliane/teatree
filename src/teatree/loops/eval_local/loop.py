@@ -1,4 +1,4 @@
-"""Local-eval mini-loop — weekly ``eval_local`` cadence anchor."""
+"""Local-eval mini-loop — daily ``eval_local`` cadence anchor."""
 
 from typing import TYPE_CHECKING
 
@@ -20,7 +20,7 @@ def _build_jobs(**_: object) -> "list[_ScannerJob]":
 
 MINI_LOOP = MiniLoop(
     name="eval_local",
-    default_cadence_seconds=3600,  # 1h tick rate — weekly cadence enforced internally
+    default_cadence_seconds=3600,  # 1h tick rate — daily cadence enforced by the row
     build_jobs=_build_jobs,
     periodic_phase="eval_local",
     declared_reach=frozenset(),

@@ -53,6 +53,24 @@ class TestNotifySendSubcommand(TestCase):
             assert notify.call_args.kwargs["options"].ticket_id is None
         resolve.assert_called_once_with()
 
+    def test_dm_reply_preserves_the_card_thread(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            _out, code = _call(
+                "notify",
+                "reply",
+                "The rule says to decide settled questions.",
+                "--user-id",
+                "U_ME",
+                "--idempotency-key",
+                "card-discussion:335.2:reply",
+                "--thread-ts",
+                "335.1",
+            )
+
+        assert code == 0
+        assert backend.post_message.call_args.kwargs["thread_ts"] == "335.1"
+
     def test_send_invokes_notify_path_and_records_audit(self) -> None:
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):

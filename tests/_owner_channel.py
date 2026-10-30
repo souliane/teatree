@@ -14,7 +14,7 @@ from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_
 OWNER_SLACK_ID = "U1"
 
 OWNER_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("No standing answer covers it.",),
     blocker="Only the owner can choose.",
     why="The answer changes what the factory does next.",
@@ -118,12 +118,12 @@ class OwnerDecisionFields(TypedDict):
 OWNER_DECISION = OwnerDecisionFields(card=OWNER_CARD)
 
 
-def owner_card(decision: OwnerDecision = OwnerDecision.PRODUCT_SCOPE, *checked: str) -> QuestionCard:
+def owner_card(decision: OwnerDecision = OwnerDecision.ARCHITECTURE, *checked: str) -> QuestionCard:
     return dataclasses.replace(OWNER_CARD, decision=decision, checked=checked or OWNER_CARD.checked)
 
 
 def legacy_owner_row(
-    question: str, *, decision: OwnerDecision = OwnerDecision.PRODUCT_SCOPE, **fields: object
+    question: str, *, decision: OwnerDecision = OwnerDecision.ARCHITECTURE, **fields: object
 ) -> DeferredQuestion:
     """An owner row as recorded before cards existed: evidence holds only the decision and the checked facts."""
     return DeferredQuestion.objects.create(

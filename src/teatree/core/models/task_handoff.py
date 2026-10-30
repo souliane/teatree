@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 #: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
 RESUME_ANSWER_PREFIX = "The user answered your earlier question:"
+CARD_DISCUSSION_PREFIX = "Owner card discussion "
 
 #: What :func:`dispatch_reason` DERIVES: true only while the dispatch actually resumes. Storing it
 #: froze it into the prompt, and a requeue that answered FRESH still told the agent to continue
@@ -140,14 +141,31 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     continue-where-you-left-off instruction for as long as the retry really does.
     A parent whose conversation cannot be continued (:meth:`TaskAttempt.cannot_continue_its_conversation`)
     gets a FRESH child instead, whose reason also carries *question* so the new run knows what was answered.
+    A pending card-discussion child absorbs the answer; a claimed one has already built its prompt, so a new
+    resume child is created behind it.
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
-    existing = task.child_tasks.filter(
-        status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
-    ).first()
+    existing = (
+        task.child_tasks.filter(
+            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+        )
+        .exclude(execution_reason__startswith=CARD_DISCUSSION_PREFIX)
+        .first()
+    )
     if existing is not None:
         return existing
+    discussion = task.child_tasks.filter(
+        status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
+    ).first()
+    if discussion is not None:
+        absorbed = f"{RESUME_ANSWER_PREFIX} {answer}. The question was: {question}. {discussion.execution_reason}"
+        still_pending = Task.objects.filter(
+            pk=discussion.pk, status=Task.Status.PENDING, execution_reason=discussion.execution_reason
+        )
+        if still_pending.update(execution_reason=absorbed):
+            discussion.execution_reason = absorbed
+            return discussion
     refuse_unplanned_mint(task.ticket, phase=task.phase)
     last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
@@ -166,3 +184,39 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
         parent_task=task,
         session_continuation=continuation,
     )
+
+
+def schedule_card_discussion(task: Task, *, event_id: str, message: str) -> Task:
+    """Queue a continuation to answer one owner message without treating it as a card decision."""
+    marker = f"{CARD_DISCUSSION_PREFIX}{event_id}: "
+    with transaction.atomic():
+        existing = task.child_tasks.filter(execution_reason__contains=marker).first()
+        if existing is not None:
+            return existing
+        pending = task.child_tasks.filter(
+            status=Task.Status.PENDING, execution_reason__startswith=CARD_DISCUSSION_PREFIX
+        ).first()
+        if pending is not None:
+            expanded = f"{pending.execution_reason}\n{marker}{message}"
+            still_pending = Task.objects.filter(
+                pk=pending.pk, status=Task.Status.PENDING, execution_reason=pending.execution_reason
+            )
+            if still_pending.update(execution_reason=expanded):
+                pending.execution_reason = expanded
+                return pending
+        refuse_unplanned_mint(task.ticket, phase=task.phase)
+        last = task.attempts.order_by("-pk").first()
+        agent_session_id = last.agent_session_id if last else ""
+        session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
+        continuation = Task.SessionContinuation.PARENT
+        if last is not None and last.cannot_continue_its_conversation():
+            task.ticket.pop_task_thread(int(task.pk))
+            continuation = Task.SessionContinuation.FRESH
+        return Task.objects.create(
+            ticket=task.ticket,
+            session=session,
+            phase=task.phase,
+            execution_reason=f"{marker}{message}",
+            parent_task=task,
+            session_continuation=continuation,
+        )

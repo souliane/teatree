@@ -173,10 +173,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.
     "dogfood_smoke": _READ_ONLY | {"shell"},
-    # ``eval_local`` shells out to run the scoped eval suite (``t3 eval run``), the
-    # same read-only+shell shape as ``dogfood_smoke``: it executes a suite and
-    # reports, it never mutates source.
-    "eval_local": _READ_ONLY | {"shell"},
+    "eval_local": frozenset(),
     # ``backlog_sweep`` triages the issue tracker — it reads the tracker over the
     # forge CLI (shell) and the web, and records close/fold PROPOSALS behind the
     # scanner's ask-gate. NO write/edit: a sweep produces proposals, never commits.

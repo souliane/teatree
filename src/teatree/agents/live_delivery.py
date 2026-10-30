@@ -107,6 +107,13 @@ def _reject(message: str) -> NoReturn:
     raise ValueError(message)
 
 
+def mailbox_wait_timeout(request: MailboxRequest) -> int | float:
+    timeout = request.get("timeout_seconds", MAX_WAIT_SECONDS)
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 <= timeout <= MAX_WAIT_SECONDS:
+        _reject("Mailbox wait timeout must be between 0 and 20 seconds")
+    return timeout
+
+
 class SendReceipt(TypedDict):
     id: int
     to: str

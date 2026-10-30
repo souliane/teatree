@@ -10,6 +10,7 @@ the conflation); the intake scanner simply never raised it.
 """
 
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -17,6 +18,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
+from teatree.utils.run import CommandFailedError
 from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 ADMIT_LABEL = "t3-auto"
@@ -97,6 +99,56 @@ class TestEveryDiscoveryQueryFailing(TestCase):
             _scanner(host).scan()
 
         assert host.attempts == [f"authored:{OWNER}", f"labeled:{ADMIT_LABEL}"]
+
+    def test_all_header_rate_limited_queries_report_the_cause_before_the_query_text(self) -> None:
+        error = CommandFailedError(
+            ["gh", "api", "search/issues?q=" + "x" * 240],
+            1,
+            "",
+            "gh api: HTTP 403: Forbidden resource=search retry-after=45",
+        )
+        host = _BrokenHost(error=error)
+
+        with pytest.raises(ScannerError) as caught:
+            _scanner(host).scan()
+
+        detail = caught.value.detail or ""
+        assert caught.value.error_class == ScannerErrorClass.RATE_LIMIT
+        assert "retry-after=45" in detail[:200]
+        assert "GNUPGHOME" not in detail
+        assert f"list_authored_issues({OWNER})" in detail
+        assert f"list_labeled_issues({ADMIT_LABEL})" in detail
+        assert host.attempts == [f"authored:{OWNER}", f"labeled:{ADMIT_LABEL}"]
+
+    def test_mixed_rate_limit_and_other_failure_preserves_auth_fallback(self) -> None:
+        host = _BrokenHost(error=RuntimeError("secondary rate limit"))
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("permission denied")),
+            pytest.raises(ScannerError) as caught,
+        ):
+            _scanner(host).scan()
+
+        assert caught.value.error_class == ScannerErrorClass.AUTH
+        assert "GNUPGHOME" in (caught.value.detail or "")
+
+    def test_mixed_rate_limit_and_network_failures_report_unknown(self) -> None:
+        host = _BrokenHost(error=RuntimeError("secondary rate limit"))
+        with (
+            patch.object(host, "list_labeled_issues", side_effect=RuntimeError("dial tcp: network is unreachable")),
+            pytest.raises(ScannerError) as caught,
+        ):
+            _scanner(host).scan()
+
+        assert caught.value.error_class == ScannerErrorClass.UNKNOWN
+        assert "GNUPGHOME" not in (caught.value.detail or "")
+
+    def test_all_network_failures_report_network(self) -> None:
+        host = _BrokenHost(error=RuntimeError("dial tcp: network is unreachable"))
+        with pytest.raises(ScannerError) as caught:
+            _scanner(host).scan()
+
+        assert caught.value.error_class == ScannerErrorClass.NETWORK
+        assert "GNUPGHOME" not in (caught.value.detail or "")
 
 
 class TestTheFailureDetailIsRedacted(TestCase):

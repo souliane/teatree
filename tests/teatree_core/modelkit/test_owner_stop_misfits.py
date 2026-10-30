@@ -81,11 +81,11 @@ class TestARowFiresOnlyOnItsOwnKindAndWords:
     def test_a_missing_marker_is_a_card(self, kind: str, question: str, facts: tuple[str, ...]) -> None:
         assert _misfit(kind, question, *facts) is None
 
-    @pytest.mark.parametrize("kind", ["money_or_plan", "irreversible", "public_post", "product_scope", "architecture"])
+    @pytest.mark.parametrize("kind", ["money_or_plan", "irreversible", "public_post", "architecture"])
     def test_the_denied_start_retry_means_nothing_for_another_kind(self, kind: str) -> None:
         assert _misfit(kind, RETRY, DENIED_START) is None
 
-    @pytest.mark.parametrize("kind", ["credentials", "money_or_plan", "product_scope", "architecture"])
+    @pytest.mark.parametrize("kind", ["credentials", "money_or_plan", "architecture"])
     def test_the_own_branch_push_and_own_process_stop_mean_nothing_for_another_kind(self, kind: str) -> None:
         assert _misfit(kind, OWN_PUSH) is None
         assert _misfit(kind, OWN_PROCESS) is None

@@ -186,7 +186,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def _owner_row(self, question: str, *, delivered_ts: str = "", **scope: str) -> DeferredQuestion:
         """A pending owner row from before #5096, when a loop-driven capture still reached the owner."""
         row = DeferredQuestion.record(
-            question, card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"), **scope
+            question, card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket is silent"), **scope
         )
         if delivered_ts:
             row.mark_mirrored(channel="D-cached", slack_ts=delivered_ts)
@@ -279,7 +279,7 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
             "Ship it?",
             session_id="s-att",
             run_id="r1",
-            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
+            card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 
@@ -292,7 +292,7 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
             "Is this another session?",
             session_id="s-other",
             run_id="r1",
-            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
+            card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 
@@ -307,7 +307,7 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
             run_id="r1",
             slack_ts="1700.0001",
             slack_channel="D-cached",
-            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
+            card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 

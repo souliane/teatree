@@ -1588,6 +1588,15 @@ def test_wait_is_bounded_and_unregister_discards_mail(broker: LiveMailboxBroker)
     )
 
 
+@pytest.mark.parametrize("timeout", [-1, True, "later"])
+def test_wait_rejects_invalid_timeout(broker: LiveMailboxBroker, timeout: object) -> None:
+    peer = broker.register(room="ticket", harness="codex", label="coder")
+    client = MailboxClient(peer.socket_path, peer.token)
+
+    with pytest.raises(ToolError, match="Mailbox wait timeout must be between 0 and 20 seconds"):
+        invoke(client, "wait", timeout_seconds=timeout)
+
+
 def test_revoked_sender_cannot_send_after_token_lookup(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="planner")
     recipient = broker.register(room="ticket", harness="codex", label="coder")

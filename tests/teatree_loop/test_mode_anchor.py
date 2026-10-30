@@ -59,8 +59,8 @@ class TestModeHandleRidesLoopLine:
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
-class TestWaitingCountCoversAllKinds:
-    """The loop-line ``N waiting`` counts the whole waiting-on-you lane (PR-21)."""
+class TestWaitingCountCoversOwnerDecisions:
+    """The loop-line ``N waiting`` counts decisions addressed to the owner."""
 
     def _loop_line(self) -> str:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
@@ -75,8 +75,8 @@ class TestWaitingCountCoversAllKinds:
     def test_hidden_at_zero(self) -> None:
         assert "waiting" not in self._loop_line()
 
-    def test_counts_manual_and_question_kinds(self) -> None:
-        WaitingItem.objects.add("chase finance")
+    def test_counts_owner_question_but_excludes_manual_item(self) -> None:
         DeferredQuestion.record("deploy now?", **OWNER_DECISION)
-        # Two distinct kinds → the count is all-kinds, not questions-only.
-        assert "2 waiting" in self._loop_line()
+        assert "1 waiting" in self._loop_line()
+        WaitingItem.objects.add("chase finance")
+        assert "1 waiting" in self._loop_line()

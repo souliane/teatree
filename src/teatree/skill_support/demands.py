@@ -14,7 +14,6 @@ class RuntimeSkillSettings(Protocol):
     review_skill_alternates: list[str]
     architectural_review_skill: str
     scanning_news_skill: str
-    eval_local_skill: str
     backlog_sweep_skill: str
     dogfood_smoke_skill: str
 
@@ -22,7 +21,6 @@ class RuntimeSkillSettings(Protocol):
 LOOP_SKILL_FIELDS: tuple[str, ...] = (
     "architectural_review_skill",
     "scanning_news_skill",
-    "eval_local_skill",
     "backlog_sweep_skill",
     "dogfood_smoke_skill",
 )
