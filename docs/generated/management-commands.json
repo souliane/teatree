@@ -875,7 +875,7 @@
       "name": "questions",
       "subcommands": [
         {
-          "help": "Reuse an exact owner answer for the same architecture question from an attended session",
+          "help": "Reuse an exact owner answer for the same architecture question from an operator session",
           "name": "coordinate"
         },
         {

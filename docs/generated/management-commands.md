@@ -449,7 +449,7 @@ Persist declared Notion pass-key routes without replacing database overrides.
 
 | Subcommand | Description |
 | --- | --- |
-| `coordinate` | Reuse an exact owner answer for the same architecture question from an attended session |
+| `coordinate` | Reuse an exact owner answer for the same architecture question from an operator session |
 | `measure` | Count the owner cards that have a Slack mirror, grouped by creation day and kind |
 | `record` | Record a question by hand — the agent-facing capture surface |
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |

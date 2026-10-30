@@ -1,4 +1,4 @@
-"""Route an owner's open-card discussion to its live task or attended coordinator."""
+"""Route an owner's open-card discussion to its live task or coordinator."""
 
 import asyncio
 import logging
@@ -74,7 +74,7 @@ def _choose_peer(peers: list[PeerIdentity], ticket_id: int | None, parked_task_i
             for peer in peers
             if peer.get("ticket") == str(ticket_id)
             and peer.get("can_receive", True)
-            and peer["harness"] not in {"interactive", "orchestrator"}
+            and peer["harness"] not in {live_mailbox.OPERATOR_HARNESS, "orchestrator"}
         ]
         if parked_task_id is not None:
             exact = [peer for peer in candidates if peer["label"].endswith(f" task {parked_task_id}")]
@@ -82,7 +82,9 @@ def _choose_peer(peers: list[PeerIdentity], ticket_id: int | None, parked_task_i
                 return exact[0]
         if len(candidates) == 1:
             return candidates[0]
-    coordinators = [peer for peer in peers if peer["harness"] == "interactive" and peer.get("can_receive", True)]
+    coordinators = [
+        peer for peer in peers if peer["harness"] == live_mailbox.OPERATOR_HARNESS and peer.get("can_receive", True)
+    ]
     return coordinators[0] if len(coordinators) == 1 else None
 
 

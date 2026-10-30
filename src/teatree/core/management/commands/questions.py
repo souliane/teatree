@@ -136,7 +136,7 @@ class Command(MachineOutputCommand):
         *,
         basis: Annotated[int, typer.Option("--basis", help="The owner-answered question to cite.")],
     ) -> str:
-        """Reuse an exact owner answer for the same architecture question from an attended session."""
+        """Reuse an exact owner answer for the same architecture question from an operator session."""
         if is_dispatched_agent_process():
             self.stderr.write("a dispatched agent cannot coordinate an owner answer")
             raise SystemExit(2)

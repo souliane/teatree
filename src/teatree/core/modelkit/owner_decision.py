@@ -47,7 +47,7 @@ OWNER_QUESTION_ROUTE = (
 )
 
 OWNER_ANSWER_ROUTE = (
-    "an owner answer arrives in its Slack thread; an attended coordinator may dismiss a settled architecture card "
+    "an owner answer arrives in its Slack thread; a coordinator may dismiss a settled architecture card "
     "with `t3 <overlay> questions dismiss <id> --reason '<evidence>'`; "
     "a dispatched agent cannot dismiss a live owner card."
 )

@@ -13,12 +13,11 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from time import monotonic
-from typing import NoReturn, Self
+from typing import Self
 
 from teatree.agents.live_control import ControlOutcome, LiveTask, PeerIdentity, RejectCode, frame_peer_message
 from teatree.agents.live_delivery import (
     _MAX_INBOX_MESSAGES,
-    MAX_WAIT_SECONDS,
     InboxMessage,
     InboxPage,
     MailboxIdentity,
@@ -28,6 +27,8 @@ from teatree.agents.live_delivery import (
     PushOnlyTask,
     SendReceipt,
     _Participant,
+    _reject,
+    mailbox_wait_timeout,
     peer_identity,
     refused_receipt,
     send_fields,
@@ -53,15 +54,12 @@ from teatree.agents.live_ingress import (
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 logger = logging.getLogger(__name__)
+OPERATOR_HARNESS = "interactive"
 
 _MAX_REQUEST_BYTES = 128_000  # JSON escaping can expand a valid 16-KiB body sixfold
 _MAX_PAGE_SIZE = 100
 _MAX_PAGE_BYTES = 1_800_000
 MAX_WAITING_SENDS = 4
-
-
-def _reject(message: str) -> NoReturn:
-    raise ValueError(message)
 
 
 class LiveMailboxBroker:
@@ -155,7 +153,7 @@ class LiveMailboxBroker:
         task: LiveTask | PushOnlyTask | None = None,
         can_receive: bool = True,
     ) -> MailboxIdentity:
-        if (not room and harness != "interactive") or not harness or not label:
+        if (not room and harness != OPERATOR_HARNESS) or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
@@ -307,7 +305,7 @@ class LiveMailboxBroker:
         role = classify_peer(peer_credentials(sock), worker_pid=os.getpid(), own_uid=os.getuid())
         if role is not PeerRole.OPERATOR:
             raise IngressRefusedError(RejectCode.PERMISSION_DENIED, "Interactive mailbox join requires an operator")
-        return self.register(room="", harness="interactive", label="attended")
+        return self.register(room="", harness=OPERATOR_HARNESS, label="attended")
 
     async def _dispatch(self, request: MailboxRequest) -> object:
         token = request.get("token")
@@ -330,7 +328,8 @@ class LiveMailboxBroker:
             return self._inbox(participant, request)
         if method == "wait":
             return await self._wait(participant, request)
-        _reject("Unknown mailbox method")
+        msg = "Unknown mailbox method"
+        raise ValueError(msg)
 
     @staticmethod
     def _identity(participant: _Participant) -> PeerIdentity:
@@ -511,9 +510,7 @@ class LiveMailboxBroker:
         }
 
     async def _wait(self, participant: _Participant, request: MailboxRequest) -> InboxPage:
-        timeout = request.get("timeout_seconds", MAX_WAIT_SECONDS)
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 <= timeout <= MAX_WAIT_SECONDS:
-            _reject("Mailbox wait timeout must be between 0 and 20 seconds")
+        timeout = mailbox_wait_timeout(request)
         deadline = monotonic() + timeout
         while True:
             result = self._inbox(participant, request)

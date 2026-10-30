@@ -14971,7 +14971,7 @@ Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 Usage: t3 teatree questions coordinate [OPTIONS] QUESTION_ID TEXT
 
  Reuse an exact owner answer for the same architecture question from an
- attended session.
+ operator session.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question_id      INTEGER  [required]                                    │
