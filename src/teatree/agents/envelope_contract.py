@@ -27,7 +27,7 @@ from teatree.agents.result_schema import (
 )
 from teatree.agents.result_schema_draft import EXECUTOR_DRAFT_FIELDS
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
@@ -275,7 +275,7 @@ def envelope_contract_lines(
             '  `user_input_checked`, `user_input_card` {"why", "blocker", '
             '"options": [{"label", "description", "recommended"}]}; stop.'
         ),
-        f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        f"  {', '.join(OWNER_RAISABLE_DECISIONS)}; an access or permission grant is credentials.",
         *(f"  {line}" for line in owner_stop_limits_lines()),
         "  Decide everything else yourself.",
         (

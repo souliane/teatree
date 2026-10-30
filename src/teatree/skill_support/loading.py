@@ -56,7 +56,6 @@ _PHASE_TO_SKILL: dict[str, str] = {
     "answering": "answerer",
     "bughunt": "debug",
     "dogfood_smoke": "dogfooding",
-    "eval_local": "running-evals",
     "critic_reviewing": "review",
     "directive_interpreting": "architecture-design",
     "e2e_reviewing": "e2e-review",

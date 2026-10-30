@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import CodeHostBackend, MergeConflictState
-from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.base import ScanSignal, SignalPayload, resolve_identities
 from teatree.loop.scanners.my_prs import _str_field
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.scanners.repository_scope import RepositoryScope
@@ -72,7 +72,7 @@ class MrConflictScanner:
     def scan(self) -> list[ScanSignal]:
         if self._scope.refuses():
             return []
-        authors = self._resolve_identities()
+        authors = resolve_identities(self.host, self.identities)
         if not authors:
             return []
         signals: list[ScanSignal] = []
@@ -125,12 +125,6 @@ class MrConflictScanner:
         except Exception as exc:  # noqa: BLE001 — a merge-state probe must never abort the tick.
             logger.warning("%s: merge-state probe failed for %s: %s", self.name, url, exc)
             return MergeConflictState.UNKNOWN
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _collect(self, authors: tuple[str, ...]) -> dict[str, RawAPIDict]:
         collected: dict[str, RawAPIDict] = {}

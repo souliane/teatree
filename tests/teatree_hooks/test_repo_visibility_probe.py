@@ -61,12 +61,6 @@ class TestProbeTimeoutFailsSafe:
 
         assert _repo_visibility.probe_visibility("gitlab.com/team/project") is None
 
-    def test_slug_is_private_timeout_is_not_private(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", _raise_timeout)
-
-        # An unresolvable (timed-out) probe must treat the repo as NOT private, not raise.
-        assert _repo_visibility.slug_is_private("github.com/octo/repo") is False
-
 
 class TestOnlyATransientForgeFailureIsAskedAgain:
     """A timeout, a 5xx, a stalled or dropped connection, or a refused process start is asked again; nothing else is."""

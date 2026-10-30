@@ -143,7 +143,7 @@ class TestProposingIsNotLifting(django.test.TestCase):
         raise_override_lift_questions(_NOW)
 
         row = DeferredQuestion.objects.get()
-        assert row.evidence["decision"] == "product_scope"
+        assert row.evidence["decision"] == "architecture"
         text = assert_a_plain_card(row, "standing", "override-lift")
         assert "> waiting on the vendor" in text
 

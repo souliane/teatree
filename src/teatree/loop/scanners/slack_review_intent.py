@@ -30,13 +30,12 @@ The ``:white_check_mark:`` Slack reaction itself is posted by
 
 import logging
 from dataclasses import dataclass, field
-from typing import cast
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewAssignment, ReviewIntent
 from teatree.loop.review_claim_signals import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.slack_self_ack import SlackSelfAckReactor
+from teatree.loop.scanners.slack_self_ack import SlackSelfAckReactor, reaction_item
 from teatree.types import RawAPIDict
 from teatree.url_classify import first_pr_url
 
@@ -82,19 +81,6 @@ def _retry_or_drop(record: dict | None, *, retain: list[dict], ts: object) -> No
         logger.warning("Dropping reaction event %s after %d failed attempts", ts, attempts)
         return
     retain.append({**record, "attempts": attempts})
-
-
-def _reaction_item(event: RawAPIDict) -> tuple[str, str]:
-    raw = event.get("item")
-    if not isinstance(raw, dict):
-        return "", ""
-    item = cast("RawAPIDict", raw)
-    channel = item.get("channel")
-    ts = item.get("ts")
-    return (
-        channel if isinstance(channel, str) else "",
-        ts if isinstance(ts, str) else "",
-    )
 
 
 @dataclass(slots=True)
@@ -218,7 +204,7 @@ class SlackReviewIntentScanner:
         user = _event_user(event)
         if not target_user or user != target_user:
             return None
-        channel, ts = _reaction_item(event)
+        channel, ts = reaction_item(event)
         if not channel or not ts:
             return None
         message = self.backend.fetch_message(channel=channel, ts=ts)

@@ -18,7 +18,7 @@ from typing import Final
 
 from teatree.core.modelkit.phase_tools import disallowed_tools_for_phase
 
-CODEX_WORKER_EXECUTION_PHASES: Final[frozenset[str]] = frozenset({"bughunt", "dogfood_smoke", "eval_local"})
+CODEX_WORKER_EXECUTION_PHASES: Final[frozenset[str]] = frozenset({"bughunt", "dogfood_smoke"})
 
 #: teatree capability name -> the ``claude_sdk`` built-in tool names that grant it.
 #: ``MultiEdit`` is deliberately absent from ``edit_file`` — it was removed from

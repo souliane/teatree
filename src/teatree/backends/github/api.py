@@ -21,7 +21,7 @@ import httpx
 
 from teatree.backends.forge_pool import client_for_url
 from teatree.types import RawAPIDict
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,24 @@ def _request_api(
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise CommandFailedError(list(args), 1, "", f"gh api: HTTP {exc.response.status_code}") from exc
+        details: list[str] = []
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            payload = None
+        for header, label in (
+            ("x-ratelimit-resource", "resource"),
+            ("x-ratelimit-remaining", "remaining"),
+            ("retry-after", "retry-after"),
+        ):
+            if value := exc.response.headers.get(header):
+                details.append(f"{label}={redact_secrets(value)[:50]}")
+        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
+            message = redact_secrets(" ".join(payload["message"].split()))
+            if message:
+                details.append(message[:200])
+        suffix = f": {' '.join(details)}" if details else ""
+        raise CommandFailedError(list(args), 1, "", f"gh api: HTTP {exc.response.status_code}{suffix}") from exc
     except httpx.RequestError as exc:
         raise CommandFailedError(list(args), 1, "", f"gh api: {type(exc).__name__}: {exc}") from exc
     return response
@@ -170,11 +187,12 @@ def is_not_found(exc: CommandFailedError) -> bool:
     """Whether a failed ``gh api`` call was a genuine HTTP 404.
 
     ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
-    with returncode 1, so the only reliable signal for a permanent "no such
-    resource" is the literal ``HTTP 404`` string in stderr. Everything else is
+    with returncode 1, so the first HTTP status in stderr identifies a permanent
+    "no such resource". Later response text may quote another status. Everything else is
     an indeterminate failure the caller must NOT swallow as an empty result.
     """
-    return "HTTP 404" in exc.stderr
+    match = re.search(r"\bHTTP ([1-5]\d\d)\b", exc.stderr)
+    return match is not None and match.group(1) == "404"
 
 
 def _gh_env(token: str) -> dict[str, str]:

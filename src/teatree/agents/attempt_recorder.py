@@ -53,7 +53,7 @@ from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.db_retry import wait_out_locked_writes
-from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OWNER_RAISABLE_DECISIONS, owner_decision
 from teatree.core.modelkit.owner_stop_misfits import MisfitAction, owner_stop_misfit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
@@ -160,7 +160,7 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     if "user_input_kind" not in result:
         return ""
     if (card := QuestionCard.from_envelope(result)) is None:
-        kinds = ", ".join(OwnerDecision)
+        kinds = ", ".join(OWNER_RAISABLE_DECISIONS)
         return owner_stop_refusal(
             f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
         )

@@ -12,14 +12,16 @@ def test_attended_join_and_codex_outbound_are_described() -> None:
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     blueprint = (_ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
     interactive = (_ROOT / "skills" / "interactive" / "SKILL.md").read_text(encoding="utf-8")
+    coordinating = (_ROOT / "skills" / "coordinating" / "SKILL.md").read_text(encoding="utf-8")
     for text in (readme, blueprint):
         assert "mcp serve --interactive" in text
         assert "dynamicTools" in text
         assert "accepted_inbox_read" in text
         assert "no live worker" in text
         assert "creation-time tool catalog" in text
-    assert "agent_mailbox_send" in interactive
-    assert "agent_mailbox_wait" in interactive
+    assert "mcp serve --interactive" in interactive
+    assert "agent_mailbox_send" in coordinating
+    assert "agent_mailbox_wait" in coordinating
     assert "queued_in_inbox true" in readme.replace("`", "")
     assert "same key retry keeps waiting" in readme
     assert "queued_in_inbox false" in readme.replace("`", "")

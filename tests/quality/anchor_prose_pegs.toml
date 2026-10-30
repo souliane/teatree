@@ -15,19 +15,19 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
+["A headless orchestrator may answer"]
+radius = 180
+"BLUEPRINT.md" = ["7edd1e39f0b3ea19"]
+
+["A headless orchestrator may answer".coverage]
+"BLUEPRINT.md" = 394
+
 ["Factory retries may re-attest interrupted writer files"]
 radius = 200
 "skills/interactive/SKILL.md" = ["ad14288911a30b86"]
 
 ["Factory retries may re-attest interrupted writer files".coverage]
 "skills/interactive/SKILL.md" = 454
-
-["Only an attended session may answer"]
-radius = 180
-"BLUEPRINT.md" = ["af1d47e0b793b3f8"]
-
-["Only an attended session may answer".coverage]
-"BLUEPRINT.md" = 395
 
 [TaskCreated]
 # 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md

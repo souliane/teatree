@@ -75,6 +75,13 @@ _ENVIRONMENTAL_ADDED = {
 
 
 class TestEveryKindHasAStrategy:
+    def test_missing_eval_measurement_has_a_stable_halt_kind(self) -> None:
+        error = "result_error: eval_measurement_absent: scenario count zero after child exit"
+        kind = classify_failure(error)
+        assert kind == FailureKind.UNCLASSIFIED
+        assert recovery_strategy(kind) is RecoveryStrategy.HALT
+        assert classify_failure("result_error: measured nothing: 0 of 2 scenarios graded") == kind
+
     def test_the_table_is_total_over_failure_kind(self) -> None:
         """Both directions: a new kind with no row is red, and so is a row for a deleted kind."""
         assert set(RECOVERY) == set(FailureKind)

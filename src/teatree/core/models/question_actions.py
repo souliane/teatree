@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING, Self
 from django.db import models
 
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.question_card import match_action_option
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, owner_kept_decision
+from teatree.core.modelkit.question_card import QuestionCard, match_action_option
+from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 
 if TYPE_CHECKING:
@@ -23,6 +25,15 @@ def is_action_question(row: "DeferredQuestion") -> bool:
 def owner_declined(row: "DeferredQuestion") -> bool:
     option = match_action_option(row.options_json, row.answer_text)
     return row.resolved_via == row.ResolvedVia.SLACK and option is not None and not option.recommended
+
+
+def dismiss_kept_for_owner(row: "DeferredQuestion", *, direct_owner: bool, dispatched: bool) -> bool:
+    if row.audience != row.Audience.OWNER_QUESTION or direct_owner or finished_subject_reason(row):
+        return False
+    if dispatched:
+        return True
+    card = QuestionCard.from_row(row.evidence, row.options_json)
+    return card is None or row.dedupe_marker.startswith(HELD_PR_MARKER_PREFIX) or owner_kept_decision(card.decision)
 
 
 def held_question(

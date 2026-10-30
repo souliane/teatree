@@ -54,7 +54,7 @@ class TestAskUserQuestionRoundtrip:
             "record",
             "Which env?",
             "--decision",
-            "product_scope",
+            "architecture",
             "--checked",
             "The ticket names no target environment.",
             "--why",

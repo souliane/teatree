@@ -46,6 +46,7 @@ from teatree.llm.credentials import Credential
 from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
+from teatree.loop.slack_answer.card_discussion import reset_card_discussion_senders
 from teatree.loops.slack_inbound import reset_dm_recorders
 from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
@@ -332,11 +333,13 @@ def _private_live_dir() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_live_harness_registries() -> Iterator[None]:
+    reset_card_discussion_senders()
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
     reset_executor_app_servers()
     yield
+    reset_card_discussion_senders()
     reset_shared_brokers()
     reset_shared_registries()
     reset_shared_codex_app_servers()
@@ -976,6 +979,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)
+    # A review or critic dispatch exports its phase; config-writing tests must not inherit that refusal.
+    monkeypatch.delenv("T3_CONFIG_WRITE_PHASE", raising=False)
     # Resolve test registry paths under the isolated HOME.
     monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh
