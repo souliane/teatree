@@ -1,6 +1,6 @@
 # TeaTree — Agent Instructions
 
-Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the seven always-on rules every agent follows, ranked by importance.
+Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the eight always-on rules every agent follows, ranked by importance.
 
 ## Code Quality Standard (applies to all reviews and implementations)
 
