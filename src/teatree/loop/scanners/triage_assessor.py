@@ -69,7 +69,7 @@ class TriageAssessorScanner:
         assignees = self._resolve_identities()
         cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE)
         if self.repo_slugs == () or (not assignees and self.repo_slugs is None):
-            return cadence.hold("no owned-repository or operator scope", kind="triage_assessor.held", retry=True)
+            return cadence.hold("no owned-repository or operator scope", kind="triage_assessor.held", retry=False)
         trigger, signals = cadence.gate(
             now=timezone.now(), held_kind="triage_assessor.held", not_due_kind="triage_assessor.not_due"
         )
@@ -81,7 +81,7 @@ class TriageAssessorScanner:
         if not survivors:
             if read_errors:
                 raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=[])
-            return cadence.hold("no unassessed needs-triage issues", kind="triage_assessor.held", retry=True)
+            return cadence.hold("no unassessed needs-triage issues", kind="triage_assessor.held", retry=False)
 
         task = cadence.queue_task(
             placeholder_issue_url=f"triage-assessor://{self.overlay_name}",

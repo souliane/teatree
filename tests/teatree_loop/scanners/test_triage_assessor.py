@@ -121,7 +121,9 @@ class TriageAssessorScanTests(TestCase):
 
     def test_no_needs_triage_issues_queues_nothing(self) -> None:
         host = _Host(issues=[_issue(self.URL, labels=["bug"])])
-        assert [signal.kind for signal in _scanner(host).scan()] == ["triage_assessor.held"]
+        signals = _scanner(host).scan()
+        assert [signal.kind for signal in signals] == ["triage_assessor.held"]
+        assert signals[0].payload["retry"] is False
         assert _last_task() is None
 
     def test_unassigned_owned_repo_issue_queues_assessment(self) -> None:
@@ -169,7 +171,9 @@ class TriageAssessorScanTests(TestCase):
 
     def test_explicit_empty_owned_repo_scope_queues_nothing(self) -> None:
         host = _Host(issues=[_issue(self.URL)])
-        assert [signal.kind for signal in _scanner(host, repo_slugs=()).scan()] == ["triage_assessor.held"]
+        signals = _scanner(host, repo_slugs=()).scan()
+        assert [signal.kind for signal in signals] == ["triage_assessor.held"]
+        assert signals[0].payload["retry"] is False
         assert _last_task() is None
 
     def test_labeled_issue_assigned_to_someone_else_is_assessed(self) -> None:
