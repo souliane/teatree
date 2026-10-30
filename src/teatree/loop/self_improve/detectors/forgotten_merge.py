@@ -57,12 +57,15 @@ def _critic_refusal_in_progress(clear: MergeClear, cutoff: dt.datetime) -> bool:
         return False
     if verdict.recorded_at > cutoff:
         return True
-    if Task.objects.filter(
-        ticket_id=clear.ticket_id,
-        phase__in=[*phase_spellings("coding"), *phase_spellings("debugging")],
-        status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
-        created_at__gt=verdict.recorded_at,
-    ).exists():
+    if (
+        Task.objects.filter(
+            ticket_id=clear.ticket_id,
+            phase__in=[*phase_spellings("coding"), *phase_spellings("debugging")],
+            created_at__gt=verdict.recorded_at,
+        )
+        .exclude(status=Task.Status.FAILED)
+        .exists()
+    ):
         return True
     return (
         DeferredQuestion.owner_pending()

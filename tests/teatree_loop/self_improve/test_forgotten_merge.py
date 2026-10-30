@@ -131,13 +131,33 @@ class ForgottenMergeDetectorTests(TestCase):
         fix_round.save(update_fields=["status"])
         assert len(_detector().detect()) == 1
 
-    def test_completed_coding_without_new_clear_does_not_suppress_stalled_merge(self) -> None:
-        _, ticket, verdict = self._critic_held_clear(209)
+    def test_a_non_failed_later_coding_or_debugging_task_keeps_old_refusal_held(self) -> None:
+        pr_id = 300
+        for phase in ("coding", "debugging"):
+            for status in (Task.Status.PENDING, Task.Status.CLAIMED, Task.Status.COMPLETED):
+                pr_id += 1
+                with self.subTest(phase=phase, status=status):
+                    _, ticket, verdict = self._critic_held_clear(pr_id)
+                    CriticVerdict.objects.filter(pk=verdict.pk).update(
+                        recorded_at=timezone.now() - dt.timedelta(hours=2)
+                    )
+                    task = Task.objects.create(
+                        ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase
+                    )
+                    Task.objects.filter(pk=task.pk).update(status=status)
+                    assert _detector().detect() == []
+
+    def test_a_task_older_than_the_refusal_does_not_hold_it(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(320)
         CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
-        coding = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="code")
-        assert _detector().detect() == []
-        coding.status = Task.Status.COMPLETED
-        coding.save(update_fields=["status"])
+        earlier = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.filter(pk=earlier.pk).update(created_at=timezone.now() - dt.timedelta(hours=3))
+        assert len(_detector().detect()) == 1
+
+    def test_a_non_coding_later_task_does_not_hold_the_refusal(self) -> None:
+        _, ticket, verdict = self._critic_held_clear(321)
+        CriticVerdict.objects.filter(pk=verdict.pk).update(recorded_at=timezone.now() - dt.timedelta(hours=2))
+        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
         assert len(_detector().detect()) == 1
 
     def test_fires_when_smell_present(self) -> None:
