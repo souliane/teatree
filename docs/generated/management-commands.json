@@ -950,6 +950,11 @@
       "subcommands": []
     },
     {
+      "help": "Preview or repair legacy self-improve planning wedges.",
+      "name": "repair_self_improve_wedges",
+      "subcommands": []
+    },
+    {
       "help": "Group root \u2014 forces sub-commands to be addressed by name.",
       "name": "repro",
       "subcommands": [

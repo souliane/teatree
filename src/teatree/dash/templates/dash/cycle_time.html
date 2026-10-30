@@ -68,6 +68,7 @@
     <h2>Pull requests: start to merged</h2>
     <p class="muted">From first admission to merge, falling back to the first transition or pull request creation; open pull requests continue to age.</p>
     <p>Median of {{ view.pr_merged_count }} merged pull requests: <strong>{{ view.pr_median }}</strong></p>
+    <p>Wait between consecutive ticket phases ({{ view.phase_gap_count }} measured): median <strong>{{ view.phase_gap_median }}</strong>, longest <strong>{{ view.phase_gap_max }}</strong>.</p>
     {% if view.open_prs %}
       <table class="dash">
         <thead><tr><th>open pull request</th><th class="num">age</th></tr></thead>

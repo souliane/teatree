@@ -56,6 +56,15 @@ def hours_since(earlier: dt.datetime, *, now: dt.datetime) -> float:
     return (now - earlier).total_seconds() / 3600.0
 
 
+def recent_iso_stamp(value: object, *, now: dt.datetime, window: dt.timedelta) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return dt.datetime.fromisoformat(value) > now - window
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_identities(host: "CodeHostBackend", identities: Sequence[str]) -> tuple[str, ...]:
     """The forge handles a scan queries: the configured aliases verbatim, else the host's current user.
 

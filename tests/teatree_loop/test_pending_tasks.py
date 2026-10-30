@@ -1,11 +1,15 @@
 """Integration test for ``PendingTasksScanner`` against the real Task model."""
 
+from datetime import timedelta
+
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
+from tests.factories import PullRequestFactory
 
 
 class PendingTasksScannerTests(TestCase):
@@ -33,6 +37,22 @@ class PendingTasksScannerTests(TestCase):
             Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
         signals = PendingTasksScanner(limit=2).scan()
         assert len(signals) == 2
+
+    def test_parked_started_pull_request_is_visible_before_unstarted_work(self) -> None:
+        unstarted = self._ticket("https://example.com/issues/20")
+        Task.objects.create(ticket=unstarted, session=self._session(unstarted), phase="coding")
+        started = self._ticket("https://example.com/issues/21")
+        parked = Task.objects.create(
+            ticket=started,
+            session=self._session(started),
+            phase="coding",
+            not_before=timezone.now() + timedelta(days=1),
+        )
+        PullRequestFactory(ticket=started, state="open")
+
+        signals = PendingTasksScanner(limit=1).scan()
+
+        assert [signal.payload["task_id"] for signal in signals] == [parked.pk]
 
     def test_summary_uses_human_subject_not_bare_phase(self) -> None:
         ticket = self._ticket("https://example.com/issues/3")

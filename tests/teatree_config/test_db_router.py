@@ -39,7 +39,7 @@ from teatree.utils.master_key import KeyFileSource
 from teatree.utils.secrets import SecretStoreError
 from tests.db_alias import register_sqlite_alias, teardown_sqlite_alias
 
-_KEY = "provision_ram_ceiling_percent"
+_KEY = "provision_slow_threshold_seconds"
 _SCOPE = "example-overlay"
 _VALUE = 96
 _ROUTER_PATH = "teatree.config.db_router.ConfigSettingRouter"

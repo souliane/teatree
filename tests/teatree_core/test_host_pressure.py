@@ -19,11 +19,6 @@ from teatree.utils import host_pressure, ram_probe, ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 
 
-@pytest.fixture(autouse=True)
-def _pin_absent_cpu_quota(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: None)
-
-
 def _write_feed(
     tmp_path: Path,
     *,
@@ -69,6 +64,7 @@ def _quota() -> QuotaSignal:
 
 def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+    monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 10)
     _write_feed(tmp_path, epoch=int(time.time()), swap_mib_per_s=12.5, vm_pressure_level=2)
     machine = read_machine_signal()
     assert machine.cores == 10
@@ -78,29 +74,37 @@ def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp
     assert machine.vm_pressure_level == 2
 
 
+def test_unrepresentable_host_memory_is_rejected_before_governor_conversion(tmp_path: Path) -> None:
+    _write_feed(tmp_path, epoch=int(time.time()), ram_available_mib=10**400)
+    path = tmp_path / "host-pressure.json"
+    assert host_pressure.feed_fault(path=path) == "feed malformed"
+    assert host_pressure.read_host_pressure(path=path) is None
+
+
 class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
-    """The core count the feed reports is what the configured per-core factor multiplies."""
+    """Admission uses the worker's usable cores without changing host load scope."""
 
     def setUp(self) -> None:
         self.feed_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.dict(os.environ, {"T3_LOOP_REGISTRY_DIR": str(self.feed_dir)}))
         uncapped = RamHeadroom(available_mib=None, cgroup_limit_mib=None, host_available_mib=None)
         self.enterContext(patch.object(ram_scope, "read_ram_headroom", return_value=uncapped))
+        self.enterContext(patch.object(ram_probe, "available_cpu_count", return_value=10))
         _write_feed(self.feed_dir, epoch=int(time.time()))
 
     def test_an_eight_core_host_without_a_cpu_quota_keeps_four_agent_slots(self) -> None:
         feed = json.loads((self.feed_dir / "host-pressure.json").read_text(encoding="utf-8"))
         feed["cores"] = 8
         (self.feed_dir / "host-pressure.json").write_text(json.dumps(feed), encoding="utf-8")
-        with patch.object(ram_probe, "cgroup_cpu_quota", return_value=None):
-            machine = read_machine_signal()
+        machine = read_machine_signal()
         assert machine.cores == 8
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 4
 
-    def test_a_cgroup_cpu_quota_caps_the_host_ceiling(self) -> None:
-        with patch.object(ram_probe, "cgroup_cpu_quota", return_value=3):
+    def test_cpu_affinity_or_quota_caps_the_host_ceiling_without_changing_load_scope(self) -> None:
+        with patch.object(ram_probe, "available_cpu_count", return_value=2):
             machine = read_machine_signal()
-        assert machine.cores == 3
+        assert machine.cores == 2
+        assert machine.load_cores == 10
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 1
 
 
@@ -148,7 +152,7 @@ def test_stale_host_reading_warns_and_falls_back(monkeypatch: pytest.MonkeyPatch
     with caplog.at_level(logging.WARNING):
         machine = read_machine_signal()
     assert machine.load1 != pytest.approx(109.45)
-    assert "host pressure feed" in caplog.text
+    assert "host pressure feed" not in caplog.text
 
 
 def test_worker_feed_path_override_reads_fresh_host_signal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -178,15 +182,13 @@ def test_worker_feed_path_override_falls_back_when_absent_or_stale(
     assert read_machine_signal().load1 == pytest.approx(0.25)
 
 
-def test_missing_feed_warning_memo_can_be_reset(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_missing_feed_is_a_silent_reader_fallback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     missing = tmp_path / "host-pressure.json"
     with caplog.at_level(logging.WARNING):
         assert host_pressure.read_host_pressure(path=missing) is None
         assert host_pressure.read_host_pressure(path=missing) is None
-        assert caplog.text.count("host pressure feed missing") == 1
-        host_pressure.reset_missing_warning_memo()
         assert host_pressure.read_host_pressure(path=missing) is None
-    assert caplog.text.count("host pressure feed missing") == 2
+    assert "host pressure feed" not in caplog.text
 
 
 def test_host_load_is_judged_against_host_cores_not_the_container_quota(
@@ -196,7 +198,7 @@ def test_host_load_is_judged_against_host_cores_not_the_container_quota(
     # 3-core cgroup's watermark.
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     _write_feed(tmp_path, epoch=int(time.time()), load1=12.0, ram_available_mib=12 * 1024, swap_used_mib=0)
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: 3)
+    monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 3)
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()
     decision = decide_admission(quota=_quota(), machine=machine, load_brake=MachineBrake(braked=True))
@@ -221,3 +223,28 @@ def test_fresh_host_memory_keeps_worker_cgroup_floor(monkeypatch: pytest.MonkeyP
     assert machine.memory_cap_gb == pytest.approx(8.0)
     assert not decision.admit
     assert "GB" in decision.reason
+    assert decision.reason.endswith("(container reading)")
+
+
+def test_host_load_refusal_names_the_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+    _write_feed(tmp_path, epoch=int(time.time()), load1=30.0, ram_available_mib=12 * 1024)
+    _stub_uncapped(monkeypatch)
+
+    decision = decide_admission(quota=_quota(), machine=read_machine_signal())
+
+    assert not decision.admit
+    assert decision.cause == "load"
+    assert decision.reason.endswith("(host feed)")
+
+
+def test_fallback_load_refusal_names_the_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+    monkeypatch.setattr(admission_governor.machine_load, "read_load_and_cores", lambda: (30.0, 10))
+    _stub_uncapped(monkeypatch)
+
+    decision = decide_admission(quota=_quota(), machine=read_machine_signal())
+
+    assert not decision.admit
+    assert decision.cause == "load"
+    assert decision.reason.endswith("(container reading)")

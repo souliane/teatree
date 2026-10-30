@@ -241,7 +241,7 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         assert drain_queue_body()["enqueued"] == [older.pk]
         assert not self._admitted(newer)
 
-    def test_expedited_unstarted_ticket_keeps_its_priority(self) -> None:
+    def test_started_pull_request_precedes_expedited_unstarted_ticket(self) -> None:
         self._fill_coding_lane()
         started_ticket = Ticket.objects.create()
         started = self._task("coding", ticket=started_ticket)
@@ -250,8 +250,8 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         )
         expedited = self._task("planning", ticket=Ticket.objects.create(expedited=True))
 
-        assert drain_queue_body()["enqueued"] == [expedited.pk]
-        assert not self._admitted(started)
+        assert drain_queue_body()["enqueued"] == [started.pk]
+        assert not self._admitted(expedited)
 
     def test_started_review_precedes_pr_less_review_at_the_same_score(self) -> None:
         self._task("reviewing", status=Task.Status.CLAIMED)

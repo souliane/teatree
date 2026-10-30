@@ -5,11 +5,13 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from teatree.utils.host_pressure import read_host_pressure
+from teatree.utils.ram_probe import host_available_ram_mib
 
 ROOT = Path(__file__).resolve().parents[2]
 PUBLISHER = Path(router.__file__).parent / "host-pressure-publish.zsh"
@@ -48,6 +50,8 @@ esac""",
                 "print -r -- 'Mach Virtual Memory Statistics: (page size of 16384 bytes)'",
                 "print -r -- 'Pages free: 25000.'",
                 "print -r -- 'Pages inactive: 5272.'",
+                "print -r -- 'Pages purgeable: 1024.'",
+                "print -r -- 'Pages speculative: 512.'",
                 f'print -r -- "Swapins: $(/bin/cat {state}/swapins)."',
                 f'print -r -- "Swapouts: $(/bin/cat {state}/swapouts)."',
             )
@@ -78,7 +82,7 @@ def test_publisher_refreshes_host_feed_after_idle_minute(tmp_path: Path) -> None
         "epoch": 1061,
         "cores": 10,
         "load1": 109.45,
-        "ram_available_mib": 473,
+        "ram_available_mib": 497,
         "swap_used_mib": 1660,
         "swap_total_mib": 3072,
         "swap_pages": 150,
@@ -88,6 +92,16 @@ def test_publisher_refreshes_host_feed_after_idle_minute(tmp_path: Path) -> None
         tmp_path / "data" / "host-pressure.json"
     ).read_text()
     assert read_host_pressure(path=tmp_path / "data" / "host-pressure.json", now=1061) is not None
+
+
+def test_publisher_and_probe_agree_on_one_vm_stat_sample(tmp_path: Path) -> None:
+    env, _ = _publisher_env(tmp_path)
+    published = _publish(env, tmp_path)
+    with (
+        patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
+        patch("shutil.which", return_value=str(tmp_path / "bin" / "vm_stat")),
+    ):
+        assert host_available_ram_mib() == published["ram_available_mib"] == 497
 
 
 def test_publisher_reports_swap_activity_between_consecutive_samples(tmp_path: Path) -> None:

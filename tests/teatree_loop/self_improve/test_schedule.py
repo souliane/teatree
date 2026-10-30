@@ -11,6 +11,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission_pressure import MachineSignal
 from teatree.core.models import SelfImproveFiring
 from teatree.loop.self_improve import (
     ActionRung,
@@ -373,7 +374,10 @@ class TheSpawnCapTripsOnRealFirings(TestCase):
 
     def _run_with_ample_ram(self) -> object:
         with (
-            patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=10.0),
+            patch(
+                "teatree.loop.self_improve.budget._read_machine_signal",
+                return_value=MachineSignal(cores=8, load1=1.0, ram_available_gb=8.0),
+            ),
             patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10.0),
         ):
             return run_tier(Tier.CHEAP, detectors=[_StubDetector()])

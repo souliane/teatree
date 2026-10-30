@@ -480,6 +480,10 @@ Score the factory against the committed recipe, and pin an approved recipe sha.
 
 Report (and optionally recover) work stranded by an outage.
 
+## `repair_self_improve_wedges`
+
+Preview or repair legacy self-improve planning wedges.
+
 ## `repro`
 
 Group root — forces sub-commands to be addressed by name.

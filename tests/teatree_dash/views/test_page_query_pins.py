@@ -75,13 +75,13 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: The lifecycle board counts every column in one grouped read before fetching pages: +1, O(1), flat at both.
 #: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
 MERGE_READ_QUERIES = 9
-#: The cycle-time page reads merged and open pull-request flow once each: +2, O(1), flat at both.
+#: The cycle-time page reads merged and open pull-request flow plus phase gaps: +3, O(1), flat at both.
 #: A signed-in request reads its session and user once each, independent of page population.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 13,
     "dash:board_lifecycle": 17,
     "dash:board_columns": 14,
-    "dash:cycle_time": 15,
+    "dash:cycle_time": 16,
     "dash:health": 25,
     "dash:health_bands": 25,
     "dash:live": 22,

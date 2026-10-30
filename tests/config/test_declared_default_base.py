@@ -41,11 +41,11 @@ from teatree.config.resolution import AUTONOMY_COLLAPSED_FIELDS, _coerce_setting
 from teatree.config.settings import UserSettings
 from teatree.core.models import ConfigSetting
 
-# Two scalars whose declared defaults (75 / 1) the fixture diverges from, plus a
+# Two scalars whose declared defaults (600 / 1) the fixture diverges from, plus a
 # structured sub-table — the shapes the resolver treats differently.
 _DIVERGING_FIXTURE = """\
 [teatree]
-provision_ram_ceiling_percent = 42
+provision_slow_threshold_seconds = 42
 merge_wip = 7
 
 [teatree.speak]
@@ -68,11 +68,13 @@ class TestTheShippedFileIsNotATier(TestCase):
         assert ConfigSetting.objects.count() == 0
         assert (
             tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"][
-                "provision_ram_ceiling_percent"
+                "provision_slow_threshold_seconds"
             ]
             == 42
         )
-        assert get_effective_settings().provision_ram_ceiling_percent == UserSettings().provision_ram_ceiling_percent
+        assert (
+            get_effective_settings().provision_slow_threshold_seconds == UserSettings().provision_slow_threshold_seconds
+        )
 
     def test_a_diverging_sub_table_leaves_the_declared_default_in_force(self) -> None:
         assert (
@@ -83,8 +85,8 @@ class TestTheShippedFileIsNotATier(TestCase):
     def test_a_db_row_still_wins_over_the_declared_default(self) -> None:
         # The control: the resolver is not inert — a real override still moves the value,
         # so the no-move assertions above measure the file and not a dead resolver.
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 60)
-        assert get_effective_settings().provision_ram_ceiling_percent == 60
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 60)
+        assert get_effective_settings().provision_slow_threshold_seconds == 60
 
     def test_effective_default_reads_the_declaration_not_the_file(self) -> None:
         # The seed-skip / import-skip authority agrees with the resolver, so a row equal

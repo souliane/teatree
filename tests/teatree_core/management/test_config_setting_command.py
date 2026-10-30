@@ -870,11 +870,11 @@ class TestConfigSettingSeed(TestCase):
         return out.getvalue()
 
     def test_seed_below_default_creates_row(self) -> None:
-        # provision_ram_ceiling_percent ships 75; 65 differs, so it seeds.
-        text = self._seed("provision_ram_ceiling_percent", "65")
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 65
+        # The shipped 600-second default differs from 65, so it seeds.
+        text = self._seed("provision_slow_threshold_seconds", "65")
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 65
         assert "created" in text
-        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        row = ConfigSetting.objects.get(key="provision_slow_threshold_seconds")
         assert row.seeded_by == "entrypoint"
         assert row.seed_value == 65
 
@@ -885,11 +885,11 @@ class TestConfigSettingSeed(TestCase):
         assert "skipped-equals-default" in text
 
     def test_seed_preserves_operator_override(self) -> None:
-        # 65 differs from the shipped 75, so the seed WOULD write — the override is what
+        # 65 differs from the shipped 600, so the seed WOULD write — the override is what
         # stops it, not the equals-default skip.
-        call_command("config_setting", "set", "provision_ram_ceiling_percent", "90")
-        self._seed("provision_ram_ceiling_percent", "65")
-        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+        call_command("config_setting", "set", "provision_slow_threshold_seconds", "90")
+        self._seed("provision_slow_threshold_seconds", "65")
+        assert ConfigSetting.objects.get_effective("provision_slow_threshold_seconds") == 90
 
     def test_seed_refuses_unknown_key(self) -> None:
         with pytest.raises(SystemExit):
@@ -897,7 +897,7 @@ class TestConfigSettingSeed(TestCase):
 
     def test_seed_refuses_invalid_json(self) -> None:
         with pytest.raises(SystemExit):
-            call_command("config_setting", "seed", "provision_ram_ceiling_percent", "not-json")
+            call_command("config_setting", "seed", "provision_slow_threshold_seconds", "not-json")
 
     def test_seed_refuses_an_overlay_scope_its_reader_never_reads(self) -> None:
         stderr = StringIO()

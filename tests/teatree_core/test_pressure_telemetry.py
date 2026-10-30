@@ -419,6 +419,13 @@ def test_admission_reason_allowlist_fails_closed_on_new_free_text() -> None:
     assert _safe_admission_reason("load 10 at/over the 50 watermark on 10 core(s); secret=abc") == "unknown"
 
 
+@pytest.mark.parametrize("source", ["host feed", "container reading"])
+def test_machine_reason_allowlist_keeps_the_deciding_reading(source: str) -> None:
+    reason = f"host paging 9.6 MiB/s at/over the 8 MiB/s watermark ({source})"
+    assert _safe_admission_reason(reason) == reason
+    assert _safe_admission_reason(reason + " secret=abc") == "unknown"
+
+
 def test_metered_reason_allowlist_accepts_reset_time_but_rejects_extra_text() -> None:
     reason = (
         "the metered lane is parked on a rate_limit window until 2026-09-25T12:34:56.123456+00:00 "

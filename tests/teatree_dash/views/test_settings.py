@@ -676,16 +676,16 @@ class TestShippedDefaultColumn(TestCase):
         assert "differs from default" in row
 
     def test_an_override_renders_the_differing_verdict(self) -> None:
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        body = self._body("provision_ram_ceiling_percent")
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 42)
+        body = self._body("provision_slow_threshold_seconds")
         assert "differs from default" in body
         assert "default-differs" in body
 
     def test_the_verdict_is_never_colour_alone(self) -> None:
         # Each coloured span carries a text icon AND its own words, so the verdict survives
         # greyscale, colour blindness, and a screen reader.
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        body = self._body("provision_ram_ceiling_percent")
+        ConfigSetting.objects.set_value("provision_slow_threshold_seconds", 42)
+        body = self._body("provision_slow_threshold_seconds")
         for css_class, icon, words in (
             ("default-match", "&#10003;", "same as default"),
             ("default-differs", "&#9679;", "differs from default"),
