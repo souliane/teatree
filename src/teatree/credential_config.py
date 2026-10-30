@@ -86,10 +86,6 @@ LIST_SETTING: dict[TokenKind, str] = {
     TokenKind.OAUTH: "anthropic_oauth_pass_paths",
     TokenKind.API_KEY: "anthropic_api_key_pass_paths",
 }
-_CREDENTIAL_CLASS: dict[TokenKind, type[Credential]] = {
-    TokenKind.OAUTH: AnthropicSubscriptionCredential,
-    TokenKind.API_KEY: AnthropicApiKeyCredential,
-}
 
 
 class AllTokensExhaustedError(CredentialError):

@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review.review_candidate import should_review_candidate_reasons
 from teatree.core.review.stranger_pr import pr_is_admitted
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, resolve_identities
 from teatree.loop.scanners.pr_payload import head_sha
-from teatree.loop.url_specificity import best_url_match_specificity
+from teatree.loop.url_specificity import url_claimed
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -280,7 +280,7 @@ class ReviewerPrsScanner:
     name: str = "reviewer_prs"
 
     def scan(self) -> list[ScanSignal]:
-        reviewers = self._resolve_identities()
+        reviewers = resolve_identities(self.host, self.identities)
         if not reviewers:
             return []
         primary_reviewer = reviewers[0]
@@ -432,23 +432,8 @@ class ReviewerPrsScanner:
             _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
         return signals
 
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
-
     def _url_allowed(self, url: str) -> bool:
-        """Same per-overlay URL-prefix gate as ``MyPrsScanner._url_allowed`` (#1015, #1324)."""
-        if not self.allowed_url_prefixes:
-            return True
-        if not url:
-            return False
-        own = best_url_match_specificity(url, self.allowed_url_prefixes)
-        if own == 0:
-            return False
-        competing = best_url_match_specificity(url, self.competing_url_prefixes)
-        return competing <= own
+        return url_claimed(url, self.allowed_url_prefixes, self.competing_url_prefixes)
 
     def _collect_unique_prs(self, reviewers: tuple[str, ...]) -> list[RawAPIDict]:
         """Union review-requested PRs across *reviewers*, deduped by URL."""

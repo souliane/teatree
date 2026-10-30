@@ -44,18 +44,6 @@ class ActionRung:
     AUTO_FIX: str = "auto_fix"
 
 
-# Drift guard: `test_ladder_constants_match_model_choices` asserts every
-# ActionRung value is a SelfImproveFiring.Action choice, so a future rung
-# rename cannot diverge silently from the DB choice value.
-_RUNG_CHOICES = {
-    ActionRung.LOG: SelfImproveFiring.Action.LOG,
-    ActionRung.STATUSLINE: SelfImproveFiring.Action.STATUSLINE,
-    ActionRung.SLACK: SelfImproveFiring.Action.SLACK,
-    ActionRung.TICKET: SelfImproveFiring.Action.TICKET,
-    ActionRung.AUTO_FIX: SelfImproveFiring.Action.AUTO_FIX,
-}
-
-
 @dataclass(frozen=True, slots=True)
 class DetectorReport:
     """One detector observation, fully self-described.

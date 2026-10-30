@@ -14,6 +14,7 @@ skills:
   - workspace
   - platforms
   - answerer
+  - coordinating
 ---
 
 # Answerer Agent

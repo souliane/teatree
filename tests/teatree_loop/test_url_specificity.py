@@ -10,7 +10,14 @@ The score stays ``len(head) + len(tail)`` at any nesting depth, so
 cross-overlay attribution ties are decided exactly as before.
 """
 
-from teatree.loop.url_specificity import best_url_match_specificity, url_match_specificity, url_matches_prefix
+import pytest
+
+from teatree.loop.url_specificity import (
+    best_url_match_specificity,
+    url_claimed,
+    url_match_specificity,
+    url_matches_prefix,
+)
 
 _HOST = "https://gitlab.com"
 _WILDCARD_PRODUCT = f"{_HOST}/*/product/"
@@ -67,3 +74,9 @@ class TestWildcardBoundaryStaysStrict:
 
     def test_different_host_does_not_match(self) -> None:
         assert url_match_specificity("https://github.com/acme/sub-group/product/pull/1", _WILDCARD_PRODUCT) == 0
+
+
+class TestUrlClaimedTieGoesToTheOwnOverlay:
+    @pytest.mark.parametrize("prefix", [f"{_HOST}/some-namespace/product/", _WILDCARD_PRODUCT])
+    def test_a_competing_prefix_identical_to_ours_is_no_more_specific(self, prefix: str) -> None:
+        assert url_claimed(_FLAT_MR, (prefix,), (prefix,)) is True
