@@ -85,23 +85,12 @@ def _box(
     )
 
 
-def _no_service(label: str) -> PeerSnapshot:
-    """A box with no teatree serving on it: the forward carried the request, the far end 404'd."""
+def _needs_import(label: str) -> PeerSnapshot:
     return PeerSnapshot(
         label=label,
         url=f"http://127.0.0.1/{label}/dash/settings/snapshot.json",
         note="the private VPS",
-        error="HTTPStatusError: Client error '404 Not Found' for url 'http://127.0.0.1/x'",
-    )
-
-
-def _forward_down(label: str) -> PeerSnapshot:
-    return PeerSnapshot(
-        label=label,
-        url=f"http://127.0.0.1/{label}",
-        note="",
-        error="ConnectError",
-        tunnel_command=f"t3 peer up {label}",
+        error="import a saved snapshot to compare",
     )
 
 
@@ -123,7 +112,7 @@ def three_legs() -> tuple[PeerSnapshot, tuple[PeerSnapshot, ...]]:
     """Two boxes that answer and one that never can — a fleet where a peer serves no dashboard."""
     local = _box("this instance", {"": {"merge_wip": 3}}, settings_key_count="287")
     peers = (
-        _no_service("no-teatree-box"),
+        _needs_import("no-teatree-box"),
         _box("peer-box", {"": {"merge_wip": 1, "autonomy": "notify"}}, settings_key_count="277"),
     )
     return local, peers
@@ -134,20 +123,14 @@ class TestEveryConfiguredInstanceIsAccountedFor:
         out = _flat(_run(*three_legs).stderr)
         assert "no-teatree-box" in out
         assert "no answer" in out
-        assert "404 Not Found" in out
+        assert "import a saved snapshot" in out
 
     def test_a_box_that_cannot_answer_is_not_an_error(self, three_legs: Any) -> None:
         assert _run(*three_legs).exit_code == 0
 
-    def test_a_far_end_that_answered_is_not_told_to_open_a_tunnel(self, three_legs: Any) -> None:
+    def test_a_configured_peer_names_the_import_option(self, three_legs: Any) -> None:
         out = _flat(_run(*three_legs).stderr)
-        assert "t3 peer up no-teatree-box" not in out
-        assert "no tunnel this side opens changes it" in out
-
-    def test_a_forward_that_never_carried_the_request_is_told_how_to_open_it(self) -> None:
-        local = _box("this instance", {"": {"merge_wip": 3}})
-        result = _run(local, (_forward_down("box-b"), _box("box-c", {"": {"merge_wip": 1}})))
-        assert "t3 peer up box-b" in _flat(result.stderr)
+        assert "--snapshot <file>" in out
 
     def test_the_caveat_is_repeated_over_the_rows_it_qualifies(self, three_legs: Any) -> None:
         assert "No reading below is from no-teatree-box." in _flat(_run(*three_legs).stderr)
@@ -200,11 +183,11 @@ class TestDifferencesAreScannableWithoutABrowser:
 
 class TestNothingToCompare:
     def test_one_answering_instance_exits_non_zero(self) -> None:
-        result = _run(_box("this instance", {"": {"merge_wip": 3}}), (_no_service("no-teatree-box"),))
+        result = _run(_box("this instance", {"": {"merge_wip": 3}}), (_needs_import("no-teatree-box"),))
         assert result.exit_code == 1
 
     def test_the_peers_are_still_named_when_there_is_nothing_to_compare(self) -> None:
-        out = _flat(_run(_box("this instance", {"": {"merge_wip": 3}}), (_no_service("no-teatree-box"),)).stderr)
+        out = _flat(_run(_box("this instance", {"": {"merge_wip": 3}}), (_needs_import("no-teatree-box"),)).stderr)
         assert "no-teatree-box" in out
         assert "no reachable peer to compare against" in out
 
@@ -220,7 +203,7 @@ class TestTheJsonViewSummarisesNothingAway:
     def test_the_instance_that_did_not_answer_carries_its_reason(self, three_legs: Any) -> None:
         unserved = next(one for one in self._payload(three_legs)["instances"] if one["label"] == "no-teatree-box")
         assert unserved["answered"] is False
-        assert "404" in unserved["error"]
+        assert unserved["error"] == "import a saved snapshot to compare"
 
     def test_the_verdict_is_machine_readable(self, three_legs: Any) -> None:
         payload = self._payload(three_legs)
@@ -233,14 +216,3 @@ class TestTheJsonViewSummarisesNothingAway:
             ("this instance", 3),
             ("peer-box", 1),
         ]
-
-
-class TestTheWaitIsTheOperatorsToChoose:
-    def test_timeout_reaches_the_peer_fetch(self) -> None:
-        local = _box("this instance", {"": {"merge_wip": 3}})
-        with (
-            patch("teatree.core.settings.settings_compare.local_snapshot", return_value=local),
-            patch("teatree.core.settings.settings_compare.peer_snapshots", return_value=()) as peers,
-        ):
-            runner.invoke(app, ["settings", "compare", "--timeout", "30"], env={"COLUMNS": "110"})
-        assert peers.call_args.args == (30.0,)

@@ -10,6 +10,7 @@ import io
 import json
 from collections.abc import Iterator
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
@@ -85,6 +86,8 @@ class TestNoCommandTextSaysDeferred(TestCase):
 
 class TestNoPageSaysDeferred(TestCase):
     def test_the_loops_page_describes_the_dispatch_loop_with_owner_questions(self) -> None:
+        user = get_user_model().objects.create_superuser(username="wording", email="", password=None)
+        self.client.force_login(user)
         seed_default_loops_and_prompts()
 
         body = self.client.get(reverse("dash:loops_table")).content.decode()

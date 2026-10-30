@@ -323,6 +323,8 @@ depends_on = [
   # the readiness probe's boot-time GET reuses the shared bounded-retry
   # transport rather than carrying a second, uncapped retry loop.
   "teatree.backends.http_retry",
+  # Operator OAuth shares the forge connection pool with GitHub/GitLab API clients.
+  "teatree.backends.forge_pool",
   # #2385: the admission leaves are their own node, so the governor reaches the
   # metered ledger through a DECLARED edge rather than a function-scoped import
   # tach's acyclic guard cannot see.
@@ -330,6 +332,8 @@ depends_on = [
   "teatree.core.admission_pressure",
   "teatree.core.modelkit",
   "teatree.core.owner_question_message",
+  "teatree.core.owner_dm.question_ticket",
+  "teatree.core.notify_targets",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
   "teatree.core.models",
@@ -909,6 +913,7 @@ path = "teatree.loop.question_binding"
 layer = "domain"
 depends_on = [
   "teatree.core.models",
+  "teatree.core.notify_targets",
   "teatree.core.owner_question_message",
   "teatree.loop.inbound_reading",
   "teatree.loop.owner_identity"
@@ -921,7 +926,17 @@ depends_on = [
 # rather than inheriting orchestration from its package, mirroring teatree.loop.question_binding.
 path = "teatree.loop.owner_identity"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.types"]
+depends_on = ["teatree.core.models", "teatree.core.notify_targets", "teatree.types"]
+
+[[modules]]
+path = "teatree.core.notify_targets"
+layer = "domain"
+depends_on = ["teatree.config", "teatree.core.models", "teatree.core.owner_dm.question_ticket", "teatree.types"]
+
+[[modules]]
+path = "teatree.core.owner_dm.question_ticket"
+layer = "domain"
+depends_on = ["teatree.core.models"]
 
 [[modules]]
 # The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf

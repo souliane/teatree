@@ -17,7 +17,6 @@ claim then rather than widening the allowlist.
 import ast
 from pathlib import Path
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models.merge_clear import MergeClear
@@ -25,6 +24,7 @@ from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.ticket import Ticket
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
 from tests.factories import TicketFactory, record_test_plan
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _DASH = Path(__file__).resolve().parents[2] / "src/teatree/dash"
 

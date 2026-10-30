@@ -14,7 +14,6 @@ from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.loop_control import GATE_CONFIRM_PHRASE, MODE_SWITCH_AUTO, LoopControlView, build_loop_control
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, is_htmx, nav_context
 from teatree.loops.loop_cadence_editing import CadenceEditError, set_loop_cadence
 
@@ -49,7 +48,6 @@ def _loops_context() -> LoopsContext:
     }
 
 
-@require_loopback_or_staff
 @require_GET
 def loops(request: "HttpRequest") -> "HttpResponse":
     """Full loop-control page — every loop's effective verdict + the header controls."""
@@ -57,14 +55,12 @@ def loops(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/loops.html", context)
 
 
-@require_loopback_or_staff
 @require_GET
 def loops_table_partial(request: "HttpRequest") -> "HttpResponse":
     """The loop table fragment — the target of the htmx poll."""
     return render(request, "dash/partials/_loops_table.html", _loops_context())
 
 
-@require_loopback_or_staff
 @require_POST
 def mode_switch(request: "HttpRequest") -> "HttpResponse":
     """POST a mode switch through the mode-override chokepoint (#61, #3826).
@@ -86,7 +82,6 @@ def mode_switch(request: "HttpRequest") -> "HttpResponse":
     return _answer(request)
 
 
-@require_loopback_or_staff
 @require_POST
 def gate_toggle(request: "HttpRequest") -> "HttpResponse":
     """POST the ``danger_gate_fail_open`` master switch, gated behind a typed confirm.
@@ -104,7 +99,6 @@ def gate_toggle(request: "HttpRequest") -> "HttpResponse":
     return _answer(request)
 
 
-@require_loopback_or_staff
 @require_POST
 def loop_cadence(request: "HttpRequest") -> "HttpResponse":
     """POST a loop's cadence — an interval XOR a wall-clock time, via the validated seam.

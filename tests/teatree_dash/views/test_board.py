@@ -13,7 +13,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth import get_user_model
 from django.template.loader import render_to_string
-from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -24,6 +23,7 @@ from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.dash.pr_board import PrBoard, PrBoardCard, PrBoardGroup
 from teatree.dash.selectors import BOARD_COLUMNS
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 
@@ -481,24 +481,24 @@ class BoardPollUrlEncodingTestCase(TestCase):
 
 
 class BoardAccessGateTestCase(TestCase):
-    """DASH-2: the board page + its poll partial carry the same loopback gate.
-
-    An off-loopback anonymous GET is refused with 403, exactly like every other dash view.
-    """
+    """The board and its poll partials require an operator session."""
 
     def test_off_loopback_anonymous_board_page_is_refused(self) -> None:
+        self.client.logout()
         resp = self.client.get(reverse("dash:board"), REMOTE_ADDR=_NON_LOOPBACK)
-        assert resp.status_code == 403
+        assert resp.status_code == 302
 
     def test_off_loopback_anonymous_columns_poll_is_refused(self) -> None:
+        self.client.logout()
         resp = self.client.get(reverse("dash:board_columns"), REMOTE_ADDR=_NON_LOOPBACK)
-        assert resp.status_code == 403
+        assert resp.status_code == 302
 
     def test_off_loopback_anonymous_pr_poll_and_lifecycle_are_refused(self) -> None:
+        self.client.logout()
         for route in ("dash:board_prs", "dash:board_lifecycle"):
             with self.subTest(route=route):
                 response = self.client.get(reverse(route), REMOTE_ADDR=_NON_LOOPBACK)
-                assert response.status_code == 403
+                assert response.status_code == 302
 
     def test_loopback_board_page_still_serves(self) -> None:
         # 127.0.0.1 is the default test-client REMOTE_ADDR — the loopback bind the deploy relies on.

@@ -7,13 +7,13 @@ propagate and blank the whole ``/dash/health/`` page.
 
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage
 from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import gate_state, health_bands
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class PerBandFailOpenTestCase(TestCase):

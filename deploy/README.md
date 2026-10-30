@@ -241,7 +241,7 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
-| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; [optional public access](#opening-and-withdrawing-the-public-webhook-endpoint-optional); `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; [optional public access](#opening-and-withdrawing-the-public-webhook-endpoint-optional); `DEBUG` off, no admin, no session or login middleware; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs the read-only phases (planning, review, critic, scoping, triage assessment, directive interpretation, answering, review-request, shipping readiness); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -1078,11 +1078,20 @@ credential. An explicitly configured
 `TEATREE_GITLAB_TOKEN_PASS_PATH` remains the bootstrap fallback for a container
 created with no host value (the watchdog cannot reach the host's pass store).
 
-An existing env value always wins; the store is the fallback. So a box that still
-carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
+Before deploying with a GitLab token, declare its bot login for the forge host in
+`self_forge_identities` through `t3 config_setting set`. The GitLab token in
+this bootstrap route must authenticate as that bot. A long-running role with an
+unverified token starts without `GITLAB_TOKEN` and reports the missing declaration;
+GitLab writes remain unavailable until the bot identity is declared and the role
+restarts.
+`deploy/t3` applies the same check to a token forwarded into a container CLI
+command before it runs that command. Operator approvals use their sealed OAuth
+grants, not this bootstrap route.
+
+An existing env value wins the selection and the store is the fallback, but a
+literal in `teatree.env` runs only when it verifies as a declared bot. A missing `pass` entry is a
 no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
-just yields a generated one, since loopback auto-login — not the password — is the
-admin boundary).
+just yields a generated one; `t3 admin` also issues a short-lived login link).
 
 The optional headless Codex harness uses this same credential plane, but its
 entry contains the complete base64-encoded `auth.json`, not a bare OAuth token.
@@ -1223,22 +1232,20 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   # then open http://localhost:8000/admin
   ```
 
-  There is **no admin login prompt**: the auto-login middleware authenticates the
-  first superuser on a `/admin/` request from loopback. The box binds the admin
-  to its real loopback, so the SSH-tunnelled request arrives as `127.0.0.1` and
-  clears the loopback check. The **SSH tunnel to the loopback, not an admin
-  password, is the security boundary**. A non-loopback request is never
-  auto-logged-in, so exposing the port off-loopback cannot open the admin.
-  `T3_ADMIN_USER` /
-  `T3_ADMIN_PASSWORD` still seed that superuser row deterministically (they matter
-  as a password only when auto-login does not apply). Because the boundary is
-  *loopback identity*, any same-host process — or a same-host reverse proxy — that
-  reaches `127.0.0.1:8000` is trusted as superuser, so keep the box's local access
-  as tight as its SSH access and never place a same-host reverse proxy in front of
-  the admin.
+  The admin and dashboard require a signed-in staff session even when the request
+  arrives from loopback. With one superuser, `t3 admin` and `t3 dashboard` issue a
+  single-use login link valid for two minutes; with several, they open `/login/`.
+  Password sign-in at `/login/` or `/admin/login/` remains available using the
+  superuser seeded by `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`. The SSH
+  tunnel keeps the service off the public network, while the login protects it
+  from other processes on the same host.
+  Before an operator's first GitHub or GitLab OAuth sign-in, an existing administrator
+  creates or selects that operator's superuser in Django admin and adds an Operator
+  identity inline with the forge, handle, and immutable forge account ID. An uninvited
+  account cannot sign in or create a user or grant.
 
-- **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same loopback
-  identity, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
+- **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same local
+  service, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
   the command serves nothing (`teatree-admin` already does) — it starts a one-off
   `teatree-admin-forward-<port>` container publishing `127.0.0.1:<port>` on the HOST,
   bridges each connection through `docker exec` into the admin's own loopback, then
@@ -1255,10 +1262,9 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
   dashboard local; the forwarder's own listener binds every interface because a
   published mapping delivers to a container's interface and never to its loopback.
-  Because the last hop is `docker exec`, gunicorn's peer stays `127.0.0.1` and the
-  auto-login above applies unchanged — a published port straight onto the admin would
-  NAT the source to the docker gateway and silently lose it. An url that does not
-  answer is refused with the cause instead of opening a browser at a dead page.
+  The last hop uses `docker exec` to reach gunicorn's loopback bind. The browser
+  opens the recorded single-use link or sign-in page. An url that does not answer is refused with the cause
+  instead of opening a browser at a dead page.
 
 - **`t3 <overlay> tool <leaf>` — the generic host hop:** the same shape as the two
   above, keyed on the command's SHAPE rather than a core verb, so an overlay owns a
@@ -1900,9 +1906,8 @@ sudo systemctl disable --now teatree-watchdog.timer && sudo rm -f /etc/systemd/s
 - **Headless orchestration is still maturing** — expect to babysit early runs via
   the admin dashboard and `docker compose logs` (and Slack once you wire it up).
 - **The admin runs under gunicorn** (a production WSGI server) bound to the box
-  loopback behind an SSH tunnel — never expose it publicly, and never place a
-  same-host reverse proxy in front of it: the auto-login trust model treats any
-  local `127.0.0.1` client (a proxy included) as superuser. Both long-running
+  loopback behind an SSH tunnel; every dashboard request needs a signed-in staff
+  session. Both long-running
   services (worker AND admin) run with `DEBUG` off to avoid `connection.queries`
   growth; `/admin/` mounts independent of `DEBUG`, so nothing here relies on it.
 - **The OAuth token shares your weekly Claude quota and does not auto-refresh** —

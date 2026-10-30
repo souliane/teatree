@@ -17,7 +17,6 @@ from uuid import uuid4
 import pytest
 from django.core.cache import cache
 from django.db import connection
-from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -29,6 +28,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.factories import PullRequestFactory, TicketFactory
 from tests.teatree_dash._overlay_venue import core_overlay_only
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 
@@ -76,22 +76,23 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
 MERGE_READ_QUERIES = 9
 #: The cycle-time page reads merged and open pull-request flow plus phase gaps: +3, O(1), flat at both.
+#: A signed-in request reads its session and user once each, independent of page population.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 11,
-    "dash:board_lifecycle": 15,
-    "dash:board_columns": 12,
-    "dash:cycle_time": 14,
-    "dash:health": 23,
-    "dash:health_bands": 23,
-    "dash:live": 20,
-    "dash:live_body": 18,
-    "dash:loops": 19,
-    "dash:loops_table": 19,
-    "dash:presets": 14,
-    "dash:sessions": 3,
-    "dash:settings": 7,
-    "dash:interchange": 2,
-    "dash:settings_readouts": 3,
+    "dash:board": 13,
+    "dash:board_lifecycle": 17,
+    "dash:board_columns": 14,
+    "dash:cycle_time": 16,
+    "dash:health": 25,
+    "dash:health_bands": 25,
+    "dash:live": 22,
+    "dash:live_body": 20,
+    "dash:loops": 21,
+    "dash:loops_table": 21,
+    "dash:presets": 16,
+    "dash:sessions": 5,
+    "dash:settings": 9,
+    "dash:interchange": 4,
+    "dash:settings_readouts": 5,
 }
 # #4085 added the enqueue-button row: ONE bounded read of the ticket's unstarted tasks,
 # O(1) in the population. A re-pin because the drawer reads a new datum, not an N+1 —
@@ -99,8 +100,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
 # code_direct's legality now reads the recorded plan decision: one more bounded EXISTS, O(1).
 # The PR chips read the voided-merge refs once per render: one more bounded read, O(1).
 # The enqueue buttons' coding legality reads the plan decision again: one more bounded EXISTS, O(1).
-TICKET_DRAWER_QUERIES = 15
-TRANSCRIPT_QUERIES = 2
+TICKET_DRAWER_QUERIES = 17
+TRANSCRIPT_QUERIES = 4
 
 
 def _seed_task_without_dispatch(ticket: Ticket) -> Task:

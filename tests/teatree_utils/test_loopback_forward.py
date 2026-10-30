@@ -1,9 +1,8 @@
 """The host-side loopback forward that makes the containerized admin reachable.
 
-The module shipped untested. Its whole reason to exist is a trust boundary —
-``LocalAdminAutoLoginMiddleware`` authenticates a request only when its real peer
-is loopback — so the bind address is a SECURITY property, not a detail: a forward
-that grew a ``0.0.0.0`` bind would auto-login anyone who can route to the box.
+The module shipped untested. Its whole reason to exist is a reachability boundary:
+the bind address is a security property, since a forward that grew a ``0.0.0.0``
+bind would expose the admin login to the network.
 That, plus the two ways it declines (a listener it cannot prove is teatree's, and
 a stack that is not up), is what these cover.
 
@@ -103,8 +102,7 @@ def _port_of(listener: socket.socket) -> int:
 
 class TestTheForwardBindsLoopbackOnly:
     def test_the_bound_address_is_loopback(self, marker_home: Path, forwards: Callable[..., LoopbackForward]) -> None:
-        # The trust boundary: gunicorn auto-logins a loopback peer, so a bind on
-        # any other interface hands that auto-login to the network.
+        # A wider bind would put the admin's login page on the network.
         address = forwards().address
 
         assert address is not None

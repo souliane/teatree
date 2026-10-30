@@ -26,7 +26,6 @@ from teatree.core.config_interchange.secret_guard import ScanTermsUnavailableErr
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.dash import audit
 from teatree.dash.interchange import SectionChange, changed_sections, export_text, import_preview
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE, NavContext, actor, nav_context
 
 if TYPE_CHECKING:
@@ -57,14 +56,12 @@ def _page_context() -> InterchangeContext:
     }
 
 
-@require_loopback_or_staff
 @require_GET
 def interchange(request: "HttpRequest") -> "HttpResponse":
     """The transfer page — what the dump covers, then the export and import controls."""
     return render(request, "dash/interchange.html", _page_context())
 
 
-@require_loopback_or_staff
 @require_GET
 def interchange_export(request: "HttpRequest") -> "HttpResponse":
     """Download the export — secrets withheld, and the two filters the page offers.
@@ -110,7 +107,6 @@ def _refused(request: "HttpRequest", reason: str, *, status: int = 400) -> "Http
     return render(request, "dash/interchange.html", context, status=status)
 
 
-@require_loopback_or_staff
 @require_POST
 def interchange_import(request: "HttpRequest") -> "HttpResponse":
     """POST an uploaded TOML file — a dry-run preview by default, a write only with ``apply``.

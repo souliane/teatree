@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 from django.db import connection
@@ -30,7 +31,7 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-class TestTheIssueTitleIsReadOutsideTheWriteTransaction(TestCase):
+class _WorkspaceTicketTestCase(TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(
@@ -42,6 +43,8 @@ class TestTheIssueTitleIsReadOutsideTheWriteTransaction(TestCase):
         for repo in ("backend", "frontend"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
 
+
+class TestTheIssueTitleIsReadOutsideTheWriteTransaction(_WorkspaceTicketTestCase):
     @override_settings(**SETTINGS)
     def test_the_title_fetch_runs_at_the_callers_transaction_depth(self) -> None:
         depth_at_fetch: list[int] = []
@@ -59,6 +62,46 @@ class TestTheIssueTitleIsReadOutsideTheWriteTransaction(TestCase):
 
         assert depth_at_fetch == [caller_depth]
         assert Ticket.objects.get(pk=ticket_id).extra["description"] == "Fix Login Flow"
+
+
+class TestTheIssueAuthorBecomesTheRequester(_WorkspaceTicketTestCase):
+    def _ticket_for(self, issue_url: str, issue: dict | Exception) -> Ticket:
+        host = MagicMock()
+        if isinstance(issue, Exception):
+            host.get_issue.side_effect = issue
+        else:
+            host.get_issue.return_value = issue
+        overlay = import_string(FULL_OVERLAY)()
+        overlay.get_issue_title = lambda _url: "Fix Login Flow"
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+            patch.object(ticket_intake_mod, "get_code_host_for_url", return_value=host),
+            override_settings(**SETTINGS),
+        ):
+            return Ticket.objects.get(pk=cast("int", call_command("workspace", "ticket", issue_url)))
+
+    def test_a_github_issue_author_is_recorded(self) -> None:
+        ticket = self._ticket_for("https://github.com/acme/app/issues/11", {"user": {"login": "Alice"}})
+        assert ticket.requested_by == "github:alice"
+
+    def test_a_gitlab_issue_author_is_recorded(self) -> None:
+        ticket = self._ticket_for("https://gitlab.com/acme/app/-/issues/12", {"author": {"username": "Bob"}})
+        assert ticket.requested_by == "gitlab:bob"
+
+    def test_the_first_author_is_never_overwritten(self) -> None:
+        url = "https://github.com/acme/app/issues/13"
+        self._ticket_for(url, {"user": {"login": "Alice"}})
+        assert self._ticket_for(url, {"user": {"login": "Mallory"}}).requested_by == "github:alice"
+
+    def test_an_unreadable_issue_leaves_the_requester_unknown_and_still_creates_the_ticket(self) -> None:
+        with self.assertLogs(ticket_intake_mod.logger, level="WARNING") as logs:
+            ticket = self._ticket_for("https://github.com/acme/app/issues/14", httpx.ConnectError("forge down"))
+        assert ticket.requested_by == ""
+        assert "forge down" in logs.output[0]
+
+    def test_an_issue_on_an_unrecognised_host_leaves_the_requester_unknown(self) -> None:
+        ticket = self._ticket_for("https://example.com/issues/15", {"user": {"login": "Alice"}})
+        assert ticket.requested_by == ""
 
 
 class TestTheSummaryReportsTheCheckout(TestCase):
