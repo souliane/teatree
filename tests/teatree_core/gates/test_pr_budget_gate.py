@@ -1,8 +1,8 @@
 """Per-(repo, ticket) open-PR budget gate — north-star PR-2 proof-case mechanism.
 
 The gate reads ``max_open_prs_per_repo_per_ticket`` as data (constraint-as-data)
-and refuses opening a PR when a ticket already has that many open (not-merged)
-PRs in one repo. Anti-vacuity coverage. TestUnlimitedOptOut: the ``0`` opt-out
+and refuses opening a PR when a ticket already has that many live (neither
+merged nor closed) PRs in one repo. Anti-vacuity coverage. TestUnlimitedOptOut: the ``0`` opt-out
 never refuses even with open PRs present (RED if the ``limit <= 0`` guard goes).
 TestPerTicketPerRepoScope: at limit 1 a second open PR for the same
 ``(repo, ticket)`` is refused while the first, a different ticket's PR in the
