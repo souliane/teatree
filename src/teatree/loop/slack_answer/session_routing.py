@@ -255,7 +255,6 @@ def _choice_reply(
 _STOP_MESSAGES = {
     CardThreadStop.CLOSED: "This card is no longer waiting for an answer. Please reply to a current card.",
     CardThreadStop.NOT_WAITING: "Question #{question_id} is no longer waiting. Please reply to a current card.",
-    CardThreadStop.OPTIONS_ONLY: "This card accepts an option reply: {options}.",
 }
 
 
@@ -271,9 +270,7 @@ def _card_result_reply(
     elif isinstance(result, UnmatchedCardThread):
         if result.reason is CardThreadStop.OPTIONS_ONLY:
             return False
-        message = _STOP_MESSAGES[result.reason].format(
-            question_id=result.question_id, options=", ".join(result.options)
-        )
+        message = _STOP_MESSAGES[result.reason].format(question_id=result.question_id)
     else:
         return False
     return _post_bound_reply(backend, unit, report, message, kind=PendingChatInjection.AnswerKind.ACK)

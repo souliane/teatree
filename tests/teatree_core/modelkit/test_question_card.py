@@ -430,6 +430,22 @@ class TestFromEnvelope:
         assert card.quoted == "Answer settled questions before asking the owner."
         assert card.problems("Should I change the rules file?") == []
 
+    def test_rules_file_stop_flattens_a_multiline_proposal(self) -> None:
+        card = QuestionCard.from_envelope(
+            {
+                "user_input_kind": "architecture",
+                "user_input_checked": ["The current rule is ambiguous."],
+                "user_input_card": {
+                    "why": "The rule needs a clear sentence before it can be changed.",
+                    "blocker": "Only the owner can approve a rules file change.",
+                    "proposed_text": "Answer settled questions\n before asking the owner.",
+                },
+            }
+        )
+        assert card is not None
+        assert card.quoted == "Answer settled questions before asking the owner."
+        assert card.problems("Should I change the rules file?") == []
+
     def test_builds_the_card_from_the_stop_keys(self) -> None:
         card = QuestionCard.from_envelope(
             {

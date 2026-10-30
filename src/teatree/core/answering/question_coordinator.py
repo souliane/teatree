@@ -4,6 +4,7 @@ import logging
 
 from django.db import DatabaseError, transaction
 
+from teatree.core import notify
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
@@ -12,6 +13,7 @@ from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.task_handoff import schedule_resume
+from teatree.core.owner_question_message import answered_line, closed_message, replace_root
 
 logger = logging.getLogger(__name__)
 _HEADLESS_MARKER_PARTS = 3
@@ -113,6 +115,8 @@ def coordinate_answer(row: DeferredQuestion, basis: DeferredQuestion, answer: st
                 schedule_resume(parked_task, answer=answer, question=resolved.question)
             except NoPlanArtifactError:
                 logger.warning("Coordinated answer to question %s kept; task was not resumed", resolved.pk)
+    if resolved.slack_ts and (backend := notify.resolve_owner_dm_backend()[0]) is not None:
+        replace_root(resolved, closed_message(resolved, answered_line(resolved)), backend)
     return resolved
 
 

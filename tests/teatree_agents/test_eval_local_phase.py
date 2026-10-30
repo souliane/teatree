@@ -73,7 +73,7 @@ class TestEvalLocalPhase(TestCase):
         def fake_run(argv: list[str], **kwargs: object) -> object:
             commands.append(argv)
             assert "ANTHROPIC_API_KEY" not in kwargs["env"]
-            assert kwargs["timeout"] == 30
+            assert kwargs["timeout"] == (120 if "pinned-regressions" in argv else 30)
             output = "alpha\n" if "list" in argv else ""
             return type("Completed", (), {"returncode": 0, "stdout": output, "stderr": ""})()
 
@@ -210,23 +210,51 @@ class TestEvalLocalPhase(TestCase):
         assert result["exit_code"] == "1"
         assert "selected scenario shard is empty" in task.attempts.latest("pk").error
 
-    def test_pinned_timeout_records_the_selected_shard_as_unmeasured(self) -> None:
+    def test_pinned_timeout_runs_after_a_measured_scenario(self) -> None:
         task = self._task()
+        order: list[str] = []
 
         def fake_run(argv: list[str], **_: object) -> object:
             if "pinned-regressions" in argv:
-                raise TimeoutExpired(argv, 30)
+                order.append("pinned")
+                raise TimeoutExpired(argv, 120)
             return type("Completed", (), {"returncode": 0, "stdout": "alpha\n", "stderr": ""})()
 
-        with patch("teatree.agents.eval_local_phase.run_allowed_to_fail", side_effect=fake_run):
+        class FakeChild:
+            returncode = 0
+
+            def communicate(self, *, timeout: float) -> tuple[str, str]:
+                order.append("scenario")
+                run = EvalRunRecord.objects.create(model="subscription", suite=f"eval_local:{task.pk}")
+                run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+                return "", ""
+
+        with (
+            patch("teatree.agents.eval_local_phase.run_allowed_to_fail", side_effect=fake_run),
+            patch("teatree.agents.eval_local_phase.spawn_session_leader", return_value=FakeChild()),
+        ):
             result = run_deterministic_phase(task)
 
         assert result is not None
         assert result["exit_code"] == "1"
+        assert order == ["scenario", "pinned"]
         run = EvalRunRecord.objects.get(suite=f"eval_local:{task.pk}")
         assert run.total == 1
-        assert run.measured_nothing
-        assert "pinned-regressions" in run.results.first().terminal_reason
+        assert run.passed == 1
+        assert "pinned-regressions" in task.attempts.latest("pk").error
+
+    def test_catalog_failure_redacts_child_stderr(self) -> None:
+        task = self._task()
+        failure = type("Completed", (), {"returncode": 2, "stdout": "", "stderr": "token=secret-value"})()
+        with (
+            patch("teatree.agents.eval_local_phase.run_allowed_to_fail", return_value=failure),
+            patch("teatree.agents.eval_local_phase.redact_secrets", return_value="[REDACTED]") as redact,
+        ):
+            result = run_deterministic_phase(task)
+        assert result is not None
+        assert result["exit_code"] == "1"
+        redact.assert_called_once_with("token=secret-value")
+        assert "secret-value" not in task.attempts.latest("pk").error
 
     def test_pinned_regressions_run_strict_and_fail_a_measured_task(self) -> None:
         task = self._task()

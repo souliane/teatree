@@ -5,11 +5,13 @@ import signal
 import time
 from contextlib import suppress
 
+from teatree.core.modelkit.task_failure_taxonomy import EVAL_MEASUREMENT_ABSENT_MARKER
 from teatree.core.models import EvalRunRecord, EvalVerdict, Loop, Task
 from teatree.utils.run import DEVNULL, PIPE, TimeoutExpired, redact_secrets, run_allowed_to_fail, spawn_session_leader
 
 _HEARTBEAT_SECONDS = 60
 _CONTROL_TIMEOUT_SECONDS = 30
+_PINNED_TIMEOUT_SECONDS = 120
 _SECONDS_PER_SCENARIO = 15 * 60
 
 
@@ -37,11 +39,12 @@ def _selected_scenarios(shard: str, env: dict[str, str]) -> list[str]:
         timeout=_CONTROL_TIMEOUT_SECONDS,
     )
     if result.returncode:
-        msg = f"measured nothing: scenario catalog unavailable: {result.stderr.strip()}"
+        diagnostic = redact_secrets(result.stderr.strip())[-1000:]
+        msg = f"{EVAL_MEASUREMENT_ABSENT_MARKER} measured nothing: scenario catalog unavailable: {diagnostic}"
         raise RuntimeError(msg)
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if not names:
-        msg = "measured nothing: selected scenario shard is empty"
+        msg = f"{EVAL_MEASUREMENT_ABSENT_MARKER} measured nothing: selected scenario shard is empty"
         raise RuntimeError(msg)
     return names
 
@@ -97,22 +100,11 @@ def run_eval_local(task: Task) -> str:
     except (OSError, RuntimeError, TimeoutExpired) as exc:
         _record_unmeasured([], reason=str(exc), suite=suite)
         raise
-    try:
-        pinned = run_allowed_to_fail(
-            _command("pinned-regressions", "--strict"),
-            env=env,
-            expected_codes=None,
-            timeout=_CONTROL_TIMEOUT_SECONDS,
-        )
-    except (OSError, RuntimeError, TimeoutExpired) as exc:
-        msg = f"measured nothing: pinned-regressions unavailable: {redact_secrets(str(exc))}"
-        _record_unmeasured(selected, reason=msg, suite=suite)
-        raise RuntimeError(msg) from exc
     prior_pk = EvalRunRecord.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
     try:
         child_exit, stdout, stderr = _run_child(task, shard, selected, env)
     except OSError as exc:
-        msg = f"measured nothing: eval lane unavailable: {redact_secrets(str(exc))}"
+        msg = f"{EVAL_MEASUREMENT_ABSENT_MARKER} measured nothing: eval lane unavailable: {redact_secrets(str(exc))}"
         _record_unmeasured(selected, reason=msg, suite=suite)
         raise RuntimeError(msg) from exc
     detail = redact_secrets((stderr or stdout).strip())[-1000:]
@@ -121,8 +113,21 @@ def run_eval_local(task: Task) -> str:
         reason = f"eval lane exited {child_exit} without a recorded run: {detail}".rstrip(": ")
         run = _record_unmeasured(selected, reason=reason, suite=suite)
     if run.measured_nothing:
-        msg = f"measured nothing: 0 of {run.total} scenarios graded (child exit {child_exit}): {detail}".rstrip(": ")
+        msg = (
+            f"{EVAL_MEASUREMENT_ABSENT_MARKER} measured nothing: 0 of {run.total} scenarios graded "
+            f"(child exit {child_exit}): {detail}"
+        ).rstrip(": ")
         raise RuntimeError(msg)
+    try:
+        pinned = run_allowed_to_fail(
+            _command("pinned-regressions", "--strict"),
+            env=env,
+            expected_codes=None,
+            timeout=_PINNED_TIMEOUT_SECONDS,
+        )
+    except (OSError, RuntimeError, TimeoutExpired) as exc:
+        msg = f"pinned-regressions unavailable after eval run #{run.pk}: {redact_secrets(str(exc))[-1000:]}"
+        raise RuntimeError(msg) from exc
     if pinned.returncode:
         diagnostic = redact_secrets((pinned.stderr or pinned.stdout).strip())[-1000:]
         msg = (f"pinned-regressions failed (exit {pinned.returncode}) after eval run #{run.pk}: {diagnostic}").rstrip(

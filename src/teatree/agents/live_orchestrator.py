@@ -105,10 +105,20 @@ async def _serve(broker: live_mailbox.LiveMailboxBroker, identity: MailboxIdenti
                 logger.warning("Orchestrator mailbox read failed; retrying", exc_info=True)
                 await asyncio.sleep(0.1)
                 continue
+            except Exception:
+                logger.exception("Orchestrator mailbox read failed unexpectedly; retrying")
+                await asyncio.sleep(0.1)
+                continue
             cursor = page["next_cursor"]
             for message in page["messages"]:
                 sender = next((peer for peer in peers if peer["address"] == message["from"]), None)
-                response = await asyncio.to_thread(_answer, message["text"], sender.get("ticket", "") if sender else "")
+                try:
+                    response = await asyncio.to_thread(
+                        _answer, message["text"], sender.get("ticket", "") if sender else ""
+                    )
+                except Exception:
+                    logger.exception("Orchestrator answer failed; continuing with later messages")
+                    continue
                 try:
                     await MailboxClient(reply_identity.socket_path, reply_identity.token).send(
                         message["from"], json.dumps(response), f"re:{message['id']}", timeout_seconds=0.1

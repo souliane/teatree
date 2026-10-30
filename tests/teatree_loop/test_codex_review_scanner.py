@@ -486,6 +486,7 @@ class TestClassifyGhStderr:
             ("HTTP 401", ScannerErrorClass.AUTH),
             ("HTTP 404: request identifier 1401", ScannerErrorClass.UNKNOWN),
             ("HTTP 404: request identifier 4012", ScannerErrorClass.UNKNOWN),
+            ("HTTP 404: request-id AB12:401:CD34", ScannerErrorClass.UNKNOWN),
             ("dial tcp: lookup api.github.com: no such host", ScannerErrorClass.NETWORK),
             ("could not resolve host", ScannerErrorClass.NETWORK),
             ("network is unreachable", ScannerErrorClass.NETWORK),

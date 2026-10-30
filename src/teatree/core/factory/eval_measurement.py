@@ -15,7 +15,17 @@ def eval_measurement_signal(now: datetime) -> HealthSignal | None:
     local_runs = EvalRunRecord.objects.filter(suite__startswith=EvalRunRecord.LOCAL_SUITE_PREFIX)
     latest = local_runs.order_by("-started_at", "-pk").first()
     if latest is None:
-        return None
+        loop = Loop.objects.filter(name="eval_local").first()
+        return (
+            HealthSignal(
+                fingerprint="eval-local-measured-nothing",
+                kind="eval_measurement",
+                severity=KnownIssue.Severity.WARNING,
+                summary="behavioral evals have no recorded local run",
+            )
+            if loop is not None and now - loop.created_at >= timedelta(seconds=loop.delay_seconds or 0)
+            else None
+        )
     last_measured = (
         local_runs.filter(scenario_results__verdict__in=("pass", "fail"))
         .distinct()

@@ -1,4 +1,4 @@
-"""No owner-question DM is sent 22:00-08:00 in the owner's zone; a night-held first post goes out at 08:00 (#4990).
+"""First owner cards send immediately; recurring question messages respect the owner's quiet hours (#4990).
 
 The owner's zone is the active schedule's, else Europe/Paris — never ``settings.TIME_ZONE`` (UTC), which would
 hold the window two hours off.
@@ -104,13 +104,13 @@ class TestWithTheScheduleInParis(_QuietHours):
                     DeferredQuestion.objects.all().delete()
                     self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
 
-    def test_the_held_first_post_goes_out_at_08_00_paris_time(self) -> None:
+    def test_the_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:
             with self.subTest(day=day):
                 DeferredQuestion.objects.all().delete()
                 self._assert_the_first_post_goes_out_at(_paris(day, 8, 0))
 
-    def test_the_window_closes_at_22_00_not_21_59(self) -> None:
+    def test_the_first_post_goes_out_at_21_59_paris_time(self) -> None:
         for day in _DAYS:
             with self.subTest(day=day):
                 DeferredQuestion.objects.all().delete()
@@ -126,7 +126,7 @@ class TestWithNoScheduleTheWindowIsStillParis(_QuietHours):
                     DeferredQuestion.objects.all().delete()
                     self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
 
-    def test_the_held_first_post_goes_out_at_08_00_paris_time(self) -> None:
+    def test_the_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:
             with self.subTest(day=day):
                 DeferredQuestion.objects.all().delete()

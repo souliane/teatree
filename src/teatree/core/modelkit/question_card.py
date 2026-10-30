@@ -431,7 +431,7 @@ class QuestionCard:
             checked=tuple(map(str, checked)) if isinstance(checked, list) else (),
             blocker=str(fields.get("blocker", "")),
             why=str(fields.get("why", "")),
-            quoted=str(fields.get("proposed_text", "")),
+            quoted=" ".join(str(fields.get("proposed_text", "")).split()),
             options=tuple(option for item in options if (option := CardOption.from_raw(item)))
             if isinstance(options, list)
             else (),

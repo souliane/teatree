@@ -1,7 +1,7 @@
 """Settled owner answers are reused before a new card reaches Slack."""
 
 import dataclasses
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.db import DatabaseError
 from django.test import TestCase
@@ -10,11 +10,28 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion, Session, Task
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from teatree.core.question_heal import live_owner_questions
 from tests._owner_channel import owner_card
 from tests.factories import planned_ticket
 
 
 class TestQuestionCoordinator(TestCase):
+    def test_coordinated_answer_closes_an_already_posted_card(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(question, card=owner_card())
+        assert pending.mark_mirrored(channel="D123", slack_ts="1800000000.000100")
+        backend = MagicMock()
+
+        with patch("teatree.core.notify.resolve_owner_dm_backend", return_value=(backend, None)):
+            live_owner_questions()
+
+        pending.refresh_from_db()
+        assert pending.answer_text == "Yes."
+        backend.update_message.assert_called_once()
+        assert "You answered: Yes." in backend.update_message.call_args.kwargs["text"]
+
     def test_headless_producer_markers_share_an_exact_answer_across_tickets(self) -> None:
         question = "Should we adopt the new dependency?"
         first_ticket = planned_ticket()

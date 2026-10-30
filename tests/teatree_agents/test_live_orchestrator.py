@@ -53,6 +53,29 @@ class TestLiveOrchestrator(TransactionTestCase):
 
         assert not peer.is_alive()
 
+    def test_unexpected_answer_error_does_not_end_the_peer(self) -> None:
+        ticket = planned_ticket()
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
+            LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch.object(live_orchestrator, "_recorded_decisions", side_effect=[RuntimeError("bad row"), []]),
+        ):
+            peer = start_orchestrator_peer(broker)
+            asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
+            client = MailboxClient(asker.socket_path, asker.token)
+            address = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
+            asyncio.run(
+                client.send(
+                    address,
+                    json.dumps({"type": "ask", "nonce": "first", "kind": "architecture"}),
+                    "ask:first",
+                    timeout_seconds=0.1,
+                )
+            )
+            second = self._ask(client, address, "second", "architecture")
+            assert second["verdict"] == "not_settled"
+            assert peer.is_alive()
+
     def setUp(self) -> None:
         super().setUp()
         self.db_directory = tempfile.TemporaryDirectory(prefix="t3-orchestrator-db-")
