@@ -150,7 +150,7 @@ def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tupl
                 task_session=task.session,
                 dedupe_marker=f"backlog-sweep-fold-{task.pk}-{position}",
                 card=QuestionCard(
-                    decision=OwnerDecision.PRODUCT_SCOPE,
+                    decision=OwnerDecision.ARCHITECTURE,
                     checked=("Both issues were open and self-authored when the proposal was recorded.",),
                     blocker="Only the owner decides whether this ticket fold should proceed.",
                     why="Your decision is recorded; this sweep changes neither issue.",

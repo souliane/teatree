@@ -714,7 +714,7 @@ class TestSweepProposalRecording(TestCase):
         result = {
             "summary": "needs input",
             "needs_user_input": True,
-            "user_input_kind": "product_scope",
+            "user_input_kind": "architecture",
             "user_input_checked": ["The tracker was read."],
             "user_input_reason": "Should these issues be grouped?",
             "user_input_card": {
