@@ -550,6 +550,24 @@ class TestSweepProposalRecording(TestCase):
         self.ticket.refresh_from_db()
         assert "sweep_fold_proposals" not in self.ticket.extra
 
+    def test_closed_fold_target_refuses_before_any_write(self) -> None:
+        member = "https://github.com/example-org/example-repo/issues/1"
+        host = "https://github.com/example-org/example-repo/issues/2"
+        proposals = {
+            "examined": [member],
+            "folds": [{"member_url": member, "host_url": host, "citation": "same work"}],
+            "gaps": [],
+        }
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue",
+            side_effect=lambda **kwargs: {"state": "closed" if kwargs["issue_url"] == host else "open"},
+        ):
+            attempt = self._record(proposals, index_urls=[member, host])
+
+        assert "not open" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+        assert DeferredQuestion.objects.count() == 0
+
     def test_claude_still_requires_ticket_sweep(self) -> None:
         attempt = self._record({"examined": [], "folds": [], "gaps": []}, harness="claude_sdk")
 
@@ -620,7 +638,33 @@ class TestSweepProposalRecording(TestCase):
         ):
             attempt = self._record(proposals, index_urls=[host.issue_url])
 
-        assert "offered" in attempt.error
+        assert "key not offered in this sweep" in attempt.error
+        attach.assert_not_called()
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_gap_host_outside_the_index_refuses_before_the_command(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+        with patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach:
+            attempt = self._record(proposals)
+
+        assert "no valid host" in attempt.error
+        attach.assert_not_called()
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_gap_host_in_another_overlay_refuses_before_the_command(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        self._pending_gaps({"gap_key": "gap-a"})
+        host = Ticket.objects.create(overlay="other", issue_url="https://github.com/example-org/example-repo/issues/2")
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+        with patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach:
+            attempt = self._record(proposals, index_urls=[host.issue_url])
+
+        assert "not an owned ticket" in attempt.error
         attach.assert_not_called()
         assert TicketSweepRun.objects.count() == 0
 
