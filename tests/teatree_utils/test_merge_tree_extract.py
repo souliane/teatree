@@ -7,7 +7,9 @@ whose ``origin`` is a local path silently changes what repo-identity reads
 resolve, so both have produced confident wrong answers on this repo.
 """
 
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -48,6 +50,45 @@ def repo(tmp_path: Path) -> Path:
 
 
 class TestExtractMergeResult:
+    def test_failed_extract_removes_its_generated_directory(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        with (
+            patch("teatree.utils.merge_tree_extract._extract_tree", side_effect=RuntimeError("archive failed")),
+            pytest.raises(RuntimeError, match="archive failed"),
+        ):
+            extract_merge_result(str(repo), base="main", head="docs-only")
+        assert not list(tmp_path.glob("t3-merge-tree-*"))
+
+    def test_interrupt_removes_its_generated_directory(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        with (
+            patch("teatree.utils.merge_tree_extract._extract_tree", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            extract_merge_result(str(repo), base="main", head="docs-only")
+        assert not list(tmp_path.glob("t3-merge-tree-*"))
+
+    def test_success_keeps_generated_extract(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        result = extract_merge_result(str(repo), base="main", head="docs-only")
+        assert Path(result.path, "guide.md").read_text(encoding="utf-8") == "v2\n"
+        assert Path(result.path, "tool.py").read_text(encoding="utf-8") == "GRANT = ('write',)\n"
+
+    def test_failed_extract_preserves_caller_directory(self, repo: Path, tmp_path: Path) -> None:
+        destination = tmp_path / "out"
+        destination.mkdir()
+        (destination / "kept").write_text("work", encoding="utf-8")
+        with (
+            patch("teatree.utils.merge_tree_extract._extract_tree", side_effect=RuntimeError("archive failed")),
+            pytest.raises(RuntimeError, match="archive failed"),
+        ):
+            extract_merge_result(str(repo), base="main", head="docs-only", into=str(destination))
+        assert (destination / "kept").read_text(encoding="utf-8") == "work"
+
     def test_the_extract_carries_both_sides_of_the_merge(self, repo: Path, tmp_path: Path) -> None:
         extract = extract_merge_result(str(repo), base="main", head="docs-only", into=str(tmp_path / "out"))
 

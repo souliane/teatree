@@ -42,7 +42,6 @@ import sqlite3
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import typer
 import yaml
@@ -61,6 +60,7 @@ from teatree.utils.git_run import run, run_strict
 from teatree.utils.install_headroom import free_bytes
 from teatree.utils.ram_scope import read_ram_headroom
 from teatree.utils.run import CommandFailedError, run_streamed
+from teatree.utils.run_scratch import run_scratch_dir
 
 # The same key ``refuse-main-clone-commit.sh`` reads, so one declaration serves both.
 _TARGET_BRANCH_CONFIG_KEY = "teatree.targetBranch"
@@ -348,8 +348,8 @@ def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
 
 
 def _run_with_private_control_db(repo: Path, stages: list[tuple[str, list[str]]]) -> tuple[list[str], list[str]]:
-    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        env = _stage_env(private_root)
+    with run_scratch_dir("t3-verify-gates-") as private_root:
+        env = _stage_env(str(private_root))
         try:
             _snapshot_control_db(repo, env)
         except (OSError, sqlite3.DatabaseError) as exc:
@@ -399,6 +399,7 @@ def verify_gates(
     green-proof — an exit code alone does not say which tree earned it. Exits 2
     without grading anything when the tree is not a git checkout, is not the
     ``--expect-sha`` target, or is a clean main clone on its default branch.
+    Its private control-DB snapshot is removed when the run ends or is interrupted.
     """
     tree = read_measured_tree(repo=str(repo))
     if tree is None:

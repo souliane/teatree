@@ -423,6 +423,38 @@ class UnattendedHousekeepingTests(_SweepFixture):
         assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
         assert "worker scratch" in plan
 
+    def test_worker_sweep_reclaims_old_run_scratch_and_reports_bytes(self) -> None:
+        root = self.workspace / "run-scratch"
+        root.mkdir()
+        candidate = root / "t3-verify-gates-abcdefgh"
+        candidate.mkdir()
+        payload = candidate / "payload"
+        payload.write_bytes(b"12345")
+        old = time.time() - 4 * 60 * 60
+        os.utime(payload, (old, old))
+        os.utime(candidate, (old, old))
+        generic = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker", "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": str(root)}),
+            patch(f"{_SWEEP}.sweep_scratch", return_value=generic),
+        ):
+            plan = self._sweep()
+
+        assert not candidate.exists()
+        assert "run scratch: freed 5 bytes" in plan
+
+    def test_non_worker_leaves_run_scratch_untouched(self) -> None:
+        root = self.workspace / "run-scratch"
+        root.mkdir()
+        candidate = root / "t3-verify-gates-abcdefgh"
+        candidate.mkdir()
+        old = time.time() - 4 * 60 * 60
+        os.utime(candidate, (old, old))
+        with patch.dict(os.environ, {"TEATREE_ROLE": "admin", "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": str(root)}):
+            self._sweep()
+
+        assert candidate.is_dir()
+
     def test_a_service_that_is_not_the_worker_never_sweeps_scratch(self) -> None:
         for role in ("admin", ""):
             with (

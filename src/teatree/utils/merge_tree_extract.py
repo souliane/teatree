@@ -19,10 +19,12 @@ defeating every repo-scoped match downstream.
 
 import tarfile
 import tempfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
+from teatree.utils.run_scratch import run_scratch_dir
 
 #: ``git merge-tree --write-tree`` exits 1 on a conflicted merge; anything above
 #: that is git refusing the invocation itself (a bad ref, not a repo).
@@ -64,17 +66,18 @@ def extract_merge_result(
     two ends conflict, leaving nothing behind.
     """
     tree_oid = _merged_tree_oid(repo, base=base, head=head)
-    destination = Path(into) if into else Path(tempfile.mkdtemp(prefix="t3-merge-tree-"))
-    destination.mkdir(parents=True, exist_ok=True)
-    _extract_tree(repo, tree_oid=tree_oid, destination=destination)
-    if init_git:
-        _init_with_source_origin(repo, destination=destination)
-    return MergeResultExtract(
-        path=str(destination),
-        tree_oid=tree_oid,
-        base_sha=_rev_parse(repo, base),
-        head_sha=_rev_parse(repo, head),
-    )
+    destination_scope = nullcontext(Path(into)) if into else run_scratch_dir("t3-merge-tree-", keep_on_success=True)
+    with destination_scope as destination:
+        destination.mkdir(parents=True, exist_ok=True)
+        _extract_tree(repo, tree_oid=tree_oid, destination=destination)
+        if init_git:
+            _init_with_source_origin(repo, destination=destination)
+        return MergeResultExtract(
+            path=str(destination),
+            tree_oid=tree_oid,
+            base_sha=_rev_parse(repo, base),
+            head_sha=_rev_parse(repo, head),
+        )
 
 
 def _merged_tree_oid(repo: str, *, base: str, head: str) -> str:

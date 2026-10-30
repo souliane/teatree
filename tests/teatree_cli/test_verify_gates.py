@@ -19,6 +19,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -640,8 +641,11 @@ class TestVerifyGatesRunsBothStages:
         assert "push" not in push[0], "must pass pre-push, not the rejected 'push'"
 
     @pytest.mark.parametrize("failing_stage", ["commit", "pre-push", "manual"])
-    def test_fails_when_any_stage_fails(self, worktree: Path, failing_stage: str) -> None:
+    def test_fails_when_any_stage_fails(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_stage: str
+    ) -> None:
         _write_prek_config(worktree, *(_manual_hook(hook) for hook in CI_JOB_MANUAL_HOOKS))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
         def _rc(cmd: list[str], **_kwargs: object) -> int:
             stage = cmd[-1] if "--hook-stage" in cmd else "commit"
@@ -654,6 +658,7 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 1
         assert f"FAILED stage(s): {failing_stage}" in _text(result)
+        assert not list(tmp_path.glob("t3-verify-gates-*"))
 
     def test_both_green_passes(self, worktree: Path) -> None:
         with (
