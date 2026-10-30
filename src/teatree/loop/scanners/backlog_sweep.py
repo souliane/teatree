@@ -135,10 +135,13 @@ class BacklogSweepScanner:
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
         if cadence.in_flight_exists():
+            self._resolve_hold_health()
             return []
 
         trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
+            if not self._pending_dream_gaps():
+                self._resolve_hold_health()
             return []
         return self._queue(cadence, trigger, self._pending_dream_gaps())
 
@@ -146,7 +149,12 @@ class BacklogSweepScanner:
         """Queue a sweep for the gaps a dream pass left pending; an empty ledger queues nothing."""
         cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
         pending = self._pending_dream_gaps()
-        if not pending or cadence.in_flight_exists():
+        if cadence.in_flight_exists():
+            self._resolve_hold_health()
+            return []
+        if not pending:
+            if cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at()) is None:
+                self._resolve_hold_health()
             return []
         return self._queue(cadence, "dream-gaps", pending)
 

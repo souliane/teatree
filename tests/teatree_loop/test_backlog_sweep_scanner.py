@@ -80,6 +80,43 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class BacklogSweepScannerTests(TestCase):
+    def test_held_health_resolves_when_a_sweep_is_in_flight(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.in_flight_exists", return_value=True):
+            assert _scanner().scan() == []
+        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
+
+    def test_held_health_resolves_when_the_sweep_is_no_longer_due(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None):
+            assert _scanner().scan() == []
+        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
+
+    def test_held_health_resolves_when_no_dream_gaps_remain(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None):
+            assert _scanner().scan_dream_gaps() == []
+        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
+
+    def test_held_health_stays_open_while_the_daily_trigger_is_due(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+        assert _scanner().scan_dream_gaps() == []
+        assert KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
+
+    def test_held_health_stays_open_while_dream_gaps_are_pending(self) -> None:
+        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+        with (
+            patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None),
+            patch.object(BacklogSweepScanner, "_pending_dream_gaps", return_value=[{"gap_key": "gap"}]),
+        ):
+            assert _scanner().scan() == []
+        assert KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
+
     def test_failed_due_queue_emits_hold_and_health_until_a_task_lands(self) -> None:
         with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
             signals = _scanner().scan()

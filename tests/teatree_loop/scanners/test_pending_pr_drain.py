@@ -55,6 +55,22 @@ class PendingPrDrainScannerTestCase(TestCase):
     def test_no_obligations_emits_nothing(self) -> None:
         assert PendingPrDrainScanner().scan() == []
 
+    def test_backed_off_old_rows_do_not_hide_a_new_due_obligation(self) -> None:
+        repo = self._tmp_path / "checkout"
+        repo.mkdir()
+        for index in range(50):
+            row = PendingPullRequest.objects.owe(repo_path=str(repo), branch=f"feat/paused-{index}", reason="waiting")
+            PendingPullRequest.objects.filter(pk=row.pk).update(
+                drain_attempts=MAX_DRAIN_ATTEMPTS, last_attempt_at=timezone.now()
+            )
+        due = PendingPullRequest.objects.owe(repo_path=str(repo), branch="feat/due", reason="waiting")
+        with patch("django.core.management.call_command", return_value={"created": True}) as ensure:
+            signals = PendingPrDrainScanner().scan()
+        assert [signal.kind for signal in signals] == ["pending_pr.drained"]
+        ensure.assert_called_once_with("pr", "ensure-pr", repo=str(repo), branch=due.branch)
+        assert not PendingPullRequest.objects.filter(pk=due.pk).exists()
+        assert PendingPullRequest.objects.count() == 50
+
     def test_overdue_obligation_backs_off_and_escalates_once(self) -> None:
         repo = self._tmp_path / "checkout"
         repo.mkdir()

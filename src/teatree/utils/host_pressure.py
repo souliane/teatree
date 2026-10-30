@@ -36,7 +36,7 @@ def feed_path() -> Path:
 
 
 def _nonnegative_int(value: object) -> TypeGuard[int]:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return isinstance(value, int) and not isinstance(value, bool) and _nonnegative_number(value)
 
 
 def _valid(raw: object, moment: float) -> str | None:

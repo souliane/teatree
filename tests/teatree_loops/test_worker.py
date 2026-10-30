@@ -234,6 +234,18 @@ def test_supervisor_survives_a_reclaim_error() -> None:
     assert all(handle.joined for handle in handles)
 
 
+def test_supervisor_survives_a_host_pressure_publish_error() -> None:
+    def fail_publish() -> None:
+        reason = "host feed unavailable"
+        raise OSError(reason)
+
+    worker, _built, handles = _make_worker(
+        script=[True], sleep=lambda _seconds: None, publish_host_pressure=fail_publish
+    )
+    worker.run()
+    assert all(handle.joined for handle in handles)
+
+
 def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     order: list[str] = []
     worker, _built, _ = _make_worker(

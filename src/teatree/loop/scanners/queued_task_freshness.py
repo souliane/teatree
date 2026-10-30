@@ -12,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.backends.loader import get_code_host_for_url
+from teatree.core.forge_url import is_forge_url, is_synthetic_ticket_url
 from teatree.core.gates.plan_currency_gate import check_plan_current
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
@@ -21,7 +22,7 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base
 from teatree.core.worktree.target_branch import bare_target, resolve_target_branch
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, recent_iso_stamp
 from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
 
@@ -75,6 +76,8 @@ class QueuedTaskFreshnessScanner:
         for task in rows.iterator(chunk_size=100):
             if checked >= _SCAN_LIMIT or self.monotonic() >= deadline:
                 break
+            if is_synthetic_ticket_url(task.ticket.issue_url):
+                continue
             if not self._claim(task.ticket, task.pk, now):
                 continue
             checked += 1
@@ -95,34 +98,31 @@ class QueuedTaskFreshnessScanner:
 
     @staticmethod
     def _claim(ticket: "Ticket", task_id: int, now: datetime) -> bool:
+        if _recent_validation_stamp(ticket, task_id, now):
+            return False
         with transaction.atomic():
             locked = type(ticket).objects.select_for_update().get(pk=ticket.pk)
-            stamps = (locked.extra or {}).get("last_validated_at") or {}
-            prior = stamps.get(str(task_id)) if isinstance(stamps, dict) else None
-            if isinstance(prior, str):
-                try:
-                    if datetime.fromisoformat(prior) > now - _RECHECK:
-                        return False
-                except (TypeError, ValueError):
-                    pass
+            if _recent_validation_stamp(locked, task_id, now):
+                return False
             locked.merge_extra(merge_into_dicts={"last_validated_at": {str(task_id): now.isoformat()}})
             return True
 
     def _check(self, task: "Task") -> str:
         ticket = task.ticket
-        host = get_code_host_for_url(self.overlay, ticket.issue_url)
-        if host is None:
-            return self._note(task, "issue host unavailable", changed=False)
-        try:
-            issue = host.get_issue(ticket.issue_url)
-        except (OSError, RuntimeError, ValueError):
-            return self._note(task, "issue could not be read", changed=False)
-        if not isinstance(issue, dict) or "error" in issue:
-            return self._note(task, "issue could not be read", changed=False)
-        if self.overlay.is_issue_done(issue):
-            if normalize_phase(task.phase) == "coding":
-                return self._supersede(task, "issue already closed")
-            return self._note(task, "issue already closed")
+        if is_forge_url(ticket.issue_url):
+            host = get_code_host_for_url(self.overlay, ticket.issue_url)
+            if host is None:
+                return self._note(task, "issue host unavailable", changed=False)
+            try:
+                issue = host.get_issue(ticket.issue_url)
+            except (OSError, RuntimeError, ValueError):
+                return self._note(task, "issue could not be read", changed=False)
+            if not isinstance(issue, dict) or "error" in issue:
+                return self._note(task, "issue could not be read", changed=False)
+            if self.overlay.is_issue_done(issue):
+                if normalize_phase(task.phase) == "coding":
+                    return self._supersede(task, "issue already closed")
+                return self._note(task, "issue already closed")
         return self._check_worktree(task)
 
     def _check_worktree(self, task: "Task") -> str:
@@ -151,7 +151,8 @@ class QueuedTaskFreshnessScanner:
             check_plan_current(ticket)
         except NoCurrentPlanError as error:
             reason = self._supersede(task, f"plan no longer current: {error}")
-            ticket.schedule_plan_reaffirm(refusal=str(error), parent_task=task)
+            if reason.startswith(SUPERSEDED_PREFIX):
+                ticket.schedule_plan_reaffirm(refusal=str(error), parent_task=task)
             return reason
         return ""
 
@@ -179,3 +180,9 @@ class QueuedTaskFreshnessScanner:
             locked.fail(reason=cause, by_holder=False)
         task.ticket.append_context(f"Queued task {task.pk} superseded: {reason}")
         return cause
+
+
+def _recent_validation_stamp(ticket: "Ticket", task_id: int, now: datetime) -> bool:
+    stamps = (ticket.extra or {}).get("last_validated_at") or {}
+    prior = stamps.get(str(task_id)) if isinstance(stamps, dict) else None
+    return recent_iso_stamp(prior, now=now, window=_RECHECK)

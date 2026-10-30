@@ -10,7 +10,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task_checkout
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScanSignal, recent_iso_stamp
 
 _RECHECK = timedelta(hours=24)
 _SCAN_LIMIT = 50
@@ -68,12 +68,7 @@ def _claim_recheck(ticket: Ticket, now: datetime) -> bool:
         stamp = (locked.extra or {}).get("stuck_halt")
         if not isinstance(stamp, dict):
             return False
-        prior = stamp.get("recheck_at")
-        if isinstance(prior, str):
-            try:
-                if datetime.fromisoformat(prior) > now - _RECHECK:
-                    return False
-            except (TypeError, ValueError):
-                pass
+        if recent_iso_stamp(stamp.get("recheck_at"), now=now, window=_RECHECK):
+            return False
         locked.merge_extra(merge_into_dicts={"stuck_halt": {"recheck_at": now.isoformat()}})
         return True

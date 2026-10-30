@@ -41,6 +41,7 @@ class ResourcePressureMarker(models.Model):
 
     singleton = models.BooleanField(default=True, unique=True)
     last_run_at = models.DateTimeField(null=True, blank=True)
+    last_dead_worktree_scan_at = models.DateTimeField(null=True, blank=True)
     last_disk_free_gb = models.FloatField(null=True, blank=True)
     last_ram_avail_gb = models.FloatField(null=True, blank=True)
     last_freed_at = models.DateTimeField(null=True, blank=True)

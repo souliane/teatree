@@ -1039,6 +1039,7 @@ depends_on = ["teatree.core.models", "teatree.core.modelkit"]
 path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
+  "teatree.core.forge_url",
   "teatree.loop.inbound_reading",
   "teatree.loop.question_binding",
   "teatree.loop.owner_identity",

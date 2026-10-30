@@ -54,15 +54,18 @@ class PendingPrDrainScanner:
 
         try:
             retired = PendingPullRequest.objects.retire_absent()
-            owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
+            owed: list[PendingPullRequest] = []
+            for row in PendingPullRequest.objects.order_by("deferred_at").iterator(chunk_size=100):
+                if len(owed) >= self.limit:
+                    break
+                if _due(row):
+                    owed.append(row)
         except (OperationalError, ProgrammingError):
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
         discharged = 0
         for row in owed:
-            if not _due(row):
-                continue
             if self._drain_one(row):
                 discharged += 1
             elif row.drain_attempts == MAX_DRAIN_ATTEMPTS:

@@ -78,6 +78,13 @@ def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp
     assert machine.vm_pressure_level == 2
 
 
+def test_unrepresentable_host_memory_is_rejected_before_governor_conversion(tmp_path: Path) -> None:
+    _write_feed(tmp_path, epoch=int(time.time()), ram_available_mib=10**400)
+    path = tmp_path / "host-pressure.json"
+    assert host_pressure.feed_fault(path=path) == "feed malformed"
+    assert host_pressure.read_host_pressure(path=path) is None
+
+
 class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
     """The core count the feed reports is what the configured per-core factor multiplies."""
 

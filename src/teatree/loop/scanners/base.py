@@ -50,6 +50,15 @@ def hours_since(earlier: dt.datetime, *, now: dt.datetime) -> float:
     return (now - earlier).total_seconds() / 3600.0
 
 
+def recent_iso_stamp(value: object, *, now: dt.datetime, window: dt.timedelta) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return dt.datetime.fromisoformat(value) > now - window
+    except (TypeError, ValueError):
+        return False
+
+
 def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     """Classify a non-zero ``gh`` stderr into a :class:`ScannerErrorClass` (#1287).
 

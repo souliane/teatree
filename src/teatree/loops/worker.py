@@ -467,7 +467,10 @@ class LoopWorker:
         expired-debris reap — because both are cadence work on one table that would add
         needless control-DB write pressure at the 5 s kill-switch poll.
         """
-        self._seams.publish_host_pressure()
+        try:
+            self._seams.publish_host_pressure()
+        except Exception:
+            logger.warning("host pressure publish failed; will retry on the next poll.", exc_info=True)
         self._polls_since_master_refresh += 1
         if self._polls_since_master_refresh >= self._polls_per_master_refresh():
             self._polls_since_master_refresh = 0

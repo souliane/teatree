@@ -109,6 +109,25 @@ class QueuedTaskFreshnessTests(TestCase):
         assert "premise unverifiable: issue host unavailable" in self.task.execution_reason
         assert len(signals) == 1
 
+    def test_synthetic_anchor_is_not_rechecked_as_a_forge_issue(self) -> None:
+        self.ticket.issue_url = "backlog-sweep://t3-test"
+        self.ticket.save(update_fields=["issue_url"])
+        with patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", side_effect=AssertionError):
+            assert self.scanner.scan() == []
+        self.ticket.refresh_from_db()
+        assert "last_validated_at" not in self.ticket.extra
+
+    def test_local_anchor_checks_checkout_without_reading_a_forge_issue(self) -> None:
+        self.ticket.issue_url = "auto:feature"
+        self.ticket.save(update_fields=["issue_url"])
+        with (
+            patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", side_effect=AssertionError),
+            patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="missing"),
+        ):
+            signals = self.scanner.scan()
+        assert len(signals) == 1
+        assert "target branch" in signals[0].summary
+
     def test_closed_issue_supersedes_pending_task(self) -> None:
         with patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host("closed")):
             signals = self.scanner.scan()
@@ -135,6 +154,28 @@ class QueuedTaskFreshnessTests(TestCase):
         assert "plan no longer current" in self.task.failure_reason
         assert Task.objects.filter(ticket=self.ticket, phase="planning", status=Task.Status.PENDING).exists()
         assert len(signals) == 1
+
+    def test_stale_plan_does_not_queue_a_plan_after_the_coding_task_is_claimed(self) -> None:
+        Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.PLAN_RECORDED)
+        self.ticket.refresh_from_db()
+
+        def claim_during_probe(repo: str, branch: str) -> str:
+            Task.objects.filter(pk=self.task.pk).update(status=Task.Status.CLAIMED)
+            return "present"
+
+        with (
+            patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
+            patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", side_effect=claim_during_probe),
+            patch("teatree.loop.scanners.queued_task_freshness.branch_content_landed_on_base", return_value=False),
+            patch(
+                "teatree.loop.scanners.queued_task_freshness.check_plan_current",
+                side_effect=NoCurrentPlanError("stale"),
+            ),
+        ):
+            self.scanner.scan()
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.CLAIMED
+        assert not Task.objects.filter(ticket=self.ticket, phase="planning", status=Task.Status.PENDING).exists()
 
     def test_closed_issue_is_not_a_cancellation_of_shipping(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(phase="shipping")
@@ -173,6 +214,11 @@ class QueuedTaskFreshnessTests(TestCase):
         ):
             signals = self.scanner.scan()
         assert [signal.payload["task_id"] for signal in signals] == [self.task.pk]
+
+    def test_recent_stamp_skips_the_write_lock(self) -> None:
+        self.ticket.merge_extra(set_keys={"last_validated_at": {str(self.task.pk): timezone.now().isoformat()}})
+        with patch("teatree.loop.scanners.queued_task_freshness.transaction.atomic", side_effect=AssertionError):
+            assert self.scanner.scan() == []
 
     def test_recheck_stops_at_its_tick_budget(self) -> None:
         second = TaskFactory(ticket=self.ticket, session=self.task.session, phase="coding")
