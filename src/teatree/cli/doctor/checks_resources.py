@@ -41,8 +41,6 @@ _PERCENT_MAX = 100
 _MIN_MOUNT_FIELDS = 3
 
 _ROOT_MOUNT = "/"
-_DEFAULT_DISK_WARN_PERCENT = 85
-_DEFAULT_DISK_CRIT_PERCENT = 95
 
 # Only the WORKER container runs headless agents + their commit/ty-check/lint hooks,
 # so it is the only role whose under-sized memory cap or missing skills is a real,
