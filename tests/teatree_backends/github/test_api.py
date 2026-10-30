@@ -137,13 +137,27 @@ def test_pooled_error_message_cannot_turn_http_403_into_not_found(pooled_server:
     assert not api.is_not_found(raised.value)
 
 
-def test_quota_counter_401_does_not_turn_http_404_into_auth(pooled_server: ForgeServer) -> None:
+@pytest.mark.parametrize(
+    ("header", "value", "label"),
+    [
+        ("X-RateLimit-Remaining", "401", "remaining"),
+        ("X-RateLimit-Remaining", "1401", "remaining"),
+        ("X-RateLimit-Remaining", "2401", "remaining"),
+        ("X-RateLimit-Remaining", "3401", "remaining"),
+        ("X-RateLimit-Remaining", "4401", "remaining"),
+        ("Retry-After", "401", "retry-after"),
+    ],
+)
+def test_quota_metadata_401_does_not_turn_http_404_into_auth(
+    pooled_server: ForgeServer, header: str, value: str, label: str
+) -> None:
     pooled_server.statuses["/missing"] = 404
-    pooled_server.response_headers["/missing"] = {"X-RateLimit-Remaining": "401"}
+    pooled_server.response_headers["/missing"] = {header: value}
 
     with pytest.raises(CommandFailedError) as raised:
         api._run_gh("gh", "api", "missing", token="test-token")
 
+    assert f"{label}={value}" in raised.value.stderr
     assert classify_gh_stderr(raised.value.stderr) == ScannerErrorClass.UNKNOWN
 
 

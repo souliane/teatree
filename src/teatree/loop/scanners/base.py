@@ -6,6 +6,7 @@ note, webhook trigger) or hand off to a phase agent.
 """
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -72,7 +73,8 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
         "retry-after=" in lower and ("http 403" in lower or "http 429" in lower)
     ):
         return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower.replace("remaining=401", "") for marker in auth_markers):
+    auth_text = re.sub(r"\b(?:remaining|retry-after)=\d+\b", "", lower)
+    if any(marker in auth_text for marker in auth_markers):
         return ScannerErrorClass.AUTH
     if any(marker in lower for marker in network_markers):
         return ScannerErrorClass.NETWORK
