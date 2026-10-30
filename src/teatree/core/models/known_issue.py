@@ -101,6 +101,15 @@ class KnownIssueManager(models.Manager["KnownIssue"]):
         )
         return row
 
+    def record_reactive(self, signal: "HealthSignal") -> "KnownIssue":
+        with transaction.atomic():
+            row = self.record_signal(signal)
+            self.filter(pk=row.pk).update(auto_resolve=False)
+        return row
+
+    def resolve_fingerprint(self, fingerprint: str) -> int:
+        return self.filter(fingerprint=fingerprint, resolved_at__isnull=True).update(resolved_at=timezone.now())
+
     def reconcile(self, live_fingerprints: set[str], *, complete: bool) -> int:
         """Auto-resolve every auto-derived row whose signal is no longer live.
 

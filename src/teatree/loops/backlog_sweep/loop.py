@@ -35,13 +35,14 @@ def nudge_for_dream_gaps() -> bool:
     if not loop_admits("backlog_sweep"):
         return False
     scanner = _backlog_sweep_scanner()
-    return scanner is not None and bool(scanner.scan_dream_gaps())
+    return scanner is not None and any(signal.payload.get("task_id") for signal in scanner.scan_dream_gaps())
 
 
 MINI_LOOP = MiniLoop(
     name="backlog_sweep",
     default_cadence_seconds=86400,  # the sweep cadence itself — daily, with no inner gate
     build_jobs=_build_jobs,
+    periodic_phase="backlog_sweep",
     declared_reach=frozenset({LoopReach.EGRESS}),
     determinism=LoopDeterminism.AI,
 )

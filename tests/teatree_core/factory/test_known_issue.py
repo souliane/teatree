@@ -5,7 +5,11 @@ aggregator considers wrong. The manager owns the open predicate, the
 signal-upsert, the auto-resolve rule, and the two operator verbs.
 """
 
+from unittest.mock import patch
+
 import pytest
+from django.db import DatabaseError
+from django.db.models import QuerySet
 
 from teatree.core.factory.operational_health import HealthSignal
 from teatree.core.models.known_issue import KnownIssue
@@ -58,6 +62,13 @@ class TestRecordSignal:
         KnownIssue.objects.dismiss(row.pk)
         KnownIssue.objects.record_signal(_signal("stale-tick:loop-a"))
         assert KnownIssue.objects.open().count() == 0
+
+
+class TestRecordReactive:
+    def test_a_failed_flip_leaves_no_auto_resolvable_row(self) -> None:
+        with patch.object(QuerySet, "update", side_effect=DatabaseError("flip failed")), pytest.raises(DatabaseError):
+            KnownIssue.objects.record_reactive(_signal("cadence-held:phase"))
+        assert not KnownIssue.objects.filter(fingerprint="cadence-held:phase").exists()
 
 
 class TestReconcile:

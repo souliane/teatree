@@ -67,28 +67,23 @@ class TriageAssessorScanner:
 
     def scan(self) -> list[ScanSignal]:
         assignees = resolve_identities(self.host, self.identities)
-        if self.repo_slugs == () or (not assignees and self.repo_slugs is None):
-            return []
         cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE)
-        if cadence.in_flight_exists():
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        if self.repo_slugs == () or (not assignees and self.repo_slugs is None):
+            return cadence.hold("no owned-repository or operator scope", kind="triage_assessor.held", retry=False)
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="triage_assessor.held", not_due_kind="triage_assessor.not_due"
+        )
         if trigger is None:
-            return []
+            return signals
 
         read_errors: list[str] = []
         survivors = self._survivors(assignees, read_errors=read_errors)
         if not survivors:
             if read_errors:
                 raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=[])
-            return [
-                ScanSignal(
-                    kind="triage_assessor.held",
-                    summary=f"triage assessor held for {self.overlay_name}: no unassessed needs-triage issues",
-                    payload={"overlay": self.overlay_name, "reason": "no unassessed needs-triage issues"},
-                )
-            ]
+            return cadence.hold(
+                "no unassessed needs-triage issues", kind="triage_assessor.held", retry=False, record_health=False
+            )
 
         task = cadence.queue_task(
             placeholder_issue_url=f"triage-assessor://{self.overlay_name}",
@@ -97,21 +92,21 @@ class TriageAssessorScanner:
             subject=f"Triage assessment: {self.overlay_name}",
             log_label="TriageAssessorScanner",
         )
-        if task is None:
-            return []
-        signals = [
+        signals = cadence.handover(
+            task,
             ScanSignal(
                 kind="triage_assessor.queued",
                 summary=f"triage-assessor queued for {self.overlay_name} ({len(survivors)} issue(s), {trigger})",
                 payload={
                     "overlay": self.overlay_name,
                     "phase": TRIAGE_ASSESSOR_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "issue_count": len(survivors),
                     "trigger": trigger,
                 },
             ),
-        ]
+            held_kind="triage_assessor.held",
+        )
         if read_errors:
             raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=signals)
         return signals
@@ -130,7 +125,7 @@ class TriageAssessorScanner:
             self.host,
             assignees,
             repo_slugs=self.repo_slugs or (),
-            include_unassigned=bool(self.repo_slugs),
+            by_label=bool(self.repo_slugs),
             read_errors=read_errors,
         ):
             url = _issue_url(issue)

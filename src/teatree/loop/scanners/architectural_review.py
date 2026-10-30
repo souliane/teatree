@@ -48,7 +48,6 @@ Design notes
 """
 
 import datetime as dt
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -56,9 +55,7 @@ from django.apps import apps
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.core.factory.health_signal import HealthSignal
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
-from teatree.core.models.known_issue import KnownIssue
 from teatree.core.owner_dm.architectural_review_notice import announce_held
 from teatree.core.task_dispatch import pending_admission_reason
 from teatree.loop.scanners.base import ScanSignal
@@ -67,9 +64,6 @@ from teatree.loop.scanners.phase_cadence import PhaseCadence
 if TYPE_CHECKING:
     from teatree.core.models import Task
     from teatree.core.models import TicketTransition as _TicketTransition
-
-logger = logging.getLogger(__name__)
-
 
 #: States that count as "merged" for the after-merge trigger. ``delivered``
 #: covers the post-merge "ticket fully closed" state; ``merged`` covers the
@@ -98,9 +92,15 @@ class ArchitecturalReviewScanner:
     name: str = "architectural_review"
 
     def scan(self) -> list[ScanSignal]:
+        cadence = PhaseCadence(
+            self.overlay_name,
+            phase=ARCHITECTURAL_REVIEW_PHASE,
+            cadence_hours=self.cadence_hours,
+            health_fingerprint=f"architectural-review-held:{self.overlay_name}",
+            health_kind="architectural_review_held",
+        )
         if not self.overlay_name:
-            return []
-        cadence = PhaseCadence(self.overlay_name, phase=ARCHITECTURAL_REVIEW_PHASE, cadence_hours=self.cadence_hours)
+            return cadence.hold("no overlay anchor", kind="architectural_review.held", retry=True)
         if cadence.in_flight_exists():
             task_model = cast("type[Task]", apps.get_model("core", "Task"))
             pending = (
@@ -108,24 +108,22 @@ class ArchitecturalReviewScanner:
                 .waiting_for_admission()
                 .first()
             )
-            if pending is None:
-                self._resolve_hold_health()
-            return self._held_signal(pending) if pending is not None else []
+            return (
+                self._held_signal(pending, cadence)
+                if pending is not None
+                else cadence.not_due("task already in flight", kind="architectural_review.not_due")
+            )
 
         now = timezone.now()
         last_completed_at = cadence.last_completed_run_at()
         trigger = self._evaluate_triggers(cadence, now=now, last_completed_at=last_completed_at)
         if trigger is None:
-            self._resolve_hold_health()
             next_due_at = cast("dt.datetime", last_completed_at) + dt.timedelta(hours=self.cadence_hours)
-            logger.info("architectural review not due for %s until %s", self.overlay_name, next_due_at.isoformat())
-            return [
-                ScanSignal(
-                    kind="architectural_review.not_due",
-                    summary=f"architectural review not due for {self.overlay_name} until {next_due_at.isoformat()}",
-                    payload={"overlay": self.overlay_name, "next_due_at": next_due_at.isoformat()},
-                )
-            ]
+            return cadence.not_due(
+                f"until {next_due_at.isoformat()}",
+                kind="architectural_review.not_due",
+                details={"next_due_at": next_due_at.isoformat()},
+            )
 
         task = cadence.queue_task(
             placeholder_issue_url=f"architectural-review://{self.overlay_name}",
@@ -135,13 +133,11 @@ class ArchitecturalReviewScanner:
             log_label="ArchitecturalReviewScanner",
         )
         if task is None:
-            return []
+            return cadence.hold("task was not created", kind="architectural_review.held", retry=True)
         task.refresh_from_db(fields=["admitted_at"])
         if task.admitted_at is None:
-            held = self._held_signal(task)
-            if held:
-                return held
-        self._resolve_hold_health()
+            return self._held_signal(task, cadence)
+        cadence.resolve_hold()
         return [
             ScanSignal(
                 kind="architectural_review.queued",
@@ -156,34 +152,11 @@ class ArchitecturalReviewScanner:
             ),
         ]
 
-    def _held_signal(self, task: "Task") -> list[ScanSignal]:
-        reason = pending_admission_reason(ARCHITECTURAL_REVIEW_PHASE)
-        if reason is None:
-            return []
+    @staticmethod
+    def _held_signal(task: "Task", cadence: PhaseCadence) -> list[ScanSignal]:
+        reason = pending_admission_reason(ARCHITECTURAL_REVIEW_PHASE) or "task waiting for admission"
         announce_held(task, reason, hold_kind="admission")
-        health = KnownIssue.objects.record_signal(
-            HealthSignal(
-                fingerprint=f"architectural-review-held:{self.overlay_name}",
-                severity=KnownIssue.Severity.WARNING,
-                kind="architectural_review_held",
-                overlay=self.overlay_name,
-                summary=f"architectural review held for {self.overlay_name}: {reason}",
-            )
-        )
-        KnownIssue.objects.filter(pk=health.pk).update(auto_resolve=False)
-        logger.warning("architectural review held for %s: %s", self.overlay_name, reason)
-        return [
-            ScanSignal(
-                kind="architectural_review.held",
-                summary=f"architectural review held for {self.overlay_name}: {reason}",
-                payload={"overlay": self.overlay_name, "task_id": task.pk, "reason": reason},
-            )
-        ]
-
-    def _resolve_hold_health(self) -> None:
-        KnownIssue.objects.filter(
-            fingerprint=f"architectural-review-held:{self.overlay_name}", resolved_at__isnull=True
-        ).update(resolved_at=timezone.now())
+        return cadence.hold(reason, kind="architectural_review.held", retry=True, task_id=task.pk)
 
     def _evaluate_triggers(
         self,

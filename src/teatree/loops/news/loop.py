@@ -22,6 +22,7 @@ MINI_LOOP = MiniLoop(
     name="news",
     default_cadence_seconds=3600,  # inert: the live cadence is the shipped daily row, not this
     build_jobs=_build_jobs,
+    periodic_phase="scanning_news",
     declared_reach=frozenset({LoopReach.INGRESS}),
     determinism=LoopDeterminism.AI,
 )

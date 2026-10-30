@@ -120,6 +120,7 @@ class LoopDispatch:
     blocked_reason: str = ""
     claimed_at: dt.datetime | None = None
     previous_last_run_at: dt.datetime | None = None
+    periodic_phase: str = ""
 
     @property
     def dispatched(self) -> bool:
@@ -319,7 +320,13 @@ def dispatch_loop_table(
             )
             continue
         outcomes.append(
-            LoopDispatch(name=loop.name, jobs=tuple(built), claimed_at=now, previous_last_run_at=row.last_run_at)
+            LoopDispatch(
+                name=loop.name,
+                jobs=tuple(built),
+                claimed_at=now,
+                previous_last_run_at=row.last_run_at,
+                periodic_phase=target.periodic_phase,
+            )
         )
     return outcomes
 
