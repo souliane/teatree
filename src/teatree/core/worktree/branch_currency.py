@@ -1,4 +1,4 @@
-"""Pre-cold-review / pre-ship branch-currency auto-merge gate (#940).
+"""Pre-cold-review / pre-ship branch-currency conflict gate (#940).
 
 The exit-point sibling of :mod:`teatree.core.gates.clone_guard` (#948, the
 session-start ``t3 doctor`` clone-currency check). #948 surfaces "a registered
@@ -12,17 +12,11 @@ the branch's diff onto the current target at merge time.
 The ship-side gate (:func:`require_current_branch`) checks checkout identity
 before fetching the target, then returns one of:
 
-* **auto-merges** the target into the feature branch on a zero-conflict
-    fast-forward (``MergeOutcome.ZERO_CONFLICT``); the caller records the
-    new HEAD so the cold reviewer attests the *post-merge* SHA.
-* **refuses** when the merge would conflict (``MergeOutcome.CONFLICTED``):
-    ``git merge --abort`` restores the worktree, the gate names the
-    conflicting paths, and returns an actionable hint instead of leaving
-    a half-merged tree that the next step would silently push.
+* **refuses** when a pure ``merge-tree`` prediction finds conflicts;
+    it names the paths without changing the reviewed head.
 * **refuses** when the checkout is not on the recorded branch
-    before it mutates the tree.
-* **no-ops** when the branch is already current
-    (``MergeOutcome.ALREADY_CURRENT``).
+    before fetching.
+* **no-ops** when the branch is current or behind without conflicts.
 
 The CLEAR-side gate (:func:`sha_conflicts_with_target`) is
 **conflict-only**: it predicts — without mutating the worktree, via
@@ -36,7 +30,6 @@ not block when the network is down.
 """
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import TypedDict
 
 from teatree.utils.git import git_env_without_overrides
@@ -54,27 +47,13 @@ class BranchStaleness:
     target_oid: str
 
 
-class MergeOutcome(Enum):
-    """Outcome of an attempted auto-merge of ``target`` into the branch."""
-
-    ZERO_CONFLICT = "zero_conflict"
-    CONFLICTED = "conflicted"
-    FETCH_FAILED = "fetch_failed"
-    ALREADY_CURRENT = "already_current"
-
-
 class BranchCurrencyResult(TypedDict):
     """Public result of :func:`require_current_branch`.
 
-    ``auto_merged`` is ``True`` only when the gate *performed* a
-    zero-conflict merge (so the caller knows to re-read HEAD). ``error``
-    is set when the gate refused (conflict or wrong checkout);
-    ``hint`` carries the manual remediation. ``post_merge_sha`` is the new
-    HEAD after a successful merge, or ``None`` when no merge ran.
+    ``error`` is set when the gate refused (conflict or wrong checkout);
+    ``hint`` carries the manual remediation.
     """
 
-    auto_merged: bool
-    post_merge_sha: str | None
     error: str | None
     hint: str | None
 
@@ -168,7 +147,7 @@ def predict_merge_conflicts(repo: str, reviewed_sha: str, target: str = "origin/
     is inconclusive and returns ``None`` so the caller fails open — same
     posture as a failed fetch.
     """
-    rc, out = _git(repo, "merge-tree", "--write-tree", "--name-only", reviewed_sha, target)
+    rc, out = _git(repo, "merge-tree", "--write-tree", "--name-only", "--no-messages", reviewed_sha, target)
     if rc == 0:
         return ()
     if rc != 1:
@@ -268,62 +247,19 @@ def branch_behind_target(repo: str, branch: str, target: str = "origin/main") ->
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _MergeAttempt:
-    """Outcome + conflicting paths from one merge attempt."""
-
-    outcome: MergeOutcome
-    conflicting_paths: tuple[str, ...]
-
-
 def _checkout_ref(repo: str) -> str:
     rc, ref = _git(repo, "symbolic-ref", "--quiet", "HEAD")
     return ref if rc == 0 else ""
 
 
-def _attempt_merge(repo: str, branch: str, target: str) -> _MergeAttempt:
-    """Single-shot merge attempt: returns outcome and conflicting paths.
-
-    On conflict, captures the unmerged paths from ``git diff
-    --name-only --diff-filter=U`` BEFORE running ``merge --abort`` so
-    the caller can render a precise hint. The abort itself is best-effort
-    — its only job is to keep the tree clean for the next gate.
-    """
-    if not _fetch_target(repo, target):
-        return _MergeAttempt(MergeOutcome.FETCH_FAILED, ())
-    if _rev_count(repo, f"refs/heads/{branch}..{target}") <= 0:
-        return _MergeAttempt(MergeOutcome.ALREADY_CURRENT, ())
-    rc, _ = _git(repo, "merge", "--no-edit", target)
-    if rc == 0:
-        return _MergeAttempt(MergeOutcome.ZERO_CONFLICT, ())
-    # Capture conflicts before aborting — the unmerged index is the
-    # authoritative source for which files conflicted.
-    _, paths_out = _git(repo, "diff", "--name-only", "--diff-filter=U")
-    paths = tuple(line for line in paths_out.splitlines() if line.strip())
-    # Restore worktree — `merge --abort` is a no-op when no merge is in
-    # progress, so safe to call unconditionally.
-    _git(repo, "merge", "--abort")
-    return _MergeAttempt(MergeOutcome.CONFLICTED, paths)
-
-
-def _ok(
-    *,
-    auto_merged: bool = False,
-    post_merge_sha: str | None = None,
-    hint: str | None = None,
-) -> BranchCurrencyResult:
+def _ok(*, hint: str | None = None) -> BranchCurrencyResult:
     """Build a non-blocking result (no error)."""
-    return BranchCurrencyResult(auto_merged=auto_merged, post_merge_sha=post_merge_sha, error=None, hint=hint)
-
-
-_NON_BLOCKING_OUTCOMES = frozenset({MergeOutcome.ALREADY_CURRENT, MergeOutcome.FETCH_FAILED})
+    return BranchCurrencyResult(error=None, hint=hint)
 
 
 def _wrong_checkout_result(repo: str, branch: str, current_ref: str) -> BranchCurrencyResult:
     current = repr(current_ref.removeprefix("refs/heads/")) if current_ref else "a detached HEAD or unreadable checkout"
     return BranchCurrencyResult(
-        auto_merged=False,
-        post_merge_sha=None,
         error=f"refusing to ship: checkout {repo!r} is on {current}, not recorded branch {branch!r}",
         hint=f"Check out {branch!r} in {repo!r} or correct the Worktree row's checkout path, then retry.",
     )
@@ -336,16 +272,13 @@ def require_current_branch(
     target: str = "origin/main",
     dry_run: bool = False,
 ) -> BranchCurrencyResult:
-    """Run the auto-merge gate; return the structured result.
+    """Check branch currency without changing the reviewed head.
 
-    ``dry_run`` reports staleness without checking the checkout or merging —
+    ``dry_run`` reports staleness without checking the checkout —
     used by callers that just want to surface the gap (e.g. a doctor
     check, a defense-in-depth pre-push probe).
 
-    On zero-conflict merge the caller should record the returned
-    ``post_merge_sha`` so the downstream cold reviewer attests the
-    post-merge tree. On conflict or wrong checkout the caller must NOT
-    proceed — ``error`` + ``hint`` is the actionable refusal.
+    On conflict or wrong checkout the caller must not proceed.
     """
     if not dry_run:
         current_ref = _checkout_ref(repo)
@@ -359,25 +292,14 @@ def require_current_branch(
             else None
         )
         return _ok(hint=hint)
-    attempt = _attempt_merge(repo, branch, target)
-    if attempt.outcome is MergeOutcome.ZERO_CONFLICT:
-        return _ok(auto_merged=True, post_merge_sha=_rev_parse(repo, "HEAD"))
-    if attempt.outcome in _NON_BLOCKING_OUTCOMES:
-        # Already-current is a true no-op; fetch-failed is an
-        # inconclusive skip (same posture as clone_guard).
+    paths = predict_merge_conflicts(repo, staleness.base_oid, target)
+    if not paths:
         return _ok()
-    # CONFLICTED.
-    paths_str = ", ".join(attempt.conflicting_paths) if attempt.conflicting_paths else "(unknown — see git status)"
+    paths_str = ", ".join(paths)
     return BranchCurrencyResult(
-        auto_merged=False,
-        post_merge_sha=None,
-        error=(
-            f"refusing to ship: merging {target} into {branch!r} produced conflicts in: "
-            f"{paths_str}. Worktree restored via `git merge --abort`."
-        ),
+        error=(f"refusing to ship: merging {target} into {branch!r} would conflict in: {paths_str}."),
         hint=(
             f"Run `git merge {target}` on {branch!r}, resolve conflicts, commit, then retry — "
-            "the cold reviewer must attest the post-merge SHA so the release pipeline "
-            "does not certify a stale base."
+            "the cold reviewer must attest the resolved head."
         ),
     )

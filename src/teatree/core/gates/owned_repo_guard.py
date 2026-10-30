@@ -52,9 +52,8 @@ class MergeKeystoneResult(TypedDict, total=False):
     ticket_state: str
     error: str
     escalated: bool
-    # ``"substrate"`` when a substrate-class refusal was escalated (the loop edge
-    # pings the owner once and holds — ping-and-hold). Empty / absent for any
-    # other refusal so the loop pings ONLY on substrate, not every held merge.
+    # ``"awaiting_critic"`` is a live-critic wait; ``"substrate"`` is an escalated
+    # substrate hold; empty/absent is every other refusal.
     escalation_kind: str
     # #3413: the config-sourced standing substrate authorizer id when the merge was
     # authorized by the owner's standing delegation (``substrate_auto_merge_authorized_by``);

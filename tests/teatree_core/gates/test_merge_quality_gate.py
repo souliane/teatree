@@ -19,14 +19,18 @@ critic, so the gate is satisfiable.
 
 import contextlib
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
+from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
 from teatree.core.gates.merge_quality_gate import (
+    MergeAwaitingCriticError,
     MergeQualityVerdictError,
     assert_merge_quality_verdict,
     build_merge_quality_contract,
@@ -294,11 +298,58 @@ class TestVerdictGate(TestCase):
         ):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
 
-    def test_exhausted_critic_refuses_with_rearm_instruction(self) -> None:
+    def test_exhausted_critic_names_available_remedies(self) -> None:
         ticket = _ordinary_ticket()
         with patch.object(CriticDispatch, "saturated") as saturated:
             saturated.return_value.filter.return_value.exists.return_value = True
-            with pytest.raises(MergeQualityVerdictError, match="critic retry budget is exhausted; inspect"):
+            with pytest.raises(MergeQualityVerdictError, match=r"t3 <overlay> ticket critic-record.*push a new commit"):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_active_critic_is_a_wait_only_while_worker_can_run_it(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=True),
+        ):
+            with pytest.raises(MergeAwaitingCriticError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+            assert claim.task is not None
+            claim.task.status = Task.Status.FAILED
+            claim.task.save(update_fields=["status"])
+            with pytest.raises(MergeQualityVerdictError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_expired_claim_refuses_even_while_critic_task_is_queued(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=True),
+        ):
+            with pytest.raises(MergeAwaitingCriticError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+            assert claim.task is not None
+            assert claim.task.status in Task.Status.active()
+            claim.deadline = timezone.now() - timedelta(seconds=1)
+            claim.save(update_fields=["deadline"])
+            with pytest.raises(MergeQualityVerdictError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_resolved_claim_refuses_even_while_critic_task_is_queued(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=True),
+        ):
+            with pytest.raises(MergeAwaitingCriticError):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+            claim = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+            assert claim.task is not None
+            assert claim.task.status in Task.Status.active()
+            claim.state = CriticDispatch.State.RESOLVED
+            claim.save(update_fields=["state"])
+            with pytest.raises(MergeQualityVerdictError):
                 check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_no_verdict_refuses_a_directive_keystone(self) -> None:
@@ -741,6 +792,13 @@ class TestKeystoneWiring(TestCase):
     def test_ordinary_keystone_merges_with_a_clean_verdict(self) -> None:
         ticket = _ordinary_ticket()
         clear = _keystone_fixtures(ticket)
+        review = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR, reviewed_sha=_FORTY_HEX)
+        with (
+            patch("teatree.core.gates.merge_critic_arm._reviewed_pr_is_current", return_value=True),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            arm_for_recorded_review(review)
+        assert CriticDispatch.objects.filter(ticket=ticket, transition="merge", head_sha=_FORTY_HEX).exists()
         _record_merge_verdict(ticket, items=_clean_verdict_items())
         outcome = self._merge(clear)
         ticket.refresh_from_db()

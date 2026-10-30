@@ -186,6 +186,11 @@ class BoundMergeResult:
     merged: bool
     merged_sha: str = ""
     refusal: str = ""
+    waiting: bool = False
+
+
+def awaiting_critic_attempt(pr: PrSummary, *, reason: str) -> MergeAttempt:
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="waiting_on_critic", reason=reason, url=pr.url)
 
 
 def blocked_merge_attempt(

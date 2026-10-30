@@ -258,6 +258,7 @@ class FakePrApiClient:
     #: The ``str(exc)`` a refused ``merge_pr_bound`` carries (#4856) —
     #: empty reproduces the pre-fix "no text at all" shape.
     refusal_text: str = ""
+    waiting: bool = False
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
     update_branch_calls: list[tuple[str, int, str]] = field(default_factory=list)
@@ -279,7 +280,7 @@ class FakePrApiClient:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         if self.fallback_succeeds:
             return BoundMergeResult(merged=True, merged_sha=MAIN_SHA)
-        return BoundMergeResult(merged=False, refusal=self.refusal_text)
+        return BoundMergeResult(merged=False, refusal=self.refusal_text, waiting=self.waiting)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         self.update_branch_calls.append((slug, pr_id, expected_head_oid))
@@ -782,6 +783,21 @@ class TestUvAuditFallback:
         assert notifier.calls == []
         assert signals[0].payload["reason"] == "uv_audit_red_but_clean_on_main"
 
+    def test_unreadable_main_uv_audit_does_not_authorize_fallback(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with (
+            _required("test (3.13)", "uv-audit"),
+            patch.object(FakePrApiClient, "main_check_failed", side_effect=RuntimeError("offline")),
+        ):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "uv_audit_red_but_clean_on_main"
+
     def test_uv_audit_red_with_main_red_keystone_merges(self) -> None:
         clear = _issue_clear()
         api = FakePrApiClient(
@@ -830,6 +846,17 @@ class TestUvAuditFallback:
         assert notifier.calls == []
         assert signals[0].kind == "pr_sweep.blocked"
         assert "head moved" in signals[0].payload["reason"]
+
+    def test_keystone_reports_live_critic_as_waiting(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="critic running", escalation_kind="awaiting_critic")
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.waiting_on_critic"
+        assert api.merge_pr_calls == []
 
 
 class TestStaleBaseMergeUpdate:
@@ -1210,6 +1237,20 @@ class TestSoloOverlayBypassesClearGate:
         assert signals[0].kind == "pr_sweep.blocked"
         assert signals[0].payload["reason"] == "solo_overlay_merge_refused: no rubric is recorded for this ticket"
 
+    def test_solo_overlay_reports_live_critic_as_waiting(self) -> None:
+        _record_cold_review()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr()]},
+            fallback_succeeds=False,
+            refusal_text="critic running",
+            waiting=True,
+        )
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(), solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.waiting_on_critic"
+
     def test_collaborative_overlay_default_never_auto_merges_on_no_clear(self) -> None:
         # Anti-vacuous: without solo_overlay, the CLEAR contract stays in force —
         # the sweep NEVER auto-merges an uncleared PR. An own green+clean PR now
@@ -1386,6 +1427,26 @@ class TestAutoReviewDispatch:
     ``_flag_no_review`` at all, so it never enqueues.
     """
 
+    def test_three_recorded_reviews_surface_limit_without_dispatch(self) -> None:
+        pr = _open_pr()
+        for digit in "abc":
+            _record_hold(sha=digit * 40)
+        dispatcher = FakeReviewDispatcher()
+        scanner, _ = _scanner(
+            api=FakePrApiClient(prs_by_slug={SLUG: [pr]}),
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+        )
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user"):
+            signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["reason"] == "review_rounds_exhausted"
+        assert signals[0].payload["review_dispatched"] is False
+        assert dispatcher.calls == []
+
     def test_flag_no_review_enqueues_one_review_task_when_armed(self) -> None:
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
@@ -1411,6 +1472,22 @@ class TestAutoReviewDispatch:
         assert dispatcher.calls == []
         assert signals[0].kind == "pr_sweep.flag_no_review"
         assert signals[0].payload.get("review_dispatched") is False
+
+    def test_disabled_auto_review_does_not_surface_a_review_cap(self) -> None:
+        pr = _open_pr()
+        for digit in "abc":
+            _record_hold(sha=digit * 40)
+        scanner, _ = _scanner(
+            api=FakePrApiClient(prs_by_slug={SLUG: [pr]}),
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=False,
+        )
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        notify.assert_not_called()
 
     def test_flag_on_but_no_dispatcher_does_not_dispatch(self) -> None:
         # Defensive: armed but no dispatcher wired -> not dispatched, no crash.
@@ -2327,6 +2404,26 @@ class TestSubstrateHoldPing:
         assert notifier.calls == []
         assert signals[0].payload["reason"] == "fallback_uv_audit_gh_refused: some refusal"
         assert pinger.calls == []
+
+    def test_non_substrate_uv_audit_fallback_wait_is_not_blocked(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=False,
+            refusal_text="critic running",
+            waiting=True,
+        )
+        keystone = FakeKeystone(merged=False, error="uv-audit failing", escalation_kind="")
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert notifier.calls == []
+        assert signals[0].kind == "pr_sweep.waiting_on_critic"
+        assert signals[0].payload["reason"] == "critic running"
 
     def test_substrate_hold_sends_no_owner_dm_and_logs_once(self) -> None:
         # F3: a substrate hold is INTERNAL — logged, NEVER DM'd — so a held diff
