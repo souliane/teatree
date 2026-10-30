@@ -8,11 +8,12 @@ import datetime as dt
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth import get_user_model
 from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
-from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models import DeferredQuestion, OperatorIdentity, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
 from teatree.loop.question_binding import answer_from_click
@@ -64,6 +65,27 @@ def _posted_card(**record_kwargs: Any) -> tuple[DeferredQuestion, MagicMock]:
 
 
 class TestTheTapRoundTrip(TestCase):
+    def test_only_registered_requester_can_tap_its_ticket_card(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        row = DeferredQuestion.record(
+            "Can I ship the widgets?",
+            card=OWNER_CARD,
+            task_session=Session.objects.create(ticket=ticket),
+            slack_ts=_ROOT_TS,
+            slack_channel="D-OP",
+        )
+        backend = _backend()
+        backend.open_dm.side_effect = lambda user_id: {_OWNER: _CHANNEL, "U-OP": "D-OP"}[user_id]
+
+        assert not answer_from_click(_tap(row, user=_OWNER), backend=backend)
+        assert answer_from_click(_tap(row, user="U-OP"), backend=backend)
+        row.refresh_from_db()
+        assert row.answer_text == "Yes"
+        assert backend.update_message.call_count == 1
+
     def test_a_tap_records_the_recommended_label_and_closes_the_root_card(self) -> None:
         row, backend = _posted_card()
         answered: list[DeferredQuestion] = []

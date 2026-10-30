@@ -8,8 +8,9 @@ import logging
 from unittest.mock import patch
 
 import pytest
+from django.contrib.auth import get_user_model
 
-from teatree.core.models import ConfigSetting, SendAudit
+from teatree.core.models import ConfigSetting, OperatorIdentity, SendAudit
 from teatree.core.models.provenance import Provenance
 from teatree.core.send_proxy import (
     REDACTION_PLACEHOLDER,
@@ -90,8 +91,22 @@ class TestSelfDmNeverLockout:
         assert verdict.allowlist_ok is True
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.ALLOWED.value
 
+    def test_registered_operator_dm_is_allowed_without_a_public_channel_exception(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        assert route_send(_request(destination="U-OP")).allowed
+        assert not route_send(_request(destination="C-public")).allowed
+
 
 class TestUnconditionalRedaction:
+    def test_unreadable_redaction_policy_is_visible_to_operator_dm_callers(self) -> None:
+        _set_allowlist(["C_TEAM"])
+        with patch("teatree.core.send_proxy.overlay_privacy_rules", side_effect=RuntimeError("policy unavailable")):
+            verdict = route_send(_request(destination="C_TEAM", strict_redaction=True))
+        assert verdict.redaction_failed
+        assert not verdict.allowed
+        assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.DENIED.value
+
     def test_redacts_a_matching_term_in_the_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_allowlist(["C_TEAM"])
         monkeypatch.setattr("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"])

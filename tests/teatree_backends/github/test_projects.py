@@ -26,6 +26,7 @@ def _node(number: int, labels: list[str], page_size: int) -> dict[str, object]:
             "title": f"issue {number}",
             "url": f"https://github.com/acme/repo/issues/{number}",
             "updatedAt": "2026-01-01T00:00:00Z",
+            "author": {"login": "ALIce"},
             "labels": {
                 "totalCount": len(labels),
                 "nodes": [{"name": name} for name in labels[:page_size]],
@@ -34,10 +35,12 @@ def _node(number: int, labels: list[str], page_size: int) -> dict[str, object]:
     }
 
 
-def _install(monkeypatch: pytest.MonkeyPatch, labels: list[str]) -> None:
+def _install(monkeypatch: pytest.MonkeyPatch, labels: list[str], *, require_author: bool = False) -> None:
     def fake_run_gh(*argv: str, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         match = _LABEL_PAGE_SIZE_IN_QUERY.search(argv[-1])
         assert match is not None, "the board query must request a labels page"
+        if require_author:
+            assert "author { login }" in argv[-1]
         body = {
             "data": {
                 "user": {
@@ -56,6 +59,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, labels: list[str]) -> None:
 
 
 class TestLabelCompleteness:
+    def test_issue_author_reaches_the_board_item(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _install(monkeypatch, [], require_author=True)
+
+        [item] = fetch_project_items("acme", 3)
+
+        assert item.author_login == "ALIce"
+
     def test_a_label_past_the_first_ten_still_reaches_the_item(self, monkeypatch: pytest.MonkeyPatch) -> None:
         labels = [f"area/{i}" for i in range(12)] + ["needs-triage"]
         _install(monkeypatch, labels)

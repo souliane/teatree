@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.contrib.auth import get_user_model
+from django.test import TestCase
 from mcp.server.mcpserver.exceptions import ToolError
 
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -36,6 +38,7 @@ from teatree.core.backend_factory import (
     sharepoint_client_from_overlay,
 )
 from teatree.core.backend_protocols import BackendResolutionError, MessagingBackend
+from teatree.core.models import OperatorIdentity
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
@@ -245,6 +248,22 @@ def test_messaging_from_overlay_delegates_to_loader() -> None:
 
     assert result == "sentinel"
     get_messaging_mock.assert_called_once()
+
+
+class TestOperatorDmPolicyWiring(TestCase):
+    def test_messaging_backend_reads_registered_operator_ids(self) -> None:
+        user = get_user_model().objects.create_superuser(username="operator", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-operator")
+        backend = SlackBotBackend(bot_token="xoxb-test", user_id="U-owner", owner_dm_only=True)
+        with (
+            _patch_overlay(_NoTokenOverlay),
+            patch("teatree.backends.loader.get_messaging", return_value=backend),
+        ):
+            resolved = messaging_from_overlay()
+
+        with patch.object(backend._http, "post", return_value={"ok": True, "channel": {"id": "D-operator"}}):
+            assert resolved is backend
+            assert backend.open_dm("U-operator") == "D-operator"
 
 
 class _SlackOverlay(OverlayBase):

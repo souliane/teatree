@@ -162,9 +162,9 @@ def _is_foreign_dm(event: dict, overlay: str) -> bool:
     if event.get("channel_type") != "im":
         return False
     ensure_django()
-    from teatree.loop.owner_identity import configured_owner_id, sent_by_owner  # noqa: PLC0415 — DM-only policy
+    from teatree.loop.owner_identity import configured_owner_id, sent_by_operator  # noqa: PLC0415 — DM-only policy
 
-    return not sent_by_owner(event, configured_owner_id(messaging_from_overlay(overlay or None)))
+    return not sent_by_operator(event, configured_owner_id(messaging_from_overlay(overlay or None)))
 
 
 def _drain_and_emit() -> None:

@@ -115,6 +115,11 @@ def upsert_ticket_from_pr(
     pr_entry_dict = pr_entry.to_dict()
     inferred_state = infer_state_from_prs({web_url: pr_entry_dict})
     mr_title = pr_entry.title if lookup_url == web_url else ""
+    author = ctx.raw.get("author")
+    author_handle = author.get("username") if isinstance(author, dict) else None
+    requester_key = (
+        f"gitlab:{author_handle}" if lookup_url == web_url and isinstance(author_handle, str) and author_handle else ""
+    )
 
     tickets = list(Ticket.objects.matching_issue(lookup_url).order_by("pk"))
     if not tickets:
@@ -129,6 +134,8 @@ def upsert_ticket_from_pr(
             new_ticket.short_description = new_ticket.short_description_seed(mr_title)
             new_ticket.extra["mr_title_generated"] = mr_title
         new_ticket.save()
+        if requester_key:
+            new_ticket.record_requester(requester_key)
         result.tickets_created += 1
     else:
         ticket = tickets[0]
@@ -139,6 +146,8 @@ def upsert_ticket_from_pr(
             ticket.overlay = overlay_name
             ticket.save(update_fields=["overlay"])
         update_ticket(ticket, pr_entry_dict, web_url, ctx.repo_short, inferred_state)
+        if requester_key:
+            ticket.record_requester(requester_key)
         result.tickets_updated += 1
 
 

@@ -21,7 +21,6 @@ _NON_FORGE_INTEGRATIONS = frozenset(
         "cli/slack/manifest.py",
         "cli/slack/user_token_setup.py",
         "core/connector_probes.py",
-        "core/settings/settings_peers.py",
         "core/worktree/readiness.py",
         "llm/rate_limits.py",
     }

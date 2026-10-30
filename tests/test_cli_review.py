@@ -1,8 +1,12 @@
+from datetime import timedelta
 from http import HTTPStatus
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 from typer.testing import CliRunner
 
 import teatree.backends.gitlab.api as gitlab_api_mod
@@ -10,6 +14,9 @@ import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.service import _find_added_line
+from teatree.core.models import ConfigSetting, OnBehalfApproval, OperatorGrant, OperatorIdentity, Ticket
+from teatree.core.models.operator_grant import OperatorGrantTokens
+from teatree.utils.sealing import MasterKey
 from tests._send_gate import allow_forge_repos
 from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import arm_on_behalf_gate, disable_on_behalf_gate, posture_forbids_cm
@@ -750,6 +757,47 @@ def _discussions_with_author(username: str) -> list[dict[str, object]]:
 
 
 class TestApprove:
+    @pytest.fixture(autouse=True)
+    def _oauth_requester(self, monkeypatch, request):
+        ConfigSetting.objects.create(
+            scope="",
+            key="operator_oauth_apps",
+            value={
+                "gitlab": {
+                    "client_id": "client",
+                    "client_secret_pass_key": "gitlab/oauth",
+                    "redirect_uri": "https://factory.example/login/oauth/gitlab/callback/",
+                }
+            },
+        )
+        user = get_user_model().objects.create_superuser("reviewer-bot", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="gitlab", handle="reviewer-bot", external_id="1")
+        Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/merge_requests/7", requested_by="gitlab:reviewer-bot"
+        )
+        key = MasterKey(b"a" * 32)
+        OperatorGrant.objects.store(
+            user=user,
+            forge="gitlab",
+            tokens=OperatorGrantTokens(
+                "oauth-access", "oauth-refresh", timezone.now() + timedelta(hours=1), scope="api"
+            ),
+            key=key,
+        )
+        monkeypatch.setattr(
+            "teatree.core.operator_auth.operator_oauth.master_key_source", lambda: SimpleNamespace(load=lambda: key)
+        )
+        absent = {
+            "test_approve_refused_without_prior_review_note",
+            "test_approve_refused_when_no_discussions",
+            "test_approve_refused_when_discussions_only_have_other_authors",
+            "test_approve_blocked_by_on_behalf_gate",
+            "test_unapprove_blocked_by_on_behalf_gate",
+        }
+        if request.node.name not in absent:
+            action = "unapprove" if "unapprove" in request.node.name else "approve"
+            OnBehalfApproval.record("org/repo!7", action, "gitlab:reviewer-bot")
+
     def test_approve_succeeds_when_reviewer_already_commented(self, monkeypatch):
         """Approve posts when a note authored by the approving identity exists."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
@@ -764,7 +812,7 @@ class TestApprove:
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
         mock_api.post_status.return_value = 201
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 0, result.output
             assert "OK approved" in result.output
@@ -780,10 +828,10 @@ class TestApprove:
         mock_api.get_json_paginated.side_effect = lambda endpoint: (
             _discussions_with_author("someone-else") if "/discussions" in endpoint else []
         )
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "review before approve" in result.output
+            assert "No consent" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_approve_refused_when_no_discussions(self, monkeypatch):
@@ -793,10 +841,10 @@ class TestApprove:
         mock_api.current_username.return_value = "reviewer-bot"
         mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
         mock_api.get_json_paginated.side_effect = lambda endpoint: []
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "review before approve" in result.output
+            assert "No consent" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_approve_refused_when_discussions_only_have_other_authors(self, monkeypatch):
@@ -808,10 +856,10 @@ class TestApprove:
         mock_api.get_json_paginated.side_effect = lambda endpoint: (
             _discussions_with_author("unrelated-user") if "/discussions" in endpoint else []
         )
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "review before approve" in result.output
+            assert "No consent" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_approve_skips_malformed_discussion_and_note_shapes(self, monkeypatch):
@@ -830,7 +878,7 @@ class TestApprove:
         )
         mock_api.get_json_paginated.side_effect = lambda endpoint: discussions if "/discussions" in endpoint else []
         mock_api.post_status.return_value = 201
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 0, result.output
             assert "OK approved" in result.output
@@ -843,10 +891,10 @@ class TestApprove:
         mock_api.get_json.side_effect = lambda endpoint: (
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
         )
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "Could not resolve" in result.output
+            assert "identity does not match" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_approve_api_failure_surfaced(self, monkeypatch):
@@ -859,7 +907,7 @@ class TestApprove:
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
         mock_api.post_status.return_value = 403
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
@@ -878,10 +926,10 @@ class TestApprove:
         mock_api.get_json_paginated.side_effect = lambda endpoint: (
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "approve-on-behalf" in result.output
+            assert "No consent" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_unapprove_succeeds(self, monkeypatch):
@@ -895,7 +943,7 @@ class TestApprove:
         mock_api.get_json.side_effect = lambda endpoint: (
             {"approved_by": []} if endpoint.endswith("/approvals") else {"id": 1}
         )
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 0, result.output
             assert "OK unapproved" in result.output
@@ -905,8 +953,9 @@ class TestApprove:
     def test_unapprove_api_failure_surfaced(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
         mock_api.post_status.return_value = 404
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 1
             assert "Failed: HTTP 404" in result.output
@@ -919,10 +968,10 @@ class TestApprove:
         # See ``test_approve_blocked_by_on_behalf_gate``: replace the autouse gate-off pin.
         arm_on_behalf_gate(monkeypatch)
         mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabOAuthAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "approve-on-behalf" in result.output
+            assert "No consent" in result.output
             mock_api.post_status.assert_not_called()
 
 

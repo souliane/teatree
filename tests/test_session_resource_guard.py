@@ -4,12 +4,14 @@
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
-from tests._session_resource_guard import pytest_testnodedown
+from tests._session_resource_guard import _live_resources, pytest_testnodedown
 
 _CORE = Path(__file__).resolve().parents[1]
 
@@ -116,3 +118,18 @@ def test_guard_is_registered_from_conftest(pytestconfig: pytest.Config) -> None:
 
 def test_crashed_worker_without_output_does_not_hide_its_failure() -> None:
     pytest_testnodedown(SimpleNamespace())
+
+
+def test_resource_scan_does_not_evaluate_lazy_objects() -> None:
+    class LazyObject:
+        @property
+        def __class__(self) -> type:
+            message = "lazy object was evaluated"
+            raise RuntimeError(message)
+
+    with (
+        patch("tests._session_resource_guard.gc.get_objects", return_value=[LazyObject()]),
+        patch("tests._session_resource_guard.threading.enumerate", return_value=[threading.main_thread()]),
+        patch("tests._session_resource_guard.multiprocessing.active_children", return_value=[]),
+    ):
+        assert _live_resources() == []

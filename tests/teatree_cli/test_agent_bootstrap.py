@@ -115,3 +115,15 @@ class TestAgentHelpIsBootstrapSafe:
         )
         assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         assert "ImproperlyConfigured" not in result.stderr
+
+
+def test_root_cli_help_imports_without_django_setup(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "from t3_bootstrap._main import main; raise SystemExit(main())", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=_clean_env(),
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"

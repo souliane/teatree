@@ -32,6 +32,8 @@ from teatree.core.models import (
     ModeScheduleSlot,
     OnBehalfApproval,
     OnBehalfAudit,
+    OperatorGrant,
+    OperatorIdentity,
     Prompt,
     SealedSecret,
     SecretCutover,
@@ -45,6 +47,8 @@ from teatree.core.models import (
     TrustedIdentity,
     WorktreeEnvOverride,
 )
+from teatree.core.models.operator_grant import OperatorGrantTokens
+from teatree.utils.sealing import MasterKey
 from tests.factories import (
     MergeAuditFactory,
     SessionFactory,
@@ -80,6 +84,81 @@ class TestConfigSettingAdmin:
         """
         model_admin = admin.site._registry[ConfigSetting]
         assert "value" not in model_admin.list_editable
+
+
+class TestOperatorUserAdmin(django.test.TestCase):
+    def test_administrator_can_invite_forge_identity_on_user_page(self) -> None:
+        administrator = get_user_model().objects.create_superuser("administrator", "admin@example.com", "pw")
+        operator = get_user_model().objects.create_superuser("operator", "operator@example.com", None)
+        self.client.force_login(administrator)
+
+        response = self.client.post(
+            reverse("admin:auth_user_change", args=[operator.pk]),
+            {
+                "username": operator.username,
+                "email": operator.email,
+                "is_active": "on",
+                "is_staff": "on",
+                "is_superuser": "on",
+                "date_joined_0": operator.date_joined.date().isoformat(),
+                "date_joined_1": operator.date_joined.time().strftime("%H:%M:%S"),
+                "operator_identities-TOTAL_FORMS": "1",
+                "operator_identities-INITIAL_FORMS": "0",
+                "operator_identities-MIN_NUM_FORMS": "0",
+                "operator_identities-MAX_NUM_FORMS": "1000",
+                "operator_identities-0-platform": "github",
+                "operator_identities-0-handle": "Alice",
+                "operator_identities-0-external_id": "123",
+                "oauth_grants-TOTAL_FORMS": "0",
+                "oauth_grants-INITIAL_FORMS": "0",
+                "oauth_grants-MIN_NUM_FORMS": "0",
+                "oauth_grants-MAX_NUM_FORMS": "1000",
+            },
+        )
+
+        assert response.status_code == 302, (
+            response.context["adminform"].form.errors,
+            [inline.formset.errors for inline in response.context["inline_admin_formsets"]],
+        )
+        assert OperatorIdentity.objects.get(platform="github", external_id="123").user == operator
+
+    def test_user_page_shows_identity_and_grant_metadata_without_tokens(self) -> None:
+        user = get_user_model().objects.create_superuser("operator", "operator@example.com", "pw")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="operator", external_id="123")
+        OperatorGrant.objects.store(
+            user=user,
+            forge="github",
+            tokens=OperatorGrantTokens(
+                access_token="access-secret-marker",
+                refresh_token="refresh-secret-marker",
+                expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1),
+            ),
+            key=MasterKey(b"a" * 32),
+        )
+        self.client.force_login(user)
+        response = self.client.get(reverse("admin:auth_user_change", args=[user.pk]))
+        assert response.status_code == 200
+        assert b"github" in response.content
+        assert b"operator" in response.content
+        assert b"access-secret-marker" not in response.content
+        assert b"refresh-secret-marker" not in response.content
+        assert b"ciphertext" not in response.content
+
+    def test_grant_admin_is_read_only_and_never_renders_ciphertext(self) -> None:
+        user = get_user_model().objects.create_superuser("operator", "operator@example.com", "pw")
+        grant = OperatorGrant.objects.store(
+            user=user,
+            forge="github",
+            tokens=OperatorGrantTokens("access-secret-marker", "refresh-secret-marker", dt.datetime.now(dt.UTC)),
+            key=MasterKey(b"a" * 32),
+        )
+        self.client.force_login(user)
+        changelist = self.client.get(reverse("admin:core_operatorgrant_changelist"))
+        assert changelist.status_code == 200
+        assert b"access-secret-marker" not in changelist.content
+        assert b"refresh-secret-marker" not in changelist.content
+        assert b"ciphertext" not in changelist.content
+        assert self.client.get(reverse("admin:core_operatorgrant_change", args=[grant.pk])).status_code == 403
 
 
 class TestSealedSecretAdmin(django.test.TestCase):
