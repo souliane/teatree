@@ -33,7 +33,7 @@ from django.apps import apps
 from django.utils import timezone
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.scanners.base import PartialScanError, ScanSignal
+from teatree.loop.scanners.base import PartialScanError, ScanSignal, resolve_identities
 from teatree.loop.scanners.needs_triage_query import _issue_labels, _issue_title, _issue_url, needs_triage_issues
 from teatree.loop.scanners.phase_cadence import PhaseCadence
 from teatree.types import RawAPIDict
@@ -66,7 +66,7 @@ class TriageAssessorScanner:
     name: str = "triage_assessor"
 
     def scan(self) -> list[ScanSignal]:
-        assignees = self._resolve_identities()
+        assignees = resolve_identities(self.host, self.identities)
         if self.repo_slugs == () or (not assignees and self.repo_slugs is None):
             return []
         cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE)
@@ -115,12 +115,6 @@ class TriageAssessorScanner:
         if read_errors:
             raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=signals)
         return signals
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _survivors(self, assignees: tuple[str, ...], *, read_errors: list[str]) -> list[RawAPIDict]:
         """OPEN ``needs-triage`` issues with no existing recommendation, truncated per tick.

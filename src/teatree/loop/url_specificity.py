@@ -85,3 +85,17 @@ __all__ = [
     "url_match_specificity",
     "url_matches_prefix",
 ]
+
+
+def url_claimed(url: str, allowed: tuple[str, ...], competing: tuple[str, ...]) -> bool:
+    """Whether *url* belongs to the overlay holding the *allowed* prefixes (#1015, #1324).
+
+    No *allowed* prefixes means a single-overlay (or legacy multi-overlay) scanner that
+    emits every URL. Otherwise a URL survives only when one of the prefixes claims it, and
+    a *competing* overlay's claim is no more specific than ours: a sibling's longer
+    non-wildcard prefix wins the URL so its scanner emits it under its own zone.
+    """
+    if not allowed:
+        return True
+    own = best_url_match_specificity(url, allowed) if url else 0
+    return own > 0 and best_url_match_specificity(url, competing) <= own

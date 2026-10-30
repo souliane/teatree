@@ -80,7 +80,7 @@ from teatree.core.review.author_trust import (
 )
 from teatree.core.work_lease import WorkIdentity, foreign_work_holder
 from teatree.instance_id import instance_id
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, resolve_identities
 from teatree.loop.scanners.forge_readback import (
     ReadbackIndex,
     build_readback_index,
@@ -217,7 +217,8 @@ class IssueIntakeScanner:
             UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
             logger.info("IssueIntakeScanner tick %s: admitted=0 claimed=0 deferred=0", self.overlay_name)
             return []
-        operators = self._resolve_identities()
+        # The OPERATOR's handles — the read-back's PR-query scope, not the trust set.
+        operators = resolve_identities(self.host, self.identities)
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
@@ -486,13 +487,6 @@ class IssueIntakeScanner:
         except Exception:
             logger.exception("IssueIntakeScanner could not read the ticket ledger — degrading to empty")
             return frozenset()
-
-    def _resolve_identities(self) -> tuple[str, ...]:
-        """The OPERATOR's handles — the read-back's PR-query scope, not the trust set."""
-        if self.identities:
-            return tuple(dict.fromkeys(self.identities))
-        user = self.host.current_user()
-        return (user,) if user else ()
 
     def _candidate_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
         """Open, URL-bearing issues from both scoped discovery queries, OLDEST FILED FIRST.
