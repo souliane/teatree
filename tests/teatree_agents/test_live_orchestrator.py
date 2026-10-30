@@ -263,8 +263,8 @@ class TestLiveOrchestrator(TransactionTestCase):
             asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
             client = MailboxClient(asker.socket_path, asker.token)
             first = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
-            first_reply = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator_reply")
             self._ask(client, first, "one", "architecture")
+            first_reply = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator_reply")
             self._ask(client, first, "two", "architecture")
             assert self._ask(client, first, "three", "architecture")["answer_to"] == "three"
             rotated_reply = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator_reply")

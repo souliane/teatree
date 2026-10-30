@@ -15,10 +15,11 @@ with the router rather than paid twice.
 import hashlib
 import json
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import DmContext, PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task, task_handoff
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
@@ -136,6 +137,26 @@ class TestCycleClosesTheCardOfATypedAnswer:
 
 
 class TestCycleAnswersItsBoundQuestion:
+    def test_failed_resume_releases_the_reply_for_immediate_retry(self) -> None:
+        question = _question("Ship it?", slack_ts="100.0")
+        reply = _reply("2", slack_ts="400.0", thread_ts="100.0")
+        backend = RecordingBackend()
+
+        with patch.object(task_handoff, "resume_on_answer", side_effect=RuntimeError("resume failed")):
+            report = run_slack_answer_cycle(messaging_resolver=lambda _o: backend, reader=CountingReader())
+
+        question.refresh_from_db()
+        reply.refresh_from_db()
+        assert report.errors == 1
+        assert question.answer_text == ""
+        assert reply.loop_replied_at is None
+
+        retry = run_slack_answer_cycle(messaging_resolver=lambda _o: backend, reader=CountingReader())
+
+        question.refresh_from_db()
+        assert retry.answered_question == 1
+        assert question.answer_text == "No"
+
     def test_thread_reply_resolves_the_question_without_reading_it(self) -> None:
         question = _question("Ship it?", slack_ts="100.0")
         reply = _reply("2", slack_ts="400.0", thread_ts="100.0")

@@ -43,8 +43,7 @@ A fresh dispatch posts no prose (#1155 — the reaction carries it), while a
 request that is already covered DOES post, because "task 42 has this" is
 information the owner does not otherwise have and is what stops him waiting.
 
-Per-unit ``try/except`` so one bad unit never blocks the rest. This is a
-management-command body — it never loads the fat skill stack.
+Per-unit ``try/except`` keeps one bad unit from blocking the rest.
 """
 
 import datetime as dt
@@ -389,7 +388,12 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, bound: BoundA
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
         return False
-    if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
+    try:
+        applied = apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    if not applied:
         _unmark_unit_loop_replied(unit)
         return False
     parked_task = bound.question.parked_task
