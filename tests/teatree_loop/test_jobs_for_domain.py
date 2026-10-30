@@ -110,7 +110,6 @@ class JobsForDomainPartitionTestCase(TestCase):
             "owner_actions",
             "pending_tasks",
             "pending_pr_drain",
-            "dead_worktree_rows",
             "stuck_checkout_recheck",
             "incoming_events",
             "outbound_audit",
