@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_checkout_test_fallback_on_ticket_workspace_refusal-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "cd /var/tmp/t3-review-example && t3 teatree run tests tests/example.py", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -20,6 +20,17 @@ from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 _READ_ONLY_SKILL_SECTIONS = {
+    "sweeping-tickets": frozenset(
+        {
+            "## Non-Negotiables",
+            "## Command Reference",
+            "## Workflow",
+            "## Scheduling via the loop",
+            "## Dream gaps ride the same sweep",
+            "## Rules",
+            "## Related skills",
+        }
+    ),
     "review": frozenset(
         {
             "### Quality Gate Verification (Verify-Fix-Repeat)",
@@ -42,8 +53,9 @@ _READ_ONLY_SKILL_SECTIONS = {
 _HEADING = re.compile(r"^(#{2,6}) ")
 
 
-def _read_only_skill_text(name: str, content: str) -> str:
-    omitted = _READ_ONLY_SKILL_SECTIONS.get(name, frozenset())
+def _read_only_skill_text(name: str, content: str, *, sweep_skill_name: str = "sweeping-tickets") -> str:
+    sections_key = "sweeping-tickets" if name == sweep_skill_name else name
+    omitted = _READ_ONLY_SKILL_SECTIONS.get(sections_key, frozenset())
     if not omitted:
         return content
     kept: list[str] = []
@@ -175,7 +187,9 @@ def _read_skill_contents_scoped(
     return _with_reach_line([*_stack_load_block(stack_names, dirs), *companion_list, *sections], dirs)
 
 
-def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str:
+def read_only_venue_skill_contents(
+    skills: list[str], embedded: set[str], *, sweep_skill_name: str = "sweeping-tickets"
+) -> str:
     """Embed primary skills and the rules document; this venue mounts no skill files."""
     dirs = harness_skills_dirs()
     sections: list[str] = []
@@ -194,11 +208,20 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
                     missing = f"{bare}/{rules_md.name}"
                     raise SkillDispatchError.missing_document(bare, missing) from exc
                 sections.append(f"--- RULES.md ---\n{rules_text}")
-            sections.append(_skill_section(bare, _read_only_skill_text(bare, skill_md.read_text(encoding="utf-8"))))
+            sections.append(
+                _skill_section(
+                    bare,
+                    _read_only_skill_text(
+                        bare, skill_md.read_text(encoding="utf-8"), sweep_skill_name=sweep_skill_name
+                    ),
+                )
+            )
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."
-    return "\n\n".join((reach, *sections))
+    rules = [section for section in sections if section.startswith(("--- RULES.md ---", "--- SKILL: rules ---"))]
+    remaining = [section for section in sections if section not in rules]
+    return "\n\n".join((reach, *rules, *remaining))
 
 
 _SUBAGENT_PREAMBLE_HEADER = (

@@ -5,6 +5,7 @@ from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.extra_key_warning import warn_stripped_extra_keys
 from teatree.core.models.repo_expansion import TicketRepoExtra
+from teatree.core.models.sweep_types import SweepDispatchWindow, SweepFoldProposalRecord, SweepPendingRun
 from teatree.types import VisualQASummary
 
 if TYPE_CHECKING:
@@ -104,6 +105,9 @@ class ShippingHold(TypedDict):
 
 
 class TicketExtra(TicketRepoExtra, total=False):
+    sweep_dispatch_window: SweepDispatchWindow
+    sweep_fold_proposals: dict[str, SweepFoldProposalRecord]
+    sweep_pending_run: SweepPendingRun
     tests_passed: bool
     brief_start_heads: dict[str, str]
     nit_follow_up: bool

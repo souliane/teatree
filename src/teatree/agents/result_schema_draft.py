@@ -14,7 +14,11 @@ from teatree.core.modelkit.phases import normalize_phase
 type JSONSchema = dict[str, object]
 
 #: The field a run on the read-only executor must return, because it can neither request a review nor ship.
-EXECUTOR_DRAFT_FIELDS: Final = {"requesting_review": "review_request", "shipping": "ship_readiness"}
+EXECUTOR_DRAFT_FIELDS: Final = {
+    "backlog_sweep": "sweep_proposals",
+    "requesting_review": "review_request",
+    "shipping": "ship_readiness",
+}
 EXECUTOR_HARNESS: Final = "codex_app_server"
 
 
@@ -32,6 +36,23 @@ class ShipReadiness(TypedDict, total=False):
 
     ready: bool
     reasons: list[str]
+
+
+class SweepFold(TypedDict):
+    member_url: str
+    host_url: str
+    citation: str
+
+
+class SweepGap(TypedDict):
+    host_url: str
+    gap_keys: list[str]
+
+
+class SweepProposals(TypedDict):
+    examined: list[str]
+    folds: list[SweepFold]
+    gaps: list[SweepGap]
 
 
 REVIEW_REQUEST_SCHEMA_PROPERTY: JSONSchema = {
@@ -61,6 +82,38 @@ SHIP_READINESS_SCHEMA_PROPERTY: JSONSchema = {
         "reasons": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["ready"],
+}
+
+SWEEP_PROPOSALS_SCHEMA_PROPERTY: JSONSchema = {
+    "type": "object",
+    "description": "A read-only sweep's proposals. The worker validates every target before recording anything.",
+    "properties": {
+        "examined": {"type": "array", "items": {"type": "string"}},
+        "folds": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "member_url": {"type": "string"},
+                    "host_url": {"type": "string"},
+                    "citation": {"type": "string"},
+                },
+                "required": ["member_url", "host_url", "citation"],
+            },
+        },
+        "gaps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "host_url": {"type": "string"},
+                    "gap_keys": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["host_url", "gap_keys"],
+            },
+        },
+    },
+    "required": ["examined", "folds", "gaps"],
 }
 
 

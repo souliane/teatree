@@ -3,6 +3,7 @@
 import logging
 import shutil
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -37,6 +38,7 @@ from teatree.agents.skill_assurance import (
     recover_truncated_inline_skills,
     skill_application_line,
 )
+from teatree.agents.skill_bundle import configured_lifecycle_skill
 from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
@@ -147,9 +149,11 @@ def prepare_run(
     """Refuse an undelivered mandatory skill before creating billable options."""
     skills = preflight.skills
     dispatch = preflight.dispatch
-    lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
-    prompt, system_context, continued_skills = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
     read_only_venue = dispatch.harness.capabilities.read_only_venue
+    lifecycle_skill = (
+        configured_lifecycle_skill(phase) if read_only_venue else SkillLoadingPolicy.lifecycle_for_phase(phase)
+    )
+    prompt, system_context, continued_skills = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
     stage_present = stage_skills_present(task, skills, configured=preflight.stage_skills)
     if read_only_venue:
         handoff = None
@@ -174,7 +178,12 @@ def prepare_run(
         skills=skills,
         required_inline=required_inline,
         required_explicit=required_explicit,
-        rendered_context=SkillDelivery(f"{system_context}\n{prompt}", _read_only_skill_text)
+        rendered_context=SkillDelivery(
+            f"{system_context}\n{prompt}",
+            partial(_read_only_skill_text, sweep_skill_name=lifecycle_skill)
+            if phase == "backlog_sweep"
+            else _read_only_skill_text,
+        )
         if read_only_venue
         else f"{system_context}\n{prompt}",
     )

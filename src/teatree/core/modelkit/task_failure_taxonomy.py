@@ -135,6 +135,7 @@ EVAL_MEASUREMENT_ABSENT_MARKER = "eval_measurement_absent:"
 MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
+SWEEP_PROPOSALS_REFUSAL_PREFIX = "sweep_proposals_refused: "
 
 
 class FailureKind(models.TextChoices):
@@ -314,6 +315,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.HEAD_SUPERSEDED, (NIT_HEAD_MOVED,)),
     (FailureKind.RECORDING_REFUSED, (COMMENT_CHECK_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
+    (FailureKind.RECORDING_REFUSED, (SWEEP_PROPOSALS_REFUSAL_PREFIX,)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
     # Ahead of SUPERSEDED: the reasons are tested by CONTAINMENT and "head_superseded: "

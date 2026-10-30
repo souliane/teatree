@@ -52,6 +52,19 @@ class TestValidatedTicketExtra:
 
         assert validated_ticket_extra(retry_heads) == retry_heads
 
+    def test_sweep_window_and_owner_proposals_survive_validation(self) -> None:
+        sweep = {
+            "sweep_dispatch_window": {
+                "task_id": 7,
+                "index": ["issue-url"],
+                "examined": ["issue-url"],
+                "external_count": 0,
+            },
+            "sweep_fold_proposals": {"7": {"folds": [], "run_id": "run-7"}},
+        }
+
+        assert validated_ticket_extra(sweep) == sweep
+
 
 class TestValidatedWorktreeExtra:
     def test_none_returns_empty(self) -> None:

@@ -11,6 +11,7 @@ from teatree.agents.runner_interruption import _record_failure
 from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_bundle import (
     ArchitecturalReviewSkillMissingError,
+    resolve_executor_sweep_bundle,
     resolve_skill_bundle,
     stage_skills_for_dispatch,
 )
@@ -95,6 +96,19 @@ def bundle_or_refusal(task: Task, bundle: Callable[[], list[str]]) -> list[str] 
         return bundle()
     except SkillPinRefusalError as exc:
         return _refused(task, exc)
+
+
+def read_only_sweep_skills_or_refusal(
+    task: Task, overlay_skill_metadata: SkillMetadata, stage_skills: list[str]
+) -> list[str] | TaskAttempt:
+    return bundle_or_refusal(
+        task,
+        lambda: resolve_executor_sweep_bundle(
+            overlay_skill_metadata=overlay_skill_metadata,
+            detection_root=dispatch_detection_root(task.ticket),
+            stage_skills=stage_skills,
+        ),
+    )
 
 
 def _refused(task: Task, exc: Exception) -> TaskAttempt:
