@@ -264,6 +264,8 @@ def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     Any failure below is UNKNOWN, including one raised while BUILDING the backend: this
     runs inside the git pre-push hook, where an exception would abort the push itself.
     """
+    if not branch:
+        return PrProbe.unknown()
     try:
         url = _gitlab_open_mr_url(repo_dir, branch)
     except Exception:  # noqa: BLE001 — the probe runs in a pre-push hook and must never raise into it.

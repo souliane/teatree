@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
@@ -23,6 +24,7 @@ from teatree.core.models import (
     Task,
     TaskAttempt,
     Ticket,
+    TicketTransition,
 )
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
@@ -57,6 +59,26 @@ class LifecycleIncidentTests(TestCase):
         )
         return detector.detect()
 
+    def _finished_repair_evidence(self) -> tuple[LifecycleIncidentDetector, list[Task], Ticket, SelfImproveFiring]:
+        ended_at = timezone.now() - timedelta(hours=1)
+        tasks = [cast("Task", TaskFactory()) for _ in range(3)]
+        for task in tasks:
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+            TaskAttemptFactory(task=task, exit_code=1, error="worker exited", ended_at=ended_at)
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        report = next(report for report in detector.detect() if report.payload["kind"] == "task_failed")
+        firing = record_firing(report, action=ActionRung.TICKET)
+        repair = cast("Ticket", TicketFactory(state=Ticket.State.WORK_STARTED, extra={"source": "self_improve"}))
+        firing.ticket = repair
+        firing.save(update_fields=["ticket"])
+        repair.ignore()
+        repair.save()
+        return detector, tasks, repair, firing
+
+    @staticmethod
+    def _task_failure_rung(detector: LifecycleIncidentDetector) -> str:
+        return next(report.requested_rung for report in detector.detect() if report.payload["kind"] == "task_failed")
+
     def test_failed_task_is_grouped_by_named_cause(self) -> None:
         for _ in range(3):
             task = TaskFactory()
@@ -69,6 +91,108 @@ class LifecycleIncidentTests(TestCase):
         assert reports[0].payload["count"] == 3
         assert reports[0].requested_rung == ActionRung.TICKET
         assert "worker exited" not in str(reports[0].payload)
+
+    def test_finished_repair_keeps_older_surviving_failures_on_statusline(self) -> None:
+        ended_at = timezone.now() - timedelta(hours=1)
+        tasks = [TaskFactory() for _ in range(4)]
+        for task in tasks:
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+            TaskAttemptFactory(task=task, exit_code=1, error="worker exited", ended_at=ended_at)
+
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        routes = DeliveryRoutes(overlay_name="t3-teatree")
+        first = run_tier(Tier.CHEAP, detectors=[detector], delivery=routes, budget=BudgetVerdict.allow())
+        assert [action.rung for action in first.actions] == [ActionRung.TICKET]
+        firing = SelfImproveFiring.objects.get(dedup_key=first.reports[0].dedup_key)
+        repair = firing.ticket
+        assert repair is not None
+
+        repair.ignore()
+        repair.save()
+        tasks[0].ticket.ignore()
+        tasks[0].ticket.save()
+
+        second = run_tier(Tier.CHEAP, detectors=[detector], delivery=routes, budget=BudgetVerdict.allow())
+
+        assert [report.requested_rung for report in second.reports] == [ActionRung.STATUSLINE]
+        assert [action.rung for action in second.actions] == [ActionRung.STATUSLINE]
+        firing.refresh_from_db()
+        assert firing.ticket_id == repair.pk
+        assert Ticket.objects.filter(extra__source="self_improve").count() == 1
+        assert not run_tier(Tier.CHEAP, detectors=[detector], delivery=routes, budget=BudgetVerdict.allow()).actions
+
+    def test_failure_after_repair_finish_keeps_ticket_rung(self) -> None:
+        detector, tasks, repair, _firing = self._finished_repair_evidence()
+        finished_at = TicketTransition.objects.filter(ticket=repair).latest("created_at").created_at
+        TaskAttemptFactory(
+            task=tasks[0], exit_code=1, error="failed again", ended_at=finished_at + timedelta(seconds=1)
+        )
+
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+    def test_attempt_ending_at_repair_finish_is_handled(self) -> None:
+        detector, tasks, repair, _firing = self._finished_repair_evidence()
+        finished_at = TicketTransition.objects.filter(ticket=repair).latest("created_at").created_at
+        TaskAttempt.objects.filter(task=tasks[0]).update(ended_at=finished_at)
+
+        assert self._task_failure_rung(detector) == ActionRung.STATUSLINE
+
+    def test_missing_or_unfinished_attempt_keeps_ticket_rung(self) -> None:
+        detector, tasks, _repair, _firing = self._finished_repair_evidence()
+        TaskAttempt.objects.filter(task=tasks[0]).delete()
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+        TaskAttemptFactory(task=tasks[0], exit_code=1, error="still running", ended_at=None)
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+    def test_reopened_or_resolved_repair_keeps_ticket_rung(self) -> None:
+        detector, _tasks, repair, firing = self._finished_repair_evidence()
+        Ticket.objects.filter(pk=repair.pk).update(state=Ticket.State.WORK_STARTED)
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+        Ticket.objects.filter(pk=repair.pk).update(state=Ticket.State.IGNORED)
+        SelfImproveFiring.objects.filter(pk=firing.pk).update(resolved_at=timezone.now())
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+    def test_missing_final_transition_keeps_ticket_rung(self) -> None:
+        detector, _tasks, repair, _firing = self._finished_repair_evidence()
+        TicketTransition.objects.filter(ticket=repair).delete()
+
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+    def test_merged_to_retro_uses_first_finish_as_boundary(self) -> None:
+        detector, tasks, repair, _firing = self._finished_repair_evidence()
+        TicketTransition.objects.filter(ticket=repair).delete()
+        Ticket.objects.filter(pk=repair.pk).update(state=Ticket.State.RETRO_RECORDED)
+        merged = TicketTransition.objects.create(
+            ticket=repair, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+        )
+        retro = TicketTransition.objects.create(
+            ticket=repair, from_state=Ticket.State.MERGED, to_state=Ticket.State.RETRO_RECORDED
+        )
+        now = timezone.now()
+        TicketTransition.objects.filter(pk=merged.pk).update(created_at=now - timedelta(hours=2))
+        TicketTransition.objects.filter(pk=retro.pk).update(created_at=now)
+        TaskAttempt.objects.filter(task=tasks[0]).update(ended_at=now - timedelta(hours=1))
+
+        assert self._task_failure_rung(detector) == ActionRung.TICKET
+
+    def test_second_finish_after_reopen_covers_intervening_attempt(self) -> None:
+        detector, tasks, repair, _firing = self._finished_repair_evidence()
+        [first_finish] = TicketTransition.objects.filter(ticket=repair, to_state=Ticket.State.IGNORED)
+        reopened = TicketTransition.objects.create(
+            ticket=repair, from_state=Ticket.State.IGNORED, to_state=Ticket.State.WORK_STARTED
+        )
+        second_finish = TicketTransition.objects.create(
+            ticket=repair, from_state=Ticket.State.WORK_STARTED, to_state=Ticket.State.IGNORED
+        )
+        now = timezone.now()
+        TicketTransition.objects.filter(pk=first_finish.pk).update(created_at=now - timedelta(hours=3))
+        TicketTransition.objects.filter(pk=reopened.pk).update(created_at=now - timedelta(hours=2))
+        TicketTransition.objects.filter(pk=second_finish.pk).update(created_at=now)
+        TaskAttempt.objects.filter(task=tasks[0]).update(ended_at=now - timedelta(hours=1))
+
+        assert self._task_failure_rung(detector) == ActionRung.STATUSLINE
 
     def test_recovered_and_cancelled_tasks_are_not_incidents(self) -> None:
         recovered = TaskFactory()

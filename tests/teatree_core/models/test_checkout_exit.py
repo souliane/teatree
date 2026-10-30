@@ -1,5 +1,10 @@
 from teatree.core.models import Task
-from teatree.core.models.checkout_exit import CheckoutExit, checkout_exit_scope, prepared_checkout_exit
+from teatree.core.models.checkout_exit import (
+    CheckoutExit,
+    checkout_exit_scope,
+    mark_verified_checkout_run,
+    prepared_checkout_exit,
+)
 
 
 def test_a_repeat_settle_is_reused_but_changed_exit_options_settle_afresh() -> None:
@@ -19,3 +24,11 @@ def test_a_repeat_settle_is_reused_but_changed_exit_options_settle_afresh() -> N
     assert options == [(True, True), (True, False), (False, False)]
     assert settled is not None
     assert settled.attested_state is None
+
+
+def test_a_verified_run_is_marked_on_the_active_scope_only() -> None:
+    mark_verified_checkout_run()
+    with checkout_exit_scope(lambda _task, _attest, _wait: None) as scope:
+        assert scope.verified_run is False
+        mark_verified_checkout_run()
+        assert scope.verified_run is True

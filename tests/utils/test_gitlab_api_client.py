@@ -94,7 +94,8 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
     client = gitlab_api.GitLabAPI(token="test-token")
     assert client.resolve_project("acme/platform") == client.resolve_project("acme/platform")
-    assert client.resolve_project("missing/project") is None
+    with pytest.raises(TypeError, match="Invalid project response"):
+        client.resolve_project("missing/project")
     assert client.list_all_open_mrs("adrien") == [{"iid": 1, "draft": False}, {"iid": 2, "draft": True}]
     assert client.list_all_open_mrs("adrien", include_draft=False) == [{"iid": 1, "draft": False}]
     assert client.cancel_pipelines(42, "feature") == [101, 101]

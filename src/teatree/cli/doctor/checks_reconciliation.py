@@ -351,7 +351,7 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
 
     Query: ``TaskAttempt`` rows with ``outcome=SUCCESS`` and ``started_at`` within
     24h, grouped by ``task_id``, excluding a
-    :data:`~teatree.core.models.task_attempt.NOOP_OVER_COMPLETED_MARKER` recovery
+    :data:`~teatree.core.modelkit.task_failure_taxonomy.NOOP_OVER_COMPLETED_MARKER` recovery
     attempt. That marker is stamped when a rival's interrupted run finds its row
     already COMPLETED (#4100/#4834) — proof the claim CAS held (only one run's
     result landed), not a second success; counting it toward "this task ran twice"

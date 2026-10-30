@@ -64,8 +64,11 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Protocol
 
+import httpx
+from django.core.cache import cache
 from django.db import OperationalError, ProgrammingError
 
 from teatree.core.backend_protocols import MessagingBackend
@@ -94,6 +97,23 @@ from teatree.url_classify import find_pr_urls
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
+_UNREADABLE_LINK_BACKOFF_SECONDS = 300
+
+
+def _unreadable_project_link(error: ScannerError) -> bool:
+    cause = error.__cause__
+    if isinstance(cause, httpx.HTTPStatusError):
+        status = cause.response.status_code
+        return status == httpx.codes.NOT_FOUND or (
+            status == httpx.codes.FORBIDDEN and "scope" not in cause.response.text.lower()
+        )
+    match = re.search(r"\bHTTP (404|403)\b", error.detail, flags=re.IGNORECASE)
+    return match is not None and (match.group(1) == "404" or "scope" not in error.detail.lower())
+
+
+def _unreadable_link_cache_key(url: str) -> str:
+    return f"slack-broadcast-unreadable:{sha256(url.encode()).hexdigest()}"
+
 
 # #1295 cap B: a broadcast that @-mentions the user's own Slack id is the
 # auto-pickup trigger. The Slack message format is ``<@U_USER_ID>``; the
@@ -256,9 +276,11 @@ class SlackBroadcastsScanner:
     review_taken: ReviewTakenProbe | None = None
     name: str = field(default="slack_broadcasts", init=False)
     _self_slack_ids: frozenset[str] = field(default_factory=frozenset, init=False)
+    _skipped_links: dict[str, set[str]] = field(default_factory=dict, init=False)
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        self._skipped_links = {}
         self._self_slack_ids = resolve_self_slack_ids(self.backend, user_id=self._user_id())
         try:
             for channel in self.channels:
@@ -291,6 +313,16 @@ class SlackBroadcastsScanner:
                 "SlackBroadcastsScanner: teatree_scanned_broadcast unavailable (DB not migrated yet) — skipping",
             )
             return []
+        if self._skipped_links:
+            counts = {repo: len(urls) for repo, urls in sorted(self._skipped_links.items())}
+            repositories = ", ".join(f"{repo} ({count})" for repo, count in counts.items())
+            signals.append(
+                ScanSignal(
+                    kind="slack.broadcast_unreadable_links",
+                    summary=f"Broadcast links unreadable: {repositories}",
+                    payload={"repositories": counts, "overlay": self.overlay},
+                )
+            )
         return signals
 
     def _scan_channel(self, channel: str) -> list[ScanSignal]:
@@ -318,8 +350,10 @@ class SlackBroadcastsScanner:
         mr_urls = _extract_mr_urls(text)
         if not mr_urls:
             return []
-        states = self.classify_mrs(mr_urls)
-        classification = _classify(states)
+        states, skipped = self._classify_links(mr_urls)
+        if not states:
+            return []
+        classification = ScannedBroadcast.Classification.PENDING if skipped else _classify(states)
         observation = BroadcastObservation(
             channel=channel,
             slack_ts=ts,
@@ -347,6 +381,27 @@ class SlackBroadcastsScanner:
         # forge-side assignment to land.
         signals.extend(self._pickup_signals(text, row, states))
         return signals
+
+    def _classify_links(self, mr_urls: Sequence[str]) -> tuple[list[MrState], bool]:
+        states: list[MrState] = []
+        skipped = False
+        for url in mr_urls:
+            key = _unreadable_link_cache_key(url)
+            link_skipped = bool(cache.get(key))
+            if not link_skipped:
+                try:
+                    states.extend(self.classify_mrs([url]))
+                except ScannerError as exc:
+                    if not _unreadable_project_link(exc):
+                        raise
+                    cache.set(key, "unreadable", timeout=_UNREADABLE_LINK_BACKOFF_SECONDS)
+                    link_skipped = True
+            if link_skipped:
+                skipped = True
+                ref = pr_ref_from_url(url)
+                repository = ref.slug if ref is not None else url
+                self._skipped_links.setdefault(repository, set()).add(url)
+        return states, skipped
 
     def _user_named(self, text: str) -> bool:
         user_id = self._user_id()

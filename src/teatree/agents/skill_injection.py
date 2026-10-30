@@ -15,7 +15,7 @@ from pathlib import Path
 
 from teatree.agents.skill_assurance import SkillDispatchError, required_load_line
 from teatree.agents.skill_files import reach_line, rules_document_path
-from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md, skill_tool_load_name
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
@@ -177,7 +177,7 @@ def _read_skill_contents_scoped(
     if explicit_names:
         block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
         block += "\n".join(
-            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
+            f"Load /{skill_tool_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
         )
         companion_list.append(block)
     if companion_names:

@@ -1,3 +1,4 @@
+from teatree.core.modelkit.task_failure_taxonomy import NOOP_OVER_COMPLETED_MARKER
 from teatree.core.models.agent_route_availability import AgentRouteAvailability
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick, AnthropicActivePickManager
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, AnthropicTokenUsageManager
@@ -135,7 +136,7 @@ from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
 from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import NOOP_OVER_COMPLETED_MARKER, TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.thread_binding import SessionCommand, ThreadBinding
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (

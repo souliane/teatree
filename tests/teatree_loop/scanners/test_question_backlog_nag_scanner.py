@@ -12,6 +12,7 @@ from teatree.core.models import DeferredQuestion
 from teatree.loop.domain_jobs import _global_dispatch_jobs, _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
+from teatree.loop.scanners.scan_deadline import scanner_deadline
 from tests._owner_channel import OWNER_DECISION
 
 
@@ -49,8 +50,13 @@ class TestQuestionBacklogNagScanner(TestCase):
             assert QuestionBacklogNagScanner().scan() == []
 
     def test_emits_signal_when_questions_are_bumped(self) -> None:
-        with patch("teatree.core.notify_question_drains.reask_escalated_questions", return_value=(3, 42)):
+        deadline = 123.0
+        with (
+            patch("teatree.core.notify_question_drains.reask_escalated_questions", return_value=(3, 42)) as drain,
+            scanner_deadline(deadline),
+        ):
             signals = QuestionBacklogNagScanner().scan()
+        assert drain.call_args.kwargs["deadline"] is deadline
         assert len(signals) == 1
         assert signals[0].kind == "deferred_question.resurfaced"
         assert signals[0].payload == {"mirrored_pending": 42, "bumped": 3}

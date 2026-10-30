@@ -14,6 +14,7 @@ from teatree.agents.skill_assurance import (
     assess_skill_application,
     assess_skill_dispatch,
     recover_truncated_inline_skills,
+    required_load_line,
 )
 from teatree.agents.skill_injection import _read_skill_contents_scoped
 from teatree.skill_support import index as skill_index
@@ -257,8 +258,11 @@ def test_namespaced_primary_skill_is_embedded_in_full(tmp_path: Path) -> None:
     assert "--- SKILL: code ---" in text
 
 
-def test_truncated_inline_skill_requires_explicit_load_of_the_full_file(tmp_path: Path) -> None:
+def test_truncated_inline_skill_requires_explicit_load_of_the_full_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _skill(tmp_path, "code")
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", tmp_path)
 
     inline, explicit, directive = recover_truncated_inline_skills(
         required_inline={"code"},
@@ -269,7 +273,7 @@ def test_truncated_inline_skill_requires_explicit_load_of_the_full_file(tmp_path
 
     assert inline == set()
     assert explicit == {"code"}
-    assert "Load /code" in directive
+    assert "Load /t3:code" in directive
     assert str(tmp_path / "code" / "SKILL.md") in directive
     assurance = assess_skill_dispatch(
         skills=["t3:code"],
@@ -280,6 +284,56 @@ def test_truncated_inline_skill_requires_explicit_load_of_the_full_file(tmp_path
     )
     assert assurance["injected"] == []
     assert assurance["explicit_load"] == ["code"]
+
+
+def test_plugin_load_directives_use_registered_names_and_are_credited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, installed = tmp_path / "plugin", tmp_path / "installed"
+    plugin.mkdir()
+    installed.mkdir()
+    _skill(plugin, "workspace")
+    _skill(plugin, "review")
+    _skill(installed, "ac-python")
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", plugin)
+    monkeypatch.setattr(skill_index, "install_roots", lambda: [installed])
+
+    rendered = "\n".join(_coding_phase_directive(["ac-python", "workspace"]))
+    assert "  - /ac-python\n" in rendered
+    assert "  - /t3:workspace\n" in rendered
+    delivered = assess_skill_dispatch(
+        skills=["ac-python", "workspace"],
+        required_inline=set(),
+        required_explicit={"ac-python", "workspace"},
+        rendered_context=rendered,
+        skills_dirs=[plugin, installed],
+    )
+    assert delivered["explicit_load"] == ["ac-python", "workspace"]
+
+    inline, explicit, recovered = recover_truncated_inline_skills(
+        required_inline={"review"}, required_explicit=set(), rendered_context="", skills_dirs=[plugin]
+    )
+    assert inline == set()
+    assert explicit == {"review"}
+    assert "Load /t3:review via the Skill tool" in recovered
+    assert str(plugin / "review" / "SKILL.md") in recovered
+    assert assess_skill_dispatch(
+        skills=["review"],
+        required_inline=inline,
+        required_explicit=explicit,
+        rendered_context=recovered,
+        skills_dirs=[plugin],
+    )["explicit_load"] == ["review"]
+
+    foreign = required_load_line("other:review", plugin / "review" / "SKILL.md")
+    assert "Load /other:review via the Skill tool" in foreign
+    assert assess_skill_dispatch(
+        skills=["review"],
+        required_inline=set(),
+        required_explicit={"review"},
+        rendered_context=foreign,
+        skills_dirs=[plugin],
+    )["explicit_load"] == ["review"]
 
 
 def test_explicit_directive_must_be_exact_skill_reference(tmp_path: Path) -> None:

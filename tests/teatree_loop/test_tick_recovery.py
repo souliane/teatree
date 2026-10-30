@@ -1,13 +1,17 @@
-"""Boot/tick recovery step wiring — the housekeeping sweeps run every tick.
+"""Boot/tick recovery step wiring — housekeeping sweeps run when due.
 
 ``_reap_stale_task_claims`` chains the boot sweeps, the transient auto-requeue,
 and the stuck-ticket re-dispatch so a returned-failure task and a frozen ticket
 both self-heal from the loop tick, never only from an explicit ``t3 recover``.
 """
 
+import os
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import patch
 
@@ -23,11 +27,135 @@ from teatree.loop import mechanical_resources
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.tick import TickReport
 from teatree.loop.tick_recovery import _execute_mechanical, _reap_stale_task_claims
+from teatree.paths import data_dir_root
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 class TestReapStaleTaskClaims(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        data_dir = patch.dict(os.environ, {"T3_DATA_DIR": temporary.name})
+        data_dir.start()
+        self.addCleanup(data_dir.stop)
+
+    def test_prelude_runs_once_inside_interval_and_refreshes_after_it(self) -> None:
+        with (
+            TemporaryDirectory() as root,
+            patch.dict(os.environ, {"T3_DATA_DIR": root}),
+            patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped") as admission,
+            patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+            patch("teatree.loop.question_drain.drain_pending_questions"),
+        ):
+            _reap_stale_task_claims()
+            _reap_stale_task_claims()
+            assert boot.call_count == 1
+            assert admission.call_count == 1
+
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_text("0", encoding="utf-8")
+            _reap_stale_task_claims()
+            assert boot.call_count == 2
+            assert admission.call_count == 2
+            assert float(stamp.read_text(encoding="utf-8")) > 0
+
+    def test_unwritable_stamp_runs_prelude_and_warns_with_path(self) -> None:
+        with TemporaryDirectory() as root:
+            blocked_parent = Path(root) / "file"
+            blocked_parent.write_text("not a directory", encoding="utf-8")
+            stamp = blocked_parent / "recovery-prelude.stamp"
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": str(blocked_parent)}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+                self.assertLogs("teatree.loop.tick_recovery", level="WARNING") as warnings,
+            ):
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert str(stamp) in "\n".join(warnings.output)
+
+    def test_failed_prelude_retries_on_next_tick_inside_interval(self) -> None:
+        with (
+            TemporaryDirectory() as root,
+            patch.dict(os.environ, {"T3_DATA_DIR": root}),
+            patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+            patch(
+                "teatree.core.worktree.recovery_sweeps.run_boot_sweeps",
+                side_effect=[RuntimeError("unavailable"), None],
+            ) as boot,
+            patch("teatree.loop.question_drain.drain_pending_questions"),
+        ):
+            errors: dict[str, str] = {}
+            _reap_stale_task_claims(errors)
+            assert "recovery:boot_sweeps" in errors
+            _reap_stale_task_claims({})
+            assert boot.call_count == 2
+
+    def test_a_stamp_from_the_future_does_not_silence_the_prelude(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_text(str(time.time() + 3600), encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+            ):
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert float(stamp.read_text(encoding="utf-8")) < time.time() + 60
+
+    def test_non_numeric_stamp_is_rewritten_so_the_throttle_recovers(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_text("not-a-number", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+            ):
+                _reap_stale_task_claims()
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert float(stamp.read_text(encoding="utf-8")) > 0
+
+    def test_unreadable_stamp_runs_prelude_and_warns_with_path(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_bytes(b"\xff")
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+                self.assertLogs("teatree.loop.tick_recovery", level="WARNING") as warnings,
+            ):
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert str(stamp) in "\n".join(warnings.output)
+
+    def test_unverified_stamp_runs_prelude_and_warns_with_path(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+                patch(
+                    "teatree.loop.tick_recovery.os.fsync",
+                    side_effect=lambda _descriptor: stamp.write_text("corrupt", encoding="utf-8"),
+                ),
+                self.assertLogs("teatree.loop.tick_recovery", level="WARNING") as warnings,
+            ):
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert str(stamp) in "\n".join(warnings.output)
+
     def test_shipping_hold_settle_is_skipped_when_claims_are_refused(self) -> None:
         with (
             patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="quiescing"),
@@ -111,6 +239,7 @@ class TestReapStaleTaskClaims(TestCase):
         assert not unplanned.tasks.filter(phase="planning").exists()
 
         ModeOverride.objects.all().delete()
+        (data_dir_root() / "recovery-prelude.stamp").write_text("0", encoding="utf-8")
         _reap_stale_task_claims()
         _reap_stale_task_claims()
 

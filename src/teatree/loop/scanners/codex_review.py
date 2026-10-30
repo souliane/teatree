@@ -39,12 +39,12 @@ loop persistence flow).
 import json
 import logging
 from dataclasses import dataclass, replace
-from typing import Protocol, TypedDict, cast, runtime_checkable
+from typing import TypedDict, cast
 
 from teatree.core.merge import CodeHostQuery
-from teatree.core.modelkit.forge_readability import CHECKS_FAILED
 from teatree.core.review.author_trust import classify_author
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr, run_gh_for_slug
+from teatree.loop.scanners.self_pr_types import UNSETTLED_CHECK_VERDICTS, PrSummary, SelfPrApi
 from teatree.utils.pr_ref import PrRef
 
 logger = logging.getLogger(__name__)
@@ -73,9 +73,6 @@ ADVERSARIAL_PATH_MARKERS: frozenset[str] = frozenset(
     },
 )
 
-#: The required-checks verdicts that say the head has not settled: the author is
-#: about to replace it, so a review dispatched now lands on a tree nobody merges.
-UNSETTLED_CHECK_VERDICTS = frozenset({"pending", CHECKS_FAILED})
 
 #: The default codex review slash command — for ordinary diffs.
 STANDARD_REVIEW_VARIANT = "codex:review"
@@ -108,33 +105,6 @@ class GhFileJson(TypedDict, total=False):
     path: str
 
 
-@dataclass(frozen=True, slots=True)
-class PrSummary:
-    """Decoded subset of a PR's ``gh`` payload, plus the head's required-checks standing.
-
-    ``checks_unsettled`` is the one field the ``gh`` payload does not carry: the
-    adapter stamps it from :func:`head_checks_unsettled` so both self-PR scanners
-    read one already-resolved answer instead of each probing the forge.
-    """
-
-    slug: str
-    number: int
-    head_sha: str
-    is_draft: bool
-    changed_files: tuple[str, ...]
-    url: str = ""
-    title: str = ""
-    author: str = ""
-    checks_unsettled: bool = False
-
-
-@runtime_checkable
-class CodexPrApi(Protocol):
-    """Adapter over ``gh`` listing self-authored open PRs — mockable in tests."""
-
-    def list_open_self_prs(self, *, slug: str) -> list[PrSummary]: ...  # pragma: no branch
-
-
 @dataclass(slots=True)
 class CodexReviewScanner:
     """Emit ``codex_review.dispatch`` signals for newly-pushed PR head SHAs.
@@ -148,7 +118,7 @@ class CodexReviewScanner:
     """
 
     repos: tuple[str, ...]
-    api: CodexPrApi
+    api: SelfPrApi
     overlay: str = ""
     name: str = "codex_review"
 
@@ -263,7 +233,7 @@ def _classify_variant(changed_files: tuple[str, ...], *, pr_url: str, slug: str 
 
 @dataclass(slots=True)
 class GhCodexPrApi:
-    """``gh``-backed :class:`CodexPrApi` — lists self-authored open PRs.
+    """``gh``-backed :class:`SelfPrApi` — lists self-authored open PRs.
 
     The target slug's owning overlay supplies ``GH_TOKEN``. Ambient authentication
     is refused. Uses ``--author @me`` to scope to the authenticated
@@ -374,7 +344,6 @@ __all__ = [
     "ADVERSARIAL_REVIEW_VARIANT",
     "STANDARD_REVIEW_VARIANT",
     "UNSETTLED_CHECK_VERDICTS",
-    "CodexPrApi",
     "CodexReviewScanner",
     "GhCodexPrApi",
     "PrSummary",

@@ -6,6 +6,8 @@ memory to apply these rules; this module is the canonical structural fix.
 
 from collections.abc import Iterable
 
+import pytest
+
 from teatree.config import cold_reader
 from teatree.core.review.review_candidate import (
     _is_self_authored,
@@ -98,6 +100,13 @@ class TestForgeAuthorshipProof:
         host = _Host(current="factory-bot", author="factory-bot")
 
         assert _is_self_authored("https://forge.example/group/repo/pull/1", host, ()) is False
+
+    def test_undeclared_bot_is_foreign_without_an_owner_declaration(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+        assert (
+            _is_self_authored("https://github.com/group/repo/pull/1", _Host(author="Dependabot[bot]"), ("owner",))
+            is False
+        )
 
     def test_unreadable_author_or_host_stays_unresolved(self, monkeypatch) -> None:
         monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
@@ -375,6 +384,38 @@ class TestSkipSelfAuthorAcrossIdentities:
             "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "present"}],
         }
         assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    @pytest.mark.parametrize(
+        ("identity", "note_login"), [("Alice-Reviewer", "alice-reviewer"), ("alice-reviewer", "ALICE-Reviewer")]
+    )
+    def test_self_note_login_compare_ignores_case_on_both_sides(self, identity: str, note_login: str) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": note_login}, "system": False, "body": "present"}],
+        }
+        reasons = should_review_candidate_reasons(mr, current_user="someone-else", self_identities=(identity,))
+        assert "has_self_note" in reasons
+
+    def test_declared_bot_note_counts_as_self_note(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {"gitlab.com": ["factory-bot"]})
+        mr = {
+            "web_url": "https://gitlab.com/group/repo/-/merge_requests/1",
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": "factory-bot"}, "system": False, "body": "reviewed"}],
+        }
+        assert "has_self_note" in should_review_candidate_reasons(mr, current_user="owner")
+
+    def test_project_bot_self_note_counts_as_self_note(self) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": "project_42_bot_abc"}, "system": False, "body": "status"}],
+        }
+        assert "has_self_note" in should_review_candidate_reasons(
+            mr, current_user="owner", self_identities=("project_42_bot_abc",)
+        )
 
     def test_colleague_mr_still_candidate_with_multiple_identities(self) -> None:
         mr = {"author": {"username": "bob"}, "state": "opened", "notes": []}

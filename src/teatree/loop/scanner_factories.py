@@ -25,6 +25,7 @@ from teatree.core.intake.budget import read_intake_budget, release_deadlocked_ho
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.overlay_repos import intake_repo_slugs, owned_repo_slugs
+from teatree.core.review import repo_exemption
 from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
@@ -65,6 +66,7 @@ from teatree.loop.scanners import (
 from teatree.loop.scanners.head_lineage import GhLineageReader
 from teatree.loop.scanners.my_prs import CiEnricher
 from teatree.loop.scanners.review_nag import default_repo_owner
+from teatree.loop.scanners.self_pr_gitlab import ForgeSelfPrApi, GitLabSelfPrApi
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 
@@ -128,10 +130,9 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     ``None`` when the overlay has no Python class or no repos configured.
     ``solo_overlay`` opts the scanner into the single-author dogfood bypass
     (#1309) — a direct ``gh pr merge`` that skips the per-diff CLEAR — ONLY
-    when the overlay's ``autonomy`` resolves to ``full`` (#1668). The
-    ``notify`` tier collapses the same merge gates (``mode = auto`` +
-    ``require_human_approval_to_merge = false``) but is a COLLABORATIVE
-    surface: it must keep the CLEAR path so the user's MR merges only after a
+    when the overlay's ``autonomy`` resolves to ``full`` (#1668) and either human
+    approval is not required or every swept repository is review-exempt. The
+    ``notify`` tier keeps the CLEAR path so the user's MR merges only after a
     colleague approval and the agent never self-approves its own MR. Gating
     on the resolved ``autonomy`` (not the collapsed gate values) is what keeps
     the bypass exclusive to ``full``.
@@ -149,7 +150,11 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     else:
         notifier = NullMergeNotifier()
     settings = _effective_settings_for_overlay(backend.name)
-    solo_overlay = settings.autonomy is Autonomy.FULL
+    exempt_patterns = repo_exemption.review_exempt_patterns(backend.name)
+    solo_overlay = settings.autonomy is Autonomy.FULL and (
+        not settings.require_human_approval_to_merge
+        or all(repo_exemption.is_review_exempt(repo, patterns=exempt_patterns) for repo in repos)
+    )
     # #68: a green own PR with no independent verdict can't self-merge — arm the
     # cold-review dispatch so the loop closes the loop. Gated on the same posture
     # as the solo-overlay merge bypass (full autonomy) AND an explicit
@@ -260,10 +265,18 @@ def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReview
     overlay = backend.overlay
     if overlay is None:
         return None
-    repos = tuple(overlay.metadata.get_followup_repos())
+    exempt_patterns = repo_exemption.review_exempt_patterns(backend.name)
+    repos = tuple(
+        repo
+        for repo in overlay.metadata.get_followup_repos()
+        if not repo_exemption.is_review_exempt(repo, patterns=exempt_patterns)
+    )
     if not repos:
         return None
-    api = GhCodexPrApi()
+    api = ForgeSelfPrApi(
+        github=GhCodexPrApi(),
+        gitlab=GitLabSelfPrApi(token=overlay.config.get_gitlab_token()),
+    )
     if resolve_pr_review_backend(backend.name) is PrReviewBackend.CODEX:
         return CodexReviewScanner(repos=repos, api=api, overlay=backend.name)
     return ClaudeSelfPrReviewScanner(repos=repos, api=api, overlay=backend.name)

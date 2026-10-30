@@ -17,6 +17,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 import teatree.agents.runner as runner_mod
 from teatree.agents.attempt_recorder import AttemptUsage
+from teatree.agents.credential_policy import ALL_ACCOUNTS_EXHAUSTED_CAUSE
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.harness_registry import HarnessRejection
 from teatree.agents.runner import TaskUsage, run_agent
@@ -441,6 +442,21 @@ class TestHttpStatusParksOnlyTheMeteredTransport(django.test.TestCase):
 
 
 class TestAdmissionGuard(django.test.TestCase):
+    def test_new_healthy_account_admits_under_stale_all_accounts_window(self) -> None:
+        now = timezone.now()
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["new/oauth"])
+        _seed_healthy("new/oauth")
+        UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=ALL_ACCOUNTS_EXHAUSTED_CAUSE,
+            resets_at=now + timedelta(hours=5),
+            now=now,
+        )
+        task = _claimed_task()
+        assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now) is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
     def test_parks_dispatch_while_window_active(self) -> None:
         now = timezone.now()
         reset = now + timedelta(hours=5)

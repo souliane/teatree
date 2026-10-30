@@ -18,6 +18,7 @@ from teatree.loop.domain_jobs import _global_dispatch_jobs, _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
+from teatree.loop.scanners.scan_deadline import scanner_deadline
 from tests._owner_channel import OWNER_DECISION
 
 
@@ -30,11 +31,16 @@ class TestDeferredQuestionPosterScanner(TestCase):
             assert DeferredQuestionPosterScanner().scan() == []
 
     def test_emits_signal_when_questions_mirrored(self) -> None:
-        with patch(
-            "teatree.core.notify_question_drains.drain_unmirrored_deferred_questions",
-            return_value=(1, 2),
+        deadline = 123.0
+        with (
+            patch(
+                "teatree.core.notify_question_drains.drain_unmirrored_deferred_questions",
+                return_value=(1, 2),
+            ) as drain,
+            scanner_deadline(deadline),
         ):
             signals = DeferredQuestionPosterScanner().scan()
+        assert drain.call_args.kwargs["deadline"] is deadline
         assert len(signals) == 1
         assert signals[0].kind == "deferred_question.mirrored"
         assert signals[0].payload == {"mirrored": 1, "total": 2}

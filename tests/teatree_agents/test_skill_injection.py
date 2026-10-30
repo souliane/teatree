@@ -341,7 +341,7 @@ def test_a_budget_cut_of_the_bodies_keeps_every_companion_line(tmp_path: Path) -
     out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) // 2)
 
     assert "…truncated" in out
-    assert "Load /slack-formatting via the Skill tool BEFORE reviewing." in out
+    assert "Load /t3:slack-formatting via the Skill tool BEFORE reviewing." in out
     assert f"- internals: not embedded — Read `{tmp_path / 'internals' / 'SKILL.md'}` when it applies" in out
 
 

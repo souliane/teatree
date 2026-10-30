@@ -8,8 +8,10 @@ that the composite never escapes the policy.
 """
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
+from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 
@@ -17,6 +19,7 @@ from teatree.agents._runner_env import _provider_child_env, system_child_env
 from teatree.agents.credential_policy import (
     ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     EXHAUSTION_CAUSES,
+    clear_stale_exhaustion_window,
     resolve_credential_provider,
     spend_metered_key,
     subscription_lane_exhausted,
@@ -24,11 +27,12 @@ from teatree.agents.credential_policy import (
 from teatree.agents.harness import resolve_harness
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.runner import _resolve_dispatch_lane
-from teatree.agents.usage_window import maybe_park_for_active_window
+from teatree.agents.usage_window import maybe_park_for_active_window, record_park
 from teatree.config import AgentHarnessProvider
 from teatree.config.cross_key_consistency import check_harness_provider_pair
 from teatree.config.schema import setting_choices
 from teatree.core.models import (
+    LIMIT_PARKED_PREFIX,
     AnthropicActivePick,
     AnthropicTokenUsage,
     ConfigSetting,
@@ -86,6 +90,19 @@ class CredentialPolicyCase(TestCase):
 
 
 class TestExhaustionRule(CredentialPolicyCase):
+    def test_admission_defers_live_health_probe_to_recovery(self) -> None:
+        self._monkeypatch.delenv(_OAUTH_VAR, raising=False)
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/plan/oauth"])
+        task = _claimed_task()
+
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe,
+            patch("teatree.agents.credential_policy.oauth_lane_available", return_value=False),
+        ):
+            assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+        probe.assert_not_called()
+
     def test_only_the_three_plan_exhaustion_causes_count(self) -> None:
         assert (
             frozenset(
@@ -103,12 +120,205 @@ class TestExhaustionRule(CredentialPolicyCase):
         assert subscription_lane_exhausted() is True
 
     def test_newly_available_oauth_account_overrides_an_old_all_accounts_window(self) -> None:
-        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
-        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/new/oauth"])
+        window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/old/oauth"], scope="overlay-a")
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/new/oauth"], scope="overlay-b")
         task = _claimed_task()
-
+        task.ticket.overlay = "overlay-a"
+        task.ticket.save(update_fields=["overlay"])
+        parked = Task.objects.create(
+            ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
+        )
+        reset = window.resets_at
+        assert reset is not None
+        record_park(
+            parked,
+            reason=f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted",
+            not_before=reset,
+        )
+        unrelated = Task.objects.create(
+            ticket=task.ticket, session=task.session, phase="reviewing", status=Task.Status.CLAIMED
+        )
+        record_park(unrelated, reason=f"{LIMIT_PARKED_PREFIX}api_credit: credit spent", not_before=reset)
+        UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            cause=ALL_ACCOUNTS_EXHAUSTED_CAUSE,
+            resets_at=reset + timedelta(days=1),
+        )
+        window.refresh_from_db()
+        reading = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=0.2,
+            status_5h="allowed",
+            status_7d="allowed",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        spent = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.99,
+            utilization_7d=0.2,
+            status_5h="rejected",
+            status_7d="allowed",
+            reset_5h=reset,
+            reset_7d=None,
+        )
         assert subscription_lane_exhausted() is False
-        assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", side_effect=(spent, reading)) as probe,
+            patch("teatree.agents.credential_policy.ModeOverride.objects.clear_auto_engaged_token_outage") as clear,
+        ):
+            assert clear_stale_exhaustion_window(window, scope="overlay-a", now=timezone.now()) == 1
+        assert [call.args[0] for call in probe.call_args_list] == ["anthropic/old/oauth", "anthropic/new/oauth"]
+        clear.assert_called_once_with()
+        window.refresh_from_db()
+        parked.refresh_from_db()
+        unrelated.refresh_from_db()
+        assert window.cleared_at is not None
+        assert parked.not_before is None
+        assert unrelated.not_before == reset
+        assert task.status == Task.Status.CLAIMED
+
+    def test_missing_health_keeps_the_window_and_throttles_recovery_reprobe(self) -> None:
+        self._monkeypatch.delenv(_OAUTH_VAR, raising=False)
+        window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/unreadable/oauth"])
+        task = _claimed_task()
+        second = Task.objects.create(
+            ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
+        )
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", return_value=None) as probe,
+            patch("teatree.agents.credential_policy.oauth_lane_available", return_value=False),
+        ):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+            assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+            assert maybe_park_for_active_window(second, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+        probe.assert_called_once_with("anthropic/unreadable/oauth")
+        window.refresh_from_db()
+        assert window.cleared_at is None
+
+    def test_unhealthy_account_keeps_the_future_reset(self) -> None:
+        window = _plan_window(LimitCause.SUBSCRIPTION_WEEKLY.value)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/spent/oauth"])
+        task = _claimed_task()
+        reading = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=0.99,
+            status_5h="allowed",
+            status_7d="rejected",
+            reset_5h=None,
+            reset_7d=window.resets_at,
+        )
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=reading):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+            attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        assert attempt is not None
+        window.refresh_from_db()
+        task.refresh_from_db()
+        assert window.cleared_at is None
+        assert task.not_before == window.resets_at
+
+    def test_healthy_account_releases_an_admission_park_before_reset(self) -> None:
+        window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/plan/oauth"])
+        task = _claimed_task()
+        reset = window.resets_at
+        assert reset is not None
+        spent = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.99,
+            utilization_7d=0.2,
+            status_5h="rejected",
+            status_7d="allowed",
+            reset_5h=reset,
+            reset_7d=None,
+        )
+        healthy = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=0.2,
+            status_5h="allowed",
+            status_7d="allowed",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=spent):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+            attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        assert attempt is not None
+        assert "window on lane 'subscription' active" in attempt.error
+        legacy = Task.objects.create(
+            ticket=task.ticket, session=task.session, phase="testing", status=Task.Status.CLAIMED
+        )
+        record_park(
+            legacy,
+            reason=(
+                f"{LIMIT_PARKED_PREFIX}admission: all_accounts_exhausted "
+                "window on lane TaskAttempt.Lane.SUBSCRIPTION active"
+            ),
+            not_before=reset,
+        )
+        cache.clear()
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=healthy):
+            released = clear_stale_exhaustion_window(window, scope=None, now=timezone.now())
+        task.refresh_from_db()
+        legacy.refresh_from_db()
+        window.refresh_from_db()
+        assert released == 2
+        assert task.not_before is None
+        assert legacy.not_before is None
+        assert window.cleared_at is not None
+
+    def test_partial_reading_does_not_replace_known_exhaustion(self) -> None:
+        window = _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        path = "anthropic/partial/oauth"
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", [path])
+        spent = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.99,
+            utilization_7d=0.2,
+            status_5h="rejected",
+            status_7d="allowed",
+            reset_5h=window.resets_at,
+            reset_7d=None,
+        )
+        cached = AnthropicTokenUsage.objects.record(path, spent, now=timezone.now())
+        partial = TokenHealthReading(
+            organization_id="org",
+            utilization_5h=0.2,
+            utilization_7d=None,
+            status_5h="allowed",
+            status_7d="",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        task = _claimed_task()
+        with patch("teatree.credential_refresh.AccountProber.read", return_value=partial):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+            assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is not None
+        cached.refresh_from_db()
+        window.refresh_from_db()
+        assert cached.is_exhausted
+        assert window.cleared_at is None
+
+    def test_failed_health_probe_names_window_and_keeps_reset(self) -> None:
+        window = _plan_window(LimitCause.SUBSCRIPTION_SESSION.value)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/down/oauth"])
+        task = _claimed_task()
+        with (
+            patch("teatree.credential_refresh.AccountProber.read", side_effect=RuntimeError("probe down")),
+            self.assertLogs(_POLICY_LOGGER, level="WARNING") as log,
+        ):
+            assert clear_stale_exhaustion_window(window, scope=None, now=timezone.now()) is None
+            attempt = maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        assert attempt is not None
+        assert str(window.pk) in " ".join(log.output)
+        window.refresh_from_db()
+        assert window.cleared_at is None
 
     def test_an_elapsed_window_does_not(self) -> None:
         now = timezone.now()

@@ -125,6 +125,23 @@ class TestHeadStateBriefLines(TestCase):
         assert "first blocker" in block
         assert "second blocker" in block
 
+    def test_activity_claim_brief_uses_real_review_head(self) -> None:
+        pr_url = "https://github.com/example/repo/pull/18"
+        head = "b" * 40
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/17")
+        PullRequest.objects.create(ticket=ticket, url=pr_url, repo="example/repo", iid="18")
+        RedMrFixAttempt.claim_activity(pr_url=pr_url, head_sha=head, note_id=42)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="debugging",
+            execution_reason=f"Auto-scheduled review-findings fix — {pr_url}",
+        )
+
+        block = "\n".join(round_brief_lines(task))
+
+        assert f"OPEN REVIEW FINDINGS at {head}" in block
+
     def test_coding_round_names_standard_and_missing_measured_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _worktree_with_commit(Path(tmp), subject="fix: prior round")
