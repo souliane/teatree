@@ -234,6 +234,41 @@ class TestARetryNeverForksASecondIssue:
         assert second.url == first.url
         assert len(host.created) == 1, "the fingerprint marker did not dedupe a re-file"
 
+    def test_a_refused_first_attempt_reuses_a_sibling_fingerprint_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ticket = _conversation_ticket()
+        stored = Ticket.objects.create(issue_url="https://gitlab.com/acme/app/-/work_items/256")
+        host = RecordingHost(forge="gitlab")
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", _blocked_write)
+
+        first = file_work_item(ticket, {"title": "Track request", "body": "Details"}, host=host, repo_for=_in_repo)
+        ticket.refresh_from_db()
+        assert first is not None
+        assert first.withheld
+        assert "work_issue_url" not in ticket.extra["slack_answer"]
+
+        hit = "https://gitlab.com/acme/app/-/issues/256"
+        host.open_issues.append({"web_url": hit, "body": "<!-- slack-request-fingerprint:fp-bottleneck -->"})
+        second = file_work_item(ticket, {"title": "Track request", "body": "Details"}, host=host, repo_for=_in_repo)
+
+        assert second is not None
+        assert second.url == hit
+        assert Ticket.objects.count() == 2
+        assert Ticket.objects.get(pk=stored.pk).issue_url.endswith("/work_items/256")
+        assert host.created == []
+
+    def test_a_recorded_sibling_url_reuses_the_stored_ticket(self) -> None:
+        stored = Ticket.objects.create(issue_url="https://gitlab.com/acme/app/-/work_items/256")
+        recorded = "https://gitlab.com/acme/app/-/issues/256"
+        ticket = _conversation_ticket(work_issue_url=recorded)
+        ThreadBinding.bind(ticket=ticket, channel="D-owner", thread_ts="1.0")
+
+        filed = file_work_item(ticket, {"title": "ignored"}, host=RecordingHost(), repo_for=_in_repo)
+
+        assert filed is not None
+        assert filed.url == recorded
+        assert Ticket.objects.count() == 2
+        assert ThreadBinding.objects.get(channel="D-owner", thread_ts="1.0").ticket_id == stored.pk
+
 
 class TestAttachingToAnExistingBacklogIssue:
     """Reuse-before-file — the agent may name a host issue instead of minting a near-duplicate."""
@@ -259,6 +294,39 @@ class TestAttachingToAnExistingBacklogIssue:
             file_work_item(
                 _conversation_ticket(), {"existing_issue_url": "4526"}, host=RecordingHost(), repo_for=_in_repo
             )
+
+
+class TestSiblingSpellingsOfOneIssue:
+    @pytest.mark.parametrize(("stored_kind", "given_kind"), [("issues", "work_items"), ("work_items", "issues")])
+    def test_attach_reuses_the_ticket_and_rebinds_the_thread(self, stored_kind: str, given_kind: str) -> None:
+        stored = Ticket.objects.create(issue_url=f"https://gitlab.com/acme/app/-/{stored_kind}/256")
+        ticket = _conversation_ticket()
+        ThreadBinding.bind(ticket=ticket, channel="D-owner", thread_ts="1.0")
+        given = f"https://gitlab.com/acme/app/-/{given_kind}/256"
+
+        filed = file_work_item(ticket, {"existing_issue_url": given}, host=RecordingHost(), repo_for=_in_repo)
+
+        assert filed is not None
+        assert filed.url == given
+        assert Ticket.objects.count() == 2
+        assert ThreadBinding.objects.get(channel="D-owner", thread_ts="1.0").ticket_id == stored.pk
+
+    def test_a_new_work_item_in_another_repo_creates_one_ticket(self) -> None:
+        Ticket.objects.create(issue_url="https://gitlab.com/acme/app/-/issues/256")
+        ticket = _conversation_ticket()
+        given = "https://gitlab.com/acme/other/-/work_items/256"
+
+        filed = file_work_item(ticket, {"existing_issue_url": given}, host=RecordingHost(), repo_for=_in_repo)
+
+        assert filed is not None
+        assert filed.url == given
+        assert Ticket.objects.count() == 3
+        created = Ticket.objects.get(issue_url=given)
+        assert (created.overlay, created.role, created.short_description) == (
+            ticket.overlay,
+            Ticket.Role.AUTHOR,
+            ticket.short_description,
+        )
 
 
 class TestNothingLeaksAndNothingFailsQuietly:

@@ -224,13 +224,8 @@ def _attach(ticket: Ticket, url: str, *, title: str = "") -> FiledWorkItem:
     claimable the moment the owner is told about it — the promise and the admissibility
     that backs it land together.
     """
-    work_ticket, _created = Ticket.objects.get_or_create(
-        issue_url=url,
-        defaults={
-            "overlay": ticket.overlay,
-            "role": Ticket.Role.AUTHOR,
-            "short_description": (title or ticket.short_description)[:_DESCRIPTION_LIMIT],
-        },
+    work_ticket, _created = Ticket.objects.get_or_create_for_issue(
+        url, overlay=ticket.overlay, short_description=(title or ticket.short_description)[:_DESCRIPTION_LIMIT]
     )
     if ticket.requested_by:
         work_ticket.record_requester(ticket.requested_by)
