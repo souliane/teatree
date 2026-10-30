@@ -315,7 +315,12 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
             timeout_seconds=120,
             env_unset=unset_overlay,
         ),
-        SmokeStep(name="worktree_teardown", command=("t3", overlay, "worktree", "teardown", *at_worktree)),
+        # Compose down and serial Docker reaping can consume 210s before CLI overhead.
+        SmokeStep(
+            name="worktree_teardown",
+            command=("t3", overlay, "worktree", "teardown", *at_worktree),
+            timeout_seconds=240,
+        ),
     ]
 
 

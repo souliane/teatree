@@ -85,7 +85,7 @@ class TestDefaultSteps:
             "workspace_provision_env_set": 60,
             "worktree_start": 120,
             "worktree_ready": 120,
-            "worktree_teardown": 60,
+            "worktree_teardown": 240,
         }
 
     def test_final_step_tears_down_only_the_fixture_checkout(self) -> None:
@@ -539,7 +539,13 @@ class TestTotalStepBudget:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         matrix = [s for s in steps if s.name.startswith("workspace_provision_env_")]
         assert len(matrix) == 2
-        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 600
+        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 780
+
+    def test_teardown_budget_covers_serial_docker_cleanup(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+        teardown = next(step for step in steps if step.name == "worktree_teardown")
+
+        assert teardown.timeout_seconds >= 240
 
 
 class TestRunnerEnvControl:
