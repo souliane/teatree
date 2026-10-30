@@ -80,16 +80,16 @@ class TestDefaultSteps:
             "worktree_teardown",
         ]
 
-    def test_workspace_ticket_gets_the_orphan_scan_budget(self) -> None:
+    def test_each_step_has_its_own_ceiling(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         assert {step.name: step.timeout_seconds for step in steps} == {
-            "workspace_ticket": 180,
-            "env_show": 60,
-            "worktree_provision": 60,
-            "workspace_provision_env_unset": 60,
-            "workspace_provision_env_set": 60,
-            "worktree_start": 120,
-            "worktree_ready": 120,
+            "workspace_ticket": 95,
+            "env_show": 30,
+            "worktree_provision": 30,
+            "workspace_provision_env_unset": 30,
+            "workspace_provision_env_set": 30,
+            "worktree_start": 65,
+            "worktree_ready": 65,
             "worktree_teardown": 240,
         }
 
@@ -560,7 +560,7 @@ class TestTotalStepBudget:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         matrix = [s for s in steps if s.name.startswith("workspace_provision_env_")]
         assert len(matrix) == 2
-        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 780
+        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 525
 
     def test_teardown_budget_exceeds_the_serial_cleanup_ceilings_it_must_cover(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
@@ -569,6 +569,11 @@ class TestTotalStepBudget:
 
         assert len(ceilings) == 5  # compose down, then list + remove for containers and for images
         assert teardown.timeout_seconds > sum(ceilings)
+
+    def test_worst_case_total_stays_under_the_lane_shell_ceiling(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+
+        assert total_step_budget_seconds(steps) < LaneBToolConfig().shell_timeout_seconds
 
     def test_no_step_ceiling_outlives_the_lane_shell_ceiling(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
