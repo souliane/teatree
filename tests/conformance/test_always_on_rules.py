@@ -1,4 +1,4 @@
-"""The seven ranked always-on rules live in one file that every agent entry point links before its first section."""
+"""The eight ranked always-on rules live in one file that every agent entry point links before its first section."""
 
 import re
 from pathlib import Path
@@ -16,6 +16,7 @@ _TITLES = (
     "A thread with the owner opens with enough context, then stays the one place for that work",
     "Finish what is started before starting more",
     "Fix and consolidate before adding",
+    "TeaTree depends on no third-party agent harness",
 )
 
 _ENTRY_RE = re.compile(r"^(\d+)\. \*\*(.+?):\*\* ", re.MULTILINE)
@@ -97,12 +98,36 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
                 "(Rule 5); the feature waits or is split. The owner can lift this per item."
             ),
         ),
+        (
+            7,
+            (
+                "7. **TeaTree depends on no third-party agent harness:** the factory must be able to run with no "
+                "harness at all, so every third-party harness (Claude Code, Codex, any other) is an optional backend "
+                "lane behind one shared interface and never a hard dependency; removing one of them, or all of them, "
+                "leaves the factory working. Code that knows a harness lives only in that harness's backend; code "
+                "that knows an attended session (a person driving a harness by hand) lives only in the interactive "
+                "skill and the hooks that serve only attended sessions. Nothing else (the coordinator, the task "
+                "queue, the models, the loops, the gates, the tests) names a harness or an attended session, or "
+                "needs one to be present. A generic notion of a session that is not specific to any harness is fine. "
+                "State the factory needs is written to the database as it goes and never held only inside a harness "
+                "or an attended session. This is about being able to run without a harness, not about which route "
+                "is used: spending stays what the owner has configured."
+            ),
+        ),
     ],
-    ids=["rule-1", "rule-3", "rule-5", "rule-6"],
+    ids=["rule-1", "rule-3", "rule-5", "rule-6", "rule-7"],
 )
 def test_owner_rules_are_verbatim(rank: int, expected: str) -> None:
     lines = _RULES_FILE.read_text(encoding="utf-8").splitlines()
     assert next(line for line in lines if line.startswith(f"{rank}. ")) == expected
+
+
+@pytest.mark.parametrize("page", ["AGENTS.md", "CLAUDE.md", "BLUEPRINT.md"])
+def test_documented_rule_count_matches_entries(page: str) -> None:
+    entries = _ENTRY_RE.findall(_RULES_FILE.read_text(encoding="utf-8"))
+    words = re.findall(r"\b(seven|eight) always-on rules\b", (_REPO_ROOT / page).read_text(encoding="utf-8"))
+    assert words
+    assert all({"seven": 7, "eight": 8}[word] == len(entries) for word in words)
 
 
 def test_the_rules_file_has_one_heading_and_no_nested_items() -> None:
