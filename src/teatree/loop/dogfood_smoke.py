@@ -43,6 +43,10 @@ OVERLAY_ENV_VAR = "T3_OVERLAY_NAME"
 #: placeholder is bound by :func:`run_smoke` once the creating step has succeeded.
 WORKTREE_PATH_PLACEHOLDER = "<worktree-path>"
 
+#: Compose down 30s + reap hook (list 30 + remove 60, containers then images) = 210s, plus CLI overhead.
+#: Holds only for an overlay that implements the reap hook and a compose project nobody else shares.
+TEARDOWN_TIMEOUT_SECONDS = 240
+
 logger = logging.getLogger(__name__)
 
 
@@ -315,11 +319,10 @@ def default_steps(*, overlay: str, fixture_ticket_url: str, variant: str = "") -
             timeout_seconds=120,
             env_unset=unset_overlay,
         ),
-        # Compose down and serial Docker reaping can consume 210s before CLI overhead.
         SmokeStep(
             name="worktree_teardown",
             command=("t3", overlay, "worktree", "teardown", *at_worktree),
-            timeout_seconds=240,
+            timeout_seconds=TEARDOWN_TIMEOUT_SECONDS,
         ),
     ]
 
@@ -434,6 +437,7 @@ def report_summary(report: SmokeReport) -> str:
 __all__ = [
     "OVERLAY_ENV_VAR",
     "STEP_OUTCOME_KIND",
+    "TEARDOWN_TIMEOUT_SECONDS",
     "WORKTREE_PATH_PLACEHOLDER",
     "SmokeOutcomeKind",
     "SmokeReport",
