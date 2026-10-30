@@ -6,12 +6,17 @@ runner so the suite never shells out — the live run would take minutes
 and depend on Docker / overlay infra.
 """
 
+import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 
+from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.core.provision.variant import Variant
+from teatree.core.runners.worktree_start import docker_compose_down
+from teatree.docker.reap import reap_compose_project
 from teatree.loop.dogfood_smoke import (
     STEP_OUTCOME_KIND,
     WORKTREE_PATH_PLACEHOLDER,
@@ -75,17 +80,17 @@ class TestDefaultSteps:
             "worktree_teardown",
         ]
 
-    def test_workspace_ticket_gets_the_orphan_scan_budget(self) -> None:
+    def test_each_step_has_its_own_ceiling(self) -> None:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         assert {step.name: step.timeout_seconds for step in steps} == {
-            "workspace_ticket": 180,
-            "env_show": 60,
-            "worktree_provision": 60,
-            "workspace_provision_env_unset": 60,
-            "workspace_provision_env_set": 60,
-            "worktree_start": 120,
-            "worktree_ready": 120,
-            "worktree_teardown": 60,
+            "workspace_ticket": 95,
+            "env_show": 30,
+            "worktree_provision": 30,
+            "workspace_provision_env_unset": 30,
+            "workspace_provision_env_set": 30,
+            "worktree_start": 65,
+            "worktree_ready": 65,
+            "worktree_teardown": 240,
         }
 
     def test_final_step_tears_down_only_the_fixture_checkout(self) -> None:
@@ -520,6 +525,22 @@ class TestOverlayEnvMatrix:
         assert "Multiple overlays found" in report.failing_step_stderr
 
 
+def _serial_cleanup_ceilings() -> list[int]:
+    ceilings: list[int] = []
+
+    def docker_answers(cmd: list[str], *, expected_codes: None, timeout: int) -> subprocess.CompletedProcess[str]:
+        ceilings.append(timeout)
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+
+    with (
+        patch("teatree.core.runners.worktree_start.run_allowed_to_fail", docker_answers),
+        patch("teatree.docker.reap.run_allowed_to_fail", docker_answers),
+    ):
+        docker_compose_down("proj-wt1", remove_volumes=True)
+        reap_compose_project("proj-wt1")
+    return ceilings
+
+
 class TestTotalStepBudget:
     """The smoke reaches its caller as ONE command — its total must stay bounded."""
 
@@ -539,7 +560,25 @@ class TestTotalStepBudget:
         steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
         matrix = [s for s in steps if s.name.startswith("workspace_provision_env_")]
         assert len(matrix) == 2
-        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 600
+        assert total_step_budget_seconds(steps) - total_step_budget_seconds(matrix) == 525
+
+    def test_teardown_budget_exceeds_the_serial_cleanup_ceilings_it_must_cover(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+        teardown = next(step for step in steps if step.name == "worktree_teardown")
+        ceilings = _serial_cleanup_ceilings()
+
+        assert len(ceilings) == 5  # compose down, then list + remove for containers and for images
+        assert teardown.timeout_seconds > sum(ceilings)
+
+    def test_worst_case_total_stays_under_the_lane_shell_ceiling(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+
+        assert total_step_budget_seconds(steps) < LaneBToolConfig().shell_timeout_seconds
+
+    def test_no_step_ceiling_outlives_the_lane_shell_ceiling(self) -> None:
+        steps = default_steps(overlay="testoverlay", fixture_ticket_url="https://x/issues/1")
+
+        assert max(step.timeout_seconds for step in steps) < LaneBToolConfig().shell_timeout_seconds
 
 
 class TestRunnerEnvControl:

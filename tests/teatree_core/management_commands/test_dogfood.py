@@ -32,7 +32,7 @@ from teatree.core.management.commands import dogfood
 from teatree.core.management.commands.dogfood import _FixtureCheckout
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig
-from teatree.loop.dogfood_smoke import SmokeOutcomeKind, SmokeReport, SmokeStep, StepResult
+from teatree.loop.dogfood_smoke import SmokeOutcomeKind, SmokeReport, SmokeStep, StepResult, default_steps
 from teatree.types import ProvisionStep
 from tests.factories import TicketFactory, WorktreeFactory
 
@@ -814,6 +814,22 @@ class TestFixtureCleanup:
         assert failures == []
         assert commands == [("t3", "acme", "worktree", "teardown", "--path", str(path)) for path in paths]
         assert all(not path.exists() for path in paths)
+
+    def test_cleanup_teardown_gets_the_same_budget_as_the_smoke_teardown_step(self, tmp_path: Path) -> None:
+        fixture, path = self._created_checkout(tmp_path)
+        budgets: list[int] = []
+
+        def teardown(step: SmokeStep) -> StepResult:
+            budgets.append(step.timeout_seconds)
+            path.rmdir()
+            return StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+
+        with patch.object(dogfood, "run_t3_command", side_effect=teardown):
+            fixture.cleanup()
+
+        smoke_steps = default_steps(overlay="acme", fixture_ticket_url=OWN_FIXTURE_URL)
+        smoke_teardown = next(step for step in smoke_steps if step.name == "worktree_teardown")
+        assert budgets == [smoke_teardown.timeout_seconds]
 
     def test_teardown_transport_error_is_reported(self, tmp_path: Path) -> None:
         fixture, path = self._created_checkout(tmp_path)
