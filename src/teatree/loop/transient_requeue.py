@@ -127,7 +127,11 @@ def _route_failed_task(task: Task, *, now: datetime, reads: DeadArtifactReads) -
     )
     # The kind is re-derived rather than read off the attempt, so a row classified by an older
     # build cannot route on a stale kind.
-    strategy = recovery_strategy(classify_failure(error))
+    strategy = (
+        RecoveryStrategy.HALT
+        if normalize_phase(task.phase) == "eval_local" and "measured nothing:" in error
+        else recovery_strategy(classify_failure(error))
+    )
 
     if review_credential_retry:
         return _reopen(task, plans_only=True)

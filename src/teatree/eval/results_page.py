@@ -19,7 +19,7 @@ def render_results_page(*, now: datetime | None = None) -> str:
     lines = [f"# Behavioral eval results — {run.started_at.date().isoformat()}", ""]
     if current - run.started_at > timedelta(days=7):
         lines.extend((f"STALE: latest run is older than one week ({run.started_at.isoformat()}).", ""))
-    if run.measured_nothing:
+    if run.measured_nothing or run.total == 0:
         lines.append(f"MEASURED NOTHING: 0 of {run.total} scenarios graded ({run.skipped} skipped).")
     else:
         cost = sum(run.results.values_list("cost_usd", flat=True))

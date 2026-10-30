@@ -700,6 +700,26 @@ class TestAllOverlaysAggregation(CheckingTestBase):
 
     OVERLAY_B = "beta"
 
+    def test_global_report_names_the_unmeasured_eval(self) -> None:
+        run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=self.now)
+        run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.SKIP)
+        with patch("teatree.loops.enable_verdict.loop_admits", return_value=True):
+            report = gather_all_overlays_report(
+                overlay_windows={self.OVERLAY: (self.since, self.now)},
+                overlay_configs={self.OVERLAY: ("github", ["acme/widgets"])},
+            )
+        assert any(item.label == "evals" and "measured nothing" in item.detail for item in report.needs_you.items)
+
+    def test_unread_eval_source_does_not_break_check_in(self) -> None:
+        with patch("teatree.core.checking.eval_measurement_signal", side_effect=RuntimeError("unread")):
+            report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+            global_report = gather_all_overlays_report(
+                overlay_windows={self.OVERLAY: (self.since, self.now)},
+                overlay_configs={self.OVERLAY: ("github", ["acme/widgets"])},
+            )
+        assert not any(item.label == "evals" for item in report.needs_you.items)
+        assert not any(item.label == "evals" for item in global_report.needs_you.items)
+
     def _ticket_b(self, *, number: int = 99, state: str = Ticket.State.REVIEW_REQUESTED) -> Ticket:
         return Ticket.objects.create(
             overlay=self.OVERLAY_B,

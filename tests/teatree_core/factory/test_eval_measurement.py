@@ -12,6 +12,30 @@ from teatree.core.models import EvalRunRecord, EvalVerdict, Loop
 
 
 class TestEvalMeasurement(TestCase):
+    def test_empty_catalog_run_warns_even_without_collected_scenarios(self) -> None:
+        now = timezone.now()
+        EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=now)
+
+        with patch("teatree.loops.enable_verdict.loop_admits", return_value=True):
+            signal = eval_measurement_signal(now)
+
+        assert signal is not None
+        assert signal.severity == "warning"
+        assert "measured nothing" in signal.summary
+
+    def test_repeated_empty_runs_do_not_reset_critical_age(self) -> None:
+        now = timezone.now()
+        Loop.objects.filter(name="eval_local").update(delay_seconds=86400)
+        for started_at in (now - timedelta(days=9), now):
+            run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=started_at)
+            run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.SKIP)
+
+        with patch("teatree.loops.enable_verdict.loop_admits", return_value=True):
+            signal = eval_measurement_signal(now)
+
+        assert signal is not None
+        assert signal.severity == "critical"
+
     def test_latest_unmeasured_run_warns(self) -> None:
         now = timezone.now()
         run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=now)

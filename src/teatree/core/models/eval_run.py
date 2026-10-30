@@ -176,9 +176,10 @@ class EvalRunManager(models.Manager["EvalRunRecord"]):
 
 
 class EvalRunRecord(models.Model):
+    """One ``t3 eval run`` invocation across all selected scenarios."""
+
     LOCAL_SUITE_PREFIX: ClassVar[str] = "eval_local:"
     RECORD_SUITE_ENV: ClassVar[str] = "T3_EVAL_RUN_SUITE"
-    """One ``t3 eval run`` invocation across all selected scenarios."""
 
     started_at = models.DateTimeField(default=timezone.now)
     model = models.CharField(max_length=128)
@@ -232,7 +233,7 @@ class EvalRunRecord(models.Model):
 
     @property
     def measured_nothing(self) -> bool:
-        return self.executed == 0
+        return self.total > 0 and self.executed == 0
 
     @property
     def models(self) -> list[str]:

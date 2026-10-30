@@ -24,7 +24,8 @@ def eval_measurement_signal(now: datetime) -> HealthSignal | None:
     )
     delay = Loop.objects.filter(name="eval_local").values_list("delay_seconds", flat=True).first() or 0
     critical_after = max(_STALE_AFTER, timedelta(seconds=2 * delay))
-    last_measured_at = last_measured.started_at if last_measured else latest.started_at
+    first = local_runs.earliest("started_at")
+    last_measured_at = last_measured.started_at if last_measured else first.started_at
     age = now - last_measured_at
     if age >= critical_after:
         return HealthSignal(
@@ -33,7 +34,7 @@ def eval_measurement_signal(now: datetime) -> HealthSignal | None:
             severity=KnownIssue.Severity.CRITICAL,
             summary=f"behavioral evals measured nothing within {critical_after.days} days",
         )
-    if latest.measured_nothing:
+    if latest.measured_nothing or latest.total == 0:
         return HealthSignal(
             fingerprint="eval-local-measured-nothing",
             kind="eval_measurement",
