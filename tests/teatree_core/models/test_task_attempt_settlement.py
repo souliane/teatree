@@ -146,6 +146,28 @@ class TestTaskAttemptSettlement(TestCase):
         assert attempt.pk is not None
         assert task.attempts.count() == 1
 
+    def test_a_lost_lease_attempt_write_is_retried_when_the_database_is_locked(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        task.claim(claimed_by="worker-a", claimed_by_session="run-a")
+        Task.objects.filter(pk=task.pk).update(claimed_by="worker-b")
+        original_create = TaskAttempt.objects.create
+        calls = 0
+
+        def create_after_lock(**kwargs: object) -> TaskAttempt:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                message = "database is locked"
+                raise OperationalError(message)
+            return original_create(**kwargs)
+
+        with mock.patch.object(TaskAttempt.objects, "create", side_effect=create_after_lock):
+            attempt = task.complete_with_attempt(exit_code=1, error="run failed")
+
+        assert calls == 2
+        assert attempt.error.startswith("stuck_loop: lease lost")
+
     def test_checkout_exit_settles_before_the_write_transaction_opens(self) -> None:
         ticket = Ticket.objects.create()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
