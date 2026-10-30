@@ -90,6 +90,9 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
         if target.state not in Ticket.EARLY_STATES:
             message = f"planning is not available from {target.state}"
             raise ActionRefusedError(message)
+        if not Task.loop_dispatched(role=target.role, phase="planning"):
+            message = f"no sub-agent plans a {target.role} ticket"
+            raise ActionRefusedError(message)
         queued = (
             Task.objects.in_flight_for_phase(target.overlay, "planning").filter(ticket=target).order_by("pk").first()
         )

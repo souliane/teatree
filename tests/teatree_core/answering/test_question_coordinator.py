@@ -7,10 +7,11 @@ from django.db import DatabaseError
 from django.test import TestCase
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.question_heal import live_owner_questions
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests._owner_channel import owner_card
 from tests.factories import planned_ticket
 
@@ -285,6 +286,22 @@ class TestQuestionCoordinator(TestCase):
         assert pending.status == DeferredQuestion.STATUS_ANSWERED
         child = task.child_tasks.get()
         assert child.execution_reason.startswith("The user answered your earlier question: Yes.")
+
+    def test_a_conversation_build_task_keeps_the_coordinated_answer_and_resumes_nothing(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        pending = DeferredQuestion.record(question, card=owner_card(), parked_task=task)
+
+        with self.assertLogs("teatree.core.answering.question_coordinator", "WARNING"):
+            drain_unmirrored_deferred_questions()
+
+        pending.refresh_from_db()
+        assert pending.status == DeferredQuestion.STATUS_ANSWERED
+        assert pending.audits.filter(action="coordinated").exists()
+        assert not task.child_tasks.exists()
 
     def test_failed_resume_keeps_the_owner_question_pending(self) -> None:
         question = "Should we adopt the new dependency?"

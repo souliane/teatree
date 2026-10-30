@@ -141,6 +141,16 @@ class TestTheCoordinatorsActionsRunFromTheClosedTable(TestCase):
         assert not Task.objects.filter(ticket=self.work, phase="planning").exists()
         assert "planning is not available from tested" in self.backend.replies[0][2]
 
+    def test_queue_task_refuses_a_ticket_whose_role_no_sub_agent_plans(self) -> None:
+        Ticket.objects.filter(pk=self.work.pk).update(role=Ticket.Role.REVIEWER)
+
+        self._record(_bind(kind="queue_task", ticket=_WORK_URL))
+
+        reply = self.backend.replies[0][2]
+        assert not Task.objects.filter(ticket=self.work, phase="planning").exists()
+        assert "Could not run queue_task: no sub-agent plans a reviewer ticket." in reply
+        assert "Planning is queued" not in reply
+
     def test_an_action_refusal_is_stated_to_the_owner(self) -> None:
         self._record(_bind(ticket=_WORK_URL, channel="C-eng"))
 
