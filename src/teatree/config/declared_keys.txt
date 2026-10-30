@@ -65,7 +65,6 @@ dream_umbrella_url
 e2e_repos
 envelope_stop_gate_refusals
 eval_ci_account_allowlist
-eval_local_skill
 excluded_skills
 expected_required_contexts
 forced_repro_gate_enabled
@@ -203,3 +202,4 @@ self_improve_owner_wait_minutes
 admission_load_brake_per_core
 admission_load_resume_per_core
 forge_pool_max_connections
+RETIRED eval_local_skill

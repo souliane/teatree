@@ -118,16 +118,17 @@ def _route_failed_task(task: Task, *, now: datetime, reads: DeadArtifactReads) -
         # No recorded error → neither transient nor deterministic; must not freeze.
         _escalate_once(task, reason="failed with no recorded error")
         return 0
+    kind = classify_failure(error)
     review_credential_retry = (
         _is_review_anchor(task)
-        and classify_failure(error) in {FailureKind.CREDENTIAL_EXHAUSTED, FailureKind.CREDENTIAL_MISSING}
+        and kind in {FailureKind.CREDENTIAL_EXHAUSTED, FailureKind.CREDENTIAL_MISSING}
         and PLANS_ONLY_MARKER not in task.execution_reason
         and get_effective_settings(task.ticket.overlay or None).agent_harness_provider
         in {None, AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY}
     )
     # The kind is re-derived rather than read off the attempt, so a row classified by an older
     # build cannot route on a stale kind.
-    strategy = recovery_strategy(classify_failure(error))
+    strategy = recovery_strategy(kind)
 
     if review_credential_retry:
         return _reopen(task, plans_only=True)

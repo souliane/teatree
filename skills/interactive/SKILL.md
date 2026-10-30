@@ -15,15 +15,15 @@ The shared Claude Code and Codex side of teatree: how skills reach an attended a
 
 Use only teatree's own MCP server. For any job unavailable there, use the `t3` CLI; do not call tools from another MCP server, including hosted connectors.
 
-## Answer the owner's cards in his place (attended session only)
+## Resolve settled owner cards and agent asks
 
-This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.
+This attended session may act on settled architecture cards below Rules 0-5. A headless orchestrator may answer its own agents' architecture questions with recorded decisions from the same ticket over the direct mailbox; it does not dismiss live owner cards or write an owner answer. Before a new architecture card is mirrored, the deterministic coordinator reuses an exact owner-channel answer with the same question, options, checked facts, subject, proposed text and producer marker, excluding owner actions; a rules-file card always reaches the owner; an attended session can cite that basis with `t3 <overlay> questions coordinate <id> --basis <id> '<exact answer>'`. Both apply the four owner limits below. The judging coordinator agent, a structured ask tool with a durable request and routing lease, and cross-ticket semantic matching remain specified in [#5063 R5](https://github.com/souliane/teatree/issues/5063), not implemented by this exact-match pass.
 
 Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply the recorded decision from answered cards when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
 
 When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. Checkout safety refusals are factory decisions: the writing fence retries them internally and records a standing health signal if they persist. Do not create, answer, or dismiss an owner card for a checkout refusal.
 
-The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. Leave those on the owner's card and report them; do not decide, dismiss or act for him.
+The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. A costly design, dependency, or large-mechanism choice also reaches the owner with intent, size, alternatives and a recommendation. Leave those on the owner's card and report them; do not decide, dismiss or act for him.
 
 ## This session does not implement — it files and enqueues (Non-Negotiable)
 

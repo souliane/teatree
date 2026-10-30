@@ -465,11 +465,6 @@ def slug_visibility(slug: str) -> str | None:
     return verdict
 
 
-def slug_is_private(slug: str) -> bool:
-    """Return True iff ``slug``'s visibility verdict is ``"PRIVATE"``."""
-    return slug_visibility(slug) == "PRIVATE"
-
-
 def _strip_host_prefix(slug: str) -> str:
     """Drop a leading ``host/`` segment (a first part containing a ``.``).
 

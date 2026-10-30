@@ -44,7 +44,7 @@ def _render(result: FactoryScore) -> str:
 
 
 _RECIPE_APPROVAL_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("The scoring recipe is not the one you approved.",),
     blocker="Only the owner approves how the factory is scored.",
     why="The scoring recipe changed, and the factory only trusts a recipe you approved.",

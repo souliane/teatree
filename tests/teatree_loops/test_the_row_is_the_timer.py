@@ -28,11 +28,11 @@ class TestTheDailyBackupIsAnchoredNotChained:
         assert "db_backup_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
 
 
-class TestTheWeeklyEvalRunsWeeklyRatherThanCheckingDaily:
-    """A daily row asking "has a week passed?" is a second clock, not a weekly cadence."""
+class TestTheDailyEvalRunsDailyRatherThanCheckingHourly:
+    """The row is the daily cadence; the runner rotates one seventh of the catalog."""
 
-    def test_the_row_carries_the_weekly_interval(self) -> None:
-        assert _row("eval_local")["delay_seconds"] == 604800
+    def test_the_row_carries_the_daily_interval(self) -> None:
+        assert _row("eval_local")["delay_seconds"] == 86400
 
     def test_the_inner_weekly_gate_is_retired(self) -> None:
         assert "eval_local_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS

@@ -90,9 +90,6 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
     return [str(s) for s in raw]
 
 
-_DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
-
-
 _ENV_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
 _ENV_BOOL_FALSE = frozenset({"0", "false", "no", "off"})
 

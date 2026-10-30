@@ -91,6 +91,16 @@ def _exhaustion_error(cause: LimitCause) -> str:
 
 
 class TestTransientRequeue(TestCase):
+    def test_local_eval_that_measured_nothing_is_not_requeued(self) -> None:
+        task = _failed_task(phase="eval_local")
+        _add_failed_attempt(task, error="result_error: measured nothing: 0 of 2 scenarios graded")
+        assert task.attempts.latest("pk").failure_kind == FailureKind.UNCLASSIFIED
+
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert HALT_STAMP in task.execution_reason
+
     def test_transient_failed_task_is_reopened_once(self) -> None:
         task = _failed_task()
         _add_failed_attempt(task, error="outage_death: connection refused")

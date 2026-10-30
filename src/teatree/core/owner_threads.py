@@ -71,7 +71,7 @@ def open_owner_threads(*, since: datetime | None = None, now: datetime | None = 
     return tuple(OwnerThread(question=row) for row in rows)
 
 
-def resolve_owner_thread(thread: OwnerThread, *, reason: str) -> bool:
+def resolve_owner_thread(thread: OwnerThread, *, reason: str, resolver_id: str = "") -> bool:
     """Close *thread* with *reason*; ``True`` on the transition, ``False`` if already closed.
 
     The one write both directions share. Single-use by construction
@@ -81,5 +81,5 @@ def resolve_owner_thread(thread: OwnerThread, *, reason: str) -> bool:
     question = thread.question
     if not question.is_pending:
         return False
-    question.mark_stale(reason)
+    question.mark_stale(reason, resolver_id=resolver_id)
     return question.dismissed_at is not None

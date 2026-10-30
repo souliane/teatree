@@ -109,4 +109,4 @@ class TestResolution:
     def test_architecture_design_requires_writing_plans(self) -> None:
         # writing-plans is an external methodology skill with no SKILL.md in this
         # repo; it stays in ``requires`` and passes through resolution.
-        assert _requires_of("architecture-design") == ["writing-plans"]
+        assert _requires_of("architecture-design") == ["rules", "writing-plans"]

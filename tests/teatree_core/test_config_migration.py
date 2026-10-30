@@ -30,6 +30,7 @@ from teatree.core.config_interchange.secret_guard import (
 )
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.placeholder_terms import TEST_TERM_REGISTRY
 
 _LEAK = TEST_TERM_REGISTRY["leak"][0]
@@ -90,6 +91,7 @@ class TestExportDbToToml(TestCase):
         assert "other" not in doc["overlays"]
 
     def test_empty_store_exports_empty_document(self) -> None:
+        seed_default_loops_and_prompts()
         assert export_db_to_toml(scan_terms=()).toml.strip() == ""
 
 
@@ -561,9 +563,10 @@ def _mask_toml(mode: str, entries: dict[str, bool]) -> str:
 
 
 class _SeedRowsTestCase(TestCase):
-    """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
+    """The install seed upgrades migration loops and creates modes/schedules."""
 
     def setUp(self) -> None:
+        seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
 
 

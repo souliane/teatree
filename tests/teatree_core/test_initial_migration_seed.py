@@ -5,10 +5,9 @@ The core history was squashed into ONE initial migration (named on disk; read th
 ``RunPython`` that seeds exactly the rows a fresh history DB used to end with: the
 default loops, the ``arch_review`` prompt and the ``off`` preset. They are LITERALS
 (a migration is frozen history and imports nothing from teatree), dumped from a fresh
-history DB of the pre-squash head, so :class:`TestSeedLiteralsMatchTheShippedSeed`
-keeps them in lock-step with :mod:`teatree.loops.seed` (the install-time seed ``t3
-setup`` runs), and :class:`FreshMigrateSeedsDefaultLoops` proves a migrate from
-``zero`` lands them.
+history DB of the pre-squash head. :class:`TestSeedLiteralsMatchTheShippedSeed`
+pins them against the install seed's current values or its declared replacements,
+and :class:`FreshMigrateSeedsDefaultLoops` proves a migrate from ``zero`` lands them.
 """
 
 import importlib
@@ -41,9 +40,9 @@ class TestSeedLiteralsMatchTheShippedSeed:
             row = _LOOP_ROWS[spec.name]
             as_seeded = _dispatch_rewrite._OLD if spec.description == _dispatch_rewrite._NEW else spec.description
             assert (row["delay_seconds"], row["daily_at"], row["description"], row["colleague_facing"]) == (
-                spec.delay_seconds,
+                spec.replaces_delay_seconds or spec.delay_seconds,
                 spec.daily_at,
-                as_seeded,
+                spec.replaces_description or as_seeded,
                 spec.colleague_facing,
             ), spec.name
             if spec.is_prompt_backed:
@@ -88,9 +87,9 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
         facing = set(Loop.objects.filter(colleague_facing=True).values_list("name", flat=True))
         assert facing == _COLLEAGUE_FACING
 
-    def test_seeds_each_loop_description_from_the_canonical_seed(self) -> None:
+    def test_seeds_each_loop_description_from_the_historical_seed(self) -> None:
         by_name = dict(Loop.objects.values_list("name", "description"))
-        assert by_name == {spec.name: spec.description for spec in DEFAULT_LOOPS}
+        assert by_name == {spec.name: spec.replaces_description or spec.description for spec in DEFAULT_LOOPS}
         assert all(by_name.values())
 
     def test_slack_answer_is_not_seeded(self) -> None:

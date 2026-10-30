@@ -136,7 +136,7 @@ class TestRecordClarifications(TestCase):
         directive.refresh_from_db()
         assert directive.state == Directive.State.CLARIFYING
         question = DeferredQuestion.objects.get(options_hash__startswith=f"directive_clarify:{directive.pk}:")
-        assert question.evidence["decision"] == "product_scope"
+        assert question.evidence["decision"] == "architecture"
         text = assert_a_plain_card(question, f"#{directive.pk}", "directive_clarify")
         assert f"> {directive.raw_text}" in text
 

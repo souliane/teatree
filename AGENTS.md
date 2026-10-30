@@ -1,6 +1,6 @@
 # TeaTree — Agent Instructions
 
-Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the seven always-on rules every agent follows, ranked by importance.
+Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the eight always-on rules every agent follows, ranked by importance.
 
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 

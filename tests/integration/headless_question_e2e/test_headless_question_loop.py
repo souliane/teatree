@@ -129,7 +129,7 @@ class TestHeadlessQuestionLoop:
         PendingChatInjection.record(
             channel=_CHANNEL,
             slack_ts=_REPLY_TS,
-            text="use postgres-1",
+            text="Answer: use postgres-1",
             context=DmContext(user_id="U_ME"),
         )
         AskUserQuestionReplyScanner(backend=backend, overlay="").scan()

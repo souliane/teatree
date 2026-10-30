@@ -8,7 +8,6 @@ All functions here are implementation details — callers import from
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from django.db import models
 from django.db.models import F, OuterRef, Q, Subquery
 
 from teatree.core.checking_types import CheckItem
@@ -17,7 +16,6 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.models.task_cancel_source import operator_cancel_q
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
@@ -235,12 +233,10 @@ def motion_for_overlay(
     overlay_name: str,
     overlay_tag: str,
     seen_in_flight: set[int],
-    seen_failed: set[int],
-) -> tuple[list, list]:
-    """Query ticket transitions and failed attempts for one overlay."""
+) -> list:
+    """Query ticket transitions for one overlay."""
     since, now = window
     in_flight: list = []
-    failed: list = []
 
     transitions = (
         TicketTransition.objects.filter(created_at__gte=since, created_at__lt=now)
@@ -266,30 +262,4 @@ def motion_for_overlay(
             )
         )
 
-    attempts = failed_attempts(since=since, now=now, overlay_name=overlay_name)
-    for attempt in attempts:
-        tick = attempt.task.ticket
-        if tick.pk in seen_failed:
-            continue
-        seen_failed.add(tick.pk)
-        failed.append(
-            CheckItem(
-                label=f"#{tick.ticket_number}",
-                url=ticket_url(tick),
-                detail=f"failed agent run {overlay_tag}",
-                title=tick.short_description,
-            )
-        )
-
-    return in_flight, failed
-
-
-def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> models.QuerySet[TaskAttempt]:
-    attempts = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .exclude(operator_cancel_q())
-        .select_related("task__ticket")
-        .order_by("-ended_at")
-    )
-    return attempts.filter(task__ticket__overlay=overlay_name) if overlay_name else attempts
+    return in_flight
