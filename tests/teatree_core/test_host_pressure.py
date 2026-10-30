@@ -70,7 +70,6 @@ def _quota() -> QuotaSignal:
 def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 10)
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: None)
     _write_feed(tmp_path, epoch=int(time.time()), swap_mib_per_s=12.5, vm_pressure_level=2)
     machine = read_machine_signal()
     assert machine.cores == 10
@@ -88,24 +87,21 @@ def test_unrepresentable_host_memory_is_rejected_before_governor_conversion(tmp_
 
 
 class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
-    """The core count the feed reports is what the configured per-core factor multiplies."""
+    """Admission uses the worker's usable cores without changing host load scope."""
 
     def setUp(self) -> None:
         self.feed_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.dict(os.environ, {"T3_LOOP_REGISTRY_DIR": str(self.feed_dir)}))
         uncapped = RamHeadroom(available_mib=None, cgroup_limit_mib=None, host_available_mib=None)
         self.enterContext(patch.object(ram_scope, "read_ram_headroom", return_value=uncapped))
+        self.enterContext(patch.object(ram_probe, "available_cpu_count", return_value=10))
         _write_feed(self.feed_dir, epoch=int(time.time()))
 
     def test_an_eight_core_host_without_a_cpu_quota_keeps_four_agent_slots(self) -> None:
         feed = json.loads((self.feed_dir / "host-pressure.json").read_text(encoding="utf-8"))
         feed["cores"] = 8
         (self.feed_dir / "host-pressure.json").write_text(json.dumps(feed), encoding="utf-8")
-        with (
-            patch.object(ram_probe, "cgroup_cpu_quota", return_value=None),
-            patch.object(ram_probe, "available_cpu_count", return_value=8),
-        ):
-            machine = read_machine_signal()
+        machine = read_machine_signal()
         assert machine.cores == 8
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 4
 
@@ -116,10 +112,7 @@ class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
         assert admission_ceiling(UNREAD_QUOTA, machine).value == 1
 
     def test_cpu_affinity_caps_the_host_ceiling_without_changing_load_scope(self) -> None:
-        with (
-            patch.object(ram_probe, "available_cpu_count", return_value=2),
-            patch.object(ram_probe, "cgroup_cpu_quota", return_value=None),
-        ):
+        with patch.object(ram_probe, "available_cpu_count", return_value=2):
             machine = read_machine_signal()
         assert machine.cores == 2
         assert machine.load_cores == 10
@@ -217,6 +210,7 @@ def test_host_load_is_judged_against_host_cores_not_the_container_quota(
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     _write_feed(tmp_path, epoch=int(time.time()), load1=12.0, ram_available_mib=12 * 1024, swap_used_mib=0)
     monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: 3)
+    monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 10)
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()
     decision = decide_admission(quota=_quota(), machine=machine, load_brake=MachineBrake(braked=True))
