@@ -1,7 +1,7 @@
 """Debug access: the loopback ttyd "Debug session" button + allowlisted command buttons (#3162).
 
-Both POST-only, CSRF-protected, and audited. The terminal binds the fixed loopback
-port carried by the dashboard forwarder; commands use a bounded allowlist.
+Both POST-only, CSRF-protected, and audited. The terminal binds the fixed host
+loopback port; commands use a bounded allowlist.
 """
 
 from typing import TYPE_CHECKING
