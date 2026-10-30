@@ -134,6 +134,29 @@ class TestOperatorApproval(TestCase):
         assert "t3 login gitlab" in result.output
         assert tokens == []
 
+    def test_requester_without_an_active_operator_login_cannot_approve(self) -> None:
+        Ticket.objects.update(requested_by="gitlab:unknown")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:unknown")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "no active operator login" in result.output
+        assert tokens == []
+
+    def test_slack_requester_without_a_gitlab_login_cannot_approve(self) -> None:
+        Ticket.objects.update(requested_by="slack:U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        OperatorIdentity.objects.filter(user=self.alice, platform="gitlab").delete()
+        self._grant(self.alice, "alice-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "slack:U-ALICE")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "no GitLab operator login" in result.output
+        assert tokens == []
+
     def test_owner_legacy_approval_works_without_a_recorded_requester(self) -> None:
         Ticket.objects.update(requested_by="")
         OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
@@ -175,6 +198,21 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is not None
         assert OnBehalfAudit.objects.get(approval=approval).approver_id == "slack:U-ALICE"
+
+    def test_slack_requester_approval_accepts_the_grants_other_linked_gitlab_identity(self) -> None:
+        Ticket.objects.update(requested_by="slack:U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="gitlab", handle="alice-alt", external_id="3")
+        self._grant(self.alice, "alice-access")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "slack:U-ALICE")
+
+        result, tokens = self._invoke("approve", username="alice-alt")
+
+        assert result.exit_code == 0, result.output
+        assert tokens
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
 
     def test_slack_requester_unapproval_uses_linked_gitlab_grant(self) -> None:
         Ticket.objects.update(requested_by="slack:U-ALICE")

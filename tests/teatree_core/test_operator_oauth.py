@@ -115,6 +115,7 @@ class OperatorOAuthTestCase(TestCase):
 
         assert response.status_code == 502
         assert b"t3 login github" in response.content
+        assert b"--approvals" not in response.content
         assert not OperatorGrant.objects.exists()
         secret.assert_called_once_with("github/oauth-app")
 
@@ -296,6 +297,23 @@ class OperatorOAuthTestCase(TestCase):
 
         assert response.status_code == 403
         assert b"refresh grant" in response.content
+        assert not OperatorGrant.objects.exists()
+
+    def test_refresh_grant_without_access_expiry_stores_nothing(self) -> None:
+        user = self._invited_github_operator("alice", "123")
+        self.client.force_login(user)
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            post.return_value = httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+                json={"access_token": "access-secret", "refresh_token": "refresh-secret"},
+            )
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 502
         assert not OperatorGrant.objects.exists()
 
     def test_classic_github_identity_token_without_expiry_can_sign_in(self) -> None:

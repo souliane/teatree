@@ -323,7 +323,7 @@ class TestQuestionGetsAnAnswerNotABareReaction:
 
     def test_an_answerable_question_is_answered_in_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            "teatree.loop.slack_answer.delivery.build_simple_answer",
             lambda _row: "3 open MRs, none blocked.",
         )
         _row("beside that everything fixed?", ts="1.0")
@@ -415,7 +415,7 @@ class TestNothingIsMarkedCompleteThatWasNot:
     def test_completion_emoji_requires_a_delivered_answer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An answer the read-back cannot see is not delivered — so nothing is stamped done."""
         monkeypatch.setattr(
-            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            "teatree.loop.slack_answer.delivery.build_simple_answer",
             lambda _row: "3 open MRs, none blocked.",
         )
         row = _row("what are you working on?", ts="1.0")

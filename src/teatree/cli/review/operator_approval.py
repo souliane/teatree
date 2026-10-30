@@ -83,8 +83,8 @@ def _approval_preflight(
     )
     if approval is None:
         return f"No consent from {approver.consent_key} for {action} on {target}", 1
-    actual = service.api.current_username()
-    if f"gitlab:{actual.casefold()}" != approver.forge_key:
+    actual_key = f"gitlab:{service.api.current_username().casefold()}"
+    if actual_key != approver.forge_key and not _same_operator(OperatorApprover(approver.consent_key, actual_key)):
         return f"OAuth grant identity does not match requester {approver.consent_key}", 1
     if action == "approve":
         refusal = _reviewed(service, repo, mr)

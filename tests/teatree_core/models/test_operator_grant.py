@@ -97,3 +97,16 @@ class OperatorGrantTestCase(TestCase):
         grant.expires_at = timezone.now() - timedelta(seconds=1)
         with pytest.raises(PermissionError, match="cannot authorize"):
             grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)
+
+    def test_token_for_approval_requires_the_grant_owners_forge_identity(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        grant = OperatorGrant.objects.store(
+            user=self.alice,
+            forge="gitlab",
+            tokens=OperatorGrantTokens("access-alice", "refresh-alice", self.expires_at, scope="api"),
+            key=self.key,
+        )
+        OnBehalfApproval.record("org/repo!7", "approve", "slack:U-ALICE")
+
+        with pytest.raises(PermissionError, match="does not belong"):
+            grant.token_for("approve", "org/repo!7", "slack:U-ALICE", key=self.key)
