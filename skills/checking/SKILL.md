@@ -59,7 +59,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 - **All-overlays (default):** The detailed view has a `Since <local HH:MM> · all overlays` header. Overlay-scoped detail carries an `[overlay]` tag.
 - **Single-overlay (`--this-overlay`):** The detailed view has a `Since <local HH:MM> · <overlay>` header.
 - `Status by feature` opens the one-screen report: one short block per active lane, at most eight, with merged/live, what is left, and who acts next. Owner waits, red PRs, and undeployed merges precede other lanes; newer tickets break ties. A `lane:<name>` issue label names the lane; the owner-named multi-user, agent communication, coordinator, webhooks, and evals lanes are inferred from issue titles when no label exists; other issues use their title. A completed, live block has no link; a named open problem has a word-labelled link. No two-digit run appears in a visible heading, sentence, or link label.
-- With `checking brief`, the human view contains active status plus linked held pull requests, or one line when no lane is active; `checking show --json` and the default detailed view retain all groups.
+- With `checking brief`, the human view contains active status plus up to two linked held pull requests (the count of further held ones is appended to the last), or one line when no lane is active; `checking show --json` and the default detailed view retain all groups.
 - Groups in fixed order in the detailed view — `Merged`, `In-flight`, `Needs you`, `Triage suggestions`, `Metered`, `Remaining`.
 - Every linked PR / issue / ticket reference in the feature status uses a markdown link `[label](url)` with a label in words.
 
