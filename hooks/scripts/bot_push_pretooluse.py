@@ -1,4 +1,4 @@
-"""Refuse a raw interactive push into a bot namespace before it reaches git."""
+"""Refuse a raw hand-typed push into a bot namespace before it reaches git."""
 
 from typing import Any
 
