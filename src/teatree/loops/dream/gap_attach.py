@@ -35,7 +35,8 @@ from teatree.core.issue_hygiene import (
 )
 from teatree.core.issue_writes.section_removal import DescriptionRemovalConflictError
 from teatree.core.models import ConsolidatedMemory, Rubric, Task, Ticket
-from teatree.core.models.dream_gap_ledger import BATCH_KEY, pending_entries, take_pending, undispositioned_gap_keys
+from teatree.core.models.dream_gap_ledger import BATCH_KEY, pending_entries, take_pending
+from teatree.core.models.dream_gap_offer import host_gap_capacity_refusal
 from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import has_plan_decision
@@ -55,7 +56,6 @@ PLANNING_INTENT = (
     '`t3 dream gap-disposition {pk} <gap_key> --misfit "<why this host cannot address it>"`:\n{gaps}'
 )
 _SECTION_HEADING = "Dream gaps folded in"
-HOST_GAP_CAP = 3
 logger = logging.getLogger(__name__)
 
 
@@ -78,16 +78,6 @@ class _FoldResult:
     end_marker: str = ""
     original_body: str = ""
     section_body: str = ""
-
-
-def _host_capacity_refusal(host: Ticket, entries: list[DreamGapEntry]) -> str:
-    declined = [entry["gap_key"] for entry in entries if host.pk in entry.get("declined_hosts", [])]
-    if declined:
-        return f"host already declined gap(s): {', '.join(declined)}"
-    existing = set(undispositioned_gap_keys(host))
-    if len(existing | {entry["gap_key"] for entry in entries}) > HOST_GAP_CAP:
-        return f"host exceeds {HOST_GAP_CAP} undispositioned gaps"
-    return ""
 
 
 def _pending_manifest_entries(umbrella: Ticket, manifest: list[DreamGapEntry]) -> list[DreamGapEntry]:
@@ -116,7 +106,7 @@ def attach_dream_gaps(
             host_pk=host.pk, attached=[], refusal=f"host {host.issue_url} is {host.state}: no new gaps"
         )
     entries = _pending_manifest_entries(umbrella, manifest)
-    if refusal := _host_capacity_refusal(host, entries):
+    if refusal := host_gap_capacity_refusal(host, entries):
         return AttachOutcome(host_pk=host.pk, attached=[], refusal=refusal)
 
     fold = _fold_into_host_issue(host, entries, code_host=code_host, sweep_run_id=sweep_run_id)

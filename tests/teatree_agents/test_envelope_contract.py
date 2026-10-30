@@ -33,7 +33,7 @@ _VERIFICATION_PHASE = "reviewing"
 
 def _contract_example(text: str) -> dict[str, object]:
     """The JSON example embedded in the contract block of *text*."""
-    marker = "Minimal valid envelope for this phase — copy this shape exactly:"
+    marker = "Minimal valid envelope for this phase"
     block = text.split(CONTRACT_HEADING, 1)[1].split(marker, 1)[1]
     start = block.index("{")
     decoded, _ = json.JSONDecoder().raw_decode(block, start)
@@ -137,6 +137,15 @@ class TestEnvelopeContractText(SimpleTestCase):
     def test_example_uses_only_schema_declared_keys(self) -> None:
         for phase in ("coding", "reviewing", "shipping"):
             assert set(envelope_example(phase)) <= set(allowed_keys()), phase
+
+    def test_sweep_example_requires_the_window_urls(self) -> None:
+        text = "\n".join(envelope_contract_lines("backlog_sweep", read_only_venue=True))
+        example = _contract_example(text)
+        proposals = example["sweep_proposals"]
+
+        assert isinstance(proposals, dict)
+        assert proposals["examined"] == ["<every issue URL in ISSUE WINDOW>"]
+        assert "replace the placeholder" in text
 
 
 class TestReviewVerdictMustDiscloseTheHeadItBoundTo(SimpleTestCase):

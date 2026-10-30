@@ -9,6 +9,7 @@ from teatree.agents.context_budget import enforce_budget
 from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_injection import (
     _is_primary,
+    _read_only_skill_text,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_subagent_skill_preamble,
@@ -52,6 +53,20 @@ def test_read_only_venue_embeds_the_rules_document_when_it_cannot_mount_files(
     assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
 
 
+def test_read_only_venue_puts_rules_before_other_embedded_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "review", "# Review")
+    _write_skill(tmp_path, "rules", "# Rules")
+    (tmp_path / "rules" / "RULES.md").write_text("# Always-On Rules", encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["review", "rules"], {"review", "rules"})
+
+    assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
+    assert rendered.index("--- SKILL: rules ---") < rendered.index("--- SKILL: review ---")
+
+
 def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -93,6 +108,15 @@ def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monke
     assert not any(heading in rendered for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
     assert "### Giving Code Review" in rendered
     assert len(raw) - len(rendered) > 8_000
+
+
+def test_configured_sweep_skill_drops_command_only_sections() -> None:
+    body = "# Custom sweep\n\n## Command Reference\nRun a command.\n\n## Decision Rules\nReturn proposals.\n"
+
+    rendered = _read_only_skill_text("custom-sweep", body, sweep_skill_name="custom-sweep")
+
+    assert "Run a command" not in rendered
+    assert "Return proposals" in rendered
 
 
 def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:

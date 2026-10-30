@@ -98,6 +98,10 @@ On a wrong checkout, return `review_head_mismatch` (`observed_sha`, `reason`) wi
 cd <worktree> && t3 <overlay> run tests -- <test-files-or-node-ids>   # `--path` also works
 ```
 
+If that command refuses a detached review checkout with `TicketWorkspaceDivergenceError`,
+run `uv sync` there, then `uv run pytest <test-files-or-node-ids>` there. Keep the
+checkout detached and report the fallback with its test result.
+
 For teatree core, inspect `t3 tool affected-tests`. Run `bash dev/test-affected.sh` on SCOPED; on FULL, run changed test files or pinned node ids locally and read CI at the reviewed head. Pytest refuses oversized package directories.
 
 The local lane uses `-n auto --reuse-db` without coverage; CI's 12 `pytest-split` shards add doctests and enforce the combined 93% coverage floor. Report selected tests. In a checkout at the reviewed head, run `t3 tool verify-gates --expect-sha <head>` and quote its measured SHA. Read head-bound CI via `gh api repos/<o>/<r>/commits/<sha>/check-runs`. <!-- mcp-ratchet: allow — the per-SHA check-runs read has no MCP tool; `gh pr checks` reads only the current head -->

@@ -71,6 +71,20 @@ def test_lifecycle_for_phase(phase, expected):
     assert SkillLoadingPolicy.lifecycle_for_phase(phase) == expected
 
 
+def test_runtime_sweep_uses_configured_skill_instead_of_declared_default(tmp_path: Path) -> None:
+    selected = SkillLoadingPolicy().select_for_runtime_phase(
+        cwd=tmp_path,
+        phase="backlog_sweep",
+        overlay_skill_metadata={},
+        agent_declared_skills=["sweeping-tickets"],
+        lifecycle_skill_override="custom-sweep",
+    )
+
+    assert selected.lifecycle_skill == "custom-sweep"
+    assert "custom-sweep" in selected.skills
+    assert "sweeping-tickets" not in selected.skills
+
+
 # ── SkillLoadingPolicy.select_for_agent_launch ──────────────────────
 
 
