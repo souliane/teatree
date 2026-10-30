@@ -301,3 +301,122 @@ def test_ambient_gitlab_token_refuses_unreadable_bot_config(monkeypatch: pytest.
     monkeypatch.setattr(bot_push_gate, "_bot_logins", lambda host: None)
 
     assert bot_push_gate.main(["--verify-ambient"]) == 1
+
+
+_BOT_REMOTE = "https://github.com/build-bot/engine.git"
+_NOREPLY = "@users.noreply.github.com"
+_NOT_THE_BOT = f"person{_NOREPLY}"
+
+
+def _arm_bot_gate(monkeypatch: pytest.MonkeyPatch, *, base: str = "", login: str = "build-bot") -> None:
+    monkeypatch.setattr(
+        bot_push_gate.cold_reader,
+        "read_setting_confirmed",
+        lambda key: SettingRead({"github.com": ["build-bot"]}, readable=True),
+    )
+    monkeypatch.setattr(bot_push_gate, "_credential_login", lambda forge, host, url, token, **kwargs: login)
+    monkeypatch.setattr(
+        bot_push_gate,
+        "remote_holdings",
+        lambda repo, remote_url, remote_name, reported_shas, env_override: RemoteHoldings(tips=(base,), listed=True),
+    )
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"GIT_AUTHOR_NAME": "person"},
+        {"GIT_COMMITTER_NAME": "person"},
+        {"GIT_AUTHOR_EMAIL": _NOT_THE_BOT},
+        {"GIT_COMMITTER_EMAIL": _NOT_THE_BOT},
+    ],
+    ids=["author-name", "committer-name", "author-email", "committer-email"],
+)
+def test_a_pushed_commit_needs_the_bot_in_every_identity_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity: dict[str, str]
+) -> None:
+    base, _ = _push_repo(tmp_path, author="build-bot")
+    for name, value in identity.items():
+        monkeypatch.setenv(name, value)
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "mixed identity")
+    _arm_bot_gate(monkeypatch, base=base)
+
+    error = bot_push_gate.bot_push_error(
+        repo=tmp_path,
+        remote_name="origin",
+        remote_url=_BOT_REMOTE,
+        refs=([(_git(tmp_path, "rev-parse", "HEAD"), "")], True),
+    )
+
+    assert "non-bot commit" in error
+
+
+@pytest.mark.parametrize(
+    "remote", ["http://github.com/build-bot/engine.git", "https://evil.example/build-bot/engine.git"]
+)
+def test_credential_probe_refuses_a_remote_that_is_not_https_on_the_declared_host(
+    monkeypatch: pytest.MonkeyPatch, remote: str
+) -> None:
+    answers_as_the_bot = SimpleNamespace(returncode=0, stdout='{"login": "build-bot"}')
+    monkeypatch.setattr(bot_push_gate, "run_allowed_to_fail", lambda argv, **kwargs: answers_as_the_bot)
+
+    assert bot_push_gate._credential_login("github", "github.com", remote, "bot-key") == ""
+
+
+def test_unreadable_bot_identity_configuration_refuses_the_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, head = _push_repo(tmp_path, author="person")
+    monkeypatch.setattr(
+        bot_push_gate.cold_reader, "read_setting_confirmed", lambda key: SettingRead(None, readable=False)
+    )
+
+    error = bot_push_gate.bot_push_error(
+        repo=tmp_path, remote_name="origin", remote_url=_BOT_REMOTE, refs=([(head, "")], True)
+    )
+
+    assert "could not be read" in error
+
+
+def test_a_push_whose_new_commits_cannot_be_listed_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base, _ = _push_repo(tmp_path, author="build-bot")
+    _arm_bot_gate(monkeypatch, base=base)
+
+    error = bot_push_gate.bot_push_error(
+        repo=tmp_path, remote_name="origin", remote_url=_BOT_REMOTE, refs=([("1" * 40, "")], True)
+    )
+
+    assert "could not be read" in error
+
+
+def test_deleting_a_remote_branch_carries_no_commits_to_vet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base, _ = _push_repo(tmp_path, author="build-bot")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f"(delete) {'0' * 40} refs/heads/old {base}\n"))
+    _arm_bot_gate(monkeypatch, base=base)
+
+    assert bot_push_gate.main(["origin", _BOT_REMOTE]) == 0
+
+
+def test_proposed_commit_refuses_a_non_bot_committer_under_a_bot_author(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _push_repo(tmp_path, author="build-bot")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "person")
+    _arm_bot_gate(monkeypatch)
+
+    assert "bot author and committer" in bot_push_gate.bot_proposed_commit_error(tmp_path, _BOT_REMOTE)
+
+
+def test_proposed_commit_refuses_when_git_cannot_name_the_committer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.useConfigOnly", "true")
+    for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    _arm_bot_gate(monkeypatch)
+
+    assert "bot author and committer" in bot_push_gate.bot_proposed_commit_error(tmp_path, _BOT_REMOTE)
