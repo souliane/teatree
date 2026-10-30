@@ -41,7 +41,7 @@ def test_coordinating_skill_pins_the_factory_watch_duty() -> None:
     ]
     positions = [section.index(read) for read in reads]
     assert positions == sorted(positions)
-    assert "BLOCKING preempts the PR board and the todo drain" in section
+    assert "BLOCKING preempts the PR board and the pending-work drain" in section
     for flag in ("--no-reconcile", "--fail-on"):
         assert section.count(flag) == 1
         assert "#5069" in section[section.index(flag) :].split("\n", 1)[0]
