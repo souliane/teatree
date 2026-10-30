@@ -12165,8 +12165,12 @@ Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ show  Print grouped merged/in-flight/needs-you changes since the last check  │
-│       (read-only).                                                           │
+│ show   Print grouped merged/in-flight/needs-you changes since the last check │
+│        (read-only).                                                          │
+│ brief  Print the one-screen status by feature plus held pull requests        │
+│        (read-only).                                                          │
+│ shoot  Post or nudge waiting owner questions on Slack and print their thread │
+│        links.                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12189,6 +12193,34 @@ Usage: t3 teatree checking show [OPTIONS]
 │ --notify                    Also DM the recap to you as a Slack table        │
 │                             (native Block Kit + monospace fence fallback).   │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree checking brief`
+
+```
+Usage: t3 teatree checking brief [OPTIONS]
+
+ Print the one-screen status while keeping full groups in the returned payload.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since               TEXT  ISO timestamp override for the window start.     │
+│ --no-advance                Do not advance the checkpoint.                   │
+│ --this-overlay              Use the current overlay only.                    │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree checking shoot`
+
+```
+Usage: t3 teatree checking shoot [OPTIONS]
+
+ Post or nudge waiting owner questions through the existing Slack drains.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the Slack question links as JSON.                       │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -2,6 +2,8 @@
 
 import re
 import subprocess
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +25,35 @@ from teatree.utils.git_run import run_strict, run_with_status
 from teatree.utils.run import CompletedProcess, run_bounded_group
 from tests._owner_channel import owner_card
 from tests.factories import MergeAuditFactory, PullRequestFactory, TaskFactory, TicketFactory
+
+
+@contextmanager
+def _two_commit_checkout() -> Generator[tuple[str, str]]:
+    with TemporaryDirectory() as directory:
+        repo = str(Path(directory))
+        run_strict(repo=repo, args=["init", "--quiet"])
+        run_strict(repo=repo, args=["remote", "add", "origin", "https://github.com/souliane/teatree.git"])
+        for message in ("first", "second"):
+            run_strict(
+                repo=repo,
+                args=[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ],
+            )
+        parent = run_strict(repo=repo, args=["rev-parse", "HEAD~1"])
+        head = run_strict(repo=repo, args=["rev-parse", "HEAD"])
+        with patch("teatree.core.checking_report.status.teatree_source_root", return_value=Path(repo)):
+            yield parent, head
 
 
 class CheckInFeatureStatusTestCase(TestCase):
@@ -140,17 +171,16 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.deploy_state == "unknown"
 
     def test_failed_batch_object_read_degrades_deployment_to_unknown(self) -> None:
-        repo = str(teatree_source_root())
-        serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD~1"])
-        merged_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
-        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
-        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/414")
-        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
-
-        with patch(
-            "teatree.core.checking_report.status.run_bounded_group",
-            return_value=CompletedProcess(["git", "cat-file"], 1, "", "read failed"),
+        with (
+            _two_commit_checkout() as (serving_sha, merged_sha),
+            patch(
+                "teatree.core.checking_report.status.run_bounded_group",
+                return_value=CompletedProcess(["git", "cat-file"], 1, "", "read failed"),
+            ),
         ):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/414")
+            MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
             status = self._report().status_by_feature
 
         assert status.deploy_state == "unknown"
@@ -366,20 +396,17 @@ class CheckInFeatureStatusTestCase(TestCase):
         assert status.features[0].title == "delayed rollout"
 
     def test_deployment_ancestry_uses_one_git_read_for_backlog(self) -> None:
-        repo = str(teatree_source_root())
-        serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD~1"])
-        merged_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
-        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
-        for _number in range(10):
-            ticket = TicketFactory(state=Ticket.State.DELIVERED)
-            audit = MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
-            audit.merged_at = timezone.now() - timedelta(days=2)
-            audit.save(update_fields=["merged_at"])
-
         with (
+            _two_commit_checkout() as (serving_sha, merged_sha),
             patch("teatree.core.checking_report.status.run_with_status", wraps=run_with_status) as git,
             patch("teatree.core.checking_report.status.run_bounded_group", wraps=run_bounded_group) as batch,
         ):
+            WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+            for _number in range(10):
+                ticket = TicketFactory(state=Ticket.State.DELIVERED)
+                audit = MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
+                audit.merged_at = timezone.now() - timedelta(days=2)
+                audit.save(update_fields=["merged_at"])
             status = self._report().status_by_feature
 
         assert git.call_count == 1
