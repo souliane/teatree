@@ -129,9 +129,9 @@ Each per-loop tick claims that loop's `loop:<name>` lease; a non-owner session S
 ### Enabling / disabling a loop
 
 ```bash
-t3 loop resume <name>     # lift a pause or disable hold and reconcile its timer
-t3 loop disable <name>    # hold a loop in DISABLED state
-t3 loop pause <name>      # reversible hold (LoopState only) — does NOT flip the durable Loop.enabled row
+t3 loop resume <name> --emergency   # lift a pause or disable hold and reconcile its timer
+t3 loop disable <name> --emergency  # hold a loop in DISABLED state
+t3 loop pause <name> --emergency    # reversible hold (LoopState only) — does NOT flip the durable Loop.enabled row
 t3 loop loop-state <name> # read the durable LoopState status (ENABLED when never touched)
 ```
 

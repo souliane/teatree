@@ -124,7 +124,7 @@ _LOOP_GUIDANCE = (
     "The singleton `t3 worker` owns the per-loop tick cadence, draining the durable "
     "self-rescheduling loop-timer chains — so the DB loops run with no Claude session open. Check it with "
     "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
-    "resume or disable an individual loop with `t3 loop resume|disable <name>` (the reconciler "
+    "resume or disable an individual loop with `t3 loop resume|disable <name> --emergency` (the reconciler "
     "adds/prunes its timer at once). The worker drives the reactive infra loops "
     "(self-improve, slack-answer, drain-queue) too; with no worker alive, start one with `t3 worker ensure`."
 )
