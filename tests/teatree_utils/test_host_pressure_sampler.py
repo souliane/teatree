@@ -84,3 +84,52 @@ def test_feed_fault_names_missing_malformed_stale_and_future(
     if contents is not None:
         target.write_text(contents)
     assert fault in feed_fault(path=target, now=now)
+
+
+def test_unreadable_proc_leaves_the_existing_feed_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    target = tmp_path / "host-pressure.json"
+    stale = json.dumps({"epoch": 1_000, "cores": 8, "load1": 1.0, "ram_available_mib": 1000})
+    target.write_text(stale)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    HostSampler(proc_root=proc, path=target).publish_if_due(now=1_100)
+    assert target.read_text() == stale
+
+
+@pytest.mark.parametrize("loadavg", ["nan 0 0 1/1 1\n", "-1.0 0 0 1/1 1\n", "inf 0 0 1/1 1\n"])
+def test_unrepresentable_load_is_not_sampled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, loadavg: str) -> None:
+    proc = tmp_path / "proc"
+    _proc(proc)
+    (proc / "loadavg").write_text(loadavg)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    assert HostSampler(proc_root=proc).sample(now=1_000) is None
+
+
+def test_failed_write_does_not_raise_and_leaves_no_temporary_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    proc = tmp_path / "proc"
+    _proc(proc)
+    data = tmp_path / "data"
+    target = data / "host-pressure.json"
+    target.mkdir(parents=True)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    HostSampler(proc_root=proc, path=target).publish_if_due(now=1_000)
+    assert target.is_dir()
+    assert [entry.name for entry in data.iterdir()] == ["host-pressure.json"]
+
+
+def test_missing_swap_counters_still_publish_without_a_swap_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    proc = tmp_path / "proc"
+    _proc(proc)
+    (proc / "vmstat").unlink()
+    target = tmp_path / "host-pressure.json"
+    sampler = HostSampler(proc_root=proc, path=target)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    sampler.publish_if_due(now=1_000)
+    reading = json.loads(target.read_text())
+    assert reading["ram_available_mib"] == 12_000_000 // 1024
+    assert "swap_mib_per_s" not in reading
