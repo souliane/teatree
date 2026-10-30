@@ -214,7 +214,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         "teatree ticket partial-merge-report",
         json_output=True,
         exit_codes=("0",),
-        note="--json emits merged tickets with an open issue and a declared remainder, plus unreadable rows; read-only",
+        note="--json emits settled tickets with an open issue, PR link wording and unreadable rows; read-only",
+    ),
+    Capability(
+        "teatree ticket unsettle",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="Reopen a settled author ticket with an open remainder; --dry-run checks without writing; "
+        "refuses closed issues and closing-keyword PRs",
     ),
     Capability(
         "teatree ticket settle-holds",

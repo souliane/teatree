@@ -525,6 +525,8 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
   2. **The durable review-loop executes it**: the `mcp__teatree__pr_merge` MCP tool, or `t3 <overlay> ticket merge <clear_id>` when the MCP server isn't connected — issuing the CLEAR in step 1 stays CLI-only. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
 
+- Historical settled tickets with an open issue are listed by `ticket partial-merge-report`; `ticket unsettle --dry-run` checks one candidate before the FSM reopens it and queues the remaining work.
+
   **Keystone merge recipe (the canonical HOW).** The two `t3` steps, copy-pasteable — do X, never the raw `gh pr merge` / `glab mr merge` (mechanically refused, #863):
 
   ```bash

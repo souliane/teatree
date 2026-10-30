@@ -69,31 +69,6 @@ def _context(repo: str, *, own_mr: bool) -> "OnBehalfContext":
     return OnBehalfContext(overlay=target_overlay(repo) if repo else None, own_mr=own_mr, target=repo.strip())
 
 
-def on_behalf_gate_active() -> bool:
-    """Whether the on-behalf pre-gate forbids unattended ``approve``/``unapprove``.
-
-    An MR approval/unapproval is an outward, state-changing post made under
-    the user's identity, so it must respect the posture pre-gate. Approve is not
-    a draft-form action: it is gated (returns ``True`` from this helper) under a
-    forbidding posture, and only permitted (returns ``False``) under a permitting one.
-
-    Target-less by construction: it answers "is the gate armed at all" for a
-    caller that holds no repo yet. A caller that DOES hold one asks
-    :func:`check_on_behalf`, which carries the target overlay's allowlist too.
-
-    The import stays lazy so ``teatree.cli`` is importable before
-    ``django.setup()``, but it is never guarded: an unresolvable gate must surface,
-    never resolve to "gate off" — a safety gate has no fail-OPEN degradation.
-    """
-    from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict  # noqa: PLC0415 — lazy CLI import
-    from teatree.on_behalf_gate import OnBehalfVerdict  # noqa: PLC0415 — lazy CLI import
-
-    # "approve" is a non-draft action: PROCEED under a permitting posture, BLOCK
-    # under a forbidding one (AUTO_DRAFT never fires for "approve"), so the
-    # proactive will-block pre-check is exactly this gate's active predicate.
-    return resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
-
-
 def gate_target(repo: str, mr: int) -> str:
     """Stable ``(repo, mr)`` identifier the recorded approval scopes to.
 

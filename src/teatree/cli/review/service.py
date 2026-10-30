@@ -48,7 +48,6 @@ from teatree.cli.review.forge_target import read_token, resolve_base_url
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
-    on_behalf_gate_active,
     publish_or_blocked,
     publish_or_blocked_issue,
 )
@@ -72,7 +71,6 @@ if TYPE_CHECKING:
 # pattern keeps working after the impl bodies moved to
 # :mod:`teatree.cli.review.post_impl` (#1280).
 _find_added_line = find_added_line
-_on_behalf_gate_active = on_behalf_gate_active
 _resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
