@@ -12910,6 +12910,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              for this ticket.                                │
 │ rework-hold                  Re-queue the findings of a self-review HOLD a   │
 │                              ticket was parked past.                         │
+│ critic-record                Record a merge critic envelope for the ticket's │
+│                              dispatched head.                                │
+│ return-gaps                  Return guarded legacy gap members to the dream  │
+│                              umbrella.                                       │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
@@ -13272,6 +13276,40 @@ Usage: t3 teatree ticket rework-hold [OPTIONS] TICKET_ID
 │ --dry-run          Report the rework without writing it.                     │
 │ --json             Emit the outcome as JSON.                                 │
 │ --help             Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket critic-record`
+
+```
+Usage: t3 teatree ticket critic-record [OPTIONS] TICKET_ID HEAD_SHA
+                                        ENVELOPE_FILE
+
+ Record a merge critic envelope for the ticket's dispatched head.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id          INTEGER  [required]                                  │
+│ *    head_sha           TEXT     [required]                                  │
+│ *    envelope_file      PATH     [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the receipt as JSON.                                    │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket return-gaps`
+
+```
+Usage: t3 teatree ticket return-gaps [OPTIONS]
+
+ Return guarded legacy gap members to the dream umbrella.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ids             TEXT  Comma-separated legacy member ticket ids.            │
+│ --confirm         TEXT  Per-id confirmation above the bulk threshold.        │
+│ --advanced        TEXT  Per-id permission for progressed tickets.            │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
