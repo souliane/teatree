@@ -26,9 +26,10 @@ cadence all resolve to "not stale" so a freshness probe can never blank
 or corrupt the statusline.
 """
 
-import json
 import time
 from pathlib import Path
+
+from teatree.loop.admit_budget import load_meta, meta_path
 
 #: A render older than ``max(STALE_CADENCE_MULTIPLIER * cadence, FLOOR_SECONDS)``
 #: is treated as frozen. The 2x multiplier mirrors the established dead-loop
@@ -75,26 +76,9 @@ def staleness_banner(age_seconds: int, *, colorize: bool = True) -> str:
     return text
 
 
-def _meta_path(statusline_path: Path) -> Path:
-    return statusline_path.with_name("tick-meta.json")
-
-
-def _rendered_at(meta_path: Path) -> float | None:
-    """Read ``rendered_at`` from the sidecar; ``None`` when unavailable.
-
-    Fails open (``None`` → "not stale") on a missing/unreadable file, a
-    non-object body, an absent or non-numeric ``rendered_at``.
-    """
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    value = data.get("rendered_at")
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
+def _rendered_at(statusline_path: Path) -> float | None:
+    value = load_meta(meta_path(statusline_path)).get("rendered_at")
+    return float(value) if isinstance(value, int | float) else None
 
 
 def render_age_seconds(statusline_path: Path, *, now: float | None = None) -> float | None:
@@ -107,7 +91,7 @@ def render_age_seconds(statusline_path: Path, *, now: float | None = None) -> fl
     it stale. Fails open to ``None`` (age unknown) on a missing/unreadable sidecar
     or an absent ``rendered_at``, exactly like :func:`staleness_banner_for`.
     """
-    rendered_at = _rendered_at(_meta_path(statusline_path))
+    rendered_at = _rendered_at(statusline_path)
     if rendered_at is None:
         return None
     return (time.time() if now is None else now) - rendered_at

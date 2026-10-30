@@ -107,7 +107,9 @@ def _stored_rows() -> tuple[list["ConfigSetting"], type["ConfigSettingChange"]]:
     return list(ConfigSetting.objects.all().order_by("key", "scope")), ConfigSettingChange
 
 
-def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSettingChange | None") -> str:
+def _finding_line(
+    drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSettingChange | None", *, audit_readable: bool
+) -> str:
     """One advisory line — key, scope, stored value, shipped value, both mask-safe.
 
     A drifted SECRET still has to surface: a stale secret row is exactly as misleading as any
@@ -124,7 +126,10 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
     )
     hours = max(0, int((timezone.now() - row.updated_at).total_seconds() // 3600))
     writer = (change.written_by if change else None) or row.written_by or row.seeded_by or "unknown writer"
-    previous = masked_display(drift.key, change.old_value) if change else "unknown (written before audit)"
+    if change:
+        previous = masked_display(drift.key, change.old_value)
+    else:
+        previous = "unknown (written before audit)" if audit_readable else "unknown (audit unreadable)"
     ignored = unhonourable_overlay_scope_reason(drift.key, drift.scope)
     bounds = SETTING_BOUNDS.get(drift.key)
     below_floor = (
@@ -164,13 +169,19 @@ def _section(
     header: str,
     findings: tuple[DriftedSetting, ...],
     coordinates: Mapping[tuple[str, str], "ConfigSetting"],
-    latest: Mapping[tuple[str, str], "ConfigSettingChange"],
+    latest: Mapping[tuple[str, str], "ConfigSettingChange"] | None,
 ) -> list[str]:
     if not findings:
         return []
+    audit = latest or {}
     return [
         header.format(count=len(findings)),
-        *(_finding_line(f, coordinates[f.key, f.scope], latest.get((f.key, f.scope))) for f in findings),
+        *(
+            _finding_line(
+                f, coordinates[f.key, f.scope], audit.get((f.key, f.scope)), audit_readable=latest is not None
+            )
+            for f in findings
+        ),
     ]
 
 
@@ -191,13 +202,14 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
         if not (drifted or unreadable):
             return
         coordinates = {(row.key, row.scope): row for row in rows}
-        latest: dict[tuple[str, str], ConfigSettingChange] = {}
+        latest: dict[tuple[str, str], ConfigSettingChange] | None = {}
         try:
             for change in change_model.objects.filter(
                 key__in={finding.key for finding in (*drifted, *unreadable)}
             ).order_by("-changed_at", "-pk"):
                 latest.setdefault((change.key, change.scope), change)
         except DatabaseError as exc:
+            latest = None
             typer.echo(f"WARN  Config audit unavailable: {exc.__class__.__name__}: {exc}")
         report = [
             *_section(_DRIFT_HEADER, drifted, coordinates, latest),
