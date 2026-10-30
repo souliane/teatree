@@ -27,6 +27,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, Ticket, Worktree
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.notify_types import DELIVERED, NotifyKind, NotifyOutcome, NotifyReason, blocked
+from teatree.core.retention.run_scratch_sweep import RunScratchSweepResult, sweep_run_scratch
 from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import dispatch
@@ -433,9 +434,20 @@ class UnattendedHousekeepingTests(_SweepFixture):
         old = time.time() - 4 * 60 * 60
         os.utime(payload, (old, old))
         os.utime(candidate, (old, old))
+        proc = self.workspace / "proc"
+        pid = proc / "123"
+        pid.mkdir(parents=True)
+        (pid / "cwd").symlink_to(self.workspace)
+        (pid / "cmdline").write_bytes(b"sleep\x001\x00")
+        (pid / "environ").write_bytes(b"")
+
+        def pinned_proc(scan_root: Path, *, deadline: float) -> RunScratchSweepResult:
+            return sweep_run_scratch(scan_root, proc_root=proc, deadline=deadline)
+
         generic = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
         with (
             patch.dict(os.environ, {"TEATREE_ROLE": "worker", "TEATREE_DISPOSABLE_CHECKOUT_ROOTS": str(root)}),
+            patch(f"{_SWEEP}.sweep_run_scratch", side_effect=pinned_proc),
             patch(f"{_SWEEP}.sweep_scratch", return_value=generic),
         ):
             plan = self._sweep()
