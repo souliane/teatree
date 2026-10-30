@@ -105,7 +105,7 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 
 **Forge relay identity.** GitLab relay rows retain the event kind, `relay` origin, project-id repository key, action and Pub/Sub publish time after the body and payload are cleared. A `body-omitted` message can retain only its header-derived event kind and publish time. Successfully drained forge rows also clear prior error text; pending and dead-lettered rows keep their diagnostic content.
 
-**`daily_at` is a CADENCE, not a driver.** A loop's `daily_at` decides only when `Loop.is_due` says yes; the live fan-out still selects it, so a once-a-day loop is on the live tick exactly like a 5-minute one. What takes a loop OFF the live tick is the code-declared `MiniLoop.off_live_tick`, carried by `dream`, `outer_loop` and `directive_loop` and by nothing else. Conflating the two produced a shipped `arch_review` description claiming it ran off the live tick when it does not; `tests/config/test_shipped_default_seed_parity.py` now pins every such claim to the code declaration.
+**`daily_at` is a CADENCE, not a driver.** A loop's `daily_at` decides only when `Loop.is_due` says yes; the live fan-out still selects it, so a once-a-day loop is on the live tick exactly like a 5-minute one. What takes a loop OFF the live tick is the code-declared `MiniLoop.off_live_tick`, carried by `dream`, `outer_loop` and `directive_loop` and by nothing else. Conflating the two produced a shipped `arch_review` description claiming it ran off the live tick when it does not; `tests/teatree_config/test_shipped_default_seed_parity.py` now pins every such claim to the code declaration.
 
 **Agent dispatch via DB (not stdout, not files).**
 
