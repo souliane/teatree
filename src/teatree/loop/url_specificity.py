@@ -80,13 +80,6 @@ def best_url_match_specificity(url: str, prefixes: tuple[str, ...]) -> int:
     return best
 
 
-__all__ = [
-    "best_url_match_specificity",
-    "url_match_specificity",
-    "url_matches_prefix",
-]
-
-
 def url_claimed(url: str, allowed: tuple[str, ...], competing: tuple[str, ...]) -> bool:
     """Whether *url* belongs to the overlay holding the *allowed* prefixes (#1015, #1324).
 
@@ -99,3 +92,11 @@ def url_claimed(url: str, allowed: tuple[str, ...], competing: tuple[str, ...]) 
         return True
     own = best_url_match_specificity(url, allowed) if url else 0
     return own > 0 and best_url_match_specificity(url, competing) <= own
+
+
+__all__ = [
+    "best_url_match_specificity",
+    "url_claimed",
+    "url_match_specificity",
+    "url_matches_prefix",
+]

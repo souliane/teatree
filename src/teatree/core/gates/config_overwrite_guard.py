@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.gates.git_invocation import GLOBAL_OPTS_WITH_VALUE
+
 # A predicate the hook supplies: path -> "was it read this session?".
 ReadPredicate = Callable[[str], bool]
 
@@ -69,13 +71,6 @@ _CONFIG_SUFFIXES: frozenset[str] = frozenset(
 # rather than a named config, so a path-operand scan cannot precisely target
 # it — the Write/checkout/restore surfaces cover the named-config case cleanly.
 _GIT_RESTORE_VERBS: tuple[str, ...] = ("checkout", "restore")
-
-# git's leading global options that consume the NEXT token as their value, so the
-# subcommand scan skips two tokens for them. Without this, ``git -C <dir> checkout``
-# reads ``-C`` as the subcommand and the restore goes unseen.
-_GLOBAL_OPTS_WITH_VALUE: frozenset[str] = frozenset(
-    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
-)
 
 _GIT_RE = re.compile(r"\bgit\b")
 
@@ -171,7 +166,7 @@ def _restore_operands(tokens: list[str]) -> list[str]:
                     return tokens[cursor + 1 :]
                 break
             base = candidate.split("=", 1)[0]
-            cursor += 2 if base in _GLOBAL_OPTS_WITH_VALUE and "=" not in candidate else 1
+            cursor += 2 if base in GLOBAL_OPTS_WITH_VALUE and "=" not in candidate else 1
     return []
 
 

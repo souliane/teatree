@@ -216,6 +216,25 @@ class TestTickMetaFreshnessParity:
         assert bool(staleness_banner_for(target, cadence_seconds=720)) is stale
         assert ("statusline STALE" in _strip_ansi(result.stdout)) is stale
 
+    @pytest.mark.parametrize(("real_age_seconds", "decoy_age_seconds"), [(6 * 3600, 30), (30, 6 * 3600)])
+    def test_a_stem_named_sidecar_beside_the_target_is_ignored(
+        self, sandbox: Path, real_age_seconds: int, decoy_age_seconds: int
+    ) -> None:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] anchor chip"]), target=target, colorize=False)
+        now = int(time.time())
+        meta_path(target).write_text(json.dumps({"cadence": 720, "rendered_at": now - real_age_seconds}))
+        decoy = target.with_name(f"{target.stem}-meta.json")
+        decoy.write_text(json.dumps({"cadence": 720, "rendered_at": now - decoy_age_seconds}))
+        stale = real_age_seconds > decoy_age_seconds
+
+        result = _run_shell(sandbox, statusline_file=target)
+
+        assert result.returncode == 0, result.stderr
+        assert bool(staleness_banner_for(target, cadence_seconds=720)) is stale
+        assert ("statusline STALE" in _strip_ansi(result.stdout)) is stale
+
 
 class TestLoopLineClassificationParity:
     """The shell's "is line 1 the loop line?" test matches what the renderer emits."""
