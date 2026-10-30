@@ -68,6 +68,17 @@ class TestFirstContactBinding(TestCase):
         assert len(self.backend.replies) == 1
         assert self.backend.replies[0][2] == "overlay=acme\nticket=#1"
 
+    def test_a_second_noted_message_in_a_bound_thread_opens_no_second_conversation(self) -> None:
+        _say("thanks!", ts="1.0")
+        _cycle(self.backend)
+        first = self._conversation()
+        _say("thx", ts="2.0", thread_ts="1.0")
+
+        _cycle(self.backend)
+
+        assert (Ticket.objects.count(), ThreadBinding.objects.count()) == (1, 1)
+        assert self._conversation().pk == first.pk
+
     def test_a_bound_status_question_delegates_when_the_simple_answer_bails(self) -> None:
         _say("thanks!", ts="1.0")
         _cycle(self.backend)

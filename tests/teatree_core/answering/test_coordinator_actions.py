@@ -254,6 +254,68 @@ class TestTheCoordinatorsActionsRunFromTheClosedTable(TestCase):
         assert self._bound_to() == self.conversation_id
         assert self._audit() == {}
 
+    def test_bind_thread_refuses_a_tracked_ticket_whose_remote_is_gone(self) -> None:
+        Ticket.objects.filter(pk=self.work.pk).update(remote_missing=True)
+
+        self._record(_bind(ticket=_WORK_URL))
+
+        assert self._bound_to() == self.conversation_id
+        assert [row["detail"] for row in self._audit().values()] == ["no open tracked ticket matches it"]
+
+    def test_an_actions_value_that_is_not_a_list_runs_and_states_nothing(self) -> None:
+        self._record({"answer": {"text": "Done."}, "actions": {"kind": "bind_thread", "ticket": _WORK_URL}})
+
+        assert self._bound_to() == self.conversation_id
+        assert self._audit() == {}
+        assert "Could not" not in self.backend.replies[0][2]
+
+    def test_an_entry_that_is_not_an_object_is_refused_and_the_next_one_still_runs(self) -> None:
+        self._record(
+            {"answer": {"text": "Done."}, "actions": ["bind_thread", {"kind": "bind_thread", "ticket": _WORK_URL}]}
+        )
+
+        assert self._bound_to() == self.work.pk
+        assert "Could not run action: an action must be an object." in self.backend.replies[0][2]
+
+    def test_an_unexpected_failure_stops_the_entries_after_it(self) -> None:
+        requests = [
+            {"kind": "queue_task", "ticket": self.task.ticket.issue_url},
+            {"kind": "bind_thread", "ticket": _WORK_URL},
+        ]
+
+        with mock.patch(
+            "teatree.core.answering.coordinator_actions.enqueue_phase_task", side_effect=RuntimeError("db down")
+        ):
+            self._record({"answer": {"text": "Done."}, "actions": requests})
+
+        reply = self.backend.replies[0][2]
+        assert self._bound_to() == self.conversation_id
+        assert "Could not confirm queue_task" in reply
+        assert "Bound this thread" not in reply
+
+    def test_a_later_answering_task_runs_the_same_proposal_again(self) -> None:
+        conversation = self.task.ticket
+        self._record(_bind(kind="queue_task", ticket=conversation.issue_url))
+        self.task = Task.objects.create(ticket=conversation, session=self.task.session, phase="answering")
+
+        self._record(_bind(kind="queue_task", ticket=conversation.issue_url))
+
+        planning = Task.objects.get(ticket=conversation, phase="planning")
+        assert f"TODO-{planning.pk}" in self.backend.replies[1][2]
+        assert len(self._audit()) == 2
+
+    def test_a_failure_in_the_action_machinery_still_delivers_the_reply(self) -> None:
+        with (
+            mock.patch(
+                "teatree.agents.reactive_envelope_recorders.run_coordinator_actions", side_effect=RuntimeError("down")
+            ),
+            self.assertLogs("teatree.agents.reactive_envelope_recorders", "ERROR"),
+        ):
+            self._record(_bind(ticket=_WORK_URL))
+
+        assert "Done." in self.backend.replies[0][2]
+        assert self._bound_to() == self.conversation_id
+
     def test_a_malformed_list_runs_nothing(self) -> None:
         self._record({"answer": {"text": "Done."}, "actions": ["bind_thread", 7, {"ticket": _WORK_URL}]})
 
