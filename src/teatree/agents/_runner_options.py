@@ -350,7 +350,7 @@ def _resolve_task_cwd(task: Task) -> str | None:
 #: read-only + ``worktree add`` while blocking any mutation of the shared clone.
 #: The triage assessor and directive interpreter read that tree and write nothing.
 _MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset(
-    {ARCHITECTURAL_REVIEW_PHASE, "triage_assessing", "directive_interpreting"}
+    {ARCHITECTURAL_REVIEW_PHASE, "triage_assessing", "directive_interpreting", "backlog_sweep"}
 )
 
 

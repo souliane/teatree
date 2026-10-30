@@ -53,6 +53,20 @@ def test_read_only_venue_embeds_the_rules_document_when_it_cannot_mount_files(
     assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
 
 
+def test_read_only_venue_puts_rules_before_other_embedded_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "review", "# Review")
+    _write_skill(tmp_path, "rules", "# Rules")
+    (tmp_path / "rules" / "RULES.md").write_text("# Always-On Rules", encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["review", "rules"], {"review", "rules"})
+
+    assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
+    assert rendered.index("--- SKILL: rules ---") < rendered.index("--- SKILL: review ---")
+
+
 def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

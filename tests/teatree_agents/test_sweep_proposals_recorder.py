@@ -175,6 +175,13 @@ class TestSweepProposalRecording(TestCase):
         assert citation.endswith("...")
         assert citation.count("&") == citation.count("&amp;")
 
+    def test_owner_citation_rewrites_whole_references_until_card_safe(self) -> None:
+        citation = _owner_citation("See #12 and #123 with --dry-run=true and sweep_pending_run=value")
+
+        assert not internal_shorthand(citation)
+        assert "reference3" not in citation
+        assert citation == "See code reference and code reference with command option and code reference"
+
     def test_repeated_targets_are_verified_once_per_recording(self) -> None:
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/3"

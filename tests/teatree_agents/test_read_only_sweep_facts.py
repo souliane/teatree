@@ -8,7 +8,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError, _list_sweep_issues, _sweep_issue_facts
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task, Ticket, TicketSweepRun
 
 
 class TestSweepFacts(TestCase):
@@ -101,7 +101,24 @@ class TestSweepFacts(TestCase):
         assert "/issues/1" in first
         assert "/issues/21" not in first
 
-    def test_failed_sweep_advances_the_next_task_window(self) -> None:
+    def test_index_marks_only_unsettled_gap_hosts_with_capacity(self) -> None:
+        base = "https://github.com/example-org/example-repo/issues/"
+        Ticket.objects.create(overlay="example", issue_url=f"{base}1", state=Ticket.State.MERGED)
+        Ticket.objects.create(
+            overlay="example",
+            issue_url=f"{base}3",
+            extra={"dream_gap_batch": [{"gap_key": f"gap-{n}"} for n in range(3)]},
+        )
+        Ticket.objects.create(overlay="example", issue_url=f"{base}4")
+
+        index, _ = self._facts()
+        lines = index.splitlines()
+
+        assert "gap host" not in lines[0]
+        assert "gap host" not in lines[2]
+        assert "gap host" in lines[3]
+
+    def test_failed_sweep_keeps_the_next_task_on_the_same_window(self) -> None:
         _, first = self._facts()
         self.task = Task.objects.create(
             ticket=self.ticket,
@@ -112,8 +129,17 @@ class TestSweepFacts(TestCase):
         _, second = self._facts()
 
         assert "/issues/1" in first
-        assert "/issues/21" in second
-        assert "/issues/1" not in second
+        assert "/issues/1" in second
+        assert "/issues/21" not in second
+
+    def test_finished_loop_sweep_advances_the_next_window(self) -> None:
+        run = TicketSweepRun.objects.begin(source="loop", overlay=self.ticket.overlay)
+        TicketSweepRun.objects.finish(run_id=run.run_id, examined_count=20)
+
+        _, window = self._facts()
+
+        assert "/issues/21" in window
+        assert "/issues/1" not in window
 
     def test_missing_ask_gate_refuses_before_listing(self) -> None:
         self.task.execution_reason = "unguarded sweep"

@@ -116,7 +116,8 @@ def _resume_pending_run(task: Task) -> None:
 
 def _owner_citation(raw: str) -> str:
     citation = " ".join(raw.split())
-    for token in internal_shorthand(citation):
+    while tokens := internal_shorthand(citation):
+        token = tokens[0]
         if re.fullmatch(r"(?:PR|pull request|MR|merge request)\s+[#!]?\d+", token, re.IGNORECASE):
             replacement = "pull request"
         elif token.startswith("tests/"):
@@ -127,7 +128,12 @@ def _owner_citation(raw: str) -> str:
             replacement = "command option"
         else:
             replacement = "code reference"
-        citation = citation.replace(token, replacement)
+        assignment = r"(?:=[^\s,;]+)?" if token.startswith("--") or "_" in token else ""
+        updated = re.sub(rf"(?<!\w){re.escape(token)}{assignment}(?!\w)", replacement, citation, count=1)
+        if updated == citation:
+            citation = "The detailed citation is retained in the recorded proposal."
+            break
+        citation = updated
     safe = escape(citation, quote=False)
     if len(safe) > QUESTION_CITATION_CHARS:
         prefix = re.sub(r"&[^;\s]*$", "", safe[: QUESTION_CITATION_CHARS - 3])

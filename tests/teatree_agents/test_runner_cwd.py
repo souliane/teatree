@@ -56,9 +56,9 @@ class TestTaskCwdComesFromTheWorktreePath(TestCase):
 
         assert _resolve_task_cwd(self.task) is None
 
-    def test_backlog_sweep_without_a_worktree_keeps_the_cwd_unset(self) -> None:
+    def test_backlog_sweep_without_a_worktree_reads_the_main_clone(self) -> None:
         self.task.phase = "backlog_sweep"
         with tempfile.TemporaryDirectory() as clone:
             (Path(clone) / ".git").mkdir()
             with patch.dict(os.environ, {"T3_REPO": clone}):
-                assert _resolve_task_cwd(self.task) is None
+                assert _resolve_task_cwd(self.task) == clone

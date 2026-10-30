@@ -17,8 +17,10 @@ from teatree.core.backend_registry import get_backend_provider
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
-from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE, SWEEP_ASK_GATE_MARKER, normalize_phase
-from teatree.core.models import ReproEvidence, Task, Ticket
+from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
+from teatree.core.models import ReproEvidence, Task, Ticket, TicketSweepRun
+from teatree.core.models.dream_gap_ledger import undispositioned_gap_keys
+from teatree.core.models.dream_gap_offer import HOST_GAP_CAP
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.overlay_repos import owned_repo_slugs
@@ -250,9 +252,11 @@ def _issue_at(ticket: "Ticket", issue_url: str) -> tuple[str, str]:
 def _sweep_issue_facts(task: "Task") -> tuple[str, str]:
     rows, window_rows = _sweep_rows_and_window(task)
     urls = [url for url, _, _, _ in rows]
-    hosts = set(
-        Ticket.objects.filter(overlay=task.ticket.overlay, issue_url__in=urls).values_list("issue_url", flat=True)
-    )
+    hosts = {
+        host.issue_url
+        for host in Ticket.objects.filter(overlay=task.ticket.overlay, issue_url__in=urls)
+        if not host.is_settled and len(set(undispositioned_gap_keys(host))) < HOST_GAP_CAP
+    }
     index = "\n".join(
         f"- {url} | {'self' if own else 'ext'} | {title}{' | gap host' if own and url in hosts else ''}"
         for url, title, _, own in rows
@@ -316,8 +320,8 @@ def _sweep_rows_and_window(
             int(urlparse(row[0]).path.rstrip("/").rsplit("/", 1)[1]),
         )
     )
-    prior_dispatches = Task.objects.filter(
-        phase=BACKLOG_SWEEP_PHASE, ticket__overlay=task.ticket.overlay, pk__lt=task.pk
+    prior_dispatches = TicketSweepRun.objects.filter(
+        source="loop", overlay=task.ticket.overlay, finished_at__isnull=False
     ).count()
     pages = max(1, (len(rows) + 19) // 20)
     start = (prior_dispatches % pages) * 20
