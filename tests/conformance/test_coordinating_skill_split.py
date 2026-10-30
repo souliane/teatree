@@ -29,9 +29,9 @@ _COORDINATING_MAX_BYTES = 16_384
 #: A sentence of this many normalized words written in both skills is a duty stated twice.
 _DUPLICATE_SENTENCE_WORDS = 8
 
-_HARNESS_TOKENS = ("claude", "codex", "pydantic", "listagents", "sessionstart", "attended", "interactive")
+_HARNESS_TOKENS = ("claude", "codex", "pydantic", "listagents", "sessionstart", "attended", "interactive", "todo")
 
-#: Every heading of skills/interactive/SKILL.md at 6385a5d51, before the split, and where its text lives now.
+#: The pre-split interactive headings and their current homes.
 _ORIGINAL_HEADINGS: dict[str, tuple[Path, str]] = {
     "# TeaTree — Interactive Session": (_INTERACTIVE, "# TeaTree — Interactive Session"),
     "## Resolve settled owner cards and agent asks": (_COORDINATING, "## Resolve settled owner cards and agent asks"),
@@ -73,7 +73,7 @@ _REFERENCES = {
 }
 
 _HEADING_LINE = re.compile(r"^#{1,6} .+$", re.MULTILINE)
-_SENTENCE_BREAK = re.compile(r"(?<=[.!?:;])\s+|\n+|\|")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?:;])\s+|\n\s*\n|\|")
 _NON_WORD = re.compile(r"[^a-z0-9\s]")
 
 
@@ -134,13 +134,40 @@ def test_the_interactive_skill_requires_and_links_the_coordinating_skill(skill_i
     assert "(../coordinating/SKILL.md)" in _text(_INTERACTIVE)
 
 
+def test_dogfood_smoke_keeps_the_shared_skill_without_the_attended_skill(skill_index: list[dict[str, object]]) -> None:
+    bundle = resolve_skill_bundle(
+        phase="dogfood_smoke",
+        overlay_skill_metadata=SkillMetadata(),
+        skill_index=skill_index,
+        detection_root=_ROOT,
+        stage_skills=[],
+    )
+    assert "coordinating" in bundle
+    assert "interactive" not in bundle
+
+
 def test_no_duty_sentence_is_written_in_both_skills() -> None:
     interactive = _long_sentences(_text(_INTERACTIVE))
     coordinating = [_long_sentences(body) for body in _coordinating_texts().values()]
     assert interactive
+    assert coordinating
     assert all(coordinating)
     twice = {sentence for sentences in coordinating for sentence in sentences & interactive}
     assert not twice, "sentences present in both skills:\n" + "\n".join(sorted(twice))
+
+
+def test_line_wrapping_cannot_hide_a_duplicated_duty_sentence() -> None:
+    sentence = "The coordinator keeps each blocking factory finding in a durable record until the work is resolved."
+    wrapped = "The coordinator keeps each blocking factory\nfinding in a durable record until the\nwork is resolved."
+    assert _long_sentences(sentence) == _long_sentences(wrapped)
+
+
+def test_ship_ensure_pr_reference_points_to_the_coordinating_recipe() -> None:
+    ship = (_SKILLS / "ship" / "SKILL.md").read_text(encoding="utf-8")
+    assert '[stranded-work.md](../coordinating/references/stranded-work.md) § "Advancing an item by hand"' in ship
+    assert "## Advancing an item by hand" in (_COORDINATING / "references" / "stranded-work.md").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize(("original", "home"), _ORIGINAL_HEADINGS.items())
