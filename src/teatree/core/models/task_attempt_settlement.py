@@ -71,6 +71,7 @@ def complete_with_attempt(task: "Task", details: AttemptInput) -> "TaskAttempt":
 
     def create_attempt(code: int, reason: str, result: JSONObject) -> "TaskAttempt":
         return task_attempt_model.objects.create(
+            # no-usage: core has no provider usage payload; post-turn crashes mark usage_unknown.
             task=task,
             ended_at=timezone.now(),
             exit_code=code,
