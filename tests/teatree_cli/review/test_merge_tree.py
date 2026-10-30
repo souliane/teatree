@@ -8,12 +8,15 @@ one exits 1 with structured JSON and materialises nothing.
 """
 
 import json
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.review import review_app
+from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 _ORIGIN_URL = "https://github.com/souliane/teatree.git"
@@ -71,3 +74,26 @@ class TestMergeTreeCommand:
         assert code == 1
         assert json.loads(out)["error"] == "merge_conflict"
         assert not Path(tmp_path / "out").exists()
+
+    def test_a_failing_extraction_exits_one_and_leaves_no_directory_behind(
+        self, clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        existed: list[bool] = []
+
+        def archive_fails(_repo: str, *, tree_oid: str, destination: Path) -> None:
+            existed.append(destination.is_dir())
+            raise CommandFailedError(["git", "archive", tree_oid], 128, "", "fatal: cannot write the archive")
+
+        argv = ["merge-tree", "--repo", str(clone), "--base", "main", "--head", "feature"]
+        with patch("teatree.utils.merge_tree_extract._extract_tree", side_effect=archive_fails):
+            failed = CliRunner().invoke(review_app, argv)
+
+        assert existed == [True], "control: the directory existed when the extraction failed"
+        assert failed.exit_code == 1
+        assert json.loads(failed.stdout)["error"] == "merge_tree_failed"
+        assert not list(scratch.glob("t3-merge-tree-*"))
+        assert CliRunner().invoke(review_app, argv).exit_code == 0
+        assert len(list(scratch.glob("t3-merge-tree-*"))) == 1, "control: a successful default extract is kept"

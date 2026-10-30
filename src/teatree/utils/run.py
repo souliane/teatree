@@ -46,6 +46,8 @@ SUBPROCESS_UNREACHABLE: tuple[type[BaseException], ...] = (OSError, SubprocessEr
 # ``_last_lines`` n=20 — so a tail this size keeps the diagnostic while capping
 # retention. ``run_streamed`` keeps only the last this-many stderr lines.
 STREAMED_STDERR_RETAINED_LINES = 200
+# Past a wrapped command's own ``timeout --kill-after=15s`` escalation.
+_CHILD_STOP_GRACE_SECONDS = 20
 type ProcessStream = int | IO[bytes] | IO[str] | None
 
 __all__ = [
@@ -346,6 +348,15 @@ def run_allowed_to_fail(  # noqa: PLR0913 — each keyword-only param is one doc
     return CompletedProcess(list(cmd), result.returncode, result.stdout, result.stderr)
 
 
+def _stop_child(process: "Popen[str]") -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=_CHILD_STOP_GRACE_SECONDS)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def run_streamed(
     cmd: Sequence[str],
     *,
@@ -371,6 +382,10 @@ def run_streamed(
     accumulate stderr for its whole lifetime; only the tail is ever read back
     (the error shows ``_last_lines`` n=20), so capping retention keeps the
     diagnostic without the unbounded growth.
+
+    An exception leaving the call (a ``KeyboardInterrupt`` raised by a SIGTERM
+    handler, a failed write to the parent's stderr) stops the child first, so no
+    command outlives the call that started it.
     """
     captured: deque[str] = deque(maxlen=STREAMED_STDERR_RETAINED_LINES)
     try:
@@ -387,11 +402,15 @@ def run_streamed(
         stderr=PIPE,
         text=True,
     ) as proc:
-        for line in cast("IO[str]", proc.stderr):
-            sys.stderr.write(line)
-            captured.append(line)
-        sys.stderr.flush()
-        returncode = proc.wait()
+        try:
+            for line in cast("IO[str]", proc.stderr):
+                sys.stderr.write(line)
+                captured.append(line)
+            sys.stderr.flush()
+            returncode = proc.wait()
+        except BaseException:
+            _stop_child(proc)
+            raise
     if check and returncode != 0:
         raise CommandFailedError(cmd, returncode, "", "".join(captured))
     return returncode
