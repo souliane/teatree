@@ -523,7 +523,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     ),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "orchestrator_turn_budget": ColdHookSetting(
-        _parse_strict_int, default=25, help="output-token budget for one orchestrator turn", stored=int
+        _parse_strict_int, default=25, help="tool-call budget for one orchestrator turn", stored=int
     ),
     "orchestrator_turn_wall_clock_seconds": ColdHookSetting(
         _parse_strict_int, default=180, help="seconds one orchestrator turn may take", stored=int

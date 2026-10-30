@@ -416,6 +416,17 @@ class DreamGapLedgerTriggerTests(TestCase):
         assert self._gap_scanner().scan_dream_gaps() == []
         assert _last_sweep_task() is None
 
+    def test_twenty_live_pull_requests_allow_dream_gaps(self) -> None:
+        _umbrella_with_pending("3a9f11")
+        for index in range(20):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 900}",
+            )
+
+        assert [signal.kind for signal in self._gap_scanner().scan_dream_gaps()] == ["backlog_sweep.queued"]
+        assert _last_sweep_task() is not None
+
     def test_no_umbrella_ticket_queues_nothing(self) -> None:
         assert self._gap_scanner().scan_dream_gaps() == []
         assert _last_sweep_task() is None

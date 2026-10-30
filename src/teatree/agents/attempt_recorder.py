@@ -29,7 +29,10 @@ from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.plan_artifact_recorder import record_returned_plan
-from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.agents.reactive_envelope_recorders import (
+    announce_completed_architectural_review,
+    record_reactive_envelopes,
+)
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
 from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
@@ -88,6 +91,7 @@ class AttemptUsage:
     # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
     # attempt's credential authenticated through, or ``""`` when unattributed.
     lane: str = ""
+    account: str = ""
     # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) rather than a real
     # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
     # not compute a reported cost is flagged conservatively as an estimate.
@@ -258,6 +262,7 @@ def record_result_envelope(
     except NoCurrentPlanError as exc:
         task.refresh_from_db()
         return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
+    announce_completed_architectural_review(task, result, phase=phase)
     return attempt
 
 
@@ -276,6 +281,7 @@ class SpendColumns(TypedDict, total=False):
     context_window_tokens: int | None
     model_fell_back: bool
     lane: str
+    account: str
     cost_is_estimated: bool
     usage_unknown: bool
     reasoning_effort: str
@@ -316,6 +322,7 @@ def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
         context_window_tokens=usage.context_window_tokens,
         model_fell_back=usage.model_fell_back,
         lane=usage.lane,
+        account=usage.account,
         cost_is_estimated=usage.cost_is_estimated,
         usage_unknown=usage.usage_unknown,
         reasoning_effort=usage.reasoning_effort,

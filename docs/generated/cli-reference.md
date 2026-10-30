@@ -15070,6 +15070,8 @@ Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 │         recurring-signal registry.                                           │
 │ digest  Read the status signals the push/pull classifier kept off the DM     │
 │         channel.                                                             │
+│ census  Count owner DM bot messages per UTC day and class from Slack         │
+│         history.                                                             │
 │ post    Post, token routed by destination (self-DM→bot,                      │
 │         colleague/channel→xoxp); exit 0 on ``ok``.                           │
 │ react   React, token routed by destination (self-DM→bot,                     │
@@ -15151,12 +15153,27 @@ Usage: t3 teatree notify digest [OPTIONS]
  Read the status signals the classifier kept off the DM channel (#4524).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --since-hours        INTEGER  How far back to read the pulled status         │
-│                               signals.                                       │
+│ --since-hours        INTEGER  How far back to read status signals and        │
+│                               setting changes.                               │
 │                               [default: 24]                                  │
 │ --overlay            TEXT     Set T3_OVERLAY_NAME for the call (per-overlay  │
 │                               bot routing).                                  │
 │ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify census`
+
+```
+Usage: t3 teatree notify census [OPTIONS]
+
+ Count bot messages in the owner DM by UTC day and ledger class.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --days           INTEGER  How many days of owner DM history to count.        │
+│                           [default: 8]                                       │
+│ --overlay        TEXT     Set T3_OVERLAY_NAME for the owner DM read.         │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -22,23 +22,7 @@ registered pair receives its directive.
 from dataclasses import dataclass
 from enum import StrEnum
 
-# Canonical token -> every accepted alias (including the canonical itself).
-_PHASE_ALIASES: dict[str, tuple[str, ...]] = {
-    "planning": ("plan", "planning"),
-    "scoping": ("scope", "scoping"),
-    "coding": ("code", "coding"),
-    "testing": ("test", "testing"),
-    "reviewing": ("review", "reviewing"),
-    "shipping": ("ship", "shipping"),
-    "retro": ("retro", "retrospect", "retrospecting"),
-    "requesting_review": ("request_review", "requesting_review", "request-review"),
-    "e2e": ("e2e",),
-    "e2e_reviewing": ("e2e-review", "e2e_review", "e2e_reviewing"),
-}
-
-_ALIAS_TO_CANONICAL: dict[str, str] = {
-    alias: canonical for canonical, aliases in _PHASE_ALIASES.items() for alias in aliases
-}
+from teatree.config.phase_names import _PHASE_ALIASES, REVIEW_PHASES, normalize_phase, phase_spellings
 
 #: The canonical phase vocabulary — the single source of truth a second
 #: hand-maintained set (``Session._REQUIRED_PHASES``) must be validated
@@ -186,10 +170,17 @@ class PhaseCost(StrEnum):
     CHEAP = "cheap"
     EXPENSIVE = "expensive"
     ANSWERING = "answering"
+    ARCHITECTURAL_REVIEW = "architectural_review"
+    MAINTENANCE = "maintenance"
+
+
+MAINTENANCE_PHASES: frozenset[str] = frozenset(
+    {BACKLOG_SWEEP_PHASE, EVAL_LOCAL_PHASE, DOGFOOD_SMOKE_PHASE, "scanning_news", "triage_assessing"}
+)
 
 
 #: Review and work-retiring phases have separate bounds outside the coding ceiling.
-#: Background assessors gate no merge, so they stay in the coding lane.
+#: Periodic maintenance has its own bounded lane; other background work stays with coding.
 #: Cheap is not free: ``_TOOLS_BY_PHASE`` grants these phases ``shell``, the
 #: cold-review procedure provisions a detached review checkout, a
 #: reviewer is told to run the suite, and a ``shipping`` agent's push fires the parity
@@ -202,9 +193,6 @@ class PhaseCost(StrEnum):
 #: operator-configurable: a per-deployment override could move ``coding`` into the
 #: exempt lane, which is the unbounded-lane failure this exemption must never become.
 #: Verdict producers unblock work waiting for review.
-REVIEW_PHASES: frozenset[str] = frozenset(
-    {"reviewing", "e2e_reviewing", "codex_reviewing", "codex_adversarial_reviewing", "critic_reviewing"}
-)
 #: Opening or merging a PR frees the worktree and agent, so these must retain a seat under load.
 RETIRING_PHASES: frozenset[str] = frozenset({"shipping", "requesting_review"})
 CHEAP_PHASES: frozenset[str] = REVIEW_PHASES | RETIRING_PHASES
@@ -234,8 +222,8 @@ class CheapClass(StrEnum):
 def phase_cost(phase: str) -> PhaseCost:
     """Classify *phase* for admission. Anything unrecognised is EXPENSIVE.
 
-    Fail-safe by construction: only an explicitly registered member of
-    :data:`CHEAP_PHASES` or :data:`ANSWERING_PHASES` leaves the braked class, so a new or
+    Fail-safe by construction: only explicitly registered cheap, answering,
+    architectural-review, or maintenance phases leave the coding class, so a new or
     misspelled phase inherits the coding bound rather than an exemption. ``phase`` is
     normalized, so a row stored under a short verb (``review``) classifies like its
     canonical gerund.
@@ -243,6 +231,10 @@ def phase_cost(phase: str) -> PhaseCost:
     canonical = normalize_phase(phase)
     if canonical in ANSWERING_PHASES:
         return PhaseCost.ANSWERING
+    if canonical == ARCHITECTURAL_REVIEW_PHASE:
+        return PhaseCost.ARCHITECTURAL_REVIEW
+    if canonical in MAINTENANCE_PHASES:
+        return PhaseCost.MAINTENANCE
     return PhaseCost.CHEAP if canonical in CHEAP_PHASES else PhaseCost.EXPENSIVE
 
 
@@ -384,30 +376,6 @@ def resolve_fanout_directive(role: str, phase: str) -> str:
     if spec is None:
         return ""
     return spec.directive_template.format(n=spec.fanout_n)
-
-
-def normalize_phase(phase: str) -> str:
-    """Return the canonical token for ``phase``.
-
-    Accepts the short verbs the skills emit and the gerunds older code uses;
-    case- and whitespace-insensitive. Unknown phases pass through lowered and
-    stripped so visiting a free-form phase still records *something* rather
-    than raising.
-    """
-    cleaned = phase.strip().lower()
-    return _ALIAS_TO_CANONICAL.get(cleaned, cleaned)
-
-
-def phase_spellings(phase: str) -> tuple[str, ...]:
-    """Every stored spelling that normalizes to ``phase``'s canonical form.
-
-    Lets a DB query match a phase regardless of which accepted spelling a
-    row was stored with (``phase__in=phase_spellings(...)``) without a
-    per-row ``normalize_phase`` call. For an unknown phase, returns just
-    its own normalized form so callers still get an exact match.
-    """
-    canonical = normalize_phase(phase)
-    return _PHASE_ALIASES.get(canonical, (canonical,))
 
 
 def canonicalize_phase_keys(value: dict[str, list[str]]) -> dict[str, list[str]]:

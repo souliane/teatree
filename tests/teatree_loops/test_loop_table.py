@@ -306,6 +306,28 @@ class TestMarkRunIfUnchanged(django.test.TestCase):
         assert won is True
         assert Loop.objects.get(name="cas-null").last_run_at == now
 
+    def test_held_release_preserves_attempt_time_and_previous_anchor(self) -> None:
+        before = timezone.now() - dt.timedelta(hours=2)
+        claimed = timezone.now()
+        Loop.objects.create(name="cas-held", delay_seconds=60, prompt=_prompt(), last_run_at=before)
+        assert Loop.objects.mark_run_if_unchanged("cas-held", previous_last_run_at=before, now=claimed)
+
+        assert Loop.objects.release_held_run_if_unchanged("cas-held", claimed_at=claimed, previous_last_run_at=before)
+        row = Loop.objects.get(name="cas-held")
+        assert row.last_run_at == before
+        assert row.last_attempt_at == claimed
+
+    def test_held_release_cannot_undo_a_newer_claim(self) -> None:
+        before = timezone.now() - dt.timedelta(hours=2)
+        claimed = timezone.now() - dt.timedelta(minutes=1)
+        newer = timezone.now()
+        Loop.objects.create(name="cas-held-race", delay_seconds=60, prompt=_prompt(), last_run_at=newer)
+
+        assert not Loop.objects.release_held_run_if_unchanged(
+            "cas-held-race", claimed_at=claimed, previous_last_run_at=before
+        )
+        assert Loop.objects.get(name="cas-held-race").last_run_at == newer
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestCadenceClaimIsAtomic(django.test.TestCase):

@@ -194,12 +194,17 @@ depends_on = ["teatree.llm"]
 [[modules]]
 path = "teatree.credential_config"
 layer = "domain"
-depends_on = ["teatree.config", "teatree.core.models", "teatree.credential_readings", "teatree.llm", "teatree.utils"]
+depends_on = ["teatree.config", "teatree.core.models", "teatree.credential_readings", "teatree.credential_refresh", "teatree.llm", "teatree.utils"]
 
 [[modules]]
 path = "teatree.credential_readings"
 layer = "domain"
 depends_on = ["teatree.core.models", "teatree.llm"]
+
+[[modules]]
+path = "teatree.credential_refresh"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.credential_readings", "teatree.llm", "teatree.utils"]
 
 [[modules]]
 path = "teatree.token_report"
@@ -258,11 +263,6 @@ depends_on = []
 path = "teatree.utils"
 layer = "foundation"
 depends_on = ["teatree.paths", "teatree.sqlite_integrity"]
-
-[[modules]]
-path = "teatree.utils.disk_consumers"
-layer = "domain"
-depends_on = ["teatree.core", "teatree.config"]
 
 [[modules]]
 path = "teatree.self_update"

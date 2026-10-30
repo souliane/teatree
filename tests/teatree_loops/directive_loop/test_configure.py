@@ -8,9 +8,11 @@ confirmed by a real-resolver read-back. ``clear_activation`` is the reversible r
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.core.models import ConfigSetting, DeferredQuestion, Directive
+from teatree.core.models import ConfigSetting, ConfigSettingChange, DeferredQuestion, Directive
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
-from teatree.loops.directive_loop.configure import Activation, apply_activation, clear_activation
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from teatree.loops.directive_loop.configure import Activation, apply_activation, clear_activation, ratifier
+from tests._loop_principal_env import pinned_loop_principal
 from tests._owner_channel import answer_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
@@ -76,8 +78,30 @@ class TestApplyActivation(TestCase):
         assert "read-back mismatch" in result.reason
         assert ConfigSetting.objects.get_effective("not_a_real_setting", scope=_SCOPE) is None
 
+    def test_read_back_mismatch_of_a_governed_key_is_cleared_under_the_ratifier(self) -> None:
+        # The resolver normalises "NOTIFY" to "notify", so the stored row reads back as a different value.
+        directive = _admitted(
+            setting_key="autonomy", setting_type="str", neutral_default="babysit", activation_value="NOTIFY"
+        )
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID):
+            result = apply_activation(directive)
+        assert result.applied is False
+        assert "read-back mismatch" in result.reason
+        assert ConfigSetting.objects.get_effective("autonomy", scope=_SCOPE) is None
+        cleared = ConfigSettingChange.objects.get(key="autonomy", scope=_SCOPE, action="clear")
+        assert cleared.written_by == ratifier(directive)
+
 
 class TestClearActivation(TestCase):
+    def test_unattended_rollback_clears_a_ratified_governed_activation(self) -> None:
+        directive = _admitted(
+            setting_key="autonomy", setting_type="str", neutral_default="babysit", activation_value="notify"
+        )
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID):
+            assert apply_activation(directive).applied is True
+            assert clear_activation(directive) is True
+        assert ConfigSetting.objects.get_effective("autonomy", scope=_SCOPE) is None
+
     def test_clear_rolls_back_the_row(self) -> None:
         directive = _admitted()
         apply_activation(directive)

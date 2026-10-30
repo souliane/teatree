@@ -158,6 +158,27 @@ class TestACutShortRunKeepsNothingOverACompletedRow(TestCase):
         assert not TaskAttempt.objects.filter(task=task).exists()
 
 
+class TestACutShortRunKeepsTheAccountThatSignedIt(TestCase):
+    def test_the_salvaged_attempt_carries_the_account_the_run_was_signed_with(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.claim(claimed_by="worker-A", lease_seconds=900)
+        envelope = {"summary": "implemented", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        outcome = HarnessOutcome(
+            agent_text=json.dumps(envelope), result_message=None, stuck_reason="runtime ceiling", tool_calls=1
+        )
+        salvage = CeilingSalvage(phase="coding", lane="", provenance=DispatchProvenance(), account="signing-account")
+
+        kept = salvage.kept(task, outcome)
+
+        task.refresh_from_db()
+        assert kept is not None
+        assert task.status == Task.Status.COMPLETED
+        assert kept.account == "signing-account"
+        assert TaskAttempt.objects.get(task=task).account == "signing-account"
+
+
 class TestALeaseLossAfterAnOperatorCancel(TestCase):
     def test_lease_loss_after_operator_cancel_keeps_the_cancel(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/o/r/issues/4834")

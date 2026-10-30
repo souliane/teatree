@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 SHIP_HINT_KEYS = ("pr_title_override", "ship_invoking_branch")
 
 
-def adoptable_pr_url(ticket: "Ticket", host: "CodeHostBackend", extra: "TicketExtra", branch: str) -> str:
+def adopt_recorded_pr_url(ticket: "Ticket", host: "CodeHostBackend", extra: "TicketExtra", branch: str) -> str:
     """The PR URL recorded for *branch* that a retry may adopt, or ``""``.
 
     #1263: only THIS branch's URL short-circuits — a reused ticket spans one PR per

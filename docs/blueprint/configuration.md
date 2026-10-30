@@ -17,6 +17,20 @@ from the DB. `config_setting export` / `import` are a byte-stable round-trip
 interchange; the shipped default VALUES, the pydantic schema that hosts them + the
 category taxonomy, and the model-derived registries are described in §10.7.
 
+Numeric run limits declare write-time floors alongside their setting definitions;
+zero keeps the documented uncapped option. Every manager or cold rescue change
+records an audit row with the previous value, writer and time. `t3 doctor check`
+shows divergent overrides with that context and flags rows below a floor;
+`t3 <overlay> notify digest` lists recent setting changes.
+Review and critic child environments mark their phase, and the settings write paths
+refuse canonical database writes while that marker is present; verification scripts
+that change settings must use a private test database.
+The 24-hour watchdog default requires a 48-hour claim drive-marker grace (twice the
+watchdog window); after a hard kill, a reused process id can delay reclaim for up to
+that grace. The in-session claim lease remains three hours.
+`config_setting set` and `clear` print the previous value from the audit row
+so an operator can restore the prior override.
+
 The keys and value shapes below are illustrative — set each one with
 `config_setting set`; the `[table]` syntax only shows how a key is scoped
 (`[teatree]` = global, `[overlays.<name>]` = that overlay):
@@ -387,7 +401,7 @@ The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and
 | `provision_ram_ceiling_percent` | #2949: RAM-used-percent ceiling above which a new worktree provision is HELD (queued, not started) rather than admitted (default `75`) — tighter than the self-improve budget gate's `DEFAULT_RAM_USED_CEILING_PCT` (85) because provisioning arrives in bursts a per-sample gate reads too late. A held request drains automatically once RAM frees, bounded by an internal max-hold ceiling. Per-overlay overridable; enforced by `teatree.core.gates.provision_admission_gate`. |
 | `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
-| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker runs W+1 `cheap` executors plus one per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned, not this setting). Both classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
+| `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker also runs one executor per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned), one for architectural review, and one per maintenance seat. Cheap classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
 | `single_branch_repo_gate_enabled` | Kill-switch for `single_branch_repos` (default `true`). `false` reverts both seams to the pre-gate behaviour byte-for-byte while leaving the entries declared. Per-call escape on the Bash seam: append `[gate-escape:single_branch_repo: <reason>]` to the command. Per-overlay overridable. |
 | `dream_memory_promote` | Whether Pass-2 memory→fix promotion runs (default `true`, #2426, #4776) — a pass batches its promotions into ONE ticket. |
@@ -396,7 +410,7 @@ The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and
 | `gitlab_events_subscription` | The relay's Pub/Sub pull subscription as `projects/<project>/subscriptions/<name>` (default `""`, which is OFF: the `inbox` loop does not build the GitLab-events job). Read by the loop with no overlay, so box-global. The VM's metadata-server identity needs `roles/pubsub.subscriber` on it; nothing is stored. |
 | `stale_stack_min_age_minutes` | #2207: stale-stack reaper threshold (minutes, default `0` = disabled, opt-in; set e.g. `240` to enable). A teatree-provisioned compose stack (named `<repo>-wt<ticket-pk>`) with NO live `Worktree` row — a failed-teardown leftover, or a hand-rolled stack started inside a worktree, which inherits `COMPOSE_PROJECT_NAME` from the env cache — is torn down once its newest container lifecycle event is older than this: automatically before `worktree start` / `workspace start` / `workspace provision`, and on demand via `t3 <overlay> workspace reap-stale [--dry-run]`. Age-keyed + fail-safe (unknown age ⇒ keep) so a parallel session's fresh stack is never reaped, and ownership-gated so a stack teatree did not provision (the deploy stack, an unrelated user project) is never a candidate on either this path or `clean-all`. Per-overlay overridable. |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
-| `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
+| `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`); its registry help and generated defaults name the same unit. Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
 | `worktree_containment_gate_enabled` | Default-on global ColdHookSetting for the Bash PreToolUse gate that refuses managed-source `git worktree add|move` outside the resolved allowed checkout roots. `t3 <overlay> gate worktree-containment disable` turns it off; `[gate-escape:worktree_containment: <reason>]` waives one call. |
 | `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` code work until the resolvable pending teatree skills load. It has no `TaskCreated` counterpart (#4216). Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
@@ -627,17 +641,19 @@ row for its key, so workers do not share healthy observations. A worker reads th
 durable row once per key and checks it again during a long quota or authentication
 hold, but does not query the DB on every other request. Cached unavailability avoids
 repeating a known-dead lane; cached health repeats the cheap local capability probe
-so a binary that disappears is detected. A runtime failure immediately updates the cache. A quota or authentication
-failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
-or an outcome made tool calls; other failures keep the two-minute hold.
+so a binary that disappears is detected. A runtime failure immediately updates the cache. A typed quota or
+authentication failure holds its candidate for an hour; a classified timed limit with a reported reset holds it
+until that reset. Agent narration alone cannot hold a route. Other failures keep the two-minute hold. A routed
+subscription limit rotates the signing account or parks the task to its reset without holding the route.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next
-candidate. Protocol/schema errors, unsupported policy, and programmer failures
+candidate. Content guardrail blocks are terminal. Protocol/schema errors,
+unsupported policy, and programmer failures
 do not. If a tool or other external side effect has already started, TeaTree
 records the failed candidate and requeues the task instead of replaying it on the
 next model. Every attempt records the selected harness/provider/model, candidate
-index, owning skill, fallback reason, predecessor attempt, lane, tokens, and
+index, owning skill, fallback reason, predecessor attempt, lane, signing account path, tokens, and
 runtime usage. A parked thread resumes only through the same harness, so a
 fallback never feeds a Codex thread id to Claude or vice versa.
 
@@ -1194,8 +1210,8 @@ therefore carries the coordinate alone. Every write runs `ConfigSetting.objects.
 so the cross-key check and the seed-provenance clear fire exactly as they do for
 `config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
 inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
-ONE function (`teatree.core.config_display.is_secret`) shared by all three rendering
-surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
+ONE function (`teatree.config.value_visibility.is_secret`) shared by all three rendering
+surfaces — it lives in `config` so the Django-free rescue writer can use it too. There
 is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
 and the changelist formset writes through `Model.save()` (so it cannot use the seam).
 

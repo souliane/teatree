@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.agents.compaction_guard import COMPACTION_BLOCKED_REASON
+from teatree.agents.credential_policy import PLANS_ONLY_MARKER
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness
 from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
@@ -132,6 +133,8 @@ def record_round_handoff(task: Task, outcome: HarnessOutcome, *, usage: "Attempt
         )
         if Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).exists():
             base = task.execution_reason.partition(_ROUND_NOTE_MARKER)[0].rstrip()
+            if PLANS_ONLY_MARKER in task.execution_reason and PLANS_ONLY_MARKER not in base:
+                base = f"{base}\n{PLANS_ONLY_MARKER}".strip()
             reason = f"{base}\n\n{note}" if base else note
             Task.objects.filter(pk=task.pk).update(execution_reason=reason)
             task.execution_reason = reason
@@ -156,7 +159,7 @@ def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) 
         context_tokens=outcome.context_tokens,
         model_fell_back=outcome.model_fell_back,
     )
-    usage = _attempt_usage(outcome.result_message, observation)
+    usage = replace(_attempt_usage(outcome.result_message, observation), account=transport.account)
     if outcome.session_id and not usage.agent_session_id:
         usage = replace(usage, agent_session_id=outcome.session_id)
     receipt = usage.skill_assurance
@@ -199,7 +202,7 @@ def record_outcome(
             transport=routed_transport,
         )
         or cli_too_old_failure(task, outcome, lane=salvage.lane, transport=routed_transport)
-        or record_success(task, outcome, phase=salvage.phase, lane=salvage.lane, provenance=salvage.provenance)
+        or record_success(task, outcome, phase=salvage.phase, lane=salvage.lane, transport=routed_transport)
     )
     record_skill_assurance_attempt(task, attempt)
     return attempt
@@ -234,7 +237,7 @@ def record_success(
     *,
     phase: str = "",
     lane: str = "",
-    provenance: DispatchProvenance | None = None,
+    transport: Transport = UNROUTED,
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
@@ -244,7 +247,7 @@ def record_success(
         parse_result,
     )
 
-    provenance = provenance or DispatchProvenance()
+    provenance = transport.provenance or DispatchProvenance()
     usage = _attempt_usage(
         outcome.result_message,
         UsageObservation(
@@ -257,6 +260,7 @@ def record_success(
             model_fell_back=outcome.model_fell_back,
         ),
     )
+    usage = replace(usage, account=transport.account)
     parse_error: ResultEnvelopeError | None = None
     try:
         parsed = parse_result(outcome.agent_text)

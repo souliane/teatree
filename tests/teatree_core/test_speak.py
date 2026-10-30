@@ -585,13 +585,10 @@ class TestSurfaceUploadFailure:
 class TestLocalPlaybackThreadConnectionHygiene(TestCase):
     """The TTS daemon thread must not strand its DB handle.
 
-    ``_maybe_speak_local`` dispatches playback onto a
-    daemon thread, and the away gate resolves the active mode from the
-    ``ConfigSetting`` store — an ORM read on that thread, which therefore gets
-    its OWN Django connection. ``close()`` is a documented no-op on the
-    in-memory test database, so the raw handle is closed directly; a stranded
-    one is finalized at a later GC as a ``ResourceWarning: unclosed database``
-    charged to an unrelated test.
+    ``_maybe_speak_local`` dispatches playback onto a daemon thread, and an ORM read on that
+    thread gets its OWN Django connection. ``close()`` is a documented no-op on the in-memory
+    test database, so the raw handle is closed directly; a stranded one is finalized at a later
+    GC as a ``ResourceWarning: unclosed database`` charged to an unrelated test.
     """
 
     def test_playback_thread_closes_its_raw_handle(self) -> None:

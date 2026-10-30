@@ -33,7 +33,7 @@ from django.apps import apps
 from django.utils import timezone
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import PartialScanError, ScanSignal
 from teatree.loop.scanners.needs_triage_query import _issue_labels, _issue_title, _issue_url, needs_triage_issues
 from teatree.loop.scanners.phase_cadence import PhaseCadence
 from teatree.types import RawAPIDict
@@ -53,8 +53,8 @@ class TriageAssessorScanner:
 
     The host and identities are passed explicitly (rather than read from a global at
     scan time) so test setup is deterministic. The scanner itself always scans when
-    invoked, but emits nothing when there are no survivors or the cadence/in-flight
-    lock holds.
+    invoked. Empty issue batches emit a held signal; cadence and in-flight locks
+    prevent duplicate work.
     """
 
     host: CodeHostBackend
@@ -67,7 +67,7 @@ class TriageAssessorScanner:
 
     def scan(self) -> list[ScanSignal]:
         assignees = self._resolve_identities()
-        if not assignees or self.repo_slugs == ():
+        if self.repo_slugs == () or (not assignees and self.repo_slugs is None):
             return []
         cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE)
         if cadence.in_flight_exists():
@@ -77,9 +77,18 @@ class TriageAssessorScanner:
         if trigger is None:
             return []
 
-        survivors = self._survivors(assignees)
+        read_errors: list[str] = []
+        survivors = self._survivors(assignees, read_errors=read_errors)
         if not survivors:
-            return []
+            if read_errors:
+                raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=[])
+            return [
+                ScanSignal(
+                    kind="triage_assessor.held",
+                    summary=f"triage assessor held for {self.overlay_name}: no unassessed needs-triage issues",
+                    payload={"overlay": self.overlay_name, "reason": "no unassessed needs-triage issues"},
+                )
+            ]
 
         task = cadence.queue_task(
             placeholder_issue_url=f"triage-assessor://{self.overlay_name}",
@@ -90,7 +99,7 @@ class TriageAssessorScanner:
         )
         if task is None:
             return []
-        return [
+        signals = [
             ScanSignal(
                 kind="triage_assessor.queued",
                 summary=f"triage-assessor queued for {self.overlay_name} ({len(survivors)} issue(s), {trigger})",
@@ -103,6 +112,9 @@ class TriageAssessorScanner:
                 },
             ),
         ]
+        if read_errors:
+            raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=signals)
+        return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:
         if self.identities:
@@ -110,7 +122,7 @@ class TriageAssessorScanner:
         user = self.host.current_user()
         return (user,) if user else ()
 
-    def _survivors(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
+    def _survivors(self, assignees: tuple[str, ...], *, read_errors: list[str]) -> list[RawAPIDict]:
         """OPEN ``needs-triage`` issues with no existing recommendation, truncated per tick.
 
         An issue already carrying a :class:`PendingTriageRecommendation` row (in
@@ -120,7 +132,13 @@ class TriageAssessorScanner:
         """
         recommendation_model = _recommendation_model()
         survivors: list[RawAPIDict] = []
-        for issue in needs_triage_issues(self.host, assignees, repo_slugs=self.repo_slugs or ()):
+        for issue in needs_triage_issues(
+            self.host,
+            assignees,
+            repo_slugs=self.repo_slugs or (),
+            include_unassigned=bool(self.repo_slugs),
+            read_errors=read_errors,
+        ):
             url = _issue_url(issue)
             if not url:
                 continue

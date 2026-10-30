@@ -70,8 +70,8 @@ class SpeakConfig:
 
     :attr:`presence_backend` opts LOCAL playback into meeting-aware muting
     (#2171): the name of a registered :class:`~teatree.core.presence.PresenceBackend`
-    (``msteams`` today) whose ``in_meeting`` verdict silences local ``say`` the
-    same way ``away`` does — the Slack arm is untouched, and the configured
+    (``msteams`` today) whose ``in_meeting`` verdict silences local ``say`` —
+    the Slack arm is untouched, and the configured
     ``local`` value is never rewritten. Empty (the default) = no probe, no
     muting. :attr:`presence_token_ref` is the ``pass`` entry holding that
     backend's access token. Both ride the ``[teatree.speak]`` sub-table and are

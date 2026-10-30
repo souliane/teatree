@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, Unpack, cast
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
@@ -31,7 +31,7 @@ from teatree.core.managers_admission import (
     waiting_for_admission_rows,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
-from teatree.core.managers_issue_match import matching_issue_q
+from teatree.core.managers_issue_match import TicketCreateFields, matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
@@ -85,13 +85,6 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
-
-
-class TicketCreateFields(TypedDict, total=False):
-    overlay: str
-    variant: str
-    repos: list[str]
-    kind: "Ticket.Kind"
 
 
 class TicketQuerySet(models.QuerySet):
@@ -488,9 +481,8 @@ class TaskQuerySet(models.QuerySet):
         """
         return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.EXPENSIVE)).count()
 
-    def answering_lane_occupancy(self) -> int:
-        """Occupancy of the owner-answering class, including recent pending seats."""
-        return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.ANSWERING)).count()
+    def lane_occupancy(self, lane: PhaseCost) -> int:
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=lane)).count()
 
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
@@ -539,8 +531,8 @@ class TaskQuerySet(models.QuerySet):
         now = timezone.now()
         seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:
-            lane = lane or (PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE)
-            seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))
+            cost = lane or (PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE)
+            seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=cost))
         if cheap_class is not None and class_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=cheap_class))
         return bool(seat.update(admitted_at=now))

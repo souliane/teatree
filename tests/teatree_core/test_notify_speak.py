@@ -1,19 +1,18 @@
-"""``notify_user`` delivers the bot→user DM through the shared speak chokepoint (#2060).
+"""``notify_user`` posts the text DM, then runs its optional speech sidecar (#2060).
 
-The IM/DM arm of text-to-speech: a successful bot→user DM goes through
-:func:`teatree.core.speak.deliver_user_dm`, which posts ONE message
-carrying the text + attached audio when ``slack`` is on (and reads it
-locally when ``local`` plays DMs), degrading to a text-only post otherwise.
-Speaking/attaching must never break or block the notification path. Only
-the messaging backend (network boundary) and the synthesis seam are mocked.
+Audio attaches under the posted text when enabled; speech failures do not
+undo delivery. Only the messaging backend and synthesis seam are mocked.
 """
 
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.models import Ticket
+from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
+from teatree.core.notify_types import NotifyOptions
 from teatree.types import SpeakConfig
 
 
@@ -24,6 +23,28 @@ def _backend() -> MagicMock:
     b.post_audio_dm.return_value = {"ok": True, "ts": "1700000000.000001"}
     b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
     return b
+
+
+class TestTicketFirstSendSpeaksAfterTheWriteLock(TransactionTestCase):
+    def test_audio_sidecar_runs_after_the_root_transaction_closes(self) -> None:
+        ticket = Ticket.objects.create(short_description="Measured")
+        backend = _backend()
+        atomic_during_audio: list[bool] = []
+
+        def inspect_sidecar(*_args: object, **_kwargs: object) -> None:
+            atomic_during_audio.append(connection.in_atomic_block)
+
+        with patch("teatree.core.speak.deliver_user_dm_sidecar", side_effect=inspect_sidecar):
+            result = notify_user_outcome(
+                "Which route?",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="ticket-speak-lock",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+
+        assert result.sent
+        assert atomic_during_audio == [False]
 
 
 class TestNotifyUserSpeaks(TestCase):

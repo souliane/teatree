@@ -42,7 +42,7 @@ from teatree.core.models import (
 )
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._route_fakes import scripted_session
+from tests.teatree_agents._route_fakes import failing_session, scripted_session
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, result_message, success_stream
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -268,6 +268,22 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert not parked.task.attempts.filter(failure_kind="result_error").exists()
         assert not AgentRouteAvailability.objects.exists()
 
+    def test_agent_crash_narration_does_not_hold_a_route(self) -> None:
+        terminal = result_message(
+            is_error=True,
+            subtype="error_during_execution",
+            result="The process timed out while discussing authorization and credentials.",
+        )
+        self._register("codex_like", scripted_session([terminal]))
+
+        attempt = self._run(self._config("codex_like"))
+
+        attempt.task.refresh_from_db()
+        assert attempt.error.startswith("result_error:")
+        assert attempt.task.status == Task.Status.FAILED
+        assert attempt.task.not_before is None
+        assert not AgentRouteAvailability.objects.exists()
+
     def test_selected_candidate_effort_reaches_spawn_and_attempt_provenance(self) -> None:
         self._register("codex_like", FakeHarnessSession)
         config = AgentConfig(
@@ -339,6 +355,40 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert self.built == ["claude_like", "codex_like"]
         assert final.selected_harness == "codex_like"
         assert final.fallback_reason == "credential missing"
+
+    def test_lazy_credential_gap_retains_the_auth_hold(self) -> None:
+        self._register("codex_like", failing_session(runner_mod.CredentialError("credential missing")))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        hold = AgentRouteAvailability.objects.get(harness="codex_like")
+        assert final.selected_harness == "claude_like"
+        assert hold.retry_at >= timezone.now() + timedelta(minutes=59)
+
+    def test_bare_http_429_retains_the_quota_hold(self) -> None:
+        failure = result_message(subtype="error_during_execution", is_error=True, api_error_status=429, result="")
+        self._register("codex_like", scripted_session([failure]))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        hold = AgentRouteAvailability.objects.get(harness="codex_like")
+        assert final.selected_harness == "claude_like"
+        assert hold.retry_at >= timezone.now() + timedelta(minutes=59)
+
+    def test_guardrail_block_stays_terminal_on_a_skill_route(self) -> None:
+        blocked = result_message(subtype="error_during_execution", is_error=True, result="guardrail_blocked")
+        self._register("codex_like", scripted_session([blocked]))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        final.task.refresh_from_db()
+        assert final.task.status == Task.Status.FAILED
+        assert final.error.startswith("leak_blocked: ")
+        assert self.built == ["codex_like"]
+        assert not AgentRouteAvailability.objects.exists()
 
     def test_retryable_failure_after_side_effects_requeues_without_switching(self) -> None:
         self._register("codex_like", _PostSideEffectFailureSession)

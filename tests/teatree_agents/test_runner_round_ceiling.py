@@ -148,7 +148,7 @@ class TestTheHandoffParksTheTask(TestCase):
             fallback_reason_for_outcome(
                 HarnessOutcome("work done", terminal, "watchdog timeout"), metered_transport=False
             )
-            is not None
+            is None
         )
 
     def test_the_interrupted_run_queues_a_bounded_continuation(self) -> None:

@@ -6,4 +6,4 @@ from teatree.config.settings_agent import _ModeHarnessSettings
 def test_agent_group_defaults() -> None:
     settings = _ModeHarnessSettings()
     assert settings.agent_harness == "claude_sdk"
-    assert settings.agent_max_turns == 250
+    assert settings.agent_max_turns == 3000

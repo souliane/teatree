@@ -15,7 +15,6 @@ from teatree.core.notify_question_drains import (
     drain_deferred_questions,
     drain_unmirrored_deferred_questions,
     reask_escalated_questions,
-    resurface_question_backlog,
 )
 from teatree.core.provision.failure_question import provision_failure_marker
 from tests._git_repo import make_git_repo
@@ -96,17 +95,6 @@ class TestTheResurfaceDrain(_HealedProvisionQuestion):
 
         self._assert_withdrawn()
         assert not self._posted_the_provision_question(backend)
-
-
-class TestTheDigest(_HealedProvisionQuestion):
-    def test_a_healed_row_is_not_counted(self) -> None:
-        self._mirror_and_age(self.live)
-        self._heal()
-
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True):
-            assert resurface_question_backlog() == (True, 1)
-
-        self._assert_withdrawn()
 
 
 class TestTheReask(_HealedProvisionQuestion):

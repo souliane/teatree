@@ -2015,6 +2015,28 @@ class TestTheCheapLineIsUnconditional:
         # The chained script sleeps 30s; anything near that means nothing bounded it.
         assert elapsed < 10, f"took {elapsed:.1f}s — the tail deadline did not fire"
 
+    def test_loop_owner_survives_a_hung_enriched_source(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._slow_chain(state_dir)
+        registry_dir = state_dir / "registry"
+        registry_dir.mkdir()
+        (registry_dir / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "owner-session", "pid": 1234}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("TEATREE_STATUSLINE_BUDGET", "0.1")
+
+        result = _run(
+            {"session_id": "owner-session", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "details dropped" in plain, plain
+        assert "t3-master: you ✓" in plain, plain
+
     def test_the_tail_is_not_dropped_when_nothing_is_slow(self, tmp_path: Path) -> None:
         """Anti-vacuity for the case above: the deadline must not fire routinely."""
         xdg = tmp_path / "xdg" / "teatree"

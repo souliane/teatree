@@ -64,17 +64,6 @@ _FALLBACK_PATTERNS = (
     re.compile(r"\b(?:could not start|failed to start|enoent)\b", re.IGNORECASE),
 )
 
-_STICKY_PATTERN = re.compile(
-    r"\b(?:401|403|429|auth(?:entication|orization)?|credential|quota|(?:rate|usage).?limit"
-    r"|subscription_(?:session|weekly)|api_credit|provider_budget)\b",
-    re.IGNORECASE,
-)
-
-
-def sticky_reason(text: str) -> bool:
-    """Whether a failure names a quota or credential state that will not clear in a couple of minutes."""
-    return _STICKY_PATTERN.search(text) is not None
-
 
 def runtime_fallback_reason(error: BaseException | str) -> str | None:
     text = str(error).strip()

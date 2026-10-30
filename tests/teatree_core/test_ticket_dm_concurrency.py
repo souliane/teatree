@@ -50,7 +50,7 @@ def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
 @pytest.mark.usefixtures("_unblocked_db")
 @pytest.mark.timeout(300)
 class TestTicketFirstSendConcurrency:
-    def test_two_first_sends_open_one_header(self, tmp_path: Path, migrated_db_template: Path | None) -> None:
+    def test_two_first_sends_open_one_card_root(self, tmp_path: Path, migrated_db_template: Path | None) -> None:
         alias = f"ticketdm_{uuid.uuid4().hex}"
         db_file = tmp_path / f"{alias}.sqlite3"
         register_migrated_sqlite_alias(alias, db_file, migrated_db_template, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
@@ -95,11 +95,13 @@ class TestTicketFirstSendConcurrency:
             with _default_on(db_file):
                 outcomes = run_racing_threads(send, 2, timeout=30)
             thread = TicketDmThread.objects.using(alias).get(ticket=ticket)
-            headers = [entry for entry in posted if not entry[1]]
+            roots = [entry for entry in posted if not entry[1]]
 
             assert outcomes == [True, True]
-            assert len(headers) == 1
-            assert thread.root_ts == headers[0][2]
-            assert [entry[1] for entry in posted if entry[1]] == [thread.root_ts, thread.root_ts]
+            assert len(posted) == 2
+            assert len(roots) == 1
+            assert "note " in roots[0][0]
+            assert thread.root_ts == roots[0][2]
+            assert [entry[1] for entry in posted if entry[1]] == [thread.root_ts]
         finally:
             teardown_sqlite_alias(alias)

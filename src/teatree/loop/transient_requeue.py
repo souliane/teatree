@@ -18,6 +18,8 @@ from functools import partial
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.agents.credential_policy import PLANS_ONLY_MARKER
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.forge_url import is_synthetic_ticket_url
@@ -32,7 +34,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     recovery_strategy,
     stall_fingerprints,
 )
-from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.review_target import (
     MOVED_REVIEW_RETRY_HEADS_KEY,
@@ -40,12 +42,7 @@ from teatree.core.models.review_target import (
     review_target_for_task,
 )
 from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
-from teatree.core.repair_loop import (
-    IterationStalled,
-    MaxIterationsExceeded,
-    requeue_verdict,
-    terminal_reason_fingerprint,
-)
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
 from teatree.loop.transient_requeue_correction import CORRECTIVE_MARKER as _CORRECTIVE_MARKER
@@ -55,13 +52,25 @@ from teatree.loop.transient_requeue_disposal import (
     LIVE_SUCCESSOR_STAMP,
     MOVED_TARGET_KINDS,
     SUPERSEDED_HEAD_STAMP,
+    DeadArtifactReads,
     park_if_live_successor,
     park_moved_target,
+    read_dead_artifact,
     retire_if_dead_artifact,
     stale_plan_halt_reason,
 )
+from teatree.loop.transient_requeue_halt import (
+    _escalate_once,
+    _is_review_anchor,
+    _latest_attempt,
+    _latest_error,
+    _stamp_halt,
+)
+from teatree.loop.transient_requeue_halt import escalation_marker as _escalation_marker
 
 logger = logging.getLogger(__name__)
+
+escalation_marker = _escalation_marker
 
 
 def requeue_transient_failed() -> int:
@@ -73,10 +82,11 @@ def requeue_transient_failed() -> int:
         # classifier blow-up, a scheduling error) must NOT abort the sweep and strand
         # every OTHER loop's FAILED tasks. Record the failure loudly and move on.
         try:
+            reads = read_dead_artifact(task)
             with redispatch_window() as refusal:
                 if refusal:
                     continue
-                reopened += _route_failed_task(task, now=now)
+                reopened += _route_failed_task(task, now=now, reads=reads)
         except Exception:
             logger.exception(
                 "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
@@ -86,7 +96,7 @@ def requeue_transient_failed() -> int:
     return reopened
 
 
-def _route_failed_task(task: Task, *, now: datetime) -> int:
+def _route_failed_task(task: Task, *, now: datetime, reads: DeadArtifactReads) -> int:
     """Route one failed task to recovery or a recorded halt; return the reopen count.
 
     Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
@@ -96,7 +106,7 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     """
     error = _latest_error(task)
     if (
-        retire_if_dead_artifact(task)
+        retire_if_dead_artifact(task, reads)
         or _answer_moved_target(task, error=error)
         or park_if_live_successor(task)
         or park_if_critic_settled(task, error=error)
@@ -108,11 +118,23 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
         # No recorded error → neither transient nor deterministic; must not freeze.
         _escalate_once(task, reason="failed with no recorded error")
         return 0
+    review_credential_retry = (
+        _is_review_anchor(task)
+        and classify_failure(error) in {FailureKind.CREDENTIAL_EXHAUSTED, FailureKind.CREDENTIAL_MISSING}
+        and PLANS_ONLY_MARKER not in task.execution_reason
+        and get_effective_settings(task.ticket.overlay or None).agent_harness_provider
+        in {None, AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY}
+    )
     # The kind is re-derived rather than read off the attempt, so a row classified by an older
     # build cannot route on a stale kind.
     strategy = recovery_strategy(classify_failure(error))
+
+    if review_credential_retry:
+        return _reopen(task, plans_only=True)
+
     if strategy is RecoveryStrategy.RETRY:
         return _retry_failed_task(task)
+
     if (cause := recoverable_exhaustion_cause(error)) is not None:
         return _requeue_on_window_reset(task, cause, now=now)
     return _handle_deterministic(task, strategy)
@@ -228,7 +250,7 @@ def _handle_deterministic(task: Task, strategy: RecoveryStrategy) -> int:
         note = _corrective_note(task)
         if note is not None:
             return _corrective_reopen(task, note)
-    _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
+    _escalate_once(task, reason="deterministic failure")
     return 0
 
 
@@ -295,18 +317,6 @@ def _corrective_reopen(task: Task, note: str) -> int:
     return reopened
 
 
-def _latest_attempt(task: Task) -> TaskAttempt | None:
-    """The newest attempt from the prefetched ``attempts`` (no extra query), or ``None``."""
-    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # Django reverse FK
-    return attempts[-1] if attempts else None
-
-
-def _latest_error(task: Task) -> str:
-    """The newest attempt's error, read from the prefetched ``attempts`` (no extra query)."""
-    attempt = _latest_attempt(task)
-    return attempt.error if attempt is not None else ""
-
-
 def _non_terminal_failed_tasks() -> list[Task]:
     """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
 
@@ -369,7 +379,7 @@ def _budget_halt_reason(task: Task) -> str | None:
     return None
 
 
-def _reopen(task: Task) -> int:
+def _reopen(task: Task, *, plans_only: bool = False) -> int:
     """CAS FAILED → PENDING; returns 1 on the winning transition, 0 if already moved.
 
     A single conditional ``UPDATE ... WHERE status=FAILED`` (the same
@@ -384,27 +394,5 @@ def _reopen(task: Task) -> int:
         status=Task.Status.PENDING,
         session_continuation=task.continuation_on_requeue(),
         **RELEASED_CLAIM,
+        **({"execution_reason": f"{task.execution_reason}\n{PLANS_ONLY_MARKER}".strip()} if plans_only else {}),
     )
-
-
-def _stamp_halt(task: Task) -> None:
-    """Remove this failed task from future retry scans."""
-    if HALT_STAMP in task.execution_reason:
-        return
-    reason = f"{task.execution_reason}\n{HALT_STAMP}".strip() if task.execution_reason else HALT_STAMP
-    Task.objects.filter(pk=task.pk).update(execution_reason=reason)
-
-
-def escalation_marker(task: Task) -> str:
-    """Reconstruct a legacy halt-question key for the old-question drain."""
-    fingerprint = terminal_reason_fingerprint(_latest_error(task))
-    phase = normalize_phase(task.phase)
-    return f"repair-halt:{phase}:{fingerprint}"[:64]
-
-
-def _escalate_once(task: Task, *, reason: str) -> None:
-    """Stamp a halted task for the factory health collector and retire its conversation."""
-    logger.warning("Task %s stopped automatic retry: %s", task.pk, reason)
-    with transaction.atomic():
-        _stamp_halt(task)
-        task.ticket.pop_task_thread(int(task.pk))
