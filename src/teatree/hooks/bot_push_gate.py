@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from http.client import HTTPSConnection
+from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -82,7 +82,7 @@ def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *
                 timeout=_PROBE_TIMEOUT_SECONDS,
             )
             payload = json.loads(result.stdout) if result.returncode == 0 else None
-    except (OSError, TimeoutExpired, ValueError):
+    except (OSError, HTTPException, TimeoutExpired, ValueError):
         return ""
     key = "login" if forge == GITHUB else "username"
     login = payload.get(key) if isinstance(payload, dict) else None

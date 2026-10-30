@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+from http.client import BadStatusLine, CannotSendRequest, IncompleteRead
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -174,16 +175,20 @@ def test_credential_probe_uses_the_username_in_the_push_url(tmp_path: Path, monk
     )
 
 
-def _fake_connection(status: int, observed: list[tuple[str, str, dict[str, str]]]) -> type:
+def _fake_connection(
+    status: int, observed: list[tuple[str, float, str, dict[str, str]]], *, error: Exception | None = None
+) -> type:
     class FakeConnection:
         def __init__(self, host: str, *, timeout: float) -> None:
             self.host = host
             self.timeout = timeout
 
         def request(self, method: str, path: str, *, headers: dict[str, str]) -> None:
-            observed.append((self.host, path, headers))
+            observed.append((self.host, self.timeout, path, headers))
 
         def getresponse(self) -> SimpleNamespace:
+            if error is not None:
+                raise error
             body = io.BytesIO(b'{"username": "build-bot"}')
             return SimpleNamespace(status=status, read=body.read)
 
@@ -200,7 +205,7 @@ def test_gitlab_credential_probe_uses_api_without_glab(monkeypatch: pytest.Monke
             raise OSError(message)
         raise AssertionError(argv)
 
-    observed: list[tuple[str, str, dict[str, str]]] = []
+    observed: list[tuple[str, float, str, dict[str, str]]] = []
     monkeypatch.setattr(bot_push_gate, "run_allowed_to_fail", no_glab)
     monkeypatch.setattr(bot_push_gate, "HTTPSConnection", _fake_connection(200, observed))
 
@@ -210,7 +215,14 @@ def test_gitlab_credential_probe_uses_api_without_glab(monkeypatch: pytest.Monke
         )
         == "build-bot"
     )
-    assert observed == [("gitlab.example.test", "/api/v4/user", {"Authorization": "Bearer bot-key"})]
+    assert observed == [
+        (
+            "gitlab.example.test",
+            bot_push_gate._PROBE_TIMEOUT_SECONDS,
+            "/api/v4/user",
+            {"Authorization": "Bearer bot-key"},
+        )
+    ]
 
 
 def test_gitlab_credential_probe_refuses_failed_api(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,6 +234,52 @@ def test_gitlab_credential_probe_refuses_failed_api(monkeypatch: pytest.MonkeyPa
         )
         == ""
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionRefusedError("connection refused"),
+        TimeoutError("timed out"),
+        BadStatusLine("garbage"),
+        IncompleteRead(b"{"),
+        CannotSendRequest("busy"),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_gitlab_credential_probe_refuses_a_transport_failure(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    monkeypatch.setattr(bot_push_gate, "HTTPSConnection", _fake_connection(200, [], error=error))
+
+    assert (
+        bot_push_gate._credential_login(
+            "gitlab", "gitlab.example.test", "https://gitlab.example.test/build-bot/engine.git", "bot-key"
+        )
+        == ""
+    )
+
+
+def test_bot_push_gate_imports_without_third_party_packages() -> None:
+    src = Path(bot_push_gate.__file__).resolve().parents[2]
+    probe = (
+        "import sys\n"
+        "sys.modules['httpx'] = None\n"
+        "sys.modules['django'] = None\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import teatree.hooks.bot_push_gate\n"
+        "print('imported')\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", probe, str(src)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "imported"
 
 
 @pytest.mark.parametrize(("login", "expected"), [("build-bot", 0), ("person", 1), ("", 1)])
