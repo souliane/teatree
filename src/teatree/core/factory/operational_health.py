@@ -40,6 +40,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb, reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
+from teatree.core.factory.eval_measurement import eval_measurement_signal
 from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
@@ -452,6 +453,11 @@ def _dream_staleness_signals() -> SignalCollection:
     )
 
 
+def _eval_measurement_signals() -> SignalCollection:
+    signal = eval_measurement_signal(timezone.now())
+    return SignalCollection((signal,)) if signal is not None else SignalCollection()
+
+
 # The deterministic signal collectors, run in order. Each is fail-open on its
 # own so one broken read never suppresses the others; adding a new signal family
 # (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
@@ -465,6 +471,7 @@ _COLLECTORS = (
     halted_retry_signals,
     stuck_ticket_halt_signals,
     _dream_staleness_signals,
+    _eval_measurement_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,
     _reclaim_stall_signals,

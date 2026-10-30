@@ -6,7 +6,7 @@ The global `agent_advisor_model` setting defaults to empty. When set, `_build_op
 
 ## The executor and its harnesses
 
-`bughunt`, `dogfood_smoke`, and `eval_local` use the current Codex worker and its write approval policy. They do not enter the read-only executor; other harnesses retain their phase tool restrictions.
+`bughunt` and `dogfood_smoke` use the current Codex worker and its write approval policy. The deterministic `eval_local` lane runs through its own CLI runner; other harnesses retain their phase tool restrictions.
 
 For a read-only Codex phase, the worker gathers forge and survey facts before opening the executor.
 Pull request URLs use the PR body and conversation APIs. A manually queued planning task records a

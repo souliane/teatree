@@ -12,6 +12,7 @@ from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.priority_directive import parse_priority_directive
 from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
+from tests._owner_channel import owner_card
 
 
 def _ticket(number: int = 445) -> Ticket:
@@ -55,6 +56,21 @@ def _ack(_text: str) -> InboundReading:
 
 
 class TestPriorityDirective(TestCase):
+    def test_priority_instruction_in_an_open_card_thread_reaches_the_ticket(self) -> None:
+        ticket = _ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        card = DeferredQuestion.record("May I change the design?", card=owner_card(), parked_task=task)
+        DeferredQuestion.objects.filter(pk=card.pk).update(slack_channel="D1", slack_ts="1.000")
+        backend = _backend()
+        reply = _row("urgent", "2.000")
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        ticket.refresh_from_db()
+        reply.refresh_from_db()
+        assert ticket.expedited is True
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.PRIORITY
+
     def test_wrapped_replies_are_confirmed_once_with_escaped_ticket_titles(self) -> None:
         ticket = _ticket()
         ticket.short_description = "Fix & <broken> | pipeline after a long release blocker report"

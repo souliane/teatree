@@ -31,6 +31,7 @@ from teatree.cli.eval.merge_summary_json import merge_summary_json
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.owed import owed_app
+from teatree.cli.eval.page import page
 from teatree.cli.eval.prepare_transcript import prepare_transcript
 from teatree.cli.eval.quarantine import quarantine_app
 from teatree.cli.eval.reachability_lane import reachability
@@ -69,6 +70,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("set-baseline")(set_baseline)
     eval_app.command("ladder")(ladder)
     eval_app.command("history")(history_command)
+    eval_app.command("page")(page)
     eval_app.add_typer(corpus_app, name="corpus")
     eval_app.add_typer(label_app, name="label")
     eval_app.add_typer(quarantine_app, name="quarantine")

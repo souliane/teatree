@@ -10,11 +10,13 @@ from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, a
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, OperatorIdentity, PendingChatInjection, Session, Ticket
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import cards_in_thread
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
+from teatree.loop.slack_answer.card_discussion import NOBODY_LISTENING, UNROUTED_AUDIT_ACTION
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
@@ -118,6 +120,56 @@ def _cycle(backend: Backend):
 
 
 class TestThreadCardReplies(TestCase):
+    def _assert_unrouted_burst(self, size: int) -> None:
+        card = _card("336.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        timestamps = [f"336.{index + 10}" for index in range(size)]
+        for timestamp in timestamps:
+            reply = _event(backend, ts=timestamp, root="336.1", text=f"Explain part {timestamp}?")
+            assert reply is not None
+
+        for _ in range(4):
+            _cycle(backend)
+
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
+        assert set(card.audits.filter(action=UNROUTED_AUDIT_ACTION).values_list("note", flat=True)) == set(timestamps)
+        assert (
+            PendingChatInjection.objects.filter(slack_ts__in=timestamps, loop_replied_at__isnull=True).count() == size
+        )
+
+    def test_two_coalesced_unrouted_replies_get_one_notice_across_cycles(self) -> None:
+        self._assert_unrouted_burst(2)
+
+    def test_four_coalesced_unrouted_replies_get_one_notice_across_cycles(self) -> None:
+        self._assert_unrouted_burst(4)
+
+    def test_an_audit_on_another_channel_does_not_hide_a_new_reply(self) -> None:
+        older_card = _card("599.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        for index in range(10):
+            timestamp = f"599.{index + 10}"
+            assert _event(backend, ts=timestamp, root="", text="Thanks for the update") is not None
+            DeferredQuestionAudit.objects.create(
+                question=older_card, action=UNROUTED_AUDIT_ACTION, note=timestamp, resolver_id="card_discussion"
+            )
+        other_card = DeferredQuestion.record("Other channel?", slack_channel="D2", slack_ts="600.1", card=OWNER_CARD)
+        DeferredQuestionAudit.objects.create(
+            question=other_card, action=UNROUTED_AUDIT_ACTION, note="600.2", resolver_id="card_discussion"
+        )
+        reply = _event(backend, ts="600.2", root="", text="Thanks for the update")
+        assert reply is not None
+
+        report = run_slack_answer_cycle(
+            messaging_resolver=lambda _overlay: backend,
+            reader=lambda _text: InboundReading(
+                intent=InboundIntent.FYI, answerable=False, work_summary="", source=ReadingSource.HEURISTIC
+            ),
+        )
+
+        reply.refresh_from_db()
+        assert report.processed == 11
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+
     def test_nested_card_reply_binds_by_thread_membership(self) -> None:
         card = _card("200.2")
         backend = Backend(user_id=OWNER_SLACK_ID)
@@ -177,7 +229,10 @@ class TestThreadCardReplies(TestCase):
             assert card.answer_text == "Approve", "the bound answer did not use the card's option label"
         assert decoy.is_pending
         assert report.answered_question == 1
-        assert live_owner_questions() == [decoy], "the answered card still holds a reminder slot"
+        assert not live_owner_questions()
+        decoy.refresh_from_db()
+        assert decoy.answer_text == "Approve"
+        assert decoy.audits.filter(action="coordinated").exists()
         assert backend.reads == []
         assert any("bound question" in line and "key=root" in line for line in logs.output)
 
@@ -215,7 +270,7 @@ class TestThreadCardReplies(TestCase):
         assert report.answered_question == 1
         assert card.answer_text == "Approve"
 
-    def test_free_text_outside_options_gets_a_note_and_leaves_card_pending(self) -> None:
+    def test_free_text_without_a_reachable_agent_waits_for_retry_and_leaves_card_pending(self) -> None:
         card = _card("335.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
         backend.message_meta["335.2"] = {"ts": "335.2", "thread_ts": "335.1"}
@@ -227,10 +282,10 @@ class TestThreadCardReplies(TestCase):
         card.refresh_from_db()
         reply.refresh_from_db()
         assert card.is_pending
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
-        assert any("Approve" in text and "Decline" in text for _, _, text in backend.replies)
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
-    def test_question_outside_card_options_has_confirmed_thread_note(self) -> None:
+    def test_question_outside_card_options_gets_one_thread_note_while_waiting(self) -> None:
         card = _card("336.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
         backend.message_meta["336.2"] = {"ts": "336.2", "thread_ts": "336.1"}
@@ -242,8 +297,14 @@ class TestThreadCardReplies(TestCase):
         card.refresh_from_db()
         reply.refresh_from_db()
         assert card.is_pending
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
-        assert reply.loop_response_confirmed_at is not None
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert reply.loop_response_confirmed_at is None
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
+
+        _cycle(backend)
+
+        assert card.audits.filter(action=UNROUTED_AUDIT_ACTION).count() == 1
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_top_level_instruction_with_one_option_card_reaches_answerer(self) -> None:
         card = _card("335.3")
@@ -342,7 +403,7 @@ class TestThreadCardReplies(TestCase):
         assert sum("336.7" in line for line in logs.output) == 1
         assert sum("336.8" in line for line in logs.output) == 1
 
-    def test_addressed_tap_only_card_gets_a_note(self) -> None:
+    def test_addressed_action_card_discussion_waits_for_a_peer(self) -> None:
         card = _action_card("337.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
         backend.message_meta["337.2"] = {"ts": "337.2", "thread_ts": "337.1"}
@@ -354,8 +415,8 @@ class TestThreadCardReplies(TestCase):
         card.refresh_from_db()
         reply.refresh_from_db()
         assert card.is_pending
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
-        assert any("tap" in text.lower() for _, _, text in backend.replies)
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_api_post_by_other_user_in_card_thread_is_not_recorded(self) -> None:
         _card("338.1")
@@ -572,7 +633,7 @@ class TestThreadCardReplies(TestCase):
         assert not PendingChatInjection.objects.filter(slack_ts="800.2").exists()
         assert "posted through an app token" in " ".join(logs.output)
 
-    def test_tap_only_card_thread_gets_a_note_and_stays_pending(self) -> None:
+    def test_action_card_thread_discussion_waits_for_a_peer(self) -> None:
         card = _action_card("850.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
         backend.message_meta["850.2"] = {"ts": "850.2", "thread_ts": "850.1"}
@@ -584,9 +645,8 @@ class TestThreadCardReplies(TestCase):
         card.refresh_from_db()
         reply.refresh_from_db()
         assert card.is_pending
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
-        assert reply.loop_response_confirmed_at is not None
-        assert any(ts == "850.2" and "tap" in text.lower() for _, ts, text in backend.replies)
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.UNANSWERED
+        assert [text for _channel, _ts, text in backend.replies] == [NOBODY_LISTENING]
 
     def test_reply_naming_a_closed_card_gets_a_note_and_binds_no_other_card(self) -> None:
         pending = _card("700.1")

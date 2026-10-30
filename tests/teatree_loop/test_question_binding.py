@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -152,7 +153,7 @@ class TestThreadedReplyBindsItsOwnQuestion:
     def test_reply_threaded_under_the_older_mirror_answers_the_older_row(self) -> None:
         older = _question("Which DB host?", slack_ts="100.0", generation=1)
         newer = _question("Ship the release?", slack_ts="300.0", generation=2)
-        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+        _reply("Answer: use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         _answer_cycle()
 
@@ -169,7 +170,7 @@ class TestThreadedReplyBindsItsOwnQuestion:
     def test_threaded_reply_acks_and_claims_the_reply_row(self) -> None:
         _question("Which DB host?", slack_ts="100.0", generation=1)
         _question("Ship the release?", slack_ts="300.0", generation=2)
-        reply = _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+        reply = _reply("Answer: use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         backend = _answer_cycle()
 
@@ -182,7 +183,7 @@ class TestExplicitIdPrefix:
     def test_hash_id_reply_answers_exactly_that_row(self) -> None:
         first = _question("Which DB host?", slack_ts="100.0", generation=1)
         second = _question("Ship the release?", slack_ts="300.0", generation=2)
-        _reply(f"#{first.pk} use postgres-1", slack_ts="400.0")
+        _reply(f"#{first.pk} Answer: use postgres-1", slack_ts="400.0")
 
         _scan()
 
@@ -194,7 +195,7 @@ class TestExplicitIdPrefix:
     def test_hash_id_binds_the_older_row_over_the_newer_one(self) -> None:
         older = _question("Which DB host?", slack_ts="100.0", generation=1)
         newer = _question("Ship the release?", slack_ts="300.0", generation=2)
-        _reply(f"#{older.pk}: use postgres-1", slack_ts="400.0")
+        _reply(f"#{older.pk}: Answer: use postgres-1", slack_ts="400.0")
 
         _scan()
 
@@ -207,7 +208,7 @@ class TestExplicitIdPrefix:
         answered = _question("Which DB host?", slack_ts="100.0", generation=1)
         answered.apply_answer("postgres-9", resolved_via="local")
         still_open = _question("Ship the release?", slack_ts="300.0", generation=2)
-        reply = _reply(f"#{answered.pk} use postgres-1", slack_ts="400.0")
+        reply = _reply(f"#{answered.pk} Answer: use postgres-1", slack_ts="400.0")
 
         _scan()
 
@@ -230,7 +231,7 @@ class TestAmbiguousTopLevelReply:
     def test_two_pending_questions_and_plain_text_resolves_nothing(self) -> None:
         first = _question("Which DB host?", slack_ts="100.0", generation=1)
         second = _question("Ship the release?", slack_ts="300.0", generation=2)
-        reply = _reply("use postgres-1", slack_ts="400.0")
+        reply = _reply("Answer: use postgres-1", slack_ts="400.0")
 
         backend = _scan()
 
@@ -244,7 +245,7 @@ class TestAmbiguousTopLevelReply:
 
     def test_one_pending_question_and_plain_text_still_binds(self) -> None:
         only = _question("Which DB host?", slack_ts="100.0", generation=1)
-        _reply("use postgres-1", slack_ts="400.0")
+        _reply("Answer: use postgres-1", slack_ts="400.0")
 
         _scan()
 
@@ -365,7 +366,7 @@ class TestMirroredQuestionOwnsItsThread:
         older, newer, roots = _mirror_two_questions()
         assert older.slack_ts < newer.slack_ts, "the older mirror must not also be the newest row"
 
-        _reply("use postgres-1", slack_ts="2000.0", thread_ts=roots[older.slack_ts])
+        _reply("Answer: use postgres-1", slack_ts="2000.0", thread_ts=roots[older.slack_ts])
         _answer_cycle()
 
         older.refresh_from_db()
@@ -377,7 +378,7 @@ class TestMirroredQuestionOwnsItsThread:
         _owner_is_mid_conversation()
         older, newer, _roots = _mirror_two_questions()
 
-        reply = _reply("use postgres-1", slack_ts="2000.0", thread_ts="900.0")
+        reply = _reply("Answer: use postgres-1", slack_ts="2000.0", thread_ts="900.0")
 
         assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None, (
             "a reply in a thread hosting no question was guessed onto one"
@@ -444,7 +445,7 @@ class TestAReplyToAReAskBumpBindsItsQuestion:
         # Oldest-first, so the first bump is the older question's; the reply carries
         # whatever thread root the fake says a reply to THAT message would carry.
         assert len(posted) == 2
-        _reply("use postgres-1", slack_ts="9000.0", thread_ts=roots[posted[0]])
+        _reply("Answer: use postgres-1", slack_ts="9000.0", thread_ts=roots[posted[0]])
         _answer_cycle()
 
         older.refresh_from_db()
@@ -472,7 +473,7 @@ class TestAResurfacedQuestionIsAnswerable:
             drain_deferred_questions(user_id="U_ME", backend=backend)
 
         assert len(posted) == 2
-        _reply("use postgres-1", slack_ts="9500.0", thread_ts=roots[posted[0]])
+        _reply("Answer: use postgres-1", slack_ts="9500.0", thread_ts=roots[posted[0]])
         _answer_cycle()
 
         older.refresh_from_db()
@@ -493,7 +494,7 @@ class TestAResurfacedQuestionIsAnswerable:
         assert row.slack_ts == posted[0], "the resurfaced copy left the row with no mirror a reply can name"
         assert roots[row.slack_ts] == row.slack_ts, "the stamped ts is mid-thread, so no reply can carry it"
 
-        _reply("use postgres-1", slack_ts="9600.0", thread_ts=roots[row.slack_ts])
+        _reply("Answer: use postgres-1", slack_ts="9600.0", thread_ts=roots[row.slack_ts])
         _answer_cycle()
 
         row.refresh_from_db()
@@ -529,12 +530,13 @@ class TestTicketThreadReplyOrdering:
         thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
         question = _question("Which route?", slack_ts="100.0")
         TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="100.0", question=question)
-        reply = _reply("Use the new route", slack_ts="130.0")
+        reply = _reply("Answer: Use the new route", slack_ts="130.0")
 
         bound = bind_reply(reply, reader=_statement, backend=FakeMessaging())
 
         assert isinstance(bound, BoundAnswer)
         assert bound.question.pk == question.pk
+        assert bound.answer == "Use the new route"
 
     def test_top_level_reply_with_root_card_and_sibling_refuses_to_guess(self) -> None:
         ticket = Ticket.objects.create(overlay="")
@@ -555,7 +557,7 @@ class TestTicketThreadReplyOrdering:
         thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
         question = _question("Which route?", slack_ts="110.0")
         TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="110.0", question=question)
-        reply = _reply("Use the new route", slack_ts="120.0", thread_ts="100.0")
+        reply = _reply("Answer: Use the new route", slack_ts="120.0", thread_ts="100.0")
 
         bound = bind_reply(reply, reader=_statement, backend=FakeMessaging())
 
@@ -627,6 +629,20 @@ class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):
         ]
         assert parked.child_tasks.count() == 1
 
+    def test_failed_resume_rolls_back_the_slack_answer(self) -> None:
+        parked = self._parked()
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked, **OWNER_DECISION)
+
+        with (
+            patch("teatree.core.models.task_handoff.schedule_resume", side_effect=DatabaseError("resume failed")),
+            pytest.raises(DatabaseError, match="resume failed"),
+        ):
+            apply_bound_answer(BoundAnswer(question=question, answer="use postgres-1"))
+
+        question.refresh_from_db()
+        assert question.is_pending
+        assert not parked.child_tasks.exists()
+
     def test_slack_answer_to_internal_row_mints_no_task(self) -> None:
         parked = self._parked()
         question = DeferredQuestion.record("Which DB host?", parked_task=parked)
@@ -645,7 +661,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
 
     def test_the_committed_answer_lands_in_the_sessions_mailbox_and_is_marked_applied(self) -> None:
         question = _question("Which DB host?", slack_ts="100.0")
-        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+        _reply("Answer: use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with self.captureOnCommitCallbacks(execute=True):
             _answer_cycle()
@@ -656,7 +672,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
 
     def test_nothing_is_handed_back_until_the_answer_commits(self) -> None:
         question = _question("Which DB host?", slack_ts="100.0")
-        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+        _reply("Answer: use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with self.captureOnCommitCallbacks(execute=False):
             _answer_cycle()
@@ -670,7 +686,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
         blocked = self.data_home / "not-a-dir"
         blocked.write_text("", encoding="utf-8")
         question = _question("Which DB host?", slack_ts="100.0")
-        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+        _reply("Answer: use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with patch.dict(os.environ, {"XDG_DATA_HOME": str(blocked)}), self.captureOnCommitCallbacks(execute=True):
             _answer_cycle()

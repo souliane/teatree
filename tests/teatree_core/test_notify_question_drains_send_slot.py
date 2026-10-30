@@ -200,6 +200,15 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         assert DeferredQuestion.unmirrored_pending().count() == 0
         assert self.backend.post_message.call_count == 41
 
+    def test_every_first_card_posts_in_one_pass(self) -> None:
+        for index in range(8):
+            _backlog(f"Unposted {index}?")
+
+        self._poster()
+
+        assert DeferredQuestion.unmirrored_pending().count() == 0
+        assert self.backend.post_message.call_count == 8
+
     def test_a_failed_send_keeps_the_slot_free_and_the_question_is_posted_on_the_next_pass(self) -> None:
         _seed_sent_question_pings(5)
         question = _backlog("Which DB host?")
@@ -414,7 +423,7 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         )
         return holder
 
-    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_one_send(self) -> None:
+    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_first_cards(self) -> None:
         _seed_sent_question_pings(5)
         _backlog("Which DB host?")
         _backlog("Which queue?")

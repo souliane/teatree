@@ -29,6 +29,15 @@ _PROPERTIES = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
 
 
 class TestEnvelopeChannelSchema:
+    def test_owner_question_kind_is_the_five_raisable_decisions(self) -> None:
+        assert _PROPERTIES["user_input_kind"]["enum"] == [
+            "credentials",
+            "money_or_plan",
+            "public_post",
+            "irreversible",
+            "architecture",
+        ]
+
     def test_article_suggestions_and_answer_are_schema_keys(self) -> None:
         assert "article_suggestions" in _PROPERTIES
         assert "answer" in _PROPERTIES

@@ -33,7 +33,7 @@ from tests.teatree_agents._executor_fakes import FIXTURES, FakeExecutor, atteste
 from tests.teatree_agents._route_fakes import write_codex_login
 
 _WRITE_PHASES = ("coding", "testing", "e2e", "debugging")
-_EXECUTION_PHASES = ("bughunt", "dogfood_smoke", "eval_local")
+_EXECUTION_PHASES = ("bughunt", "dogfood_smoke")
 _PLANNING = ClaudeAgentOptions(permission_mode="bypassPermissions", disallowed_tools=["Write", "Edit", "NotebookEdit"])
 
 

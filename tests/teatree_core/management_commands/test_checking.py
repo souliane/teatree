@@ -28,7 +28,7 @@ from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
+from teatree.core.models import BotPing, PendingTriageRecommendation, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -247,6 +247,7 @@ class TestCheckingShow:
             "merged",
             "in_flight",
             "needs_you",
+            "triage_suggestions",
             "metered",
             "internal_escalations",
             "remaining",
@@ -277,6 +278,22 @@ class TestCheckingShow:
         assert item["owner_only"] is True
         assert "questions dismiss" not in item["detail"]
         assert "Slack" in item["detail"]
+
+    def test_walk_resolves_exact_architecture_repeat_and_lists_owner_limit_once(self, checkpoint_file: Path) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        repeated = DeferredQuestion.record(question, card=owner_card())
+        reserved = DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        repeated.refresh_from_db()
+        assert repeated.answer_text == "Yes."
+        assert str(basis.pk) in repeated.audits.get(action="coordinated").note
+        assert payload["needs_you"]["total"] == 1
+        assert [item["row_id"] for item in payload["needs_you"]["items"]] == [reserved.pk]
+        assert DeferredQuestion.objects.get(pk=reserved.pk).is_pending
 
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -539,10 +556,7 @@ class TestCheckingRemaining:
             with _two_overlay_patch():
                 payload = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
             labels = [item["label"] for item in payload["needs_you"]["items"]]
-            assert "#801" not in labels
-            assert "#802" in labels
-            assert "#803" in labels
-            assert "#804" not in labels
+            assert not labels
 
     def test_remaining_alone_does_not_notify(self, checkpoint_file: Path) -> None:
         self._open_pr()
@@ -1352,9 +1366,13 @@ class TestCheckingNotify:
 
     @pytest.mark.parametrize("aged", [timedelta(minutes=5), timedelta(hours=5), timedelta(days=2)])
     def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path, aged: timedelta) -> None:
-        wait = WaitingItem.objects.add("Read the pending review")
+        wait = DeferredQuestion.record(
+            "May I widen this credential's use?",
+            card=owner_card(OwnerDecision.CREDENTIALS),
+            dedupe_marker="checking-recap-owner-wait",
+        )
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
+        DeferredQuestion.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
 
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 
@@ -1518,3 +1536,24 @@ class TestMachineOutputChannel:
         out, err = self._channels("--this-overlay", "--json")
         assert "since" in json.loads(out)
         assert err == ""
+
+    def test_pending_triage_recommendation_is_a_suggestion_not_a_need(self, checkpoint_file: Path) -> None:
+        PendingTriageRecommendation.record_candidate(
+            issue_url="https://github.com/acme/widgets/issues/21",
+            verdict="close",
+            title="Duplicate widget report",
+            overlay="acme",
+        )
+
+        per_overlay, _err = self._channels("--this-overlay", "--json")
+        with _two_overlay_patch():
+            all_overlays, _err = self._channels("--json")
+
+        for out in (per_overlay, all_overlays):
+            payload = json.loads(out)
+            assert payload["needs_you"]["total"] == 0
+            suggestions = payload["triage_suggestions"]
+            assert suggestions["total"] == 1
+            assert suggestions["items"][0]["url"] == "https://github.com/acme/widgets/issues/21"
+            assert suggestions["items"][0]["title"] == "Duplicate widget report"
+            assert "Triage suggestions" in payload["terse"]

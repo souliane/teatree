@@ -24,7 +24,7 @@ from tests._owner_channel import legacy_owner_row
 _SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"
 _SAMPLE_WHY = "This tells me whether it is set up for channels or only for our direct messages."
 _SAMPLE_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("The bot answers direct messages.",),
     blocker="Only the owner can say which setup is wanted.",
     why=_SAMPLE_WHY,
@@ -47,7 +47,7 @@ _NO_OPTIONS_TEXT = """\
 Can I archive the old widget logs?
 They take space and nobody reads them.
 
-Reply in this thread.
+Reply here to discuss; write Answer: followed by your decision to close this card.
 ref: question {ref}"""
 
 _DRAFT_TEXT = """\
@@ -125,7 +125,7 @@ def _draft_row() -> DeferredQuestion:
 
 def _largest_row() -> DeferredQuestion:
     card = QuestionCard(
-        decision=OwnerDecision.PRODUCT_SCOPE,
+        decision=OwnerDecision.ARCHITECTURE,
         checked=("Four plans were drawn up.",),
         blocker="Only the owner picks the rollout.",
         why="Each plan trades speed against the risk of a bad release.",
@@ -272,7 +272,10 @@ class TestLayoutProperties(TestCase):
                 assert word_count(text) <= 120
                 for banned in ("deferred", "Pending question", "typed reply", "What I checked", "What blocks me"):
                     assert banned.lower() not in text.lower(), banned
-                assert lines[-2] in {"Or reply in this thread.", "Reply in this thread."}
+                assert lines[-2] in {
+                    "Or reply in this thread.",
+                    "Reply here to discuss; write Answer: followed by your decision to close this card.",
+                }
                 assert lines[-1] == f"ref: question {row.pk}"
                 options = [line for line in lines if re.match(r"^\[.+\]( \(recommended\))? - ", line)]
                 buttons = [e for b in blocks if b["type"] == "actions" for e in b["elements"]]
