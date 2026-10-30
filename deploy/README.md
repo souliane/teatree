@@ -241,7 +241,7 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 | `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
-| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; [optional public access](#opening-and-withdrawing-the-public-webhook-endpoint-optional); `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs the read-only phases (planning, review, critic, scoping, triage assessment, directive interpretation, answering, review-request, shipping readiness); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -1272,8 +1272,10 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   command's. `teatree.core.host_hop.host_run` writes what the wrapper reads and pins the three
   spellings.
 
-- **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
-  up — the tunnel rides your normal SSH access.
+- **Default: no Tailscale public endpoint.** SSH is the only inbound port. This
+  works with a corporate VPN up — the tunnel rides your normal SSH access. The
+  owner can [open the public webhook endpoint](#opening-and-withdrawing-the-public-webhook-endpoint-optional)
+  as an optional host step.
 - **Loop notifications / questions:** this workflow provisions **no** Slack
   credential, so notifications are not wired out of the box. To enable them, set
   the overlay's Slack bot token on the box and re-deploy (`t3 setup slack-bot`, or
@@ -1288,6 +1290,126 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   offline floor, never a replacement for in-loop self-update. There is **no**
   second workflow and no quiescence probe — a re-run of the deploy workflow is only
   needed for infra/compose/image changes.
+
+### Opening and withdrawing the public webhook endpoint (optional)
+
+The factory never opens this endpoint itself. Exposing it to the internet is the
+owner's decision. [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel)
+forwards public HTTPS to the isolated listener's loopback port, `8001` by default
+(`TEATREE_WEBHOOK_PORT` above), **not** the admin port `8000`. The listener routes
+only `/hooks/github/` and `/hooks/gitlab/`: GitHub verifies a delivery signature,
+while GitLab expects a shared token. `/` and `/admin/` answer 404; a plain GET on
+either hook address answers 405. The current deployment does not configure
+`TEATREE_GITLAB_WEBHOOK_TOKEN`, so a GitLab POST answers 503; there is no GitLab
+hook setup step here. The receiver and GitHub secret handling are described in
+the [loop-topology blueprint](../docs/blueprint/loop-topology.md).
+
+Run the following in a terminal **on the host** running `teatree-webhooks`, as
+the deploy user; use `sudo` for Funnel changes. The host must have Tailscale
+1.38.3 or newer and be joined to the tailnet. Funnel needs MagicDNS, HTTPS
+certificates, and permission in the tailnet policy; its public HTTPS port is
+443, while `8001` is the local target.
+
+1. Check the listener and whether port 443 already has a Tailscale route:
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/hooks/github/
+   ```
+
+   Expected output: `405`. If `TEATREE_WEBHOOK_PORT` was changed, use that
+   port instead. This local check does not prove public reachability.
+
+   ```bash
+   tailscale funnel status
+   tailscale serve status
+   ```
+
+   Expected output on an unused node: `No serve config` for each command. If
+   either lists a handler on port 443, stop and inspect it before changing that
+   port: Serve and Funnel cannot use it privately and publicly at the same time.
+
+2. Identify the machine's Tailscale sign-in account if needed:
+
+   ```bash
+   tailscale status --json
+   ```
+
+   On a user-owned node, output includes `Self.UserID` and the matching
+   `User[<Self.UserID>].LoginName`, for example:
+
+   ```json
+   {"Self":{"UserID":123},"User":{"123":{"LoginName":"<login>"}}}
+   ```
+
+   Use that full login name to recognize the account and its identity provider
+   at sign-in; plain `tailscale status` can shorten the displayed name. Confirm
+   this is the tailnet owner's account before enabling Funnel; if it is not, use
+   the owner account shown in the Tailscale admin console.
+
+3. Open the listener in the background:
+
+   ```bash
+   sudo tailscale funnel --bg 8001
+   ```
+
+   Expected output includes `Available on the internet:`,
+   `https://<machine>.<tailnet>.ts.net/`, and
+   `|-- / proxy http://127.0.0.1:8001` (wording varies by Tailscale version).
+   `--bg` keeps the route across a reboot. If the command prints an enable link
+   instead, open that link in a browser, sign in with the account that owns the
+   tailnet, enable Funnel, then rerun the same command.
+
+4. Confirm the route and test it from a device **outside the tailnet**:
+
+   ```bash
+   tailscale funnel status
+   ```
+
+   Expected output lists `https://<machine>.<tailnet>.ts.net/` as public and
+   `/` proxying to `http://127.0.0.1:8001`.
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' 'https://<machine>.<tailnet>.ts.net/hooks/github/'
+   ```
+
+   Expected output: `405`. This safe GET needs no signing secret. Public DNS
+   propagation can take up to ten minutes after Funnel is first enabled.
+
+5. From the teatree checkout on the host, create the GitHub repository hook:
+
+   ```bash
+   deploy/t3 teatree github-webhook connect --repo '<owner>/<repo>' --url 'https://<machine>.<tailnet>.ts.net/hooks/github/'
+   ```
+
+   Expected output includes `<owner>/<repo>: hook <id> created; ping verified.`
+   A repeat may say `updated` or `unchanged`; success still requires `ping
+   verified`. The command uses the [provisioned GitHub token](#credential-provisioning-passgpg),
+   stores the signing secret, creates or reconciles the hook, and confirms a
+   signed `ping` reached the listener's control DB. It refuses ambient `gh`
+   authentication. In GitHub, open the repository's **Settings → Webhooks →
+   this hook → Recent Deliveries**, open the ping, choose **Redeliver**, and
+   expect HTTP `200` on the delivery response. Provisioning does not select
+   webhook transport for the loop; polling continues.
+
+To withdraw public access, run this on the host (one command):
+
+```bash
+sudo tailscale funnel --https=443 off
+```
+
+Expected result: the public proxy on port 443 is removed; `tailscale funnel
+status` no longer lists it. To remove the GitHub repository hook as well, run
+this **before** turning Funnel off:
+
+```bash
+deploy/t3 teatree github-webhook disconnect --repo '<owner>/<repo>' --url 'https://<machine>.<tailnet>.ts.net/hooks/github/'
+```
+
+Expected output includes `<owner>/<repo>: hook <id> disconnected; ping not
+checked.` If the exact URL has no hook, it says `hook 0 absent`. The running
+listener may accept the removed signing secret from its cache for up to ten
+minutes; turning Funnel off removes the active public proxy. Do not use
+`tailscale funnel reset` for this route: it clears other Funnel configuration.
 
 ## Running the `t3` CLI on the box (#3232)
 

@@ -73,9 +73,7 @@ class TestShellExplorationRetryBudget:
     ``from_options`` can never disagree.
     """
 
-    @pytest.mark.parametrize(
-        "phase", ["architectural_review", "bughunt", "dogfood_smoke", "eval_local", "backlog_sweep"]
-    )
+    @pytest.mark.parametrize("phase", ["architectural_review", "bughunt", "dogfood_smoke", "backlog_sweep"])
     def test_exploration_phase_widens_both_ceilings(self, phase: str) -> None:
         config = LaneBToolConfig(phase=phase)
         assert config.shell_tool_retries is not None

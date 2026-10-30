@@ -566,7 +566,7 @@ def test_default_code_home_is_private_teatree_data_not_ambient_codex_home(
     assert CodexAppServerHarness(refusal=None).code_home == tmp_path / "data" / "codex-home"
 
 
-@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke"])
 def test_execution_phase_uses_the_current_worker_write_policy(
     phase: str, fake_codex: tuple[tuple[str, ...], Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

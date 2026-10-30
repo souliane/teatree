@@ -108,6 +108,30 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="issue_implementer").delay_seconds == 900
 
+    def test_reseed_upgrades_only_the_shipped_eval_cadence(self) -> None:
+        Loop.objects.create(
+            name="eval_local",
+            script="src/teatree/loops/eval_local/loop.py",
+            delay_seconds=604800,
+            description="Runs the local behavioral eval suite weekly; this row IS the cadence.",
+        )
+
+        seed_default_loops_and_prompts()
+        loop = Loop.objects.get(name="eval_local")
+        assert loop.delay_seconds == 86400
+        assert loop.description == "Runs one shard of behavioral evals daily on the factory subscription account."
+
+        Loop.objects.filter(pk=loop.pk).update(delay_seconds=604800, description="operator description")
+        seed_default_loops_and_prompts()
+        loop.refresh_from_db()
+        assert loop.delay_seconds == 86400
+        assert loop.description == "operator description"
+
+        Loop.objects.filter(pk=loop.pk).update(delay_seconds=172800)
+        seed_default_loops_and_prompts()
+        loop.refresh_from_db()
+        assert loop.delay_seconds == 172800
+
     def test_default_loops_satisfy_the_prompt_xor_script_constraint(self) -> None:
         # Every seeded row must hold exactly one of prompt-FK / script (the DB
         # CheckConstraint) — a seed that violated it would raise on create.

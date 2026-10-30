@@ -40,7 +40,7 @@ def test_resolve_skill_bundle_uses_framework_detection(
 
 @pytest.mark.parametrize(
     ("phase", "skill"),
-    [("bughunt", "debug"), ("dogfood_smoke", "dogfooding"), ("eval_local", "running-evals")],
+    [("bughunt", "debug"), ("dogfood_smoke", "dogfooding")],
 )
 def test_execution_phase_loads_its_route_skill(phase: str, skill: str) -> None:
     bundle = resolve_skill_bundle(phase=phase, overlay_skill_metadata={})

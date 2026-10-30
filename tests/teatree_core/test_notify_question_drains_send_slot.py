@@ -441,7 +441,7 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         )
         return holder
 
-    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_one_send(self) -> None:
+    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_first_cards(self) -> None:
         _seed_sent_question_pings(5)
         _backlog("Which DB host?")
         _backlog("Which queue?")

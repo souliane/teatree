@@ -134,6 +134,7 @@ PUSH_OWNERSHIP_VENUE_FAULT = "result_error: push ownership gate could not authen
 
 #: The producer and the recovery classifier share these prefixes so their wording cannot drift.
 OWNER_STOP_REFUSAL_PREFIX = "owner stop card refused: "
+EVAL_MEASUREMENT_ABSENT_MARKER = "eval_measurement_absent:"
 MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
@@ -338,6 +339,10 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # After the park row: a parked budget stop is a usage window, a terminal one a drained credential.
     (FailureKind.CREDENTIAL_EXHAUSTED, ("provider_budget:",)),
     (FailureKind.OUTAGE, ("outage_death:",)),
+    (
+        FailureKind.UNCLASSIFIED,
+        (EVAL_MEASUREMENT_ABSENT_MARKER, "result_error: measured nothing:", "RuntimeError: measured nothing:"),
+    ),
     (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
@@ -380,9 +385,9 @@ def classify_failure(error: str) -> str:
     stored nothing, which is a defect in that path rather than a property of the failure,
     and naming it is what makes it findable instead of invisible.
 
-    An unmatched non-blank reason is :attr:`FailureKind.UNCLASSIFIED` — deliberately NOT
-    environmental, so an unrecognised failure is never presented as a harness fault the
-    operator can dismiss.
+    An unmatched non-blank reason, or a known failure without a dedicated persisted kind,
+    is :attr:`FailureKind.UNCLASSIFIED` — deliberately NOT environmental, so it cannot
+    be presented as a harness fault the operator can dismiss.
     """
     haystack = error.casefold().strip()
     if not haystack:

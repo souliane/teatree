@@ -41,6 +41,8 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, owner_decision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, bump_due, first_posted_at, owner_quiet_at, reask_key
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user_outcome, resolve_owner_dm_backend
@@ -124,13 +126,13 @@ def _question_ping_keys() -> Q:
 
 
 def owner_quiet_now() -> bool:
-    """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
+    """Whether it is 22:00-08:00 in the owner's zone — when re-asks are held."""
     return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
 
 
 @contextmanager
-def _question_ping_slot(*, deadline: float | None = None) -> Generator[bool]:
-    if owner_quiet_now():
+def _question_ping_slot(*, deadline: float | None = None, first_post: bool = False) -> Generator[bool]:
+    if not first_post and owner_quiet_now():
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
         return
@@ -222,7 +224,14 @@ def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | N
     """The rows that pass the owner-message checks; the others are withheld, never posted, bumped or counted."""
     sendable: list[DeferredQuestion] = []
     for row in rows:
-        if not (problems := shown_problems_for(row)):
+        card = QuestionCard.from_row(row.evidence, row.options_json) if isinstance(row.evidence, dict) else None
+        decision = owner_decision(row.evidence.get("decision")) if isinstance(row.evidence, dict) else None
+        problems = shown_problems_for(row)
+        if card is None:
+            problems.append("owner card is missing")
+        if decision not in OWNER_RAISABLE_DECISIONS:
+            problems.append(f"{decision or 'no decision'} cannot be raised to the owner")
+        if not problems:
             sendable.append(row)
         elif withhold(row, problems) and row.slack_ts:
             _replace_root(row, backend)
@@ -458,6 +467,8 @@ def drain_unmirrored_deferred_questions(
     resolved in this context) is left un-mirrored — the durable row IS the
     fallback — and retried next tick. Returns ``(mirrored, total)``.
 
+    First-time cards bypass quiet hours and count limits because an agent
+    waiting on an owner decision needs the card as soon as it is recorded.
     The pass stops before its deadline; pending rows remain for the next pass.
     """
     end = _deadline_for_pass(deadline)
@@ -470,7 +481,7 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
-            with _question_ping_slot(deadline=end) as open_slot:
+            with _question_ping_slot(deadline=end, first_post=True) as open_slot:
                 if not open_slot:
                     break
                 sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
