@@ -121,6 +121,30 @@ def test_unreadable_same_uid_process_refuses_every_deletion(tmp_path: Path) -> N
     assert candidate.is_dir()
 
 
+@pytest.mark.parametrize("names_candidate", [False, True])
+def test_process_with_unreadable_cwd_and_environ_is_judged_by_cmdline(tmp_path: Path, *, names_candidate: bool) -> None:
+    root, candidate, proc = _unused_candidate(tmp_path)
+    cmdline = os.fsencode(candidate) + b"\0" if names_candidate else b"gpg-agent\0"
+    _pid(proc, "39", cwd=tmp_path, cmdline=cmdline)
+    original_readlink, original_read = Path.readlink, Path.read_bytes
+
+    def guarded_readlink(path: Path) -> Path:
+        if path.parent.name == "39":
+            raise PermissionError
+        return original_readlink(path)
+
+    def guarded_read(path: Path) -> bytes:
+        if path.parent.name == "39" and path.name == "environ":
+            raise PermissionError
+        return original_read(path)
+
+    with patch("pathlib.Path.readlink", new=guarded_readlink), patch("pathlib.Path.read_bytes", new=guarded_read):
+        result = sweep_run_scratch(root, proc_root=proc)
+
+    assert not result.refusal
+    assert candidate.exists() is names_candidate
+
+
 def test_missing_root_is_empty_and_unlistable_root_refuses(tmp_path: Path) -> None:
     assert sweep_run_scratch(tmp_path / "absent").freed_bytes == 0
     with patch("pathlib.Path.iterdir", side_effect=PermissionError("denied")):

@@ -16,6 +16,7 @@ local hook covers.
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -658,6 +659,24 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 1
         assert f"FAILED stage(s): {failing_stage}" in _text(result)
+        assert not list(tmp_path.glob("t3-verify-gates-*"))
+
+    def test_sigterm_during_a_stage_removes_the_private_root(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_prek_config(worktree, *(_manual_hook(hook) for hook in CI_JOB_MANUAL_HOOKS))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+        def _terminated(cmd: list[str], **_kwargs: object) -> int:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return 0
+
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=_terminated),
+        ):
+            runner.invoke(app, ["tool", "verify-gates"])
+
         assert not list(tmp_path.glob("t3-verify-gates-*"))
 
     def test_both_green_passes(self, worktree: Path) -> None:

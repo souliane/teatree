@@ -20,6 +20,20 @@ class RunScratchSweepResult:
     refusal: str = ""
 
 
+def _readable_cwd(pid: Path) -> Path:
+    try:
+        return (pid / "cwd").readlink()
+    except PermissionError:
+        return Path()
+
+
+def _readable_environ(pid: Path) -> bytes:
+    try:
+        return (pid / "environ").read_bytes()
+    except PermissionError:
+        return b""
+
+
 def _process_references(proc_root: Path) -> tuple[tuple[tuple[Path, bytes], ...], str]:
     try:
         pids = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
@@ -32,9 +46,9 @@ def _process_references(proc_root: Path) -> tuple[tuple[tuple[Path, bytes], ...]
         try:
             if pid.stat().st_uid != os.geteuid():
                 continue
-            cwd = (pid / "cwd").readlink()
             cmdline = (pid / "cmdline").read_bytes()
-            environ = (pid / "environ").read_bytes()
+            cwd = _readable_cwd(pid)
+            environ = _readable_environ(pid)
         except FileNotFoundError:
             if pid.exists():
                 return (), f"same-uid pid {pid.name} has an unreadable process reference"
