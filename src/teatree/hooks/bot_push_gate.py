@@ -1,5 +1,6 @@
 """Refuse a push to a declared bot namespace under a human credential or commit identity."""
 
+import atexit
 import json
 import os
 import sys
@@ -13,12 +14,15 @@ from teatree.config import cold_reader
 from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path, host_of_slug
 from teatree.hooks._repo_visibility import slug_for_remote_url
 from teatree.hooks.remote_holds import remote_holdings
+from teatree.utils.forge_http import ForgeConnections
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 _ZERO = "0" * 40
 _PROBE_TIMEOUT_SECONDS = 8
 _REF_FIELDS = 4
 _COMMIT_FIELDS = 4
+_BOT_PROBE_CONNECTIONS = ForgeConnections(max_connections=1)
+atexit.register(_BOT_PROBE_CONNECTIONS.close)
 
 
 class BotIdentityUnreadableError(RuntimeError):
@@ -65,8 +69,9 @@ def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *
         return ""
     try:
         if forge == GITLAB:
-            response = httpx.get(
-                f"https://{host}/api/v4/user",
+            url = f"https://{host}/api/v4/user"
+            response = _BOT_PROBE_CONNECTIONS.session_for(url).get(
+                url,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=_PROBE_TIMEOUT_SECONDS,
             )

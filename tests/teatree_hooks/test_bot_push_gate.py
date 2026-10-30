@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -188,7 +189,9 @@ def test_gitlab_credential_probe_uses_api_without_glab(monkeypatch: pytest.Monke
         return httpx.Response(200, request=httpx.Request("GET", url), json={"username": "build-bot"})
 
     monkeypatch.setattr(bot_push_gate, "run_allowed_to_fail", no_glab)
-    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(
+        bot_push_gate, "_BOT_PROBE_CONNECTIONS", SimpleNamespace(session_for=lambda url: SimpleNamespace(get=get))
+    )
 
     assert (
         bot_push_gate._credential_login(
@@ -203,7 +206,9 @@ def test_gitlab_credential_probe_refuses_failed_api(monkeypatch: pytest.MonkeyPa
     def get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
         return httpx.Response(401, request=httpx.Request("GET", url), json={"username": "build-bot"})
 
-    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(
+        bot_push_gate, "_BOT_PROBE_CONNECTIONS", SimpleNamespace(session_for=lambda url: SimpleNamespace(get=get))
+    )
 
     assert (
         bot_push_gate._credential_login(
