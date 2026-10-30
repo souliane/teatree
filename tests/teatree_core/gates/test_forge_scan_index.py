@@ -1,5 +1,7 @@
 """One live forge and origin snapshot per repository during a branch sweep."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -74,17 +76,49 @@ def test_orphan_workers_share_scan_scope() -> None:
     assert active_branch_scan_index() is None
 
 
-def test_unreadable_open_pr_state_inside_scope_warns_naming_the_repository(caplog: pytest.LogCaptureFixture) -> None:
+@contextmanager
+def _classifying_unmerged_branches(probe: PrProbe) -> Generator[None]:
     ahead = SimpleNamespace(genuinely_ahead=["commit"], branch_missing=False)
     with (
         patch("teatree.core.gates.orphan_guard._origin_default_branch_target", return_value="origin/main"),
         patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject", return_value=ahead),
         patch("teatree.core.gates.orphan_guard._local_content_verdict", return_value=None),
         patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash", return_value=False),
-        patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch", return_value=PrProbe.unknown()),
+        patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch", return_value=probe),
         patch("teatree.core.gates.orphan_guard.branch_content_landed_on_base", return_value=False),
-        branch_scan_scope(),
     ):
+        yield
+
+
+def test_unreadable_open_pr_state_inside_scope_warns_naming_the_repository(caplog: pytest.LogCaptureFixture) -> None:
+    with _classifying_unmerged_branches(PrProbe.unknown()), branch_scan_scope():
         report = classify_branch(_REPO, "feature")
     assert report.status is BranchStatus.PR_UNKNOWN
     assert any(_REPO in record.message and record.levelname == "WARNING" for record in caplog.records)
+
+
+def test_classifying_many_branches_in_a_scan_reads_origin_once_and_maps_each_branch() -> None:
+    listing = MagicMock(returncode=0, stdout="a" * 40 + "\trefs/heads/pushed\n")
+    with (
+        _classifying_unmerged_branches(PrProbe.none()),
+        patch("teatree.core.gates.forge_scan_index.run_with_status", return_value=listing) as shared_read,
+        patch("teatree.core.gates.orphan_guard.run_with_status") as per_branch_read,
+        branch_scan_scope(),
+    ):
+        statuses = [classify_branch(_REPO, branch).status for branch in ("pushed", "local-only", "also-local")]
+    assert statuses == [BranchStatus.PUSHED_ORPHAN, BranchStatus.UNPUSHED_ORPHAN, BranchStatus.UNPUSHED_ORPHAN]
+    shared_read.assert_called_once()
+    per_branch_read.assert_not_called()
+
+
+def test_an_unreadable_origin_listing_makes_every_branch_in_the_scan_remote_unknown() -> None:
+    failed = MagicMock(returncode=128, stdout="", stderr="unavailable")
+    with (
+        _classifying_unmerged_branches(PrProbe.none()),
+        patch("teatree.core.gates.forge_scan_index.run_with_status", return_value=failed),
+        patch("teatree.core.gates.orphan_guard.run_with_status") as per_branch_read,
+        branch_scan_scope(),
+    ):
+        statuses = {classify_branch(_REPO, branch).status for branch in ("one", "two")}
+    assert statuses == {BranchStatus.REMOTE_UNKNOWN}
+    per_branch_read.assert_not_called()

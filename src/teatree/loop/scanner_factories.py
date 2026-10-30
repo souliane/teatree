@@ -63,10 +63,10 @@ from teatree.loop.scanners import (
     TaskSweepScanner,
     TriageAssessorScanner,
 )
-from teatree.loop.scanners.codex_review_gitlab import ForgeCodexPrApi, GlabCodexPrApi
 from teatree.loop.scanners.head_lineage import GhLineageReader
 from teatree.loop.scanners.my_prs import CiEnricher
 from teatree.loop.scanners.review_nag import default_repo_owner
+from teatree.loop.scanners.self_pr_gitlab import ForgeSelfPrApi, GitLabSelfPrApi
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 
@@ -273,9 +273,9 @@ def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReview
     )
     if not repos:
         return None
-    api = ForgeCodexPrApi(
+    api = ForgeSelfPrApi(
         github=GhCodexPrApi(),
-        gitlab=GlabCodexPrApi(token=overlay.config.get_gitlab_token()),
+        gitlab=GitLabSelfPrApi(token=overlay.config.get_gitlab_token()),
     )
     if resolve_pr_review_backend(backend.name) is PrReviewBackend.CODEX:
         return CodexReviewScanner(repos=repos, api=api, overlay=backend.name)

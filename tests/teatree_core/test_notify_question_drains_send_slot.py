@@ -216,6 +216,29 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
         question.refresh_from_db()
         assert question.slack_ts
 
+    def test_the_slot_wait_never_outlasts_the_time_left_before_the_deadline(self) -> None:
+        question = _backlog("Which DB host?")
+        waits: list[float] = []
+
+        class _RecordedGuard:
+            def acquire(self, *, timeout: float = -1) -> bool:
+                waits.append(timeout)
+                return False
+
+        spare = 2
+        with patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", _RecordedGuard()):
+            result = drain_unmirrored_deferred_questions(
+                user_id="U_ME",
+                backend=self.backend,
+                deadline=time.monotonic() + drains_module._QUESTION_SEND_RESERVE_SECONDS + spare,
+            )
+
+        assert result == (0, 1)
+        assert len(waits) == 1
+        assert 0 < waits[0] <= spare < drains_module._QUESTION_PING_THREAD_WAIT_SECONDS
+        question.refresh_from_db()
+        assert not question.slack_ts
+
     def test_resurface_has_no_count_slice_with_time_available(self) -> None:
         for index in range(6):
             _backlog(f"Resurface {index}?")

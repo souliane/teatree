@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.merge import CodeHostQuery
 from teatree.core.merge.host_kind import forge_for_repo_slug
-from teatree.loop.scanners.codex_review import UNSETTLED_CHECK_VERDICTS, CodexPrApi, PrSummary
+from teatree.loop.scanners.self_pr_types import UNSETTLED_CHECK_VERDICTS, PrSummary, SelfPrApi
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
 from teatree.utils.pr_ref import PrRef
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class GlabCodexPrApi:
+class GitLabSelfPrApi:
     token: str = ""
 
     def _backend(self) -> "CodeHostBackend":
@@ -30,7 +30,7 @@ class GlabCodexPrApi:
             raise
         except Exception as exc:
             raise ScannerError(
-                scanner="codex_review",
+                scanner="self_pr_review",
                 error_class=ScannerErrorClass.UNKNOWN,
                 detail=f"GitLab self-PR read failed for {slug!r}: {type(exc).__name__}: {exc}",
             ) from exc
@@ -108,9 +108,9 @@ def _author(raw: object) -> str:
 
 
 @dataclass(slots=True)
-class ForgeCodexPrApi:
-    github: CodexPrApi
-    gitlab: CodexPrApi
+class ForgeSelfPrApi:
+    github: SelfPrApi
+    gitlab: SelfPrApi
 
     def list_open_self_prs(self, *, slug: str) -> list[PrSummary]:
         forge = forge_for_repo_slug(slug)

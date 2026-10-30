@@ -19,7 +19,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.scanner_factories import _self_pr_review_scanner_for
 from teatree.loop.scanners.codex_review import CodexReviewScanner
-from teatree.loop.scanners.codex_review_gitlab import ForgeCodexPrApi, GlabCodexPrApi
+from teatree.loop.scanners.self_pr_gitlab import ForgeSelfPrApi, GitLabSelfPrApi
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 
 
@@ -70,8 +70,8 @@ class TestSelfPrReviewScannerBuilder(TestCase):
         assert isinstance(scanner, CodexReviewScanner)
         assert scanner.repos == ("souliane/teatree",)
         assert scanner.overlay == "t3-teatree"
-        assert isinstance(scanner.api, ForgeCodexPrApi)
-        assert isinstance(scanner.api.gitlab, GlabCodexPrApi)
+        assert isinstance(scanner.api, ForgeSelfPrApi)
+        assert isinstance(scanner.api.gitlab, GitLabSelfPrApi)
 
     def test_overlay_without_python_class_returns_none(self) -> None:
         backend = OverlayBackends(
