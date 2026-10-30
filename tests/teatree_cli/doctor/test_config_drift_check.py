@@ -150,6 +150,8 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
             out = _run()
         assert "issue_implementer_label" in out
         assert "no audit table" in out
+        assert "was unknown (audit unreadable)" in out
+        assert "written before audit" not in out
 
     def test_a_drifted_secret_is_reported_with_its_value_masked(self) -> None:
         # The row still has to surface — a secret that drifted is exactly as misleading as any
