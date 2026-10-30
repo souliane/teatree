@@ -19,7 +19,6 @@ import datetime as dt
 import os
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -32,6 +31,7 @@ from teatree.dash.views.base import NAV_ITEMS
 from teatree.loops.loop_table import loop_block_reasons
 from teatree.loops.registry import iter_loops
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 _SECRET = "hunter2-live-view-token"

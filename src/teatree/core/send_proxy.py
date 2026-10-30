@@ -43,6 +43,7 @@ from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, overlay_privacy_rules, scan_outbound_text
+from teatree.core.notify_targets import registered_operator_slack_ids
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
 
@@ -129,6 +130,7 @@ class SendRequest:
     authorized_by: str = ""
     provenance: str = field(default_factory=_default_provenance)
     is_self_dm: bool = False
+    strict_redaction: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +145,7 @@ class SendVerdict:
     allowlist_ok: bool
     redaction_matches: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
+    redaction_failed: bool = False
     audit_id: int | None = None
 
     @property
@@ -170,6 +173,8 @@ def destination_allowed(channel: SendChannel, destination: str, *, overlay: str,
     An empty allowlist denies every non-self destination.
     """
     if is_self_dm:
+        return True
+    if channel is SendChannel.SLACK and destination.startswith("U") and destination in registered_operator_slack_ids():
         return True
     patterns = _allowlist(overlay)
     if not patterns:
@@ -235,7 +240,10 @@ def redact_payload(payload: str, *, overlay: str) -> tuple[str, tuple[str, ...]]
     fired (empty when the payload is clean), so a caller can tell a redacted
     payload from an untouched one.
     """
-    terms = _redact_terms(overlay)
+    return _apply_redaction(payload, _redact_terms(overlay))
+
+
+def _apply_redaction(payload: str, terms: list[str]) -> tuple[str, tuple[str, ...]]:
     if not payload or not terms:
         return payload, ()
     matched: set[str] = set()
@@ -260,14 +268,21 @@ def route_send(request: SendRequest) -> SendVerdict:
     Audit-write failures are logged without breaking the send.
     """
     allowlist_ok = _safe_allowlist_check(request)
-    redacted, matches = _safe_redact(request)
+    redacted, matches, redaction_failed = _safe_redact(request)
 
     verdict = SendVerdict(
-        allowed=allowlist_ok,
+        allowed=allowlist_ok and not (request.strict_redaction and redaction_failed),
         payload=redacted,
         allowlist_ok=allowlist_ok,
         redaction_matches=matches,
-        reason="" if allowlist_ok else f"destination {request.destination!r} not on the send-proxy allowlist",
+        reason=(
+            f"destination {request.destination!r} not on the send-proxy allowlist"
+            if not allowlist_ok
+            else "redaction policy unavailable"
+            if request.strict_redaction and redaction_failed
+            else ""
+        ),
+        redaction_failed=redaction_failed,
     )
     audit = _record_audit(request, verdict)
     return replace(verdict, audit_id=audit.pk if audit is not None else None)
@@ -286,12 +301,26 @@ def _safe_allowlist_check(request: SendRequest) -> bool:
         return False
 
 
-def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
+def _strict_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
+    rules = overlay_privacy_rules(request.overlay)
+    if rules is None:
+        message = "redaction policy unavailable"
+        raise RuntimeError(message)
+    return _apply_redaction(request.payload, list(rules[0]))
+
+
+def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...], bool]:
     try:
-        return redact_payload(request.payload, overlay=request.overlay)
+        redacted, matches = (
+            _strict_redact(request)
+            if request.strict_redaction
+            else redact_payload(request.payload, overlay=request.overlay)
+        )
     except Exception as exc:  # noqa: BLE001 — redaction is best-effort; a failure leaves the payload unchanged.
         logger.debug("send_proxy: redaction failed (%s) — leaving payload unredacted", exc)
-        return request.payload, ()
+        return request.payload, (), True
+    else:
+        return redacted, matches, False
 
 
 def _record_audit(
@@ -341,7 +370,7 @@ def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":
     """Map a :class:`SendVerdict` onto the audit verdict enum."""
     from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
 
-    if verdict.allowlist_ok:
+    if verdict.allowed:
         return SendAudit.Verdict.ALLOWED
     return SendAudit.Verdict.DENIED
 

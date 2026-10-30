@@ -91,8 +91,8 @@ urlpatterns = [
     path("presets/schedule/slot/delete/", schedule_slot_delete, name="schedule_slot_delete"),
     path("sessions/", sessions, name="sessions"),
     path("settings/", settings, name="settings"),
-    # The comparison pair, both read-only GETs behind the same access decorator: the JSON a
-    # peer instance fetches over its loopback tunnel, and the page that reads every peer.
+    # The comparison pair, both read-only GETs behind the staff login: the JSON a peer
+    # instance fetches over its loopback tunnel, and the page that reads every peer.
     path("settings/snapshot.json", settings_snapshot, name="settings_snapshot"),
     path("settings/compare/", settings_compare, name="settings_compare"),
     path("settings/readouts/", settings_readouts, name="settings_readouts"),

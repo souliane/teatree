@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.post_impl import approve_impl
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -94,7 +95,7 @@ class TestApproveAlreadyApprovedIsIdempotent:
         stub = _AlreadyApprovedAPI()
         service = _service_with(stub)
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = approve_impl(service, OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert code == 0, msg
         assert "Already approved by souliane" in msg
@@ -104,7 +105,7 @@ class TestApproveAlreadyApprovedIsIdempotent:
         stub = _GenuineAuthFailureAPI()
         service = _service_with(stub)
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = approve_impl(service, OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert code == 1
         assert "Failed" in msg
@@ -158,7 +159,7 @@ class TestApprove401NamesSelfApproval:
     def test_a_self_authored_mr_401_names_the_author_and_the_sanctioned_create_paths(self) -> None:
         stub = _SelfAuthoredMrAPI()
 
-        msg, code = _service_with(stub).approve(OWNED_REPO, 7)
+        msg, code = approve_impl(_service_with(stub), OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert code == 1
         assert "401" in msg
@@ -170,7 +171,7 @@ class TestApprove401NamesSelfApproval:
     def test_a_colleague_authored_mr_401_keeps_the_bare_status(self) -> None:
         stub = _GenuineAuthFailureAPI()
 
-        msg, _code = _service_with(stub).approve(OWNED_REPO, 7)
+        msg, _code = approve_impl(_service_with(stub), OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert "AUTHORED by" not in msg
 
@@ -178,7 +179,7 @@ class TestApprove401NamesSelfApproval:
         # Another status has its own cause; naming self-approval on all of them is a guess.
         stub = _ForbiddenAPI()
 
-        msg, code = _service_with(stub).approve(OWNED_REPO, 7)
+        msg, code = approve_impl(_service_with(stub), OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
 
         assert code == 1
         assert "403" in msg

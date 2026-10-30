@@ -37,6 +37,7 @@ class ProjectItem:
     position: int
     labels: list[str]
     updated_at: str = ""
+    author_login: str = ""
 
 
 def _gh_graphql(query: str, *, token: str = "") -> RawAPIDict:
@@ -69,6 +70,7 @@ _PROJECT_ITEMS_QUERY = """\
                             title
                             url
                             updatedAt
+                            author {{ login }}
                             labels(first: {label_page_size}) {{ totalCount nodes {{ name }} }}
                         }}
                     }}
@@ -149,4 +151,5 @@ def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
         position=position,
         labels=labels,
         updated_at=str(dig(node, "content", "updatedAt") or ""),
+        author_login=str(dig(node, "content", "author", "login") or ""),
     )

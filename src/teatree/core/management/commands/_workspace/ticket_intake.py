@@ -37,6 +37,7 @@ from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
 from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree.worktree_paths import ticket_dir_for
 from teatree.utils import git
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 from teatree.utils.url_slug import project_slug_from_ref
 
@@ -256,6 +257,38 @@ def build_branch_name(repo_names: list[str], ticket_number: str, description: st
     return f"{ticket_number}-{slug}"
 
 
+_AUTHOR_FIELD = {"github": ("user", "login"), "gitlab": ("author", "username")}
+
+
+def _issue_requester_key(overlay: "OverlayBase", issue_url: str) -> str:
+    """The ``platform:handle`` key of the issue's author, or ``""`` when the forge cannot name one."""
+    forge = forge_from_remote(issue_url)
+    host = get_code_host_for_url(overlay, issue_url) if forge else None
+    if host is None:
+        return ""
+    try:
+        issue = host.get_issue(issue_url)
+    except (
+        IssueNotFoundError,
+        httpx.HTTPError,
+        CommandFailedError,
+        TimeoutExpired,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        logger.warning("requester read failed for %s: %s", issue_url, exc)
+        return ""
+    field, name = _AUTHOR_FIELD[forge]
+    author = issue.get(field) if isinstance(issue, dict) else None
+    handle = author.get(name) if isinstance(author, dict) else None
+    return f"{forge}:{handle}" if isinstance(handle, str) and handle else ""
+
+
+def _record_requester(ticket: Ticket, requester: str) -> None:
+    if requester:
+        ticket.record_requester(requester)
+
+
 def locked_get_or_create_ticket(
     issue_url: str,
     variant: str,
@@ -307,6 +340,7 @@ def build_ticket(
     # ticket). The title feeds the inference; an explicit ``--kind`` wins.
     # Read before ``atomic()``: its ``BEGIN IMMEDIATE`` would hold the write lock for the forge's latency.
     description = intake.description or overlay.get_issue_title(intake.issue_url)
+    requester = _issue_requester_key(overlay, intake.issue_url)
     with transaction.atomic():
         ticket, created = locked_get_or_create_ticket(
             intake.issue_url,
@@ -315,6 +349,7 @@ def build_ticket(
             kind=classify_ticket_kind(title=description, explicit=intake.kind),
             overlay_name=overlay_name_of(overlay),
         )
+        _record_requester(ticket, requester)
 
         _refuse_a_shipped_ticket(write, ticket, overlay_name_of(overlay))
 

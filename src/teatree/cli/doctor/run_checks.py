@@ -26,6 +26,7 @@ from teatree.cli.doctor.checks_admission_pressure import (
 from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
+from teatree.cli.doctor.checks_bot_push_events import check_bot_push_events
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_browser import _check_browser_ready
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
@@ -579,7 +580,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # The same shape one layer up: the settings READ fine and say the deployment knows neither
     # who may review its merges nor whose credential opens its MRs. Both are invisible until a
     # merge is refused or an MR's author is read by hand, so this one hard-FAILs.
-    ok = check_identity_wiring() and ok
+    ok = all((check_identity_wiring(), check_bot_push_events())) and ok
     # The other half of the same blind spot: a flag that READS back correctly still
     # buys nothing if the engagement it drives never materialises. Walks the live hook
     # path end to end and FAILs when a stored `autoload = true` engages no platform

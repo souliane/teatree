@@ -7,14 +7,8 @@ the agent had to post a content-free "APPROVE" prose comment from the
 approver's identity first — the useless approval-summary comment the user
 repeatedly deletes (concrete instance: a now-deleted note on a real MR).
 
-The corrected contract: an *internal* reviewing footprint satisfies the
-precondition so no public comment is ever forced. The two internal
-footprints, neither of which is a colleague-visible post:
-
-* a **draft note** authored by the approver (colleague-invisible review);
-* the recorded :class:`OnBehalfApproval` for ``(<repo>!<mr>, "approve")`` —
-    the human-recorded, maker!=checker internal verdict/attribution that the
-    on-behalf approve path already requires.
+The corrected contract accepts a draft note by the approver, so no public
+comment is forced. Consent alone does not prove that the approver reviewed.
 
 Approval then records the GitLab ``approved_by`` (verify-after-post) and
 the internal audit, and posts ZERO notes/discussions. The maker!=checker
@@ -27,6 +21,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.cli.review.operator_approval import publish_operator_approval
 from teatree.core.models import OnBehalfApproval
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
@@ -37,10 +32,8 @@ pytestmark = pytest.mark.django_db
 class _SilentApproveStubAPI:
     """``GitLabAPI`` stand-in with NO published note authored by the approver.
 
-    ``discussions`` and ``draft_notes`` come back empty — there is no public
-    prose footprint at all. The only attribution is the recorded
-    :class:`OnBehalfApproval`. Records every call so the test can assert
-    nothing was posted to the MR.
+    ``discussions`` and ``draft_notes`` come back empty. Records every call
+    so the test can assert nothing was posted to the MR.
     """
 
     def __init__(self) -> None:
@@ -80,7 +73,7 @@ def _immediate_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _service_with_stub() -> tuple[ReviewService, _SilentApproveStubAPI]:
     stub = _SilentApproveStubAPI()
-    service = ReviewService(token="t", api=stub)
+    service = ReviewService(token="t", api=stub, oauth=True)
     return service, stub
 
 
@@ -99,20 +92,16 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_recorded_approval_satisfies_precondition_with_no_public_note(self) -> None:
-        """On-behalf approve succeeds via the internal verdict, posting ZERO notes."""
+    def test_recorded_approval_without_a_review_note_refuses(self) -> None:
         _immediate_gate(self.tmp_path, self.monkeypatch)
-        # The internal verdict/attribution record — human-recorded, maker!=checker.
-        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="gitlab:souliane")
         service, stub = _service_with_stub()
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
-        assert code == 0, msg
-        assert "OK approved" in msg
-        # The GitLab approval landed...
-        assert any(c[0] == "post_status" and c[1].endswith("/approve") for c in stub.calls)
-        # ...and NOT ONE note/discussion/draft was posted to the MR.
+        assert code == 1
+        assert "review before approve" in msg
+        assert not any(c[0] == "post_status" for c in stub.calls)
         assert _posted_to_mr(stub) == []
 
     def test_no_footprint_and_no_recorded_approval_still_refuses(self) -> None:
@@ -125,10 +114,10 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         _immediate_gate(self.tmp_path, self.monkeypatch)
         service, stub = _service_with_stub()
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
         assert code == 1
-        assert "review before approve" in msg
+        assert "No consent" in msg
         assert not any(c[0] == "post_status" for c in stub.calls)
         assert _posted_to_mr(stub) == []
 
@@ -154,11 +143,12 @@ class TestApproveAcceptsDraftFootprint:
     def test_draft_note_footprint_satisfies_precondition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A colleague-invisible draft review satisfies the precondition — no public note forced."""
         _immediate_gate(self.tmp_path, self.monkeypatch)
-        service = ReviewService(token="t")
+        service = ReviewService(token="t", oauth=True)
         stub = _DraftReviewStubAPI()
         monkeypatch.setattr(service, "_get_api", lambda: stub)
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="gitlab:souliane")
 
-        msg, code = service.approve(OWNED_REPO, 7)
+        msg, code = publish_operator_approval(service, OWNED_REPO, 7, "approve", "gitlab:souliane")
 
         assert code == 0, msg
         assert "OK approved" in msg

@@ -90,3 +90,20 @@ def _git_output(repo: Path, args: list[str]) -> str | None:
     env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
     result = run_allowed_to_fail(["git", *args], expected_codes=None, cwd=repo, env=env)
     return result.stdout if result.returncode == 0 else None
+
+
+def _added_lines_from_diff(diff_text: str) -> dict[str, list[str]]:
+    """Keep added hunk bodies, including lines beginning with ``++``."""
+    by_path: dict[str, list[str]] = {}
+    path = ""
+    in_hunk = False
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            path, in_hunk = "", False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk and line.startswith("+++ b/"):
+            path = line[len("+++ b/") :]
+        elif in_hunk and line.startswith("+") and path:
+            by_path.setdefault(path, []).append(line[1:])
+    return by_path

@@ -71,6 +71,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 
+from hooks.scripts.bot_push_pretooluse import bot_push_refusal
 from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_git import (
     GitProbe,
@@ -151,8 +152,9 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
     parsed = push_specs(command, str(data.get("cwd", "") or ""))
     if not parsed.specs and not parsed.unread:
         return False
-    if not _teatree_bool_setting(GATE_SETTING):
-        return False
+    bot_refusal = bot_push_refusal(data, parsed=parsed)
+    if bot_refusal or not _teatree_bool_setting(GATE_SETTING):
+        return emit_pretooluse_deny(bot_refusal, gate_id="bot_push") if bot_refusal else False
     verdict = _refusal_verdict(parsed, _ForgeRun())
     if verdict is None:
         return False

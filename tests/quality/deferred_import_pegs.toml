@@ -8,6 +8,7 @@
 # sub-node edge; never raise one without the edge being genuinely load-bearing (rationale in the commit).
 
 [intra_core]
+"src/teatree/core/notify_targets.py" = 4
 "src/teatree/core/_checking_gather.py" = 2
 # 1: the dedupe-audit facade defers `from teatree.core.models import
 # TicketSweepRun` (#162) — an ORM import that must resolve after the app

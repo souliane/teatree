@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
-from django.test import Client, TestCase
 from django.urls import reverse
 from typer.testing import CliRunner
 
@@ -16,6 +15,7 @@ import teatree.core.settings.settings_compare as settings_compare_module
 from teatree.cli import app
 from teatree.core.settings.settings_peers import PeerSnapshot
 from teatree.core.settings_snapshot import SNAPSHOT_FORMAT
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 
 class TestSettingsCompareManagementCommand(TestCase):
@@ -54,7 +54,7 @@ class TestSettingsCompareManagementCommand(TestCase):
             patch.object(settings_compare_module, "local_snapshot", return_value=box("this instance", local_values)),
             patch.object(settings_compare_module, "peer_snapshots", return_value=(box("peer", peer_values),)),
         ):
-            page = Client().get(
+            page = self.client.get(
                 reverse("dash:settings_compare"),
                 {flag: value, "differs_only": "off"},
                 REMOTE_ADDR="127.0.0.1",
@@ -222,7 +222,7 @@ class TestSettingsCompareManagementCommand(TestCase):
             patch.object(settings_compare_module, "local_snapshot", return_value=box("this instance", 2)),
             patch.object(settings_compare_module, "peer_snapshots", return_value=(box("peer", 3),)),
         ):
-            page = Client().get(
+            page = self.client.get(
                 reverse("dash:settings_compare"),
                 {"family": "setting", "group": "Agents", "text": "merge", "differs_only": "off"},
                 REMOTE_ADDR="127.0.0.1",
