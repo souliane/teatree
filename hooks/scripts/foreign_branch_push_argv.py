@@ -44,9 +44,13 @@ class PushSpec:
     refspecs: tuple[str, ...]
     force: bool
     destructive: bool
-    unpinnable: str
+    repo_unpinnable: str = ""
+    unnamed_targets: str = ""
     config_overrides: tuple[str, ...] = ()
-    repo_pinned: bool = True
+
+    @property
+    def unpinnable(self) -> str:
+        return self.repo_unpinnable or self.unnamed_targets
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,9 +110,9 @@ def _spec(args: list[str], work_dir: str, overrides: tuple[str, ...], *, repo_un
         refspecs=refspecs,
         force=force,
         destructive=force or delete,
-        unpinnable=repo_unpinnable or (f"`git push {unnamed[0]}` names no branch, so its targets" if unnamed else ""),
+        repo_unpinnable=repo_unpinnable,
+        unnamed_targets=f"`git push {unnamed[0]}` names no branch, so its targets" if unnamed else "",
         config_overrides=overrides,
-        repo_pinned=not repo_unpinnable,
     )
 
 
