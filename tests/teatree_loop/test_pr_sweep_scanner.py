@@ -1460,25 +1460,6 @@ class TestAutoReviewDispatch:
         assert signals[0].kind == "pr_sweep.flag_no_review"
         assert signals[0].payload["review_dispatched"] is True
 
-    def test_one_sweep_checks_the_review_limit_once(self) -> None:
-        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
-        scanner, _ = _scanner(
-            api=api,
-            keystone=FakeKeystone(),
-            solo_overlay=True,
-            auto_review_dispatch=True,
-            dispatcher=FakeReviewDispatcher(),
-        )
-        with (
-            patch("teatree.loop.scanners.pr_sweep.review_rounds_exhausted", return_value=False) as sweep_limit,
-            patch("teatree.loop.scanners.pr_sweep_review_gate.review_rounds_exhausted") as arm_limit,
-        ):
-            signals = scanner.scan()
-
-        assert signals[0].payload["review_dispatched"] is True
-        sweep_limit.assert_called_once()
-        arm_limit.assert_not_called()
-
     def test_no_dispatch_when_flag_disabled(self) -> None:
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})

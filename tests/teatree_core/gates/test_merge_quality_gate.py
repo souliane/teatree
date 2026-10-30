@@ -302,7 +302,7 @@ class TestVerdictGate(TestCase):
         ticket = _ordinary_ticket()
         with patch.object(CriticDispatch, "saturated") as saturated:
             saturated.return_value.filter.return_value.exists.return_value = True
-            with pytest.raises(MergeQualityVerdictError, match=r"manage.py ticket critic-record.*push a new commit"):
+            with pytest.raises(MergeQualityVerdictError, match=r"t3 <overlay> ticket critic-record.*push a new commit"):
                 check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_active_critic_is_a_wait_only_while_worker_can_run_it(self) -> None:

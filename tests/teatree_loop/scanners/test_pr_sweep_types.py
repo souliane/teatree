@@ -1,6 +1,7 @@
 """Unit tests for the pure attempt builders in ``pr_sweep_types`` (#4856)."""
 
-from teatree.loop.scanners.pr_sweep_types import PrSummary, blocked_merge_attempt
+from teatree.loop.scanners.pr_sweep_reporting import signal_from_attempt
+from teatree.loop.scanners.pr_sweep_types import PrSummary, awaiting_critic_attempt, blocked_merge_attempt
 
 _PR = PrSummary(slug="souliane/teatree", number=6230, head_sha="a" * 40, is_draft=False, has_changes_requested=False)
 
@@ -36,3 +37,14 @@ class TestBlockedMergeAttempt:
         # of its own, so omitting default_reason reuses reason_prefix verbatim.
         attempt = blocked_merge_attempt(_PR, reason_prefix="solo_overlay_merge_refused", refusal="")
         assert attempt.reason == "solo_overlay_merge_refused"
+
+
+class TestAwaitingCriticAttempt:
+    def test_reports_as_a_wait_that_merged_nothing(self) -> None:
+        refusal = "a headless critic has been armed; retry once it records a clean verdict"
+
+        signal = signal_from_attempt(awaiting_critic_attempt(_PR, reason=refusal), overlay="teatree")
+
+        assert signal.kind == "pr_sweep.waiting_on_critic"
+        assert signal.payload["merged"] is False
+        assert signal.payload["reason"] == refusal

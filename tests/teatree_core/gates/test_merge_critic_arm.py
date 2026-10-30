@@ -6,7 +6,11 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.gates.merge_critic_arm import arm_for_recorded_review
-from teatree.core.models import CriticDispatch, PullRequest, ReviewVerdict, Ticket
+from teatree.core.models import CriticDispatch, MergeClear, PullRequest, ReviewVerdict, Ticket
+
+_SLUG = "souliane/teatree"
+_PR_ID = 5689
+_HEAD = "a" * 40
 
 
 class TestRecordedReviewArming(TestCase):
@@ -165,3 +169,68 @@ class TestRecordedReviewArming(TestCase):
                 arm_for_recorded_review(passed)
 
         assert CriticDispatch.objects.filter(ticket=ticket, transition="merge", head_sha="a" * 40).exists()
+
+    def _recorded_pass(self, *, pr_state: str | None) -> tuple[Ticket, ReviewVerdict]:
+        """A recorded merge_safe on a ticket whose PR row has *pr_state*, or only a CLEAR when ``None``."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        if pr_state is None:
+            MergeClear.objects.create(
+                ticket=ticket,
+                slug=_SLUG,
+                pr_id=_PR_ID,
+                reviewed_sha=_HEAD,
+                reviewer_identity="reviewer-agent-7",
+                gh_verify_result=MergeClear.VerifyResult.GREEN,
+                blast_class=MergeClear.BlastClass.LOGIC,
+            )
+        else:
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay="t3-teatree",
+                repo=_SLUG,
+                iid=str(_PR_ID),
+                url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+                state=pr_state,
+            )
+        passed = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-agent-7",
+            ticket=ticket,
+        )
+        return ticket, passed
+
+    def test_unreadable_forge_does_not_arm_and_warns(self) -> None:
+        ticket, passed = self._recorded_pass(pr_state=PullRequest.State.OPEN)
+        host = MagicMock()
+        host.get_pr_open_state.return_value = PrOpenState.OPEN
+        host.fetch_live_head_sha.side_effect = RuntimeError("forge down")
+        provider = MagicMock()
+        provider.get_code_host_for_url.return_value = host
+        with (
+            patch("teatree.core.gates.merge_critic_arm.get_backend_provider", return_value=provider),
+            patch("teatree.core.gates.merge_critic_arm.get_overlay_for_ticket", return_value=object()),
+            self.assertLogs("teatree.core.gates.merge_critic_arm", level="WARNING") as logs,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            arm_for_recorded_review(passed)
+
+        assert f"Could not verify live PR head before arming critic for {_SLUG}#{_PR_ID}" in logs.output[0]
+        assert not CriticDispatch.objects.filter(ticket=ticket, transition="merge").exists()
+
+    def test_pr_without_a_row_or_already_settled_locally_never_reads_the_forge(self) -> None:
+        for pr_state in (None, PullRequest.State.MERGED, PullRequest.State.CLOSED):
+            ticket, passed = self._recorded_pass(pr_state=pr_state)
+            provider = MagicMock()
+            with (
+                self.subTest(pr_state=pr_state),
+                patch("teatree.core.gates.merge_critic_arm.get_backend_provider", return_value=provider),
+                self.assertNoLogs(level="ERROR"),
+                self.captureOnCommitCallbacks(execute=True),
+            ):
+                arm_for_recorded_review(passed)
+            provider.get_code_host_for_url.assert_not_called()
+            assert not CriticDispatch.objects.filter(ticket=ticket, transition="merge").exists()
+            ticket.delete()

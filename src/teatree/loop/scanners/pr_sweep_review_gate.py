@@ -49,9 +49,8 @@ __all__ = [
     "arm_cold_review",
     "held_head_attempt",
     "no_review_attempt",
-    "notify_review_rounds_exhausted",
+    "report_exhausted_review_rounds",
     "review_in_flight_for_pr",
-    "review_rounds_exhausted",
 ]
 
 logger = logging.getLogger(__name__)
@@ -87,31 +86,22 @@ def _counted_review_heads(ticket: "Ticket", *, slug: str, pr_id: int) -> tuple[s
     return tuple(dict.fromkeys((*recorded_heads, *measured)))
 
 
-def review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> bool:
+def report_exhausted_review_rounds(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> bool:
+    """True once the ticket's recorded passes spent the cap; the owner is told once per ticket and PR."""
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     if ticket is None:
         return False
     heads = _counted_review_heads(ticket, slug=slug, pr_id=pr_id)
-    return len(heads) >= MAX_REVIEW_ROUNDS and head_sha not in heads
-
-
-def notify_review_rounds_exhausted(*, slug: str, pr_id: int, pr_url: str, head_sha: str) -> None:
-    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
-    if ticket is None:
-        return
-    heads = _counted_review_heads(ticket, slug=slug, pr_id=pr_id)
-    if len(heads) < MAX_REVIEW_ROUNDS:
-        return
-    text = (
-        f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url} at {head_sha[:8]}: "
-        f"{MAX_REVIEW_ROUNDS} recorded passes ({', '.join(heads)}). Review the findings before another dispatch."
-    )
+    if len(heads) < MAX_REVIEW_ROUNDS or head_sha in heads:
+        return False
     notify_user(
-        text,
+        f"Review limit reached for {ticket.issue_url or ticket.pk} and {pr_url} at {head_sha[:8]}: "
+        f"{len(heads)} recorded passes ({', '.join(heads)}). Review the findings before another dispatch.",
         kind=NotifyKind.INFO,
         idempotency_key=f"review_rounds_exhausted:{ticket.pk}:{pr_id}",
         audience=NotifyAudience.OWNER_ESCALATION,
     )
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +116,6 @@ class ReviewArmContext:
 
     dispatcher: ReviewDispatcher | None
     enabled: bool
-    rounds_checked: bool = False
     self_identities: tuple[str, ...] = ()
     overlay: str = ""
 
@@ -180,14 +169,9 @@ def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:
     """Enqueue the claimable review task for *pr*; return whether one was armed."""
     if not ctx.enabled or ctx.dispatcher is None:
         return False
-    if not own_or_same_repo(pr, self_identities=ctx.self_identities) or pr_ticket_under_external_delivery(
-        slug=pr.slug, pr_id=pr.number, pr_url=pr.url
-    ):
+    if not own_or_same_repo(pr, self_identities=ctx.self_identities):
         return False
-    if not ctx.rounds_checked and review_rounds_exhausted(
-        slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha
-    ):
-        notify_review_rounds_exhausted(slug=pr.slug, pr_id=pr.number, pr_url=pr.url, head_sha=pr.head_sha)
+    if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
         return False
     if review_in_flight_for_pr(pr_url=pr.url):
         return False

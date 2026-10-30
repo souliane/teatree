@@ -6,7 +6,8 @@ merges and nobody is told why. Silence is the defect, not the skip.
 
 This reads the sweep's own emitted signals rather than reaching into the scanner, so
 ``pr_sweep`` needs no hook: every outcome on which the PR did NOT land extends that
-PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, and a streak reaching
+PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, a :data:`_NEUTRAL_KINDS`
+outcome (a live critic the merge awaits) neither extends nor resolves it, and a streak reaching
 :data:`SURFACE_AFTER_TICKS` is announced once per reason group episode.
 A deliberately-parked reason (a draft PR) never announces however long it runs, and the
 doctor's standing view is ONE finding naming the count rather than a line per row (#4523).

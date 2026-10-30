@@ -18,7 +18,7 @@ array against a median merged diff of 287 lines.
 from typing import Final
 
 CRITIC_REMEDY: Final[str] = (
-    "Inspect the failed critic tasks; record a verified verdict with `manage.py ticket critic-record` "
+    "Inspect the failed critic tasks; record a verified verdict with `t3 <overlay> ticket critic-record` "
     "or push a new commit."
 )
 
