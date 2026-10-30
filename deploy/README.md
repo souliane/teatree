@@ -1249,16 +1249,16 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   t3 dashboard --port 9111  # the published mapping follows the flag
   ```
 
-  The same forwarder also publishes `127.0.0.1:8804` for the Terminal button.
-  ttyd listens on that fixed port with a secret URL path, an origin check and a
-  one-client limit; only one terminal can run at a time. A plain SSH tunnel to
-  the dashboard needs a second mapping: `ssh -L 8000:127.0.0.1:8000 -L
-  8804:127.0.0.1:8804 <box>`. The panel shows this hint if the browser cannot
-  reach the terminal port.
+  The admin container uses host networking, so ttyd binds directly to the box's
+  `127.0.0.1:8804` for the Terminal button. The forwarder must leave that port
+  free. ttyd uses a secret URL path, an origin check and a one-client limit; only
+  one terminal can run at a time. A plain SSH tunnel to the dashboard needs a
+  second mapping: `ssh -L 8000:127.0.0.1:8000 -L 8804:127.0.0.1:8804 <box>`.
+  The panel shows this hint if the browser cannot reach the terminal port.
 
   A running forwarder is reused only while its `teatree.admin-container` label names
-  the current admin container and its ports label includes the terminal route; a
-  stale forwarder is removed and restarted.
+  the current admin container and its ports label names only the dashboard route;
+  a stale two-port forwarder is removed and restarted to release port 8804.
 
   Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
   dashboard local; the forwarder's own listener binds every interface because a

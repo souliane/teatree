@@ -38,9 +38,9 @@ ssh -L 8000:127.0.0.1:8000 <box>   # then open http://127.0.0.1:8000/dash/ local
 When teatree is *up* but a ticket is stuck, the ticket drawer's **Debug session**
 button spawns one `ttyd --writable --once` on `127.0.0.1:8804` wrapping a
 `claude` session (fresh, or `--resume <session>` from the card). The URL has a
-secret path; origin checking and a one-client limit guard the websocket. `t3
-dashboard` forwards port 8804 beside the dashboard port. Over a plain SSH
-connection, add `ssh -L 8804:127.0.0.1:8804 <box>`; only one terminal can use
+secret path; origin checking and a one-client limit guard the websocket. The
+admin container uses host networking, so ttyd binds the box's loopback directly.
+Over a plain SSH connection, add `ssh -L 8804:127.0.0.1:8804 <box>`; only one terminal can use
 the port at a time. An unused terminal closes after two minutes. If Django is
 down, fall back to tier 1.
 

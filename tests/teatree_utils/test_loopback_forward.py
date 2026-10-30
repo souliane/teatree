@@ -163,7 +163,7 @@ class TestReuseVersusRefusal:
         assert result.url == f"http://127.0.0.1:{port}"
         assert result.error == ""
         # Reused, not owned: closing must not stop the process that actually holds it.
-        assert all(forward.address != ("127.0.0.1", port) for forward in result.forwards)
+        assert result.forward is None
         result.close()
 
     def test_refuses_a_listener_no_marker_claims(
@@ -194,13 +194,14 @@ class TestReuseVersusRefusal:
         result = ensure_admin_forward(port=0)
         try:
             assert result.error == ""
-            assert len(result.forwards) == 2
-            assert all(forward.address is not None and forward.address[0] == "127.0.0.1" for forward in result.forwards)
+            assert result.forward is not None
+            assert result.forward.address is not None
+            assert result.forward.address[0] == "127.0.0.1"
         finally:
             result.close()
-        assert all(forward.address is None for forward in result.forwards)
+        assert result.forward.address is None
 
-    def test_a_foreign_terminal_listener_reports_a_warning_but_keeps_admin(
+    def test_host_network_terminal_listener_does_not_block_dashboard_forward(
         self, marker_home: Path, stack_up: None, sockets: Callable[[], socket.socket]
     ) -> None:
         blocker = sockets()
@@ -209,8 +210,8 @@ class TestReuseVersusRefusal:
             result = ensure_admin_forward(port=0)
         try:
             assert result.url.startswith("http://127.0.0.1:")
-            assert f"terminal port {terminal_port}" in result.error
-            assert len(result.forwards) == 1
+            assert result.error == ""
+            assert result.forward is not None
         finally:
             result.close()
 
@@ -219,21 +220,6 @@ class TestReuseVersusRefusal:
             result = ensure_admin_forward(port=8804)
         assert result.url == ""
         assert "reserved" in result.error
-
-    def test_native_terminal_route_reuses_a_claimed_listener(
-        self, marker_home: Path, stack_up: None, sockets: Callable[[], socket.socket]
-    ) -> None:
-        blocker = sockets()
-        terminal_port = _port_of(blocker)
-        (marker_home / f"loopback-forward-{terminal_port}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-        with patch("teatree.utils.loopback_forward.TERMINAL_PORT", terminal_port):
-            result = ensure_admin_forward(port=0)
-        try:
-            assert result.error == ""
-            assert len(result.forwards) == 1
-            assert result.url.startswith("http://127.0.0.1:")
-        finally:
-            result.close()
 
 
 def _dead_pid() -> int:
@@ -261,7 +247,7 @@ class TestItDeclinesInsteadOfBlocking:
 
         assert result.url == ""
         assert "no running teatree-admin container" in result.error
-        assert result.forwards == ()
+        assert result.forward is None
 
     def test_a_stopped_stack_is_reported_from_inside_a_container_too(self, marker_home: Path) -> None:
         # The venue changes HOW the forward is made, never whether the stack is up.
@@ -344,7 +330,7 @@ def _containerized_stack(ps_answer: Callable[[list[str]], str]) -> Generator[lis
         yield calls
 
 
-def _a_running_forwarder(label: str | None, *, terminal_route: bool = True) -> Callable[[list[str]], str]:
+def _a_running_forwarder(label: str | None, *, ports_label: str = "8803") -> Callable[[list[str]], str]:
     def answer(cmd: list[str]) -> str:
         label_filters = [
             cmd[index + 1]
@@ -352,8 +338,7 @@ def _a_running_forwarder(label: str | None, *, terminal_route: bool = True) -> C
             if value == "--filter" and cmd[index + 1].startswith("label=")
         ]
         expected = [f"label={label}"]
-        if terminal_route:
-            expected.append("label=teatree.forward-ports=8803,8804")
+        expected.append(f"label=teatree.forward-ports={ports_label}")
         return "old-forwarder" if not label_filters or label_filters == expected else ""
 
     return answer
@@ -387,42 +372,13 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert "reserved" in result.error
         assert not any(call[1:2] == ["run"] for call in containerized_stack_up)
 
-    def test_it_publishes_and_bridges_the_terminal_port(self, containerized_stack_up: list[list[str]]) -> None:
+    def test_host_network_terminal_port_is_not_published_twice(self, containerized_stack_up: list[list[str]]) -> None:
         ensure_admin_forward(port=8803)
         argv = _run_argv(containerized_stack_up)
         publish = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--publish"]
-        assert publish == ["127.0.0.1:8803:8803", "127.0.0.1:8804:8804"]
+        assert publish == ["127.0.0.1:8803:8803"]
         source = argv[-1]
-        assert "8804" in source
-        assert 'create_connection(("127.0.0.1", 8804))' in source
-
-    def test_failed_terminal_publish_keeps_the_dashboard_route(self) -> None:
-        calls: list[tuple[str, ...]] = []
-
-        def answer(*args: str) -> str:
-            calls.append(args)
-            if args[0] == "inspect":
-                return "admin-image"
-            if args[0] == "run":
-                return "" if sum(call[0] == "run" for call in calls) == 1 else "dashboard-forwarder"
-            return ""
-
-        with (
-            patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
-            patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
-            patch("teatree.utils.loopback_forward._docker", side_effect=answer),
-            patch("teatree.utils.loopback_forward._docker_socket_gid", return_value=0),
-        ):
-            result = ensure_admin_forward(port=8803)
-
-        runs = [call for call in calls if call[0] == "run"]
-        assert result.url == "http://127.0.0.1:8803"
-        assert "terminal" in result.error
-        assert len(runs) == 2
-        assert "127.0.0.1:8804:8804" in runs[0]
-        assert "127.0.0.1:8804:8804" not in runs[1]
-        assert "127.0.0.1:8803:8803" in runs[1]
-        assert "teatree.forward-ports=8803" in runs[1]
+        assert 'create_connection(("127.0.0.1", 8000))' in source
 
     def test_the_published_mapping_is_pinned_to_the_host_loopback(
         self, containerized_stack_up: list[list[str]]
@@ -450,7 +406,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
         source = _run_argv(containerized_stack_up)[-1]
         assert "listener.bind(('0.0.0.0', port))" in source
         assert "(8803," in source
-        assert "(8804," in source
+        assert "(8804," not in source
 
     def test_it_bridges_through_the_admins_own_loopback(self, containerized_stack_up: list[list[str]]) -> None:
         # The trust anchor: gunicorn must still see 127.0.0.1 as its peer, so the last
@@ -477,9 +433,9 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert [call[1] for call in calls] == ["ps"]
         assert f"label=teatree.admin-container={_ADMIN_CONTAINER}" in calls[0]
 
-    def test_a_forwarder_missing_the_terminal_route_is_replaced(self) -> None:
+    def test_a_two_port_forwarder_is_replaced_to_release_the_terminal_port(self) -> None:
         with _containerized_stack(
-            _a_running_forwarder(f"teatree.admin-container={_ADMIN_CONTAINER}", terminal_route=False)
+            _a_running_forwarder(f"teatree.admin-container={_ADMIN_CONTAINER}", ports_label="8803,8804")
         ) as calls:
             result = ensure_admin_forward(port=8803)
         assert result.url == "http://127.0.0.1:8803"
@@ -502,7 +458,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
         with (
             patch("teatree.utils.loopback_forward.running_in_container", return_value=True),
             patch("teatree.utils.loopback_forward._running_admin_containers", return_value=[_ADMIN_CONTAINER]),
-            patch("teatree.utils.loopback_forward._docker", side_effect=["", "an/image", "", "", "", ""]),
+            patch("teatree.utils.loopback_forward._docker", side_effect=["", "an/image", "", ""]),
         ):
             result = ensure_admin_forward(port=8803)
 
@@ -510,7 +466,7 @@ class TestTheContainerizedVenuePublishesAHostPort:
         assert "could not start the published forwarder" in result.error
 
 
-def test_published_terminal_route_relays_websocket_upgrade(tmp_path: Path) -> None:
+def test_published_route_relays_websocket_upgrade(tmp_path: Path) -> None:
     docker = tmp_path / "docker"
     docker.write_text('#!/bin/sh\nshift 3\nexec "$@"\n', encoding="utf-8")
     docker.chmod(0o755)

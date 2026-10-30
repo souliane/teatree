@@ -1,13 +1,9 @@
-"""A loopback-only TCP forward from a fixed host port into a container's own loopback.
+"""A loopback-only TCP forward from a fixed host port into the admin process.
 
-The admin gunicorn binds the CONTAINER's ``127.0.0.1``, and
+The admin container uses host networking and gunicorn binds ``127.0.0.1:8000``.
 :class:`~teatree.core.middleware.LocalAdminAutoLoginMiddleware` authenticates a request
-only when its real peer is loopback — so neither obvious way to reach it from a host
-browser works: a published bridge port NATs the source to the docker gateway, and a
-same-host reverse proxy in front of the admin is forbidden outright (``deploy/README.md``
-§ "Access & networking"). Each accepted connection is bridged through ``docker exec -i``
-instead, which publishes nothing and proxies nothing, so the loopback trust model is
-untouched.
+only when its real peer is loopback. The dashboard forward presents a stable URL on
+another host loopback port and bridges through ``docker exec -i``, preserving that peer.
 
 TWO VENUES REACH THIS, and only one of them can bind a host port. A native ``t3 admin``
 binds ``127.0.0.1`` on the host directly. The containerized CLI (``deploy/t3``) cannot —
@@ -18,7 +14,8 @@ interface and never to its loopback; the host side of that mapping is pinned to
 ``127.0.0.1``, so the dashboard still never leaves the host. Both venues end at the same
 ``docker exec`` bridge, so the admin's peer is its own loopback either way.
 
-The terminal route carries ttyd's fixed loopback port beside the dashboard route.
+The admin uses host networking, so ttyd's fixed loopback port is already on the
+host. Forwarding that same port would occupy it before ttyd could bind.
 """
 
 import os
@@ -279,16 +276,16 @@ class LoopbackForward:
 
 @dataclass(frozen=True, slots=True)
 class ForwardResult:
-    """The admin URL, any route warning, and the forwards this process owns."""
+    """The admin URL or failure, and the forward this process owns."""
 
     url: str = ""
     error: str = ""
-    forwards: tuple[LoopbackForward, ...] = ()
+    forward: LoopbackForward | None = None
 
     def close(self) -> None:
         """Stop a forward THIS process started; a reused one stays with the process owning it."""
-        for forward in self.forwards:
-            forward.close()
+        if self.forward is not None:
+            self.forward.close()
 
 
 def _docker(*args: str) -> str:
@@ -336,7 +333,7 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
         return ForwardResult(error=f"dashboard port {port} is reserved for the terminal")
     # The bridge targets this admin id, which changes when the admin is recreated.
     label = f"{_FORWARDER_ADMIN_LABEL}={container}"
-    ports_label = f"{_FORWARDER_PORTS_LABEL}={port},{TERMINAL_PORT}"
+    ports_label = f"{_FORWARDER_PORTS_LABEL}={port}"
     if _docker(
         "ps",
         "--filter",
@@ -354,46 +351,34 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     image = _container_image(container)
     if not image:
         return ForwardResult(error=f"cannot resolve the {_ADMIN_SERVICE} container's image to run the forwarder from")
-    for ports in ((port, TERMINAL_PORT), (port,)):
-        _docker("rm", "--force", name)
-        routes = tuple(
-            (
-                host_port,
-                _BRIDGE_SOURCE.format(
-                    host=_LOOPBACK,
-                    port=_ADMIN_CONTAINER_PORT if host_port == port else TERMINAL_PORT,
-                    size=_RELAY_CHUNK,
-                ),
-            )
-            for host_port in ports
-        )
-        publish = [arg for host_port in ports for arg in ("--publish", f"{_LOOPBACK}:{host_port}:{host_port}")]
-        started = _docker(
-            "run",
-            "--detach",
-            "--rm",
-            "--label",
-            label,
-            "--label",
-            f"{_FORWARDER_PORTS_LABEL}={','.join(map(str, ports))}",
-            "--name",
-            name,
-            *publish,
-            "--volume",
-            f"{_DOCKER_SOCKET}:{_DOCKER_SOCKET}",
-            "--group-add",
-            str(_docker_socket_gid()),
-            "--memory",
-            _FORWARDER_MEMORY,
-            "--entrypoint",
-            "python3",
-            image,
-            "-c",
-            _FORWARDER_SOURCE.format(container=container, routes=routes, size=_RELAY_CHUNK, bind=_ALL_INTERFACES),
-        )
-        if started:
-            warning = f"terminal port {TERMINAL_PORT} could not be published" if len(ports) == 1 else ""
-            return ForwardResult(url=url, error=warning)
+    _docker("rm", "--force", name)
+    routes = ((port, _BRIDGE_SOURCE.format(host=_LOOPBACK, port=_ADMIN_CONTAINER_PORT, size=_RELAY_CHUNK)),)
+    started = _docker(
+        "run",
+        "--detach",
+        "--rm",
+        "--label",
+        label,
+        "--label",
+        ports_label,
+        "--name",
+        name,
+        "--publish",
+        f"{_LOOPBACK}:{port}:{port}",
+        "--volume",
+        f"{_DOCKER_SOCKET}:{_DOCKER_SOCKET}",
+        "--group-add",
+        str(_docker_socket_gid()),
+        "--memory",
+        _FORWARDER_MEMORY,
+        "--entrypoint",
+        "python3",
+        image,
+        "-c",
+        _FORWARDER_SOURCE.format(container=container, routes=routes, size=_RELAY_CHUNK, bind=_ALL_INTERFACES),
+    )
+    if started:
+        return ForwardResult(url=url)
     return ForwardResult(error=f"could not start the published forwarder container {name}")
 
 
@@ -431,24 +416,9 @@ def _ensure_native_forward(container: str, *, port: int) -> ForwardResult:
         forward.start()
     except OSError as exc:
         if _OwnerMarker(port).held_by_live_process():
-            return _ensure_terminal_forward(container, url=forward.url)
+            return ForwardResult(url=forward.url)
         return ForwardResult(error=f"{_LOOPBACK}:{port} is held by a listener teatree does not own ({exc})")
-    return _ensure_terminal_forward(container, url=forward.url, owned=(forward,))
-
-
-def _ensure_terminal_forward(container: str, *, url: str, owned: tuple[LoopbackForward, ...] = ()) -> ForwardResult:
-    terminal = LoopbackForward(container, TERMINAL_PORT, port=TERMINAL_PORT)
-    try:
-        terminal.start()
-    except OSError as exc:
-        if _OwnerMarker(TERMINAL_PORT).held_by_live_process():
-            return ForwardResult(url=url, forwards=owned)
-        return ForwardResult(
-            url=url,
-            error=f"terminal port {TERMINAL_PORT} is held by a listener teatree does not own ({exc})",
-            forwards=owned,
-        )
-    return ForwardResult(url=url, forwards=(*owned, terminal))
+    return ForwardResult(url=forward.url, forward=forward)
 
 
 __all__ = ["FORWARD_PORT", "TERMINAL_PORT", "ForwardResult", "LoopbackForward", "ensure_admin_forward"]
