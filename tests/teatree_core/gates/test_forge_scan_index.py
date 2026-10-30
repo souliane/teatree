@@ -65,8 +65,10 @@ def test_orphan_workers_share_scan_scope() -> None:
         patch("teatree.core.gates.orphan_guard.clone_root", return_value=Path("/tmp")),
         patch("teatree.core.gates.orphan_guard.resolve_clone_path", return_value=Path("/tmp")),
         patch("teatree.core.gates.orphan_guard.classify_branch", side_effect=classify),
+        branch_scan_scope() as index,
     ):
         assert find_orphans_in_workspace(rows=rows) == []
     assert len(seen) == 50
-    assert seen[0] is not None
-    assert all(index is seen[0] for index in seen)
+    assert seen[0] is index
+    assert all(item is index for item in seen)
+    assert active_branch_scan_index() is None
