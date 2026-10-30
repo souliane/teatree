@@ -27,6 +27,7 @@ def test_launch_ttyd_spawns_writable_once_on_loopback() -> None:
     argv = spawn.call_args.args[0]
     assert "--writable" in argv
     assert "--once" in argv
+    assert "--check-origin" in argv
     assert "127.0.0.1" in argv
     assert result.pid == 999
 

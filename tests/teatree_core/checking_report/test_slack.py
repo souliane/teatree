@@ -32,6 +32,25 @@ def _shoot(beat: ListenerBeat | None = None, *, missing_listener: bool = False) 
 
 
 class CheckingShootTestCase(TestCase):
+    def test_finished_subject_is_settled_before_shoot_posts(self) -> None:
+        ticket = TicketFactory()
+        task = TaskFactory(ticket=ticket, session__ticket=ticket)
+        question = DeferredQuestion.record("Can I publish?", parked_task=task, card=owner_card())
+        ticket.state = ticket.State.DELIVERED
+        ticket.save(update_fields=["state"])
+        backend = MagicMock(user_id="U_ME")
+
+        with (
+            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=False),
+        ):
+            report = _shoot()
+
+        question.refresh_from_db()
+        assert report["posted"] == 0
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        backend.post_message.assert_not_called()
+
     def test_stuck_owner_answer_uses_fallback(self) -> None:
         IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,

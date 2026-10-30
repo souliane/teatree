@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import phase_wedges_healed
 from teatree.core.provision.failure_question import provision_failures_healed
@@ -45,8 +46,15 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
 
 
 def live_owner_questions() -> list[DeferredQuestion]:
-    """The pending owner-audience backlog, healed rows withdrawn."""
-    return withdraw_healed(DeferredQuestion.owner_pending())
+    """The pending owner-audience backlog, healed or finished rows withdrawn."""
+    live: list[DeferredQuestion] = []
+    rows = DeferredQuestion.owner_pending().select_related("parked_task__ticket", "task_session__ticket")
+    for row in withdraw_healed(rows):
+        if reason := finished_subject_reason(row):
+            row.mark_stale(reason, resolver_id="subject_terminal")
+        else:
+            live.append(row)
+    return live
 
 
 def withhold(row: DeferredQuestion, problems: Sequence[str]) -> bool:

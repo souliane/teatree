@@ -245,6 +245,22 @@ class TestCheckingShow:
         assert "failed run" in text.lower()
         assert "[restore delivery](https://github.com/acme/widgets/issues/725)" in text
 
+    def test_brief_keeps_old_failed_run_without_ticket_url(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="", state=Ticket.State.NOT_STARTED, short_description="restore delivery"
+        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(
+            task=task, ended_at=timezone.now() - timedelta(days=2), exit_code=1, error="agent crashed"
+        )
+
+        text = _call("checking", "brief", "--this-overlay", "--no-advance")
+        needs_you = _show_json()["needs_you"]
+
+        assert "Failed run: restore delivery" in text
+        assert "No active feature work" not in text
+        assert needs_you["total"] == 1
+
     def test_brief_keeps_held_pull_request_visible(self, checkpoint_file: Path) -> None:
         for index in range(6):
             other = Ticket.objects.create(

@@ -19,7 +19,8 @@ from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.core.review.pr_next_action import UPDATE_BRANCH
 from teatree.paths import teatree_source_root
-from teatree.utils.git_run import run_strict
+from teatree.utils.git_run import run_strict, run_with_status
+from teatree.utils.run import CompletedProcess, run_bounded_group
 from tests._owner_channel import owner_card
 from tests.factories import MergeAuditFactory, PullRequestFactory, TaskFactory, TicketFactory
 
@@ -70,12 +71,12 @@ class CheckInFeatureStatusTestCase(TestCase):
         status = report.to_dict()["status_by_feature"]
         assert [feature["title"] for feature in status["features"]] == [
             "dashboard access",
-            "review workflow",
-            "message delivery",
             "Other maintenance",
+            "message delivery",
+            "review workflow",
         ]
         assert report.to_terse().startswith("Status by feature\n")
-        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[2]
+        assert "https://github.com/example/widgets/pull/203" in report.status_by_feature.render()[4]
         assert status["features"][2]["left"][0]["url"] == "https://github.com/example/widgets/pull/202"
         assert status["features"][0]["owner_waits"][0]["url"].startswith("https://slack.com/archives/")
         assert status["not_yet_deployed"] == []
@@ -137,6 +138,23 @@ class CheckInFeatureStatusTestCase(TestCase):
             status = self._report().status_by_feature
 
         assert status.deploy_state == "unknown"
+
+    def test_failed_batch_object_read_degrades_deployment_to_unknown(self) -> None:
+        repo = str(teatree_source_root())
+        serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD~1"])
+        merged_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/414")
+        MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
+
+        with patch(
+            "teatree.core.checking_report.status.run_bounded_group",
+            return_value=CompletedProcess(["git", "cat-file"], 1, "", "read failed"),
+        ):
+            status = self._report().status_by_feature
+
+        assert status.deploy_state == "unknown"
+        assert len(status.not_yet_deployed) == 1
 
     def test_other_repository_merge_does_not_change_worker_deployment_state(self) -> None:
         sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
@@ -230,6 +248,7 @@ class CheckInFeatureStatusTestCase(TestCase):
     def test_technical_words_survive_number_removal(self) -> None:
         assert plain_title("Fix S3 bucket policy") == "Fix S3 bucket policy"
         assert plain_title("IPv6 routing") == "IPv6 routing"
+        assert plain_title("Fix SHA256 digest") == "Fix SHA digest"
 
     def test_red_pull_request_survives_feature_cap(self) -> None:
         for number in range(8):
@@ -269,6 +288,67 @@ class CheckInFeatureStatusTestCase(TestCase):
 
         assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/911"]
         assert status.features[0].title == "delayed delivery"
+
+    def test_delivered_ticket_stays_undeployed_after_checkpoint(self) -> None:
+        serving_sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        ticket = TicketFactory(
+            issue_url="https://github.com/souliane/teatree/issues/912",
+            short_description="delayed rollout",
+            state=Ticket.State.DELIVERED,
+        )
+        audit = MergeAuditFactory(
+            clear__ticket=ticket, clear__slug="souliane/teatree", clear__pr_id=913, merged_sha="a" * 40
+        )
+        audit.merged_at = timezone.now() - timedelta(days=2)
+        audit.save(update_fields=["merged_at"])
+
+        status = self._report().status_by_feature
+
+        assert [item.url for item in status.not_yet_deployed] == ["https://github.com/souliane/teatree/pull/913"]
+        assert status.features[0].title == "delayed rollout"
+
+    def test_deployment_ancestry_uses_one_git_read_for_backlog(self) -> None:
+        repo = str(teatree_source_root())
+        serving_sha = run_strict(repo=repo, args=["rev-parse", "HEAD~1"])
+        merged_sha = run_strict(repo=repo, args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        for _number in range(10):
+            ticket = TicketFactory(state=Ticket.State.DELIVERED)
+            audit = MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=merged_sha)
+            audit.merged_at = timezone.now() - timedelta(days=2)
+            audit.save(update_fields=["merged_at"])
+
+        with (
+            patch("teatree.core.checking_report.status.run_with_status", wraps=run_with_status) as git,
+            patch("teatree.core.checking_report.status.run_bounded_group", wraps=run_bounded_group) as batch,
+        ):
+            status = self._report().status_by_feature
+
+        assert git.call_count == 1
+        assert batch.call_count == 1
+        assert len(status.not_yet_deployed) == 10
+        assert status.deploy_state == "waiting"
+
+    def test_live_completed_blocks_do_not_hide_active_work(self) -> None:
+        serving_sha = run_strict(repo=str(teatree_source_root()), args=["rev-parse", "HEAD"])
+        WorkerGeneration.objects.create(sha=serving_sha, image="test-image", state=WorkerGeneration.State.ACTIVE)
+        for number in range(8):
+            ticket = TicketFactory(
+                issue_url=f"https://github.com/souliane/teatree/issues/{930 + number}",
+                short_description=f"finished feature {chr(65 + number)}",
+            )
+            MergeAuditFactory(clear__ticket=ticket, clear__slug="souliane/teatree", merged_sha=serving_sha)
+        active = TicketFactory(
+            issue_url="https://github.com/souliane/teatree/issues/940",
+            short_description="active feature",
+            state=Ticket.State.CODED,
+        )
+
+        status = self._report().status_by_feature
+
+        assert any(block.title == active.short_description for block in status.features)
+        assert status.more == 1
 
     def test_related_features_share_a_named_lane_and_keep_problem_links(self) -> None:
         first = TicketFactory(

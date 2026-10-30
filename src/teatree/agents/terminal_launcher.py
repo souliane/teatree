@@ -142,7 +142,7 @@ def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> Lau
     # can fill the OS pipe buffer and block a chatty ttyd mid-session. The reaper's
     # liveness probe is an independent loopback ``lsof`` on the port, not ttyd's stderr.
     proc = spawn(
-        [ttyd_bin, "--writable", "--interface", _LOOPBACK, "--port", str(port), "--once", *command],
+        [ttyd_bin, "--writable", "--check-origin", "--interface", _LOOPBACK, "--port", str(port), "--once", *command],
         env=env,
         stdout=DEVNULL,
         stderr=DEVNULL,

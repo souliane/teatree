@@ -12,10 +12,10 @@ Default path (no ``--this-overlay``): aggregates all configured overlays,
 advancing each overlay's marker independently after gathering. ``--this-overlay``
 restores the pre-existing single-overlay scope (backward-compat).
 
-Read-only: every query underneath is a select; the command never transitions a
-ticket nor writes any row except the checkpoint marker. The report is routed
-through the machine-output seam — JSON on stdout under ``--json``, the terse
-human view on stderr — and returned as the typed payload.
+``show`` and ``brief`` read report rows and only the default path writes a
+checkpoint marker. ``shoot`` posts Slack questions and records delivery state.
+The report is routed through the machine-output seam — JSON on stdout under
+``--json``, the terse human view on stderr — and returned as the typed payload.
 """
 
 import hashlib
@@ -90,9 +90,9 @@ def _brief_critical_lines(groups: list[CheckGroup]) -> list[str]:
     lines: list[str] = []
     for group in groups:
         if group.title == "Needs you":
-            lines.extend(
-                f"Failed run: [{plain_title(item.title)}]({item.url})" for item in group.critical_items if item.url
-            )
+            for item in group.critical_items:
+                label = plain_title(item.title)
+                lines.append(f"Failed run: [{label}]({item.url})" if item.url else f"Failed run: {label}")
         elif group.title == "Remaining":
             lines.extend(f"Held pull request: [{plain_title(item.title)}]({item.url})" for item in group.critical_items)
     return lines

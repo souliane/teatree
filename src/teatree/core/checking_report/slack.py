@@ -11,6 +11,7 @@ from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.notify import resolve_owner_dm_backend
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
+from teatree.core.question_heal import live_owner_questions
 from teatree.utils.slack_links import slack_permalink
 
 _FAULT_KEY = "checking:slack"
@@ -70,6 +71,7 @@ def _linked_cards() -> list[ShootCardDict]:
 
 
 def shoot_questions(*, overlay: str, listener_stale: bool) -> ShootReportDict:
+    live_owner_questions()
     backend, _reason = resolve_owner_dm_backend()
     broken = _broken_reason(backend, listener_stale=listener_stale)
     if broken:

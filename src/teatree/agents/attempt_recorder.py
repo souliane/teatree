@@ -153,6 +153,10 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     ``record-attempt`` both land here. The ``additionalProperties: false`` rule and
     the one closed enum are enforced (no full JSON-Schema dependency).
     """
+    return _validate_result_keys(result, owner_stop_misfit(result) if "user_input_kind" in result else None)
+
+
+def _validate_result_keys(result: AgentResultBlob, misfit: MisfitAction | None) -> str:
     allowed = set(cast("JSONSchema", RESULT_JSON_SCHEMA.get("properties", {})).keys())
     unexpected = set(result) - allowed
     if unexpected:
@@ -166,7 +170,6 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
         return owner_stop_refusal("; ".join(problems))
-    misfit = owner_stop_misfit(result)
     if misfit in {MisfitAction.BACKGROUND_RETRY, MisfitAction.REFUSE_AND_DECIDE}:
         detail = (
             "automatic approval review refused a command; retry once in the background"
@@ -412,14 +415,15 @@ def _check_before_recording(
     out so that function stays a short record-or-refuse decision over ONE verdict
     rather than a ladder of early returns.
     """
+    misfit = owner_stop_misfit(result)
     if error := (
-        (_AUTOMATIC_REVIEW_PREFIX if owner_stop_misfit(result) is MisfitAction.BACKGROUND_RETRY else "")
-        or validate_result_keys(result)
+        (_AUTOMATIC_REVIEW_PREFIX if misfit is MisfitAction.BACKGROUND_RETRY else "")
+        or _validate_result_keys(result, misfit)
         or review_head_mismatch_refusal(task, result, phase=phase)
         or review_venue_limit_refusal(task, result, phase=phase)
         or (
             "result_error: routed agent access denied"
-            if usage.route_candidate_index is not None and owner_stop_misfit(result) is MisfitAction.ENVIRONMENT_FAILURE
+            if usage.route_candidate_index is not None and misfit is MisfitAction.ENVIRONMENT_FAILURE
             else ""
         )
     ):

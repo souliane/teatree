@@ -54,7 +54,7 @@ from teatree.core.owner_question_message import (
     shown_problems_for,
     withheld_message,
 )
-from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
+from teatree.core.question_heal import live_owner_questions, withhold
 from teatree.loop.preset_resolution import owner_zone
 
 # Bound first-card bursts after the owner returns; later ticks read the remaining backlog.
@@ -471,7 +471,9 @@ def drain_unmirrored_deferred_questions(
     is re-read every tick, so the backlog drains steadily instead of at once,
     and a question that has waited hours can wait one more cadence.
     """
-    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)[:_MAX_MIRRORS_PER_TICK]
+    rows = _checked((row for row in live_owner_questions() if not row.slack_ts), backend=backend)[
+        :_MAX_MIRRORS_PER_TICK
+    ]
     if not rows:
         return 0, 0
 

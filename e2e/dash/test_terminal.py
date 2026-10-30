@@ -10,13 +10,18 @@ import os
 import re
 import shutil
 import socket
+from collections.abc import Sequence
 from http import HTTPStatus
+from typing import IO
+from unittest.mock import patch
 
 import pytest
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
 from e2e.dash.pom import BoardPage
+from teatree.agents import terminal_launcher
+from teatree.utils.run import Popen
 
 _TERMINAL = "Open a loopback terminal session"
 _LOOPBACK_URL = re.compile(r"^http://127\.0\.0\.1:8804$")
@@ -63,14 +68,52 @@ def test_terminal_button_click_renders_launch_url(live_server: LiveServer, page:
     expect(result.get_by_role("link")).to_have_attribute("href", _LOOPBACK_URL)
     if page.request.get("http://127.0.0.1:8804").status != HTTPStatus.OK:
         pytest.fail("terminal did not answer HTTP")
-    key = base64.b64encode(os.urandom(16)).decode()
-    with socket.create_connection(("127.0.0.1", 8804), timeout=2) as client:
-        client.sendall(
-            (
-                "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:8804\r\nUpgrade: websocket\r\n"
-                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: tty\r\n\r\n"
-            ).encode()
-        )
-        if not client.recv(1024).startswith(b"HTTP/1.1 101 Switching Protocols"):
-            pytest.fail("terminal did not accept a websocket upgrade")
+
+
+@requires_ttyd
+def test_terminal_rejects_foreign_websocket_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setattr(terminal_launcher, "TERMINAL_PORT", port)
+    launched: list[Popen[str]] = []
+    real_spawn = terminal_launcher.spawn
+
+    def capture_spawn(
+        cmd: Sequence[str],
+        *,
+        env: dict[str, str] | None = None,
+        stdout: int | IO[bytes] | IO[str] | None = None,
+        stderr: int | IO[bytes] | IO[str] | None = None,
+    ) -> Popen[str]:
+        proc = real_spawn(cmd, env=env, stdout=stdout, stderr=stderr)
+        launched.append(proc)
+        return proc
+
+    with patch.object(terminal_launcher, "spawn", side_effect=capture_spawn):
+        result = terminal_launcher.launch_ttyd(["/bin/cat"])
+    if not result.launch_url:
+        pytest.fail(result.error)
+    try:
+
+        def upgrade(origin: str) -> bytes:
+            key = base64.b64encode(os.urandom(16)).decode()
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+                client.sendall(
+                    (
+                        f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n"
+                        f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: tty\r\n"
+                        f"Origin: {origin}\r\n\r\n"
+                    ).encode()
+                )
+                return client.recv(1024)
+
+        if upgrade("https://foreign.example").startswith(b"HTTP/1.1 101"):
+            pytest.fail("foreign origin obtained a writable terminal")
+        if not upgrade(f"http://127.0.0.1:{port}").startswith(b"HTTP/1.1 101"):
+            pytest.fail("same-origin terminal was rejected")
+    finally:
+        if launched[0].poll() is None:
+            launched[0].terminate()
+        launched[0].wait(timeout=2)

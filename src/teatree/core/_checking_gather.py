@@ -277,9 +277,14 @@ def motion_for_overlay(
 
 
 def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> models.QuerySet[TaskAttempt]:
+    latest_task_id = Task.objects.filter(ticket_id=OuterRef("task__ticket_id")).order_by("-pk").values("pk")[:1]
+    persistent_failure = Q(task__status=Task.Status.FAILED, task_id=Subquery(latest_task_id)) & ~Q(
+        task__ticket__state__in=Ticket.finished_states()
+    )
     attempts = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
+        TaskAttempt.objects.filter(ended_at__lt=now)
         .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
+        .filter(Q(ended_at__gte=since) | persistent_failure)
         .exclude(operator_cancel_q())
         .select_related("task__ticket")
         .order_by("-ended_at")

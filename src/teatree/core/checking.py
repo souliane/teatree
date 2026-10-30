@@ -15,8 +15,8 @@ Four delta groups scoped to the window ``[since, now)`` and one live group:
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
 * **Needs you** — all four live waiting kinds (NOT window-bounded: a
-    pending wait still needs the user however old it is) plus failed
-    ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
+    pending wait still needs the user however old it is) plus in-window failed
+    ``TaskAttempt`` runs and persistent latest failed tasks. Failed runs are the durable
     proxy for "blocked" — core makes no live forge calls; an overlay opts into
     richer signals via :meth:`OverlayBase.get_checking_sources`.
 * **Metered** — one row per ticket with metered attempts inside the window,
