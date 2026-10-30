@@ -32,6 +32,13 @@ def _recovery_stamp_path() -> Path:
     return data_dir_root() / _RECOVERY_STAMP_NAME
 
 
+def _stamped_at(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _recovery_prelude_due() -> bool:
     stamp = _recovery_stamp_path()
     try:
@@ -39,9 +46,9 @@ def _recovery_prelude_due() -> bool:
         descriptor = os.open(stamp, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            previous = handle.read().strip()
+            previous = _stamped_at(handle.read())
             now = time.time()
-            if previous and 0 <= now - float(previous) < RECOVERY_PRELUDE_INTERVAL_SECONDS:
+            if previous is not None and 0 <= now - previous < RECOVERY_PRELUDE_INTERVAL_SECONDS:
                 logger.debug("Recovery prelude skipped inside interval: %s", stamp)
                 return False
             handle.seek(0)

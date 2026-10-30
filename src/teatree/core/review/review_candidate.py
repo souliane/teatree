@@ -129,11 +129,13 @@ def _is_self_authored(
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     if not author:
         return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
+    # Forge logins are case-insensitive, so a case-only difference is still the same account.
     self_identities = {name.casefold() for name in _resolve_self_identities(mr_url, identities)}
-    if author_is_self(author.casefold(), current_user="", self_identities=self_identities):
-        verdict = AuthorshipVerdict.SELF
-    else:
-        verdict = AuthorshipVerdict.FOREIGN
+    verdict = (
+        AuthorshipVerdict.SELF
+        if author_is_self(author.casefold(), current_user="", self_identities=self_identities)
+        else AuthorshipVerdict.FOREIGN
+    )
     return _observed_authorship(mr_url, author, verdict)
 
 

@@ -93,6 +93,21 @@ class TestReapStaleTaskClaims(TestCase):
             _reap_stale_task_claims({})
             assert boot.call_count == 2
 
+    def test_non_numeric_stamp_is_rewritten_so_the_throttle_recovers(self) -> None:
+        with TemporaryDirectory() as root:
+            stamp = Path(root) / "recovery-prelude.stamp"
+            stamp.write_text("not-a-number", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"T3_DATA_DIR": root}),
+                patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="stopped"),
+                patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps") as boot,
+                patch("teatree.loop.question_drain.drain_pending_questions"),
+            ):
+                _reap_stale_task_claims()
+                _reap_stale_task_claims()
+            boot.assert_called_once()
+            assert float(stamp.read_text(encoding="utf-8")) > 0
+
     def test_unreadable_stamp_runs_prelude_and_warns_with_path(self) -> None:
         with TemporaryDirectory() as root:
             stamp = Path(root) / "recovery-prelude.stamp"
