@@ -1,28 +1,24 @@
 """Refuse a push to a declared bot namespace under a human credential or commit identity."""
 
-import atexit
 import json
 import os
 import sys
 from dataclasses import dataclass
+from http.client import HTTPSConnection
 from pathlib import Path
 from urllib.parse import urlsplit
-
-import httpx
 
 from teatree.config import cold_reader
 from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path, host_of_slug
 from teatree.hooks._repo_visibility import slug_for_remote_url
 from teatree.hooks.remote_holds import remote_holdings
-from teatree.utils.forge_http import ForgeConnections
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 _ZERO = "0" * 40
 _PROBE_TIMEOUT_SECONDS = 8
+HTTP_OK = 200
 _REF_FIELDS = 4
 _COMMIT_FIELDS = 4
-_BOT_PROBE_CONNECTIONS = ForgeConnections(max_connections=1)
-atexit.register(_BOT_PROBE_CONNECTIONS.close)
 
 
 class BotIdentityUnreadableError(RuntimeError):
@@ -69,14 +65,15 @@ def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *
         return ""
     try:
         if forge == GITLAB:
-            url = f"https://{host}/api/v4/user"
-            response = _BOT_PROBE_CONNECTIONS.session_for(url).get(
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=_PROBE_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            connection = HTTPSConnection(host, timeout=_PROBE_TIMEOUT_SECONDS)
+            try:
+                connection.request("GET", "/api/v4/user", headers={"Authorization": f"Bearer {token}"})
+                response = connection.getresponse()
+                if response.status != HTTP_OK:
+                    return ""
+                payload = json.load(response)
+            finally:
+                connection.close()
         else:
             result = run_allowed_to_fail(
                 [FORGE_TOOL[forge], "api", "user", "--hostname", host],
@@ -85,7 +82,7 @@ def _credential_login(forge: str, host: str, remote_url: str, token: str = "", *
                 timeout=_PROBE_TIMEOUT_SECONDS,
             )
             payload = json.loads(result.stdout) if result.returncode == 0 else None
-    except (OSError, TimeoutExpired, ValueError, httpx.HTTPError):
+    except (OSError, TimeoutExpired, ValueError):
         return ""
     key = "login" if forge == GITHUB else "username"
     login = payload.get(key) if isinstance(payload, dict) else None
