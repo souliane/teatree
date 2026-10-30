@@ -329,7 +329,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         assert scanner.scans == 2
         assert Loop.objects.get(name="eval_local").last_run_at is not None
 
-    def test_empty_triage_does_not_recheck_before_its_cadence(self) -> None:
+    def test_empty_triage_rechecks_on_the_next_tick(self) -> None:
         host = Mock()
         host.list_labeled_issues.return_value = []
         scanner = TriageAssessorScanner(
@@ -358,10 +358,10 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             patch("teatree.loop.tick.scan_phase", side_effect=TestPeriodicLoopHandover._scan_inline),
         ):
             _run(loop="triage_assessor")
-            assert Loop.objects.get(name="triage_assessor").last_run_at is not None
+            assert Loop.objects.get(name="triage_assessor").last_run_at is None
             _run(loop="triage_assessor")
 
-        host.list_labeled_issues.assert_called_once()
+        assert host.list_labeled_issues.call_count == 2
 
     def test_named_non_retry_returns_keep_all_periodic_anchors(self) -> None:
         phases = {
@@ -468,7 +468,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         assert KnownIssue.objects.open().filter(fingerprint="loop-silent:news").exists()
         assert Loop.objects.get(name="news").last_run_at is None
 
-    def test_periodic_factory_with_no_job_names_reason_and_keeps_anchor(self) -> None:
+    def test_periodic_factory_with_no_job_names_reason_and_retries(self) -> None:
         prompt = Prompt.objects.create(name="no-job-news-prompt", body="test")
         Loop.objects.get_or_create(name="news", defaults={"delay_seconds": 3600, "prompt": prompt})
         Loop.objects.filter(name="news").update(delay_seconds=3600, daily_at=None, last_run_at=None)
@@ -491,14 +491,13 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             self.assertLogs("teatree.loops.tick_outcome", level="WARNING") as logs,
         ):
             _run(loop="news")
-            claimed_at = Loop.objects.get(name="news").last_run_at
+            assert Loop.objects.get(name="news").last_run_at is None
             _run(loop="news")
 
         assert any("news" in line and "no scanner job" in line for line in logs.output)
         assert KnownIssue.objects.open().filter(fingerprint="loop-silent:news").exists()
-        assert claimed_at is not None
-        assert Loop.objects.get(name="news").last_run_at == claimed_at
-        build_jobs.assert_called_once()
+        assert Loop.objects.get(name="news").last_run_at is None
+        assert build_jobs.call_count == 2
 
 
 def _periodic_scanner(loop: str) -> Scanner:
