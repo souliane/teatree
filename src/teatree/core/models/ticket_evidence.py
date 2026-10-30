@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -24,6 +23,8 @@ if TYPE_CHECKING:
 
 #: ``extra`` slot holding one durable agent conversation per ``Task.pk`` (``TicketExtra.pydantic_ai_threads``).
 TASK_THREADS_KEY = "pydantic_ai_threads"
+type PopKey = str | tuple[str, str]
+type PopKeys = list[str] | list[tuple[str, str]] | list[PopKey] | tuple[PopKey, ...]
 
 
 def phase_attempt_count(ticket: "TicketEvidenceModel", phase: str) -> int:
@@ -124,7 +125,7 @@ class TicketEvidenceModel(TicketFacet):
         return raw
 
     @staticmethod
-    def _pop_extra_keys(merged: "JSONObject", keys: Sequence[str | tuple[str, str]] | None) -> None:
+    def _pop_extra_keys(merged: "JSONObject", keys: PopKeys | None) -> None:
         for key in keys or []:
             if isinstance(key, str):
                 merged.pop(key, None)
@@ -143,7 +144,7 @@ class TicketEvidenceModel(TicketFacet):
         self,
         *,
         set_keys: "TicketExtra | None" = None,
-        pop_keys: "Sequence[str | tuple[str, str]] | None" = None,
+        pop_keys: "PopKeys | None" = None,
         also_set: "TicketSiblingFields | None" = None,
         append_to_lists: "dict[str, list[object]] | None" = None,
         merge_into_dicts: "dict[str, JSONObject] | None" = None,
