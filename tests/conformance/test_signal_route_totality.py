@@ -21,9 +21,11 @@ a kind nothing produces is dead surface.
 """
 
 import ast
+import re
 from functools import cache
 
 from teatree.loop.dispatch import _CONDITIONAL_HANDLERS
+from teatree.loop.dispatch_reducer import is_statusline_dropped
 from teatree.loop.dispatch_tables import (
     AGENT_BY_KIND,
     MECHANICAL_BY_KIND,
@@ -31,6 +33,7 @@ from teatree.loop.dispatch_tables import (
     STATUSLINE_DROP_PREFIXES,
     STATUSLINE_ZONE_BY_KIND,
 )
+from teatree.loop.scanners.base import ScanSignal
 from tests.conformance._src_tree import SRC_DIR, src_modules
 
 _LOOP_DIR = SRC_DIR / "loop"
@@ -304,3 +307,20 @@ class TestSignalRouteTotalityFiresRed:
         literals, prefixes = emitted_signal_kinds()
         assert _produced("pr_sweep.flag_no_review", literals, prefixes)
         assert _produced("issue_disposition.close_candidate", literals, prefixes)
+
+
+class TestPeriodicNotDueKindsLeaveTheStatusline:
+    """A cadence not-due kind is passed to ``PhaseCadence`` as an argument, so the emitted-kind walk never sees it."""
+
+    def test_every_not_due_kind_a_scanner_names_is_dropped(self) -> None:
+        kinds = {
+            kind
+            for path in (_LOOP_DIR / "scanners").glob("*.py")
+            for kind in re.findall(r'"([a-z_]+\.not_due)"', path.read_text(encoding="utf-8"))
+        }
+
+        assert {"eval_local.not_due", "triage_assessor.not_due"} <= kinds
+        undropped = sorted(
+            kind for kind in kinds if not is_statusline_dropped(ScanSignal(kind=kind, summary="", payload={}))
+        )
+        assert undropped == []

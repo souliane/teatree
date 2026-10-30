@@ -356,6 +356,24 @@ class ArchitecturalReviewScannerTests(TestCase):
         assert [signal.kind for signal in signals] == ["architectural_review.held"]
         assert _last_review_task() is None
 
+    def test_a_task_that_cannot_be_created_holds_for_retry(self) -> None:
+        with patch("teatree.loop.scanners.phase_cadence.PhaseCadence.queue_task", return_value=None):
+            signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["architectural_review.held"]
+        assert signals[0].payload["reason"] == "task was not created"
+        assert signals[0].payload["retry"] is True
+        assert KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
+
+    def test_a_not_created_hold_clears_once_the_review_is_queued(self) -> None:
+        with patch("teatree.loop.scanners.phase_cadence.PhaseCadence.queue_task", return_value=None):
+            _scanner().scan()
+
+        signals = _scanner().scan()
+
+        assert [signal.kind for signal in signals] == ["architectural_review.queued"]
+        assert not KnownIssue.objects.open().filter(fingerprint=f"architectural-review-held:{OVERLAY}").exists()
+
     def test_no_prior_review_queues_task(self) -> None:
         """First-ever run on an overlay queues exactly one task.
 
