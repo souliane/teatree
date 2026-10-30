@@ -563,7 +563,6 @@ _FIXING_PHASES = frozenset({"coding", "debugging"})
 _WORKER_EXECUTION_COMMANDS = {
     "bughunt": "Inspect and reproduce candidates before reporting each finding.",
     "dogfood_smoke": "Run `t3 dogfood overlay-provision-smoke` for the configured overlay and report its result.",
-    "eval_local": "Run `t3 eval run` for the configured local evaluation and report its result.",
 }
 
 

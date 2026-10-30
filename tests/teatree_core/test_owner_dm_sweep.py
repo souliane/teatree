@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, PullRequest, Ticket
-from teatree.core.owner_dm_sweep import SweepSeams, run_sweep, subject_closed_locally
+from teatree.core.owner_dm_sweep import run_sweep, subject_closed_locally
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads
 from teatree.core.review.owner_waits import ask_owner_to_approve_post
 from teatree.url_classify import find_forge_urls
@@ -22,32 +22,6 @@ def _thread(text: str, *, age: timedelta = timedelta(minutes=5), ts: str = "1779
     return row
 
 
-class TestOwnerAlreadyAnswered(TestCase):
-    def test_a_thread_the_owner_replied_in_is_resolved(self) -> None:
-        row = _thread("Ship it?")
-
-        result = run_sweep(seams=SweepSeams(owner_replied=lambda _t: True))
-
-        assert result.resolved == 1
-        row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_DISMISSED
-
-    def test_an_unanswered_thread_is_left_open(self) -> None:
-        row = _thread("Ship it?")
-
-        result = run_sweep(seams=SweepSeams(owner_replied=lambda _t: False))
-
-        assert result.resolved == 0
-        assert result.left_open == 1
-        row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_PENDING
-
-    def test_with_no_backend_the_rule_is_skipped_not_guessed(self) -> None:
-        _thread("Ship it?")
-
-        assert run_sweep(seams=SweepSeams(owner_replied=None)).resolved == 0
-
-
 class TestSubjectClosed(TestCase):
     def test_a_thread_about_a_merged_pull_request_is_resolved(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.MERGED)
@@ -57,6 +31,7 @@ class TestSubjectClosed(TestCase):
         assert run_sweep().resolved == 1
         row.refresh_from_db()
         assert row.dismissed_reason == "the thread's subject is closed"
+        assert row.audits.get(action="dismissed").resolver_id == "dm_sweep"
 
     def test_a_thread_about_an_open_pull_request_is_left_alone(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED)
@@ -181,10 +156,12 @@ class TestDuplicateThreads(TestCase):
 
 
 class TestTheAgeFloor(TestCase):
-    def test_a_thread_older_than_a_day_is_untouched_even_when_answered(self) -> None:
-        row = _thread("Ship it?", age=AUTO_RESOLVE_MAX_AGE + timedelta(hours=1))
+    def test_a_thread_older_than_a_day_is_untouched_even_when_subject_closed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        row = _thread(f"Should I rebase {_PR_URL}?", age=AUTO_RESOLVE_MAX_AGE + timedelta(hours=1))
 
-        result = run_sweep(seams=SweepSeams(owner_replied=lambda _t: True))
+        result = run_sweep()
 
         assert result.resolved == 0
         row.refresh_from_db()
@@ -201,6 +178,8 @@ class TestSilence(TestCase):
         assert result == run_sweep()
 
     def test_a_pass_that_resolved_something_is_not_silent(self) -> None:
-        _thread("Ship it?")
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
+        _thread(f"Should I rebase {_PR_URL}?")
 
-        assert run_sweep(seams=SweepSeams(owner_replied=lambda _t: True)).silent is False
+        assert run_sweep().silent is False

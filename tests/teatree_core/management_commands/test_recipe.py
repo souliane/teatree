@@ -43,7 +43,7 @@ class TestRecipeScoreReadOnly(TestCase):
         assert FactoryScoreSnapshot.objects.count() == 1
         assert DeferredQuestion.objects.count() == 1
         row = DeferredQuestion.objects.get()
-        assert row.evidence["decision"] == "product_scope"
+        assert row.evidence["decision"] == "architecture"
         assert row.question == "Can the factory use the new scoring recipe?"
         assert recipe_sha()[:12] not in row.question + str(row.evidence)
         _score("--record")

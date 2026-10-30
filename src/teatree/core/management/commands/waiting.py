@@ -1,10 +1,7 @@
 """``t3 teatree waiting`` — the durable waiting-on-you lane (PR-21).
 
-``list`` prints every entry currently waiting on the user — questions,
-PRs awaiting a merge authorization, pending review requests, and the
-operator's own manual items — computed live by
-:func:`teatree.core.waiting.gather_waiting`, so a resolved thing simply stops
-appearing. ``add`` records a manual :class:`~teatree.core.models.waiting_item.WaitingItem`;
+``list`` shows owner-directed decisions; ``list --all`` includes the factory's
+merge, review and manual waits. ``add`` records a manual :class:`~teatree.core.models.waiting_item.WaitingItem`;
 ``resolve`` closes one by id. The auto-populated kinds have no ``resolve`` here —
 they clear by resolving their own source (answer the question, issue the CLEAR,
 approve the MR).
@@ -20,7 +17,7 @@ from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
-from teatree.core.waiting import WaitingEntry, format_age, gather_waiting
+from teatree.core.waiting import WaitingEntry, format_age, gather_owner_waiting, gather_waiting
 
 
 class _WaitingRow(TypedDict):
@@ -89,6 +86,10 @@ class Command(MachineOutputCommand):
     def list(
         self,
         *,
+        all_items: Annotated[
+            bool,
+            typer.Option("--all", help="Include internal merge, review, and manual waits."),
+        ] = False,
         overlay: Annotated[
             str,
             typer.Option("--overlay", help="Scope merge/review entries to this overlay (default: all)."),
@@ -98,8 +99,8 @@ class Command(MachineOutputCommand):
             typer.Option("--json", help="Emit the entries as JSON instead of the table view."),
         ] = False,
     ) -> WaitingPayload:
-        """List everything currently waiting on the user."""
-        entries = gather_waiting(overlay)
+        """List owner decisions, or the full factory inventory with --all."""
+        entries = gather_waiting(overlay) if all_items else gather_owner_waiting()
         payload = _payload(entries)
         self.print_result = False
         emit(

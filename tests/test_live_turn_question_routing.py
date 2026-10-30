@@ -216,7 +216,7 @@ class TestAttendedTurnNeverReachesSlack:
             "Ship it?",
             session_id="s-8",
             run_id="r-1",
-            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
+            card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket is silent"),
         )
         assert stranded.dismissed_at is None
 

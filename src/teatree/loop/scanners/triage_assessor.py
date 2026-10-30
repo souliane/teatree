@@ -16,7 +16,7 @@ Two hard invariants (mirroring the disposition scanner's conservative doctrine):
     recorder persists from the agent's returned envelope.
 * **Nothing acts autonomously.** The queued task routes to a shell-denied agent
     that RETURNS a typed ``triage_recommendations`` envelope; the recorder persists
-    one PENDING ask-gate row per issue plus one ``DeferredQuestion`` DMing the user.
+    one PENDING ask-gate row per issue and records no owner card.
 
 The dedup / last-run / bootstrap-cadence machinery is shared with the other
 periodic task-queuing scanners via

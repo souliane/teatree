@@ -17,7 +17,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
-from teatree.loops.seed import DEFAULT_LOOPS
+from teatree.loops.seed import DEFAULT_LOOPS, seed_default_loops_and_prompts
 
 
 def _prompt(name: str = "demo-prompt", body: str = "do x") -> Prompt:
@@ -301,12 +301,13 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="dream").daily_at == dt.time(3, 0)
         assert Loop.objects.get(name="dogfood").delay_seconds == 86400
 
-    def test_eval_local_is_seeded_weekly_with_no_manual_override(self) -> None:
-        # The row seeds with its own cadence and NO manual opinion: whether it runs is
-        # the active preset's answer, and `enabled` is the escape hatch nobody has used.
+    def test_eval_local_is_seeded_daily_with_no_manual_override(self) -> None:
+        # The install seed upgrades the historical migration cadence without adding
+        # a manual opinion; the active preset decides whether the loop runs.
+        seed_default_loops_and_prompts()
         loop = Loop.objects.get(name="eval_local")
         assert loop.enabled is None
-        assert loop.delay_seconds == 604800
+        assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
         # The seeded set equals the canonical ``DEFAULT_LOOPS`` (== ``iter_loops()``);

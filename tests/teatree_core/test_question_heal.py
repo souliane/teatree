@@ -87,7 +87,7 @@ class TestLiveOwnerQuestions(TestCase):
             ticket=ticket, repo_path="backend", branch="x", extra={"worktree_path": str(make_git_repo(root / "b"))}
         )
         owner = DeferredQuestion.record(
-            "Which DB host?", card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket names no host")
+            "Which DB host?", card=owner_card(OwnerDecision.ARCHITECTURE, "the ticket names no host")
         )
         DeferredQuestion.record("Repair stall")
 

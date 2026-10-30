@@ -197,7 +197,6 @@ class OverlayConfig(BaseModel):
     review_skill_alternates: list[str] = Field(default_factory=list)
     architectural_review_skill: str = "architectural-review"
     scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfooding"
     dogfood_smoke_fixture_url: str = ""
