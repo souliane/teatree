@@ -380,7 +380,9 @@ class LiveControlIntegrationTests(TestCase):
 
     def test_a_retried_command_id_is_idempotent_and_a_changed_text_is_refused(self) -> None:
         run = _FakeCliRun(
-            self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}, {"tool": "Bash"}]
+            self.root,
+            steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}, {"tool": "Bash"}],
+            hold_before_stop=str(self.root / "release-stop"),
         )
 
         def operator() -> tuple[ReceiptPayload, ReceiptPayload, ReceiptPayload]:
@@ -388,10 +390,13 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("same words", command_id="dup-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            first = steering.result(timeout=_WAIT_LIMIT)
-            again = self.live.steer(self.task.pk, "same words", command_id="dup-1", wait=5)
-            changed = self.live.steer(self.task.pk, "other words", command_id="dup-1", wait=5)
-            return first, again, changed
+            try:
+                first = steering.result(timeout=_WAIT_LIMIT)
+                again = self.live.steer(self.task.pk, "same words", command_id="dup-1", wait=5)
+                changed = self.live.steer(self.task.pk, "other words", command_id="dup-1", wait=5)
+                return first, again, changed
+            finally:
+                run.release_stop.touch()
 
         first, again, changed = self.dispatch(run, operator)
 
