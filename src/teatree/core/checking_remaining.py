@@ -500,6 +500,7 @@ def _summarize(
         title="Remaining",
         items=[summary, queue_item, *items[:cap]],
         total=len(items),
+        critical_items=[item for item in items if item.kind == "pr" and item.hold and item.url],
         eta=eta_total,
         queue=queue,
         durations=durations,

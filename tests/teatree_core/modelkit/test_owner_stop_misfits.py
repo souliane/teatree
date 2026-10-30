@@ -28,6 +28,63 @@ class TestTheTableNeverReachesAMoneyOrColleagueDecision:
 
 
 class TestARowFiresOnlyOnItsOwnKindAndWords:
+    def test_automatic_review_refusal_is_environment_only_when_facts_name_the_refused_test(self) -> None:
+        question = "Can I have one-time approval to rerun the focused regression tests?"
+        refused = "The automatic approval review refused the focused regression tests as foreground heavy work."
+        credential = f"{refused} An admin token is required."
+
+        assert _misfit("credentials", question, refused) is MisfitAction.BACKGROUND_RETRY
+        assert _misfit("credentials", question, credential) is None
+
+    def test_automatic_review_refusal_needs_the_credentials_decision_and_at_least_one_checked_fact(self) -> None:
+        question = "Can I have one-time approval to rerun the focused regression tests?"
+        refused = "The automatic approval review refused the focused regression tests as foreground heavy work."
+
+        unchecked = owner_stop(question, "credentials", refused) | {"user_input_checked": []}
+
+        assert _misfit("public_post", question, refused) is None
+        assert owner_stop_misfit(unchecked) is None
+
+    def test_automatic_review_classifies_a_new_wording_but_keeps_real_access_decisions(self) -> None:
+        fact = "The automatic approval review rejected the test command as foreground heavy work."
+        routine = owner_stop("Can I rerun the tests in the background?", "credentials", fact)
+        credential = owner_stop("Can I use an admin token to run the tests?", "credentials", fact)
+        altered = owner_stop("Can I rerun the tests in the background?", "credentials", fact)
+        card = altered["user_input_card"]
+        assert isinstance(card, dict)
+        card["why"] = "A deployment token is missing."
+
+        assert owner_stop_misfit(routine) is MisfitAction.BACKGROUND_RETRY
+        assert owner_stop_misfit(credential) is None
+        assert owner_stop_misfit(altered) is None
+
+    @pytest.mark.parametrize(
+        ("field", "wording"),
+        [
+            ("why", "This spends five thousand dollars on a paid plan."),
+            ("blocker", "The proposed message posts to the whole team in the owner's name."),
+            ("label", "Delete every customer record permanently"),
+            ("description", "The production database would be permanently deleted."),
+            ("fact", "The automatic approval review refused the test command; deleting production data follows."),
+        ],
+    )
+    def test_automatic_review_keeps_unrelated_owner_decisions(self, field: str, wording: str) -> None:
+        result = owner_stop(
+            "Can I rerun the tests in the background?",
+            "credentials",
+            "The automatic approval review rejected the test command as foreground heavy work.",
+        )
+        card = result["user_input_card"]
+        assert isinstance(card, dict)
+        if field == "fact":
+            result["user_input_checked"] = [wording]
+        elif field in {"why", "blocker"}:
+            card[field] = wording
+        else:
+            card["options"][0][field] = wording
+
+        assert owner_stop_misfit(result) is None
+
     @pytest.mark.parametrize(
         ("kind", "question", "facts", "expected"),
         [

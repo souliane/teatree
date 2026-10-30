@@ -20,22 +20,11 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering_classification import _ClassifiedActions
+from teatree.utils.slack_links import slack_permalink
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest
     from teatree.core.models.review_request_post import ReviewRequestPost
-
-
-def _slack_permalink(channel_id: str, thread_ts: str) -> str:
-    """Return ``https://slack.com/archives/{channel}/p{ts}`` or ``""``.
-
-    Empty inputs collapse to ``""`` so a partial ``ReviewRequestPost``
-    (channel id known, thread ts not yet captured) doesn't render a
-    broken link.
-    """
-    if not channel_id or not thread_ts:
-        return ""
-    return f"https://slack.com/archives/{channel_id}/p{thread_ts.replace('.', '')}"
 
 
 def _mr_urls_from_actions(actions: Iterable[DispatchAction]) -> set[str]:
@@ -88,7 +77,7 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
             .only("mr_url", "slack_channel_id", "slack_thread_ts")
         )
         for row in rows:
-            permalink = _slack_permalink(row.slack_channel_id, row.slack_thread_ts)
+            permalink = slack_permalink(row.slack_channel_id, row.slack_thread_ts)
             if permalink:
                 result[row.mr_url] = permalink
     except Exception:  # noqa: BLE001 — a permalink-build failure degrades to no mapping

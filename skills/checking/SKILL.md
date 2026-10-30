@@ -18,7 +18,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` reconciles pending owner questions against recorded answers, then prints a terse, grouped, clickable report of important changes since the user's last check and advances per-overlay markers. That reconciliation can close exact repeats and resume their parked tasks. After the report, it walks the owner waits oldest first and names any answer that still needs a Slack reply.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` reconciles owner questions against recorded answers, runs `checking brief` for the one-screen status, and advances per-overlay markers. After the report, it shoots waiting owner questions to Slack and gives one thread link per posted card.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -26,7 +26,7 @@ The user does NOT want a long report. Answer first; one idea per line.
 
 Load `/t3:checking` when the user wants a quick "what happened while I was away?" — phrasings like "what did I miss", "catch me up", "what changed since" — or when they want to answer the backlog from here ("ask me the questions", "shoot me the questions").
 
-The report gatherer stays read-only; the command's prior reconciliation can write question and task rows. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command.
+The report gatherer stays read-only; the command's prior reconciliation can write question and task rows. The walk-through may record a session-known wait or dismiss a stale card with evidence; it never answers an owner card through the internal question-answer command. `checking shoot` posts or nudges through the existing Slack drains.
 
 ## Walking the owner waits (no mode flip)
 
@@ -35,7 +35,7 @@ After the report, triage the live waits in `Needs you` and the owner cards toget
 1. Record every wait already known in this session that lacks a row — a held pull request, a gate refusal that says to ask the owner, or an approval request. Use `t3 <overlay> questions record` with the real decision kind, checked facts and a plain-language card. Check the list first so an existing row is reused. A failed record is an explicit unresolved wait, never an empty list.
 2. List cards with `mcp__teatree__question_list` (fallback: `t3 <overlay> questions list --json`, filtered to `owner_question`). The MCP list contains only owner-audience cards, oldest first. Read the complete non-row list with `t3 <overlay> waiting list --json` because the report caps its rows at five; exclude its `question` entries whose `row_id` is already in the card list, then join by age, oldest first. Internal escalations are a separate factory count, never questions for the owner.
 3. Before each card say how many remain to triage (`N left`). Re-read the facts. If the underlying wait ended, dismiss with evidence. If a recorded rule or earlier answer settles it without crossing an owner-kept decision, take the sanctioned action and dismiss with `--resolver agent:interactive --reason '<facts and action>'`; report each automatic resolution in one line so the owner can overrule it.
-4. Otherwise raise one card at a time through `AskUserQuestion`. Spending money, irreversible deletion of work on no remote, widening security or credential use, and colleague-visible posts stay with the owner: never decide, dismiss, or act on these in his place. The owner-only row remains pending until the authenticated Slack reply; `questions answer` and MCP `question_answer` refuse it. Say `awaiting your Slack reply` and let the existing question drain mirror it. A reply in this client is useful context but is not the durable owner-channel answer.
+4. Run `t3 <overlay> checking shoot --json`. It posts unmirrored cards and nudges mirrored cards on their existing schedule, then returns a Slack permalink for each mirrored card; print the word-labelled links, not the card texts. While its mode is `slack`, ask nothing through `AskUserQuestion`. Only when Slack is broken and shoot returns `fallback`, state its one-line reason and raise one card at a time through `AskUserQuestion`. Spending money, irreversible deletion of work on no remote, widening security or credential use, and colleague-visible posts stay with the owner: never decide, dismiss, or act on these in his place. The owner-only row remains pending until the authenticated Slack reply; `questions answer` and MCP `question_answer` refuse it. Say `awaiting your Slack reply` until that reply lands.
 5. End with zero **untriaged** waits: name each still-open card and the count awaiting Slack, or say `No pending owner waits.` only when both cards and non-row waits are empty. Do not call an awaiting-reply card resolved.
 
 A Slack-given answer is read on demand with `questions list --all`; the walk-through does not flip the user's mode or start ticket work.
@@ -43,21 +43,25 @@ A Slack-given answer is read on demand with `questions list --all`; the walk-thr
 ## The single command
 
 ```bash
-t3 <overlay> checking show                 # report ALL overlays since their last check, advance each marker
+t3 <overlay> checking brief                # one-screen report for ALL overlays; advance each marker
+t3 <overlay> checking show                 # detailed report with the original groups
 t3 <overlay> checking show --this-overlay  # scope to the current overlay only (backward-compat)
 t3 <overlay> checking show --since 2026-05-30T08:00:00   # explicit window start (does NOT advance the marker)
 t3 <overlay> checking show --no-advance     # read without moving the last-checked markers
 t3 <overlay> checking show --json           # structured payload instead of the terse view
+t3 <overlay> checking shoot --json          # post or nudge owner questions on Slack; return thread links
 ```
 
-The default path aggregates **all configured overlays** into one report. Each overlay's marker advances independently — only after the gather, so an immediate second run reports nothing. `--this-overlay` restores the old single-overlay scope. `--since` and `--no-advance` leave markers untouched.
+The default path aggregates **all configured overlays** into one report. Each overlay's marker advances independently after the gather, so an immediate second run has an empty change window while current feature status remains visible. `--this-overlay` restores the old single-overlay scope. `--since` and `--no-advance` leave markers untouched.
 
 ## Output contract
 
-- **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
-- **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Triage suggestions`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
-- Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
+- **All-overlays (default):** The detailed view has a `Since <local HH:MM> · all overlays` header. Overlay-scoped detail carries an `[overlay]` tag.
+- **Single-overlay (`--this-overlay`):** The detailed view has a `Since <local HH:MM> · <overlay>` header.
+- `Status by feature` opens the one-screen report: one short block per active lane, at most eight, with merged/live, what is left, and who acts next. Owner waits, red PRs, and undeployed merges precede other lanes; newer tickets break ties. A `lane:<name>` issue label names the lane; the owner-named multi-user, agent communication, coordinator, webhooks, and evals lanes are inferred from issue titles when no label exists; other issues use their title. A completed, live block has no link; a named open problem has a word-labelled link. No two-digit run appears in a visible heading, sentence, or link label.
+- With `checking brief`, the human view contains active status plus up to two linked held pull requests (the count of further held ones is appended to the last), or one line when no lane is active; `checking show --json` and the default detailed view retain all groups.
+- Groups in fixed order in the detailed view — `Merged`, `In-flight`, `Needs you`, `Triage suggestions`, `Metered`, `Remaining`.
+- Every linked PR / issue / ticket reference in the feature status uses a markdown link `[label](url)` with a label in words.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
 - No preamble, no "Here is your report."
@@ -65,6 +69,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 ## Sources (all read-only)
 
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
+- **Feature delivery** — a merged ticket still awaiting deployment remains in the feature status and `Not yet deployed` after its merge leaves the checkpoint window. Fresh, verified PR inventory supplies GitHub CI and branch-update words; the recorded PR state and ticket cache remain the fallback when that inventory is absent or stale.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
 - **Needs you** — unresolved cards for the four owner limits or an architecture decision, oldest first and not window-bounded. Question items carry their row id and subject link; each carries its age in days and owner-only flag. Failed runs, review waits, merge waits, manual waits and internal escalations stay in the factory inventory. The owner waiting gather runs once for the whole default report, so a global question never appears twice.
 - **Triage suggestions** — PENDING recommendations from the assessor, shown for review without adding owner decisions to Needs you.

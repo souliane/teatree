@@ -175,9 +175,8 @@ def audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) 
 
 def merged_entries_from_qs(
     *,
-    since: datetime,
-    now: datetime,
     scope: _MergedScope,
+    scoped: list[tuple[MergeAudit, str]],
     overlay_tag: str = "",
 ) -> list[tuple[datetime, CheckItem]]:
     """Every scoped merge in the window as ``(merged_at, item)``, newest first.
@@ -186,18 +185,8 @@ def merged_entries_from_qs(
     order the union before capping it — capping each overlay's slice first let one
     overlay's older merges displace another's newer ones.
     """
-    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
-
-    qs = (
-        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
-        .select_related("clear", "clear__ticket")
-        .order_by("-merged_at")
-    )
     entries: list[tuple[datetime, CheckItem]] = []
-    for audit in qs:
-        repo_slug = resolved_repo_slug(audit.clear)
-        if not audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
-            continue
+    for audit, repo_slug in scoped:
         ticket = audit.clear.ticket
         raw_detail = ticket.short_description if ticket else ""
         detail = (f"{raw_detail} {overlay_tag}".strip() if raw_detail else overlay_tag) if overlay_tag else raw_detail
@@ -214,17 +203,20 @@ def merged_entries_from_qs(
     return entries
 
 
-def merged_group_from_qs(
-    *,
-    since: datetime,
-    now: datetime,
-    scope: _MergedScope,
-    cap: int,
-    overlay_tag: str = "",
-) -> tuple[list, int]:
-    """Query and scope the merged audits; return (items, total)."""
-    entries = merged_entries_from_qs(since=since, now=now, scope=scope, overlay_tag=overlay_tag)
-    return [item for _, item in entries[:cap]], len(entries)
+def scoped_merge_audits(*, since: datetime, now: datetime, scope: _MergedScope) -> list[tuple[MergeAudit, str]]:
+    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
+
+    qs = (
+        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
+        .select_related("clear", "clear__ticket")
+        .order_by("-merged_at")
+    )
+    rows: list[tuple[MergeAudit, str]] = []
+    for audit in qs:
+        repo_slug = resolved_repo_slug(audit.clear)
+        if audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
+            rows.append((audit, repo_slug))
+    return rows
 
 
 def motion_for_overlay(

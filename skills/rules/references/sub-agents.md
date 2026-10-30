@@ -12,6 +12,8 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the skills the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Name only the skills the brief needs. Before spawning an e2e / coder / reviewer sub-agent, generate the preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` and **prepend it to the brief**. Requested non-stack skills carry `--- SKILL: <name> ---` bodies; stack skills carry required load directives. A bare brief is the bug this gate exists to catch. (Pinned by `evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the agent dispatch path uses `teatree.agents.skill_injection`.)
 
+The receiving sub-agent already has the preamble in its brief. It runs `skill-preamble` only if it dispatches a child; running it again before its own work adds an unnecessary approval gate.
+
 **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 
 **After a sub-agent completes, re-read any files it modified.** Sub-agents get a forked copy of your file state — their edits don't update your cache. Writing to a file without re-reading first will silently overwrite their changes.

@@ -256,6 +256,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Terse 'what did I miss' report since the last check (read-only).",
         [
             ("show", "Print grouped merged/in-flight/needs-you changes since the last check (read-only)."),
+            ("brief", "Print the one-screen status by feature plus held pull requests (read-only)."),
+            ("shoot", "Post or nudge waiting owner questions on Slack and print their thread links."),
         ],
         core_dispatch=True,
     ),

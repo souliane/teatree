@@ -563,9 +563,8 @@ class TestTerseFormatting(CheckingTestBase):
         self._merge(ticket, pr_id=7, slug="acme/widgets", hours_ago=2)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         terse = report.to_terse(overlay_name=self.OVERLAY)
-        first = terse.splitlines()[0]
-        assert first.startswith("Since ")
-        assert first.endswith(f"· {self.OVERLAY}")
+        assert terse.splitlines()[0] == "Status by feature"
+        assert any(line.startswith("Since ") and line.endswith(f"· {self.OVERLAY}") for line in terse.splitlines())
 
     def test_cap_appends_and_x_more(self) -> None:
         for n in range(7):
@@ -576,7 +575,7 @@ class TestTerseFormatting(CheckingTestBase):
         terse = report.to_terse(overlay_name=self.OVERLAY)
         assert "…and 2 more" in terse
         # Exactly the cap of items rendered as links.
-        assert terse.count("](") == 5
+        assert terse.split("\nMerged\n", 1)[1].split("\nRemaining", 1)[0].count("](") == 5
 
     def test_no_bare_numeric_ids_in_reference_lines(self) -> None:
         # Exercise the recap groups, including a pending DeferredQuestion —
@@ -589,7 +588,8 @@ class TestTerseFormatting(CheckingTestBase):
         DeferredQuestion.record("Should I ship the widget rename?", **OWNER_DECISION)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="github")
         terse = report.to_terse(overlay_name=self.OVERLAY)
-        for line in terse.splitlines():
+        group_lines = terse.split("\nSince ", 1)[1].splitlines()[1:]
+        for line in group_lines:
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
@@ -612,6 +612,7 @@ class TestJsonShape(CheckingTestBase):
         encoded = json.dumps(payload)  # must not raise
         decoded = json.loads(encoded)
         assert set(decoded) == {
+            "status_by_feature",
             "since",
             "merged",
             "in_flight",

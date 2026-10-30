@@ -42,11 +42,12 @@ from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
     merged_entries_from_qs,
-    merged_group_from_qs,
     motion_for_overlay,
+    scoped_merge_audits,
     ticket_url,
 )
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_report.status import StatusByFeature, StatusByFeatureDict, build_feature_status
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
@@ -58,6 +59,7 @@ from teatree.core.checking_types import (
 )
 from teatree.core.factory.eval_measurement import eval_measurement_signal
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -67,6 +69,8 @@ from teatree.core.waiting import WaitingKind, format_age, gather_owner_waiting
 logger = logging.getLogger(__name__)
 
 CheckItemDict = checking_types.CheckItemDict
+type StatusMergeRow = tuple[MergeAudit, str, str]
+type AccumulatedRows = tuple[list[tuple[datetime, CheckItem]], list[StatusMergeRow], list[CheckItem], datetime | None]
 
 
 def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
@@ -126,6 +130,7 @@ def internal_escalation_count() -> int:
 
 
 class CheckingReportDict(TypedDict):
+    status_by_feature: StatusByFeatureDict
     since: str
     merged: CheckGroupDict
     in_flight: CheckGroupDict
@@ -138,6 +143,7 @@ class CheckingReportDict(TypedDict):
 
 
 class AllOverlaysReportDict(TypedDict):
+    status_by_feature: StatusByFeatureDict
     all_overlays: list[str]
     earliest_since: str
     merged: CheckGroupDict
@@ -160,6 +166,7 @@ class CheckingReport:
     needs_you: CheckGroup
     triage_suggestions: CheckGroup
     metered: CheckGroup
+    status_by_feature: StatusByFeature = field(default_factory=StatusByFeature)
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
@@ -173,6 +180,7 @@ class CheckingReport:
 
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
+            status_by_feature=self.status_by_feature.to_dict(),
             since=self.since.isoformat(),
             merged=self.merged.to_dict(),
             in_flight=self.in_flight.to_dict(),
@@ -198,10 +206,11 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
+        status = self.status_by_feature.render()
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations and not status:
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
-        lines = [header]
+        lines = [*status, header]
         for group in groups:
             lines.extend(group.render(cap=cap))
         if self.internal_escalations:
@@ -226,6 +235,7 @@ class AllOverlaysReport:
     needs_you: CheckGroup
     triage_suggestions: CheckGroup
     metered: CheckGroup
+    status_by_feature: StatusByFeature = field(default_factory=StatusByFeature)
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
@@ -239,6 +249,7 @@ class AllOverlaysReport:
 
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
+            status_by_feature=self.status_by_feature.to_dict(),
             all_overlays=self.all_overlays,
             earliest_since=self.earliest_since.isoformat(),
             merged=self.merged.to_dict(),
@@ -264,9 +275,10 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
+        status = self.status_by_feature.render()
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations and not status:
             return f"Nothing since {stamp}."
-        lines = [f"Since {stamp} · all overlays"]
+        lines = [*status, f"Since {stamp} · all overlays"]
         for group in groups:
             lines.extend(group.render(cap=cap))
         if self.internal_escalations:
@@ -310,10 +322,10 @@ def gather_all_overlays_report(
     The global waiting gather runs exactly ONCE — pending questions are not
     scoped per overlay, so repeating the gather would duplicate them.
 
-    Overlay-scoped items (merged, in-flight, failed attempts) have their
+    Overlay-scoped items (merged and in-flight) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
     """
-    merged_entries, in_flight_items, earliest_since = _accumulate_overlays(
+    merged_entries, merged_rows, in_flight_items, earliest_since = _accumulate_overlays(
         overlay_windows=overlay_windows, overlay_configs=overlay_configs
     )
     in_flight_items.sort(
@@ -335,6 +347,7 @@ def gather_all_overlays_report(
     return AllOverlaysReport(
         all_overlays=list(overlay_windows),
         earliest_since=effective_since,
+        status_by_feature=build_feature_status(merged=merged_rows, overlay_names=list(overlay_windows)),
         merged=CheckGroup(
             title="Merged",
             items=[item for _, item in merged_entries[:cap]],
@@ -362,8 +375,9 @@ def _accumulate_overlays(
     *,
     overlay_windows: dict[str, tuple[datetime, datetime]],
     overlay_configs: dict[str, tuple[str, list[str]]],
-) -> tuple[list[tuple[datetime, CheckItem]], list[CheckItem], datetime | None]:
+) -> AccumulatedRows:
     merged_entries: list[tuple[datetime, CheckItem]] = []
+    merged_rows: list[StatusMergeRow] = []
     in_flight_items: list[CheckItem] = []
     seen_in_flight: set[int] = set()
     earliest_since: datetime | None = None
@@ -374,9 +388,9 @@ def _accumulate_overlays(
         code_host, overlay_repos = overlay_configs.get(overlay_name, ("", []))
         scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos)
         overlay_tag = f"[{overlay_name}]"
-        merged_entries.extend(
-            merged_entries_from_qs(since=window[0], now=window[1], scope=scope, overlay_tag=overlay_tag)
-        )
+        scoped = scoped_merge_audits(since=window[0], now=window[1], scope=scope)
+        merged_rows.extend((audit, repo_slug, code_host) for audit, repo_slug in scoped)
+        merged_entries.extend(merged_entries_from_qs(scope=scope, overlay_tag=overlay_tag, scoped=scoped))
         new_in_flight = motion_for_overlay(
             window=window,
             overlay_name=overlay_name,
@@ -386,7 +400,7 @@ def _accumulate_overlays(
         in_flight_items.extend(new_in_flight)
 
     merged_entries.sort(key=operator.itemgetter(0), reverse=True)
-    return merged_entries, in_flight_items, earliest_since
+    return merged_entries, merged_rows, in_flight_items, earliest_since
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -415,9 +429,14 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
     merged group to ticket-bearing CLEARs only (the back-compat behaviour).
     """
     scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos or [])
+    scoped = scoped_merge_audits(since=since, now=now, scope=scope)
     return CheckingReport(
         since=since,
-        merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
+        merged=_merged_group(scope=scope, cap=cap, scoped=scoped),
+        status_by_feature=build_feature_status(
+            merged=[(audit, repo_slug, code_host) for audit, repo_slug in scoped],
+            overlay_names=[overlay_name] if overlay_name else [],
+        ),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(now=now, overlay_name=overlay_name, cap=cap),
         triage_suggestions=_triage_suggestions_group(overlay_name=overlay_name, cap=cap),
@@ -469,9 +488,9 @@ def _metered_group(*, since: datetime, now: datetime, overlay_name: str, cap: in
     return CheckGroup(title="Metered", items=[item for _, item in entries], total=total)
 
 
-def _merged_group(*, since: datetime, now: datetime, scope: _MergedScope, cap: int) -> CheckGroup:
-    items, total = merged_group_from_qs(since=since, now=now, scope=scope, cap=cap, overlay_tag="")
-    return CheckGroup(title="Merged", items=items, total=total)
+def _merged_group(*, scope: _MergedScope, cap: int, scoped: list[tuple[MergeAudit, str]]) -> CheckGroup:
+    entries = merged_entries_from_qs(scope=scope, scoped=scoped)
+    return CheckGroup(title="Merged", items=[item for _, item in entries[:cap]], total=len(entries))
 
 
 def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
