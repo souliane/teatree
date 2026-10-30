@@ -67,22 +67,25 @@ class PhaseCadence:
     def resolve_hold(self) -> None:
         KnownIssue.objects.resolve_fingerprint(self.hold_fingerprint)
 
-    def resolve_not_due(self) -> None:
-        KnownIssue.objects.resolve_fingerprint(f"cadence-not-due:{self.phase}:{self.overlay_name}")
-
-    def hold(self, reason: str, *, kind: str, retry: bool, task_id: int | None = None) -> list[ScanSignal]:
-        self.resolve_not_due()
+    # ``record_health=False`` is for a normal idle return (an empty batch): it must not move the chip.
+    def hold(
+        self, reason: str, *, kind: str, retry: bool, task_id: int | None = None, record_health: bool = True
+    ) -> list[ScanSignal]:
         summary = f"{self.phase} held for {self.overlay_name}: {reason}"
-        KnownIssue.objects.record_reactive(
-            HealthSignal(
-                fingerprint=self.hold_fingerprint,
-                severity=KnownIssue.Severity.WARNING,
-                kind=self.health_kind,
-                overlay=self.overlay_name,
-                summary=summary,
+        if record_health:
+            KnownIssue.objects.record_reactive(
+                HealthSignal(
+                    fingerprint=self.hold_fingerprint,
+                    severity=KnownIssue.Severity.WARNING,
+                    kind=self.health_kind,
+                    overlay=self.overlay_name,
+                    summary=summary,
+                )
             )
-        )
-        logger.warning("%s", summary)
+            logger.warning("%s", summary)
+        else:
+            self.resolve_hold()
+            logger.info("%s", summary)
         payload: dict[str, str | bool | int] = {"overlay": self.overlay_name, "reason": reason, "retry": retry}
         if task_id is not None:
             payload["task_id"] = task_id
@@ -91,15 +94,6 @@ class PhaseCadence:
     def not_due(self, reason: str, *, kind: str, details: dict[str, str] | None = None) -> list[ScanSignal]:
         self.resolve_hold()
         summary = f"{self.phase} not due for {self.overlay_name}: {reason}"
-        KnownIssue.objects.record_reactive(
-            HealthSignal(
-                fingerprint=f"cadence-not-due:{self.phase}:{self.overlay_name}",
-                severity=KnownIssue.Severity.WARNING,
-                kind="cadence_not_due",
-                overlay=self.overlay_name,
-                summary=summary,
-            )
-        )
         logger.info("%s", summary)
         return [
             ScanSignal(
@@ -131,7 +125,6 @@ class PhaseCadence:
             reason = pending_admission_reason(self.phase) or "task waiting for admission"
             return self.hold(reason, kind=held_kind, retry=True, task_id=task.pk)
         self.resolve_hold()
-        self.resolve_not_due()
         return [queued]
 
     def in_flight_exists(self) -> bool:

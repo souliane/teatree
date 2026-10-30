@@ -81,7 +81,9 @@ class TriageAssessorScanner:
         if not survivors:
             if read_errors:
                 raise PartialScanError(scanner=self.name, detail="; ".join(read_errors), signals=[])
-            return cadence.hold("no unassessed needs-triage issues", kind="triage_assessor.held", retry=False)
+            return cadence.hold(
+                "no unassessed needs-triage issues", kind="triage_assessor.held", retry=False, record_health=False
+            )
 
         task = cadence.queue_task(
             placeholder_issue_url=f"triage-assessor://{self.overlay_name}",

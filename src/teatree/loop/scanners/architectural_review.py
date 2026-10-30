@@ -138,7 +138,6 @@ class ArchitecturalReviewScanner:
         if task.admitted_at is None:
             return self._held_signal(task, cadence)
         cadence.resolve_hold()
-        cadence.resolve_not_due()
         return [
             ScanSignal(
                 kind="architectural_review.queued",
