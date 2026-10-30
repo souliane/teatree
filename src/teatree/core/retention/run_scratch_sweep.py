@@ -1,13 +1,16 @@
 """Reclaim abandoned verify-gates and merge-tree run directories."""
 
+import logging
 import os
 import re
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.retention.scratch_tree import tree_stats
+from teatree.utils.run_scratch import remove_tree
+
+logger = logging.getLogger(__name__)
 
 RUN_SCRATCH_MAX_AGE_SECONDS = 3 * 60 * 60
 _RUN_DIR = re.compile(r"t3-(?:verify-gates|merge-tree)-[a-z0-9_]{8}\Z")
@@ -34,6 +37,13 @@ def _readable_environ(pid: Path) -> bytes:
         return b""
 
 
+def _is_zombie(pid: Path) -> bool:
+    try:
+        return (pid / "stat").read_bytes().rpartition(b")")[2].split()[:1] == [b"Z"]
+    except OSError:
+        return False
+
+
 def _process_references(proc_root: Path) -> tuple[tuple[tuple[Path, bytes], ...], str]:
     try:
         pids = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
@@ -50,7 +60,7 @@ def _process_references(proc_root: Path) -> tuple[tuple[tuple[Path, bytes], ...]
             cwd = _readable_cwd(pid)
             environ = _readable_environ(pid)
         except FileNotFoundError:
-            if pid.exists():
+            if pid.exists() and not _is_zombie(pid):
                 return (), f"same-uid pid {pid.name} has an unreadable process reference"
             continue
         except OSError as exc:
@@ -78,8 +88,9 @@ def _candidate_size(path: Path, *, cutoff: float, deadline: float | None) -> int
 
 def _remove(path: Path) -> bool:
     try:
-        shutil.rmtree(path)
+        remove_tree(path)
     except OSError:
+        logger.warning("could not remove run scratch %s", path, exc_info=True)
         return False
     return not path.exists()
 

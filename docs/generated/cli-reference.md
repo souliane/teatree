@@ -4317,8 +4317,8 @@ Usage: t3 tool verify-gates [OPTIONS]
  green-proof — an exit code alone does not say which tree earned it. Exits 2
  without grading anything when the tree is not a git checkout, is not the
  ``--expect-sha`` target, or is a clean main clone on its default branch.
- Its private control-DB snapshot is removed when the run ends or is
- interrupted.
+ Its private control-DB snapshot is removed when the run ends; SIGTERM or
+ SIGHUP stops the running stage first.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │

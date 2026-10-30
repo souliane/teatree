@@ -245,14 +245,55 @@ def test_other_uid_candidate_is_kept(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("failure", [OSError("busy"), None])
-def test_failed_or_unconfirmed_removal_is_not_counted(tmp_path: Path, failure: OSError | None) -> None:
+def test_failed_or_unconfirmed_removal_is_not_counted(
+    tmp_path: Path, failure: OSError | None, caplog: pytest.LogCaptureFixture
+) -> None:
     root, candidate, proc = _unused_candidate(tmp_path)
-    with patch("teatree.core.retention.run_scratch_sweep.shutil.rmtree", side_effect=failure):
+    with patch("teatree.utils.run_scratch.shutil.rmtree", side_effect=failure):
         result = sweep_run_scratch(root, proc_root=proc)
 
     assert result.freed_bytes == 0
     assert result.removed == 0
     assert candidate.is_dir()
+    assert ("could not remove" in caplog.text) is (failure is not None)
+
+
+def test_sweep_removes_a_read_only_subtree(tmp_path: Path) -> None:
+    root, candidate, proc = _unused_candidate(tmp_path)
+    (candidate / "pkg").mkdir()
+    (candidate / "pkg" / "payload").write_bytes(b"data")
+    for aged in (candidate / "pkg" / "payload", candidate / "pkg", candidate):
+        os.utime(aged, (_OLD, _OLD))
+    (candidate / "pkg").chmod(0o555)
+
+    result = sweep_run_scratch(root, proc_root=proc)
+
+    assert result.removed == 1
+    assert not candidate.exists()
+
+
+def test_zombie_holds_nothing_and_does_not_refuse_the_pass(tmp_path: Path) -> None:
+    root, candidate, _proc = _unused_candidate(tmp_path)
+    zombie = subprocess.Popen([sys.executable, "-c", ""])
+    stat = Path("/proc") / str(zombie.pid) / "stat"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and stat.read_text().rpartition(")")[2].split()[0] != "Z":
+        time.sleep(0.01)
+    original_iterdir = Path.iterdir
+
+    def only_zombie_in_proc(path: Path) -> Iterator[Path]:
+        if path == Path("/proc"):
+            return iter((Path("/proc") / str(zombie.pid),))
+        return original_iterdir(path)
+
+    try:
+        with patch("pathlib.Path.iterdir", new=only_zombie_in_proc):
+            result = sweep_run_scratch(root)
+    finally:
+        zombie.wait(timeout=5)
+
+    assert result.refusal == ""
+    assert not candidate.exists()
 
 
 def test_deadline_or_recheck_refusal_keeps_candidate(tmp_path: Path) -> None:

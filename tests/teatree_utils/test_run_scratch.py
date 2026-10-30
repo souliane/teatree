@@ -1,4 +1,9 @@
+import contextlib
+import os
+import select
 import signal
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -83,3 +88,69 @@ def test_cleanup_failure_warns_and_leaves_directory_for_sweep(
 
     assert root.is_dir()
     assert "run scratch cleanup failed" in caplog.text
+
+
+def test_ignored_hangup_stays_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        with run_scratch_dir("t3-probe-"):
+            inside = signal.getsignal(signal.SIGHUP)
+        after = signal.getsignal(signal.SIGHUP)
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+
+    assert inside == signal.SIG_IGN
+    assert after == signal.SIG_IGN
+
+
+def test_read_only_and_unlistable_subtrees_are_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    with run_scratch_dir("t3-probe-") as root:
+        (root / "pkg" / "mod").mkdir(parents=True)
+        (root / "pkg" / "mod" / "payload").write_bytes(b"data")
+        (root / "sealed").mkdir()
+        (root / "sealed" / "payload").write_bytes(b"data")
+        (root / "pkg" / "mod").chmod(0o555)
+        (root / "pkg").chmod(0o555)
+        (root / "sealed").chmod(0o000)
+
+    assert not list(tmp_path.glob("t3-probe-*"))
+
+
+_WRITING_CHILD = 'echo $$ >&2; exec 2>/dev/null; while :; do echo x >> "$1/log"; sleep 0.02; done'
+
+_LIVE_CHILD_PARENT = f"""
+from teatree.utils.run import run_streamed
+from teatree.utils.run_scratch import run_scratch_dir
+
+with run_scratch_dir("t3-probe-") as root:
+    print(root, flush=True)
+    run_streamed(["sh", "-c", {_WRITING_CHILD!r}, "sh", str(root)], check=False)
+"""
+
+
+def test_sigterm_with_a_live_writing_child_removes_the_root_and_stops_the_child(tmp_path: Path) -> None:
+    child = 0
+    with subprocess.Popen(
+        [sys.executable, "-c", _LIVE_CHILD_PARENT],
+        env={**os.environ, "TMPDIR": str(tmp_path)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as parent:
+        try:
+            assert parent.stderr is not None
+            assert select.select([parent.stderr], [], [], 30)[0], "child never announced its pid"
+            child = int(parent.stderr.readline())
+            parent.terminate()
+            parent.wait(timeout=30)
+        finally:
+            parent.kill()
+            if child:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+                    pytest.fail("the child outlived the parent")
+
+    assert not list(tmp_path.glob("t3-probe-*"))

@@ -3,9 +3,8 @@
 import contextlib
 import json
 import logging
-import shutil
 import tempfile
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from pathlib import Path
 from typing import TypedDict
 
@@ -13,6 +12,7 @@ from teatree.config import get_data_dir
 from teatree.core.cleanup.checkout_registry import CACHEDIR_SIGNATURE, CACHEDIR_TAG, is_tagged_cache
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
+from teatree.utils.run_scratch import remove_tree
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,6 @@ _HANDOFF_FILENAME = "handoff.json"
 _STORE_MODE = 0o300
 _DELIVERY_MODE = 0o500
 _HANDOFF_MODE = 0o400
-_REMOVABLE_MODE = 0o700
 
 
 class _HandoffPayload(TypedDict):
@@ -58,17 +57,9 @@ def delivered_phase_handoff(task: Task) -> Generator[Path | None]:
 
 def _remove(delivery: Path) -> None:
     try:
-        delivery.chmod(_REMOVABLE_MODE)
-        shutil.rmtree(delivery, onexc=_unlock_and_retry)
+        remove_tree(delivery)
     except OSError:
         logger.exception("could not remove the handoff delivery %s", delivery)
-
-
-def _unlock_and_retry(function: Callable[[str], object], path: str, _error: BaseException) -> None:
-    for target in (Path(path).parent, Path(path)):
-        with contextlib.suppress(OSError):
-            target.chmod(_REMOVABLE_MODE)
-    function(path)
 
 
 def _handoff_payload(task: Task) -> _HandoffPayload | None:
