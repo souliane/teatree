@@ -72,3 +72,4 @@ def test_events_lists_the_event_names_registered_for_a_source() -> None:
     assert registry.events("github") == {"pull_request_review", "issues"}
     assert registry.events("gitlab") == {"note"}
     assert registry.events("slack") == frozenset()
+    assert registry.keys() == {("github", "pull_request_review"), ("github", "issues"), ("gitlab", "note")}

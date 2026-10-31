@@ -44,6 +44,9 @@ class HandlerRegistry:
         specific = self._by_triple.get((source, event_name, action))
         return specific or self._by_triple.get((source, event_name, ANY_ACTION))
 
+    def keys(self) -> frozenset[tuple[str, str]]:
+        return frozenset((source, event_name) for source, event_name, _ in self._by_triple)
+
     def events(self, source: str) -> frozenset[str]:
         return frozenset(event_name for registered, event_name, _ in self._by_triple if registered == source)
 

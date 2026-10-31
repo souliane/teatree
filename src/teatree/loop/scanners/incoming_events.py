@@ -105,6 +105,7 @@ def _unwired_runner(event: "IncomingEvent") -> HandlingOutcome:
 @dataclass(slots=True)
 class IncomingEventsScanner:
     limit: int = 25
+    handled_per_key: int = 5
     name: str = "incoming_events"
     runner: Callable[["IncomingEvent"], HandlingOutcome] = _unwired_runner
     replier: Replier = field(default_factory=NoopReplier)
@@ -122,7 +123,11 @@ class IncomingEventsScanner:
             # Transient OperationalError (lock timeout, connection drop)
             # and any other DatabaseError keep propagating to
             # `tick._run_job`, which surfaces them on the statusline.
-            events = list(event_model.objects.unprocessed().order_by("received_at", "pk")[: self.limit])
+            events = list(
+                event_model.objects.drain_batch(
+                    self.limit, budgeted=event_handlers.HANDLERS.keys(), per_key=self.handled_per_key
+                )
+            )
         except (OperationalError, ProgrammingError) as exc:
             if not _is_missing_relation(exc):
                 raise

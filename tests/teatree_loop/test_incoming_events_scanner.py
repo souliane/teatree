@@ -706,6 +706,25 @@ class TestHandledRows(TestCase):
         event.refresh_from_db()
         assert (event.processed_at, event.attempts) == (None, 0)
 
+    def test_deferred_rows_of_one_key_do_not_hold_back_a_newer_row_of_another(self) -> None:
+        deferred = [pending_review_event(f"github:d-{number}") for number in range(25)]
+        newer = _event(source=IncomingEvent.Source.CI, body="pipeline green", key="ci:newer")
+        self.outcome = HandlingOutcome.DEFERRED
+
+        self.scan()
+
+        newer.refresh_from_db()
+        assert newer.processed_at is not None
+        assert self.classified > 0
+        assert [row.pk for row in self.handled] == [row.pk for row in deferred[:5]]
+
+    def test_a_key_with_no_handler_is_not_capped_by_the_per_key_budget(self) -> None:
+        rows = [_event(source=IncomingEvent.Source.CI, body="green", key=f"ci:many-{number}") for number in range(8)]
+
+        self.scan()
+
+        assert IncomingEvent.objects.filter(pk__in=[row.pk for row in rows], processed_at__isnull=False).count() == 8
+
     def test_a_handled_row_with_no_runner_wired_fails_loudly_without_spending_an_attempt(self) -> None:
         event = pending_review_event()
 

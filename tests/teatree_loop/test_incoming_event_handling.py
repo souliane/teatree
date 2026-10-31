@@ -4,6 +4,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import django.test
+from django.db import OperationalError
 from django.utils import timezone
 
 from teatree.core.models import IncomingEvent, Task, Ticket
@@ -77,6 +78,18 @@ class TestFailures(HandlingTestCase):
 
         self.assert_retry_scheduled()
         assert "db down" in self.reload().last_error
+
+    def test_a_zone_handler_that_fails_leaves_the_row_pending_for_a_retry_not_lost(self) -> None:
+        with (
+            registered(),
+            patch.object(Ticket, "begin_planning", side_effect=OperationalError("database is locked")),
+        ):
+            assert handle_incoming_event(self.event) is HandlingOutcome.RETRY
+
+        self.assert_retry_scheduled()
+        assert "persist:t3:orchestrator" in self.reload().last_error
+        assert "database is locked" in self.reload().last_error
+        assert not Task.objects.exists()
 
     def test_a_dispatch_error_entry_leaves_the_row_pending_for_a_retry(self) -> None:
         def fail_in_dispatch(signals: list, *, errors: dict[str, str]) -> list:
