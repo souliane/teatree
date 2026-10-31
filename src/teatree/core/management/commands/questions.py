@@ -254,9 +254,10 @@ class Command(MachineOutputCommand):
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
             dedupe_marker = f"{kind}:{question_fingerprint(question)}"
-        card = None
-        if kind is not None:
-            card = QuestionCard(
+        card = (
+            None
+            if kind is None
+            else QuestionCard(
                 decision=kind,
                 checked=tuple(checked or ()),
                 blocker=blocker,
@@ -264,6 +265,7 @@ class Command(MachineOutputCommand):
                 options=parsed_options(options_json, self.stderr),
                 quoted=proposed_text,
             )
+        )
         ticket = resolve_invoking_ticket()
         if card is not None and (problem := earlier_answer_problem(ticket.pk if ticket else None, card, question)):
             self.stderr.write(f"{problem}. {OWNER_QUESTION_ROUTE}")
