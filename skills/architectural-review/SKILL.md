@@ -4,7 +4,7 @@ description: Periodic holistic architectural review — the third of teatree's t
 eval_exempt: whole-tree periodic synthesis with no fixed input/output pair to grade per-turn; correctness is judged by the merged fixes it produces over time, mirroring retro (#837)
 requires:
   - ac-reviewing-codebase
-compatibility: macOS/Linux, any teatree-managed repo.
+compatibility: Linux, any teatree-managed repo.
 metadata:
   version: 0.0.1
 ---

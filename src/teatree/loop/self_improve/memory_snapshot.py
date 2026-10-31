@@ -178,7 +178,7 @@ def _process_lines() -> list[str]:
 
 
 def box_memory_snapshot(report: DetectorReport) -> str:
-    if report.detector != PressureIncidentDetector.name or report.payload.get("cause") not in {"memory", "swap"}:
+    if report.detector != PressureIncidentDetector.name or report.payload.get("cause") != "memory":
         return ""
     lines = [f"Box memory snapshot ({datetime.now(UTC).isoformat(timespec='seconds')}):"]
     for heading, read in (("Memory scopes", _memory_lines), ("Top processes by RSS", _process_lines)):

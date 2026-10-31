@@ -7,23 +7,18 @@ and emits ``resource.*`` signals; a paired mechanical handler
 (``free_resources``) does the actual freeing.
 
 ABSOLUTE BYTES, NEVER PERCENT. Disk is measured as ``os.statvfs("/").f_bavail
-* f_frsize`` (true free bytes) — a percent-of-nominal-total would misread an
-APFS shared container (a 460 G nominal total with 7 G free reads as "69 %
-full = fine" and the scanner never fires). RAM is read per platform: on Linux
-``/proc/meminfo``'s ``MemAvailable``, the kernel's own estimate of what it can
-hand out without swapping; on macOS the sum of the genuinely-reclaimable
-``vm_stat`` page classes (free + inactive + purgeable + speculative), which
-approximates the same quantity — macOS keeps RAM ~99 % "used" by design
-(compressor + inactive cache), so a naive percent fires constantly and means
-nothing. The machine figure is then floored by this process's own cgroup
+* f_frsize`` (true free bytes) — a percent-of-nominal-total would misread a
+shared container volume (a 460 G nominal total with 7 G free reads as "69 %
+full = fine" and the scanner never fires). RAM is ``/proc/meminfo``'s
+``MemAvailable``, the kernel's own estimate of what it can hand out without
+swapping. The machine figure is then floored by this process's own cgroup
 headroom, because a capped container OOMs at its own ceiling while the host
 still looks roomy.
 
-A PROBE THAT CANNOT ANSWER SAYS SO (#4104), ON BOTH RESOURCES. ``vm_stat`` is
-macOS-only, so the single-reader version returned ``None`` on every Linux pass
-and the caller silently skipped the whole RAM ladder — a scanner reporting
-"0 signals" on a box with 2 GB of 30 available, indistinguishable from a healthy
-one. Disk then reacquired the same shape when the probe path moved off ``/``:
+A PROBE THAT CANNOT ANSWER SAYS SO (#4104), ON BOTH RESOURCES. A RAM reader that
+returns ``None`` makes the caller silently skip the whole RAM ladder — a scanner
+reporting "0 signals" on a box with 2 GB of 30 available, indistinguishable from a
+healthy one. Disk has the same shape when the probe path moves off ``/``:
 ``worktree_root()`` is a pure resolver that never touches the filesystem, so it
 routinely names a path that does not exist, ``statvfs`` raised, and the reading
 degraded to ``None`` -> ``inf`` -> healthy with no signal at all. Both halves now
@@ -50,8 +45,6 @@ returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
 
 import logging
 import os
-import platform
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -63,7 +56,6 @@ from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb
 from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.ram_probe import linux_mem_available_kb
 from teatree.utils.ram_scope import cgroup_headroom_mib, cgroup_memory_probe_inert
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
@@ -71,6 +63,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GIB = 1024 * 1024 * 1024
+_RAM_INERT_REASON = "/proc/meminfo unreadable and no cgroup memory limit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,33 +151,23 @@ def read_ram_avail_gb() -> float | None:
     """Absolute reclaimable RAM in GB — the tightest scope that can answer.
 
     Two scopes can each run out independently, so the honest figure is whichever
-    binds first: the machine (Linux ``/proc/meminfo`` ``MemAvailable``, macOS's
-    reclaimable ``vm_stat`` page classes) and this process's own cgroup. Reading
-    only the machine is how a 23 GB-capped worker was OOM-killed three times while
-    the 30 GB host still reported ~10 GB free, an order of magnitude above every
-    threshold (#4104). Mirrors :func:`ram_scope.read_ram_headroom`, which the sibling
-    intake scanner in this same mini-loop already reasons in — and shares its cgroup
-    reader outright, so the two cannot drift.
+    binds first: the machine (``/proc/meminfo`` ``MemAvailable``) and this process's own
+    cgroup. Reading only the machine is how a 23 GB-capped worker was OOM-killed three
+    times while the 30 GB host still reported ~10 GB free, an order of magnitude above
+    every threshold (#4104). Mirrors :func:`ram_scope.read_ram_headroom`, which the
+    sibling intake scanner in this same mini-loop already reasons in — and shares its
+    cgroup reader outright, so the two cannot drift.
 
     ``None`` means no scope could answer — the caller reports the RAM ladder INERT
     rather than skipping it silently.
     """
-    system = platform.system()
-    readings = [gb for gb in (_read_machine_ram_avail_gb(system), _read_cgroup_headroom_gb()) if gb is not None]
+    available_kb = linux_mem_available_kb()
+    machine_gb = None if available_kb is None else available_kb * 1024 / _GIB
+    readings = [gb for gb in (machine_gb, _read_cgroup_headroom_gb()) if gb is not None]
     if not readings:
-        logger.warning("resource_pressure: %s — the RAM ladder is inert", _ram_inert_reason(system))
+        logger.warning("resource_pressure: %s — the RAM ladder is inert", _RAM_INERT_REASON)
         return None
     return min(readings)
-
-
-def _read_machine_ram_avail_gb(system: str) -> float | None:
-    """Machine-wide available RAM in GB, per platform."""
-    if system == "Linux":
-        available_kb = linux_mem_available_kb()
-        return None if available_kb is None else available_kb * 1024 / _GIB
-    if system == "Darwin":
-        return _read_vm_stat_avail_gb()
-    return None
 
 
 def _read_cgroup_headroom_gb() -> float | None:
@@ -197,75 +180,6 @@ def _read_cgroup_headroom_gb() -> float | None:
     """
     headroom_mib = cgroup_headroom_mib()
     return None if headroom_mib is None else headroom_mib / 1024
-
-
-def _ram_inert_reason(system: str) -> str:
-    """Why no reading was possible — an operator chasing a platform gap needs the real cause."""
-    machine_reader = {"Linux": "/proc/meminfo unreadable", "Darwin": "vm_stat unavailable"}
-    return f"{machine_reader.get(system, f'no RAM reader for platform {system}')} and no cgroup memory limit"
-
-
-def _read_vm_stat_avail_gb() -> float | None:
-    """Reclaimable macOS RAM in GB from ``vm_stat``, ``None`` when it cannot be read.
-
-    The honest "available" figure on macOS is the sum of the page classes the
-    OS can hand back without swapping: free + inactive + purgeable +
-    speculative. Wired/active/compressed pages are genuinely committed.
-    """
-    vm_stat = shutil.which("vm_stat")
-    if vm_stat is None:
-        return None
-    try:
-        proc = run_allowed_to_fail([vm_stat], expected_codes=None, timeout=10)
-    except (OSError, CommandFailedError):
-        logger.warning("resource_pressure: vm_stat invocation failed")
-        return None
-    if proc.returncode != 0:
-        return None
-    return _parse_vm_stat_avail_gb(proc.stdout)
-
-
-def _parse_vm_stat_avail_gb(output: str) -> float | None:
-    """Sum the reclaimable ``vm_stat`` page classes into GB, ``None`` if unparsable."""
-    page_size = _vm_stat_page_size(output)
-    if page_size is None:
-        return None
-    reclaimable_labels = (
-        "Pages free",
-        "Pages inactive",
-        "Pages purgeable",
-        "Pages speculative",
-    )
-    total_pages = 0
-    found_any = False
-    for label in reclaimable_labels:
-        pages = _vm_stat_pages_for(output, label)
-        if pages is not None:
-            total_pages += pages
-            found_any = True
-    if not found_any:
-        return None
-    return (total_pages * page_size) / _GIB
-
-
-def _vm_stat_page_size(output: str) -> int | None:
-    """Extract the page size (bytes) from the ``vm_stat`` header line."""
-    for line in output.splitlines():
-        if "page size of" in line:
-            for token in line.replace(")", "").split():
-                if token.isdigit():
-                    return int(token)
-    return None
-
-
-def _vm_stat_pages_for(output: str, label: str) -> int | None:
-    """Return the page count for *label* (e.g. ``"Pages free"``), ``None`` if absent."""
-    for line in output.splitlines():
-        if line.strip().startswith(label):
-            digits = line.split(":", 1)[-1].strip().rstrip(".").replace(",", "")
-            if digits.isdigit():
-                return int(digits)
-    return None
 
 
 def measure_resources() -> ResourceReading:
@@ -383,12 +297,10 @@ def _disk_probe_degraded_signal(reading: ResourceReading) -> ScanSignal:
 
 def _ram_probe_inert_signal() -> ScanSignal:
     """Say the RAM ladder is not protecting this host, so it reads differently from a healthy one."""
-    system = platform.system()
-    reason = _ram_inert_reason(system)
     return ScanSignal(
         kind="resource.probe_inert",
-        summary=f"ram probe INERT on {system} — {reason}; the RAM ladder is not guarding this host",
-        payload={"resource": "ram", "level": "inert", "platform": system, "reason": reason},
+        summary=f"ram probe INERT — {_RAM_INERT_REASON}; the RAM ladder is not guarding this host",
+        payload={"resource": "ram", "level": "inert", "reason": _RAM_INERT_REASON},
     )
 
 
@@ -411,7 +323,7 @@ class ResourcePressureScanner:
 
     Threshold fields are absolute GB. ``cadence_minutes`` gates how often the
     scanner re-measures (decoupled from the loop tick cadence so a sub-minute
-    tick doesn't re-shell ``vm_stat``). ``min_free_interval_minutes`` is the
+    tick doesn't re-read ``/proc``). ``min_free_interval_minutes`` is the
     anti-thrash gap between *freeing* passes — measurement still runs every
     cadence window, only ``resource.cleanup_needed`` is rate-limited. All
     destructive levers default OFF and live in the mechanical handler; the

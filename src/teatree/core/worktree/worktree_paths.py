@@ -45,18 +45,11 @@ def _local_paths(path: str) -> tuple[list[str], str]:
     resolved = str(Path(path).resolve())
     if resolved != path:
         candidates.append(resolved)
-    # macOS: /private/var ↔ /var, /private/tmp ↔ /tmp, /private/etc ↔ /etc
-    if path.startswith("/private/"):
-        candidates.append(path.removeprefix("/private"))
-    else:
-        prefixed = "/private" + path
-        if Path(prefixed).exists():
-            candidates.append(prefixed)
     return list(dict.fromkeys(candidates)), resolved
 
 
 def _candidate_paths(path: str, *, mount_table: MountTable | None = None) -> list[str]:
-    """Return literal, resolved, macOS ``/private``, and verified mount spellings for DB lookups."""
+    """Return literal, resolved and verified mount spellings for DB lookups."""
     candidates, resolved = _local_paths(path)
     table = mount_table if mount_table is not None else parsed_mount_table(read_mount_table())
     candidates.extend(table.spellings(path, resolved=resolved))
@@ -92,9 +85,8 @@ def paths_match(a: str | Path, b: str | Path) -> bool:
 
     The pairwise form of the matcher the DB-lookup sites in :mod:`teatree.core.intake.resolve`
     already use via ``filter(extra__worktree_path__in=_candidate_paths(...))``. Two
-    paths match when their candidate spellings coincide, so a
-    ``/var`` path matches its ``/private/var`` twin (and a resolved symlink matches
-    its source). Routing the on-disk pairwise comparisons through it — the
+    paths match when their candidate spellings coincide, so a resolved symlink matches
+    its source. Routing the on-disk pairwise comparisons through it — the
     ``reconcile`` stale-dir scan and ``worktree_collision`` own-dir exclusion
     use the DB matcher's symlink
     and mount tolerance. :func:`path_is_within` handles descendants, including

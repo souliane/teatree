@@ -44,7 +44,6 @@ resolves correctly.
 from collections.abc import Callable
 
 from teatree.backends.slack import egress
-from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
@@ -554,32 +553,6 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""
         return read_permalink(self.get, channel, ts)
-
-    def post_audio_dm(
-        self,
-        *,
-        channel: str,
-        filepath: str,
-        text: str,
-        thread_ts: str = "",
-        title: str = "",
-    ) -> RawAPIDict:
-        """Post ONE DM to ``channel`` carrying ``text`` + an inline audio attachment (#2050).
-
-        Uses the modern three-step upload (``getUploadURLExternal`` → PUT bytes →
-        ``completeUploadExternal`` with ``text`` as ``initial_comment``). Needs the
-        token's ``files:write`` scope; without it the reserve step returns
-        ``missing_scope`` (surfaced verbatim so the caller degrades to text-only).
-        Routes under :meth:`_route_token`; ``{}`` when no token / unreadable file.
-        """
-        token = self._route_token(channel)
-        if not token or not channel:
-            return {}
-        return upload_audio_dm(
-            http=self._http,
-            token=token,
-            request=AudioDmRequest(channel=channel, filepath=filepath, text=text, thread_ts=thread_ts, title=title),
-        )
 
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""

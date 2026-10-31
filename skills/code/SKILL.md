@@ -1,7 +1,7 @@
 ---
 name: code
 description: Writing code with TDD methodology. Use when user says "implement", "write", "add", "code", "feature", "build", or is actively coding a solution.
-compatibility: macOS/Linux, any language/framework supported by the project.
+compatibility: Linux, any language/framework supported by the project.
 requires:
   - workspace
   - architecture-design

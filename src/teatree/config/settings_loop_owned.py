@@ -243,8 +243,7 @@ class _ResourcePressureLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "resource_pressure")
 
-    # Measures ABSOLUTE reclaimable bytes (``vm_stat`` pages) — never
-    # percent-of-nominal, which macOS "99 % RAM used" misleads about.
+    # Measures ABSOLUTE reclaimable bytes (``MemAvailable``), never percent-of-nominal.
     ram_warn_avail_gb: float = setting(
         3.0, spec=SettingSpec(help="available RAM below this many GB warns", parse=_parse_strict_float)
     )

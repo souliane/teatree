@@ -118,12 +118,6 @@ class TestSourceMountDrift:
         stub = _docker_stub(running=True, container_source=str(tmp_path / "fork"))
         assert DRIFT_MARKER not in _run(tmp_path, stub).stderr
 
-    def test_a_docker_desktop_host_mnt_prefix_is_not_a_drift(self, tmp_path: Path) -> None:
-        # Docker Desktop reports some bind sources under `/host_mnt`; comparing raw
-        # would flag every mount on a Mac as drifted and make the warning worthless.
-        stub = _docker_stub(running=True, container_source=f"/host_mnt{tmp_path / 'fork'}")
-        assert DRIFT_MARKER not in _run(tmp_path, stub).stderr
-
     def test_nothing_running_is_silent(self, tmp_path: Path) -> None:
         # The one-off `run` branch creates its container FROM the resolved value,
         # so there is no divergence to report.

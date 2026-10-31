@@ -50,8 +50,8 @@ _logger = logging.getLogger("teatree.config")
 # dict ConfigSetting, NOT a scalar. ``_coerce_setting_rows`` SKIPS them — a bare dict
 # cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
 # them bespoke from the raw row layers (``setting_layers.apply_structured_settings``):
-# ``mr_reminder`` highest-layer-wins, ``speak`` as a MERGE up the layers.
-_BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
+# ``mr_reminder`` highest-layer-wins.
+_BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"mr_reminder"})
 
 #: Sentinel for "no declaration owns this key at all" — never equals a real value, so a
 #: seed/import of such a key is always written, and a provenance walk can tell a key whose
@@ -141,12 +141,11 @@ def get_effective_settings(
     To make an additional setting DB-overridable, add it to
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
     ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
-    ``dataclasses.replace``. The two non-generic fields are the nested structured
-    tables ``speak`` / ``mr_reminder`` (``_BESPOKE_STRUCTURED_FIELDS``): they are
-    stored as JSON dicts, so ``_coerce_setting_rows`` skips them and
+    ``dataclasses.replace``. The one non-generic field is the nested structured
+    table ``mr_reminder`` (``_BESPOKE_STRUCTURED_FIELDS``): it is
+    stored as a JSON dict, so ``_coerce_setting_rows`` skips it and
     ``setting_layers.apply_structured_settings`` rebuilds the dataclass from the raw row
-    layers (TOML default, DB global, DB overlay) — ``mr_reminder`` highest-layer-wins,
-    ``speak`` as a MERGE up the layers (a partial row overrides only the keys it sets).
+    layers (TOML default, DB global, DB overlay) — ``mr_reminder`` highest-layer-wins.
 
     As a final step the single ``autonomy`` switch is applied: under
     :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the collapsed approval gates
@@ -195,7 +194,7 @@ def get_effective_settings(
     defaults_base = base
     layered = {**code_defaults, **overrides}
     settings = defaults_base if not layered else replace(defaults_base, **layered)
-    settings = apply_structured_settings(settings, layers.db_rows, defaults_base.speak)
+    settings = apply_structured_settings(settings, layers.db_rows)
     # Pin only parsed global settings; unknown stored rows never affect autonomy.
     return _apply_autonomy(
         settings,

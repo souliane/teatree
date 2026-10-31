@@ -1,8 +1,8 @@
 """One read-write domain for the canonical control database.
 
 SQLite's WAL mode coordinates its writers through an mmap'd ``-shm`` file. mmap
-coherence between a host process and a process inside a VM is NOT guaranteed
-across Docker Desktop's shared-folder layer (virtiofs / gRPC-FUSE), so two
+coherence between a host process and a process inside a container is NOT guaranteed
+across a shared-folder layer (virtiofs / gRPC-FUSE), so two
 writers on opposite sides of that boundary can each believe a page is free and
 allocate it independently. That is a documented SQLite constraint, not a bug in
 anything here, and this install has already taken the resulting damage once:

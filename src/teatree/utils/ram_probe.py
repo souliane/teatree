@@ -1,10 +1,9 @@
 """Host RAM and CPU sizing probes.
 
-Mirrors the same probe shape ``hooks/scripts/statusline.sh`` uses (``sysctl``
-on macOS, ``/proc/meminfo`` on Linux). Dependency-free so a missing optional
-library never crashes a caller; each platform read degrades to ``0.0`` on any
-subprocess/parse failure rather than raising, since "can't tell" must never
-look like "under pressure" to a caller gating on a high-usage threshold.
+Reads ``/proc/meminfo`` the way ``hooks/scripts/statusline.sh`` does. Dependency-free
+so a missing optional library never crashes a caller; each read degrades to ``0`` on
+any parse failure rather than raising, since "can't tell" must never look like
+"under pressure" to a caller gating on a high-usage threshold.
 
 Doubles as the deploy-time worker-sizing helper (#3432): run from the HOST as
 ``python3 ram_probe.py compose-sizing`` (pure stdlib, no teatree import needed on
@@ -15,17 +14,13 @@ the cgroup-capped worker :func:`available_cpu_count` reads a host-sized quota
 instead of a baked-in 3-core cap that made host-derived concurrency a no-op.
 """
 
-# The `compose-sizing` entry point runs under the HOST's `python3`, which on macOS
-# is /usr/bin/python3 — Python 3.9, where a `X | None` annotation is EVALUATED at
-# def time and raises `TypeError: unsupported operand type(s) for |`. That kills
-# the module at import, deploy.sh suppresses stderr, and the worker silently keeps
-# the 18g compose default sized for the box. Signatures below therefore quote any
-# annotation whose syntax outruns that interpreter — a string is never evaluated.
+# The `compose-sizing` entry point runs under the HOST's bare `python3`, whose version is
+# not ours to choose: on 3.9 a `X | None` annotation is EVALUATED at def time and raises
+# `TypeError`, which kills the module at import and silently keeps the compose default.
+# Signatures below therefore quote any annotation whose syntax outruns that interpreter.
 # `from __future__ import annotations` would do the same globally and is banned.
 
 import os
-import platform
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,10 +44,6 @@ _RESUME_FLOOR_MIB = 6 * 1024
 #: is operator-overridable (``TEATREE_WORKER_MEMORY_FLOOR_GIB``) and so cannot be restated
 #: here without the two disagreeing.
 _FLOOR_CLEARING_MIB = _RESUME_FLOOR_MIB + 1
-# ``vm_stat`` states its own page size on the header line; only fall back to the
-# Intel-era 4 KiB when that line cannot be read (see :func:`_macos_page_size`).
-_VM_STAT_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
-_DEFAULT_PAGE_SIZE = 4096
 _MEMINFO_PATH = "/proc/meminfo"
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEM_V1_UNLIMITED = 9223372036854771712
@@ -87,23 +78,6 @@ def cgroup_file(filename: str, *, version: int = 2, controller: str = "") -> Pat
             raise OSError
         return root.joinpath(*components, filename)
     raise OSError
-
-
-def _macos_page_size(vm_stat_output: str) -> int:
-    """Page size (bytes) declared by ``vm_stat``'s header, or 4096 when unreadable.
-
-    Not a constant: Apple Silicon uses 16384-byte pages where Intel used 4096,
-    and ``vm_stat`` reports page COUNTS. Assuming 4 KiB on an arm64 Mac scales
-    the reclaimable total (free + inactive + purgeable + speculative pages) down 4x, so a 24 GiB
-    host can falsely appear to have less than 4 GiB available. ``vm_stat`` states the real size on
-    its first line, so read it rather than guess.
-
-    The 4096 fallback keeps an unparsable header on conservative arithmetic
-    instead of raising — consistent with this module degrading rather than
-    crashing a caller.
-    """
-    match = _VM_STAT_PAGE_SIZE_RE.search(vm_stat_output)
-    return int(match.group(1)) if match else _DEFAULT_PAGE_SIZE
 
 
 def _linux_meminfo(path: "str | None" = None, *, trace: "dict[str, int | str] | None" = None) -> "dict[str, int]":
@@ -144,92 +118,25 @@ def linux_mem_available_kb(path: "str | None" = None) -> "int | None":
 
 
 def host_total_ram_mib() -> int:
-    """Physical RAM of the host in whole MiB, or ``0`` when it cannot be read.
+    """Physical RAM of the host in whole MiB (``/proc/meminfo`` ``MemTotal``), or ``0`` when unreadable.
 
-    Linux reads ``/proc/meminfo``'s ``MemTotal`` (kB); macOS reads
-    ``sysctl -n hw.memsize`` (bytes). ``0`` on any failure so a caller keeps its
-    fallback rather than sizing a cap off a bogus reading.
+    ``0`` on any failure so a caller keeps its fallback rather than sizing a cap off a bogus reading.
     """
-    system = platform.system()
-    if system == "Linux":
-        return _linux_meminfo().get("MemTotal", 0) // 1024
-    if system == "Darwin":
-        return _macos_total_ram_mib()
-    return 0
-
-
-def _macos_total_ram_mib() -> int:
-    """Read mac physical RAM (MiB) via ``sysctl -n hw.memsize``; ``0`` on failure.
-
-    Pure stdlib, NOT ``teatree.utils.run``: this is on the ``compose-sizing`` path
-    that ``deploy/deploy.sh`` runs as a bare ``python3`` script, where no teatree
-    package is importable. A ``from teatree...`` here raises ImportError, deploy.sh
-    suppresses stderr, and the worker silently keeps the 18g compose default that
-    is sized for the box — the reason a Mac deploy never applied a derived cap.
-    """
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-    import subprocess  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    sysctl = shutil.which("sysctl")
-    if not sysctl:
-        return 0
-    try:
-        out = subprocess.run(
-            [sysctl, "-n", "hw.memsize"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=True,
-        )
-        total = int(out.stdout.strip())
-    except (subprocess.SubprocessError, ValueError, OSError):
-        return 0
-    return max(0, total // (1024 * 1024))
+    return _linux_meminfo().get("MemTotal", 0) // 1024
 
 
 def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> int:
     """RAM the HOST could hand out right now, in whole MiB, or ``0`` when unreadable.
 
-    Linux reads ``/proc/meminfo``'s ``MemAvailable`` (the kernel's own estimate, which
-    already accounts for reclaimable page cache); macOS sums the reclaimable ``vm_stat``
-    page classes. ``0`` on any failure, so a caller sizing against headroom keeps its
-    fallback rather than sizing off a bogus reading — "can't tell" must never read as
-    "plenty free" any more than it reads as "nothing free".
+    ``/proc/meminfo``'s ``MemAvailable`` is the kernel's own estimate, which already accounts for
+    reclaimable page cache. ``0`` on any failure, so a caller sizing against headroom keeps its
+    fallback rather than sizing off a bogus reading — "can't tell" must never read as "plenty
+    free" any more than it reads as "nothing free".
     """
-    system = platform.system()
-    if system == "Linux":
-        info = _linux_meminfo(trace=trace)
-        if trace is not None and "MemAvailable" in info:
-            trace["meminfo"] = info["MemAvailable"] // 1024
-        return info.get("MemAvailable", 0) // 1024
-    if system == "Darwin":
-        return _macos_available_ram_mib()
-    return 0
-
-
-def _macos_available_ram_mib() -> int:
-    """Available mac RAM (MiB) from free, inactive, purgeable, and speculative pages."""
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
-
-    vm_stat = shutil.which("vm_stat")
-    if not vm_stat:
-        return 0
-    try:
-        stat = run_checked([vm_stat], timeout=2).stdout
-    except (CommandFailedError, OSError, TimeoutError):
-        return 0
-    page_size = _macos_page_size(stat)
-    pages = {"Pages free": 0, "Pages inactive": 0, "Pages purgeable": 0, "Pages speculative": 0}
-    for line in stat.splitlines():
-        name, _, value = line.partition(":")
-        if name in pages:
-            digits = value.strip().rstrip(".")
-            if digits.isdigit():
-                pages[name] = int(digits)
-    reclaimable = sum(pages.values())
-    return reclaimable * page_size // (1024 * 1024)
+    info = _linux_meminfo(trace=trace)
+    if trace is not None and "MemAvailable" in info:
+        trace["meminfo"] = info["MemAvailable"] // 1024
+    return info.get("MemAvailable", 0) // 1024
 
 
 def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" = None) -> "int | None":
@@ -336,8 +243,8 @@ class WorkerSizing:
 
     Two outcomes a bare ``int`` cannot tell apart. ``mem_limit_mib == 0`` with no
     ``refusal`` is "no opinion" — the basis was unreadable, so compose keeps its in-file
-    default. ``mem_limit_mib == 0`` WITH a ``refusal`` is "this daemon cannot host the
-    worker at all", where keeping that default would silently hand a small VM an
+    default. ``mem_limit_mib == 0`` WITH a ``refusal`` is "this host cannot hold the
+    worker at all", where keeping that default would silently hand a small host an
     effectively-uncapped container.
     """
 
@@ -348,88 +255,32 @@ class WorkerSizing:
 class DockerWorkerSizing:
     """Derives the worker container's compose caps from the real host.
 
-    Grouped as one class because these three steps are a single concern —
-    turning what the HOST and the Docker DAEMON report into the ``cpus`` and
-    ``mem_limit`` ``deploy/deploy.sh`` passes to compose. They are separate from
-    the raw OS/cgroup RAM probes above, which answer "what is available right
-    now" for the admission gate rather than "how big may the worker be".
+    Grouped as one class because these steps are a single concern — turning what the HOST
+    reports into the ``cpus`` and ``mem_limit`` ``deploy/deploy.sh`` passes to compose. They
+    are separate from the raw RAM probes above, which answer "what is available right now"
+    for the admission gate rather than "how big may the worker be".
     """
 
     @classmethod
-    def worker_cpus(cls, cpu_count: "int | None" = None, daemon_cpus: "int | None" = None) -> int:
+    def worker_cpus(cls, cpu_count: "int | None" = None) -> int:
         """Whole-core CPU quota for the worker container, derived from the host (#3432).
 
-        All cores but one of the smaller of the host and the Docker engine — the
-        reserved core covers the light admin/listener/watchdog sidecars and the host
-        OS — floored at 1. Docker Desktop's VM can hold fewer CPUs than the host, and
-        the daemon refuses a ``cpus`` above its own count. Called by
-        ``deploy/deploy.sh`` on the UNCAPPED host so the resulting compose ``cpus``
-        reflects real host cores; inside the cgroup-capped worker
-        :func:`available_cpu_count` then reads this quota and
-        :func:`default_provision_concurrency` derives concurrency from the host
-        instead of a baked-in 3-core cap.
+        All cores but one — the reserved core covers the light admin/listener/watchdog
+        sidecars and the host OS — floored at 1. Called by ``deploy/deploy.sh`` on the
+        UNCAPPED host so the resulting compose ``cpus`` reflects real host cores; inside the
+        cgroup-capped worker :func:`available_cpu_count` then reads this quota and
+        :func:`default_provision_concurrency` derives concurrency from the host instead of a
+        baked-in 3-core cap.
         """
         n = cpu_count if cpu_count is not None else available_cpu_count()
-        engine = daemon_cpus if daemon_cpus is not None else cls.daemon_cpu_count()
-        if engine > 0:
-            n = min(n, engine)
         return max(1, n - 1)
 
     @classmethod
-    def daemon_cpu_count(cls) -> int:
-        """CPUs the Docker engine reports (``NCPU``); ``0`` when unreadable."""
-        return cls._docker_info_int("{{.NCPU}}")
+    def worker_sizing(cls, total_ram_mib: "int | None" = None) -> "WorkerSizing":
+        """The worker's ``mem_limit``, or the reason this host cannot hold one (#3432).
 
-    @classmethod
-    def daemon_total_ram_mib(cls) -> int:
-        """RAM the Docker daemon can actually hand a container, in whole MiB; ``0`` when unreadable.
-
-        On Linux — the box — the daemon shares the host kernel, so this equals host
-        RAM and changes nothing. Under Docker Desktop the daemon runs in the product's
-        own Linux VM, sized a FRACTION of the host (a 24 GiB Mac commonly allocates 8
-        GiB). A cap derived from host RAM there exceeds the machine the container
-        actually runs on, so the cgroup ceiling can never bind: instead of a clean
-        per-container OOM the VM reaches a GLOBAL one (``constraint=CONSTRAINT_NONE``,
-        ``global_oom``) that reaps whichever task it picks and leaves dockerd without
-        an exit event — the container then refuses `stop`/`kill` and exits 137.
-
-        Pure stdlib on purpose: ``deploy/deploy.sh`` runs this file as a bare
-        ``python3`` script with no teatree package importable, and it suppresses
-        stderr — so an import error here would degrade SILENTLY to the compose default.
-        """
-        return cls._docker_info_int("{{.MemTotal}}") // (1024 * 1024)
-
-    @staticmethod
-    def _docker_info_int(template: str) -> int:
-        """One integer field of ``docker info``; ``0`` when docker is absent, unreachable or unparsable."""
-        import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-        import subprocess  # noqa: PLC0415 — deferred: loaded only on this code path
-
-        docker = shutil.which("docker")
-        if not docker:
-            return 0
-        try:
-            out = subprocess.run(
-                [docker, "info", "--format", template],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=True,
-            )
-            return max(0, int(out.stdout.strip()))
-        except (subprocess.SubprocessError, ValueError, OSError):
-            return 0
-
-    @classmethod
-    def worker_sizing(cls, total_ram_mib: "int | None" = None, daemon_ram_mib: "int | None" = None) -> "WorkerSizing":
-        """The worker's ``mem_limit``, or the reason this daemon cannot host one (#3432).
-
-        The basis is the SMALLER of host RAM and what the Docker daemon reports it can
-        hand out (:meth:`daemon_total_ram_mib`) — identical on Linux, but under Docker
-        Desktop the daemon's VM is the real ceiling and the host figure would size a cap
-        the container can never be held to. From that basis, a fixed reserve for the
-        sibling containers (:data:`_SIBLING_RESERVE_MIB`) and ~20% OS/burst headroom
-        (:data:`_HOST_HEADROOM`).
+        The basis is host RAM, less a fixed reserve for the sibling containers
+        (:data:`_SIBLING_RESERVE_MIB`) and ~20% OS/burst headroom (:data:`_HOST_HEADROOM`).
 
         A derived cap at or under :data:`_RESUME_FLOOR_MIB` is raised to
         :data:`_FLOOR_CLEARING_MIB`, not lowered. Lowering it under the agent-workload
@@ -439,18 +290,15 @@ class DockerWorkerSizing:
         cannot hold it — while ``t3 doctor check`` hard-FAILs the same cap as a broken
         product that OOM-kills (exit 137) even on an idle host.
 
-        When the daemon cannot hold a floor-clearing cap beside the siblings, there is no
+        When the host cannot hold a floor-clearing cap beside the siblings, there is no
         workable cap at all and this REFUSES rather than emitting one: a lane that will
         not start beats one that OOM-kills mid-run, and the alternative — emitting nothing
-        — leaves compose's generous in-file default on a VM it dwarfs.
+        — leaves compose's generous in-file default on a host it dwarfs.
 
         ``0`` with no refusal when the basis is unreadable, so ``deploy/deploy.sh`` keeps
         the compose default rather than imposing a cap derived from a bogus reading.
         """
         total = total_ram_mib if total_ram_mib is not None else host_total_ram_mib()
-        daemon = daemon_ram_mib if daemon_ram_mib is not None else cls.daemon_total_ram_mib()
-        if daemon > 0:
-            total = daemon if total <= 0 else min(total, daemon)
         if total <= 0:
             return WorkerSizing(0)
         derived = int((total - _SIBLING_RESERVE_MIB) * _HOST_HEADROOM)
@@ -462,23 +310,16 @@ class DockerWorkerSizing:
 
     @staticmethod
     def _no_workable_cap(total_mib: int) -> str:
-        """The operator sentence for a daemon too small to host a floor-clearing worker."""
+        """The operator sentence for a host too small to hold a floor-clearing worker."""
         minimum = _FLOOR_CLEARING_MIB + _SIBLING_RESERVE_MIB
         return (
-            f"teatree cannot size the worker container on this Docker daemon: it reports "
+            f"teatree cannot size the worker container on this host: it reports "
             f"{total_mib} MiB total, and the worker needs {_FLOOR_CLEARING_MIB} MiB (one MiB above the "
             f"admission governor's resume floor, below which a braked lane can never re-admit) beside "
-            f"{_SIBLING_RESERVE_MIB} MiB of sibling ceilings — {minimum} MiB in all. Raise Docker's memory "
-            f"allocation to at least {minimum} MiB and re-run the deploy, or set TEATREE_WORKER_MEM_LIMIT "
+            f"{_SIBLING_RESERVE_MIB} MiB of sibling ceilings — {minimum} MiB in all. Use a host with at "
+            f"least {minimum} MiB of RAM, or set TEATREE_WORKER_MEM_LIMIT "
             f"explicitly to accept a smaller cap and its consequences."
         )
-
-
-def _exceeds(cpus: str, limit: int) -> bool:
-    try:
-        return float(cpus) > limit
-    except ValueError:
-        return False
 
 
 def _emit_compose_sizing() -> None:
@@ -486,27 +327,19 @@ def _emit_compose_sizing() -> None:
 
     ``deploy/deploy.sh`` ``eval``s this on the host before it converges the stack. The
     ``mem_limit`` line is omitted when host RAM is unreadable so compose keeps its in-file
-    default. ``cpus`` is omitted when the daemon's ``NCPU`` is unreadable: the daemon
-    refuses a ``cpus`` above its own count, and host cores overstate a Docker Desktop VM.
+    default.
 
     An operator who exported ``TEATREE_WORKER_CPUS`` or ``TEATREE_WORKER_MEM_LIMIT`` has
     already decided that cap, so its derivation is skipped — re-emitting a derived line
-    would silently overwrite it. The one exception is a ``cpus`` above the daemon's count,
-    which is capped at it rather than left to fail the whole ``up``. The memory override is
-    also the never-lockout escape from the refusal below.
+    would silently overwrite it. The memory override is also the never-lockout escape from
+    the refusal below.
 
-    Exits ``3`` on a refusal so ``deploy.sh`` can tell "this daemon cannot host a worker"
+    Exits ``3`` on a refusal so ``deploy.sh`` can tell "this host cannot hold a worker"
     (abort, with the reason) from "the probe could not run" (degrade to the compose
     default), which a shared non-zero code could not.
     """
-    engine = DockerWorkerSizing.daemon_cpu_count()
-    operator_cpus = os.environ.get("TEATREE_WORKER_CPUS", "").strip()
-    if not operator_cpus:
-        if engine > 0:
-            sys.stdout.write(f"TEATREE_WORKER_CPUS={DockerWorkerSizing.worker_cpus(daemon_cpus=engine)}\n")
-    elif engine > 0 and _exceeds(operator_cpus, engine):
-        sys.stderr.write(f"TEATREE_WORKER_CPUS={operator_cpus} exceeds the Docker daemon's {engine} CPUs; capped.\n")
-        sys.stdout.write(f"TEATREE_WORKER_CPUS={engine}\n")
+    if not os.environ.get("TEATREE_WORKER_CPUS", "").strip():
+        sys.stdout.write(f"TEATREE_WORKER_CPUS={DockerWorkerSizing.worker_cpus()}\n")
     if os.environ.get("TEATREE_WORKER_MEM_LIMIT", "").strip():
         return
     sizing = DockerWorkerSizing.worker_sizing()

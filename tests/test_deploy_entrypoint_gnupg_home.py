@@ -7,7 +7,7 @@ never has to redirect it — it only decides what that path is made OF:
 * a socket-capable host home (the deployment box's ext4 bind mount) is ADOPTED in place
     through a symlink, so the services keep sharing ONE gpg-agent and the
     cached-passphrase setup ``deploy/README.md`` documents keeps working;
-* a host home on a file-sharing transport (Docker Desktop for Mac reports ``fakeowner``,
+* a host home on a file-sharing transport (``virtiofs``, ``9p``, …,
     which cannot host the ``S.*`` sockets gpg-agent and keyboxd bind) is COPIED into the
     tmpfs, where a socket binds normally.
 
@@ -33,10 +33,10 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash
 ENTRYPOINT = Path(__file__).resolve().parents[1] / "deploy" / "entrypoint.sh"
 _BASH = shutil.which("bash") or "bash"
 
-# The filesystems Docker Desktop / Colima / Lima serve a host bind mount over.
+# The filesystems a VM or network share serves a host bind mount over.
 # None of them can host a unix socket, and the list is open-ended — which is why
 # the entrypoint allowlists the good ones instead of denylisting these.
-SHARING_TRANSPORTS = ["fakeowner", "virtiofs", "9p", "fuse.grpcfuse", "osxfs", "nfs", "cifs", "vboxsf", "sshfs"]
+SHARING_TRANSPORTS = ["virtiofs", "9p", "fuse.grpcfuse", "nfs", "cifs", "vboxsf", "sshfs"]
 LOCAL_FILESYSTEMS = ["ext4", "xfs", "btrfs", "zfs", "overlay", "tmpfs"]
 
 _FUNCTIONS = (
@@ -113,7 +113,7 @@ def _build_host_gnupg(home: Path) -> None:
     (home / "gpg.conf").write_text("default-key DEADBEEF\n", encoding="utf-8")
     (home / "trustdb.gpg").write_bytes(b"trust")
     (home / "random_seed").write_bytes(b"entropy")
-    (home / "gpg-agent.conf").write_text("pinentry-program /opt/homebrew/bin/pinentry-mac\n", encoding="utf-8")
+    (home / "gpg-agent.conf").write_text("pinentry-program /usr/local/bin/pinentry-host-only\n", encoding="utf-8")
     (home / "private-keys-v1.d").mkdir()
     (home / "private-keys-v1.d" / "ABC123.key").write_bytes(b"secret-key")
     (home / "public-keys.d").mkdir()
@@ -144,10 +144,11 @@ class TestFstypeHostsUnixSockets:
 class TestPathFstype:
     def test_resolves_the_longest_matching_mount_point(self, tmp_path: Path) -> None:
         table = _mount_table(
-            tmp_path, [("/", "ext4"), ("/home/teatree", "ext4"), ("/home/teatree/.gnupg", "fakeowner")]
+            tmp_path,
+            [("/", "ext4"), ("/home/teatree", "ext4"), ("/home/teatree/.gnupg", "virtiofs")],  # privacy-scan:allow
         )
         script = f"export TEATREE_PROC_MOUNTS={table}\npath_fstype /home/teatree/.gnupg"
-        assert _run(tmp_path, script) == "fakeowner"
+        assert _run(tmp_path, script) == "virtiofs"
 
     def test_falls_back_to_the_enclosing_mount(self, tmp_path: Path) -> None:
         table = _mount_table(tmp_path, [("/", "ext4"), ("/home", "xfs")])
@@ -161,7 +162,7 @@ class TestPathFstype:
 
     def test_a_sibling_prefix_never_matches(self, tmp_path: Path) -> None:
         # `/home/teatree/.gnupg-run` must not be served by `/home/teatree/.gnupg`.
-        table = _mount_table(tmp_path, [("/", "ext4"), ("/home/teatree/.gnupg", "fakeowner")])
+        table = _mount_table(tmp_path, [("/", "ext4"), ("/home/teatree/.gnupg", "virtiofs")])  # privacy-scan:allow
         script = f"export TEATREE_PROC_MOUNTS={table}\npath_fstype /home/teatree/.gnupg-run"
         assert _run(tmp_path, script) == "ext4"
 
@@ -193,7 +194,7 @@ class TestDeriveContainerGnupgHome:
         # Dotlocks leaked by a process that died holding them must not travel.
         assert not (derived / "public-keys.d" / "pubring.db.lock").exists()
         assert not (derived / "public-keys.d" / ".#lk0x1.host.22").exists()
-        # A host agent config names host-only binaries (`pinentry-mac`) absent here.
+        # A host agent config names host-only binaries (`pinentry-host-only`) absent here.
         assert not (derived / "gpg-agent.conf").exists()
         assert not (derived / "random_seed").exists()
         assert not (derived / "openpgp-revocs.d").exists()
@@ -268,18 +269,18 @@ class TestSeedContainerGnupgHome:
         assert derived.resolve() == host.resolve()
 
     def test_a_sharing_transport_gets_a_real_container_local_copy(self, tmp_path: Path) -> None:
-        # The laptop. A COPY, so the container's keyboxd binds its sockets on the tmpfs
+        # A socket-less share. A COPY, so the container's keyboxd binds its sockets on the tmpfs
         # and never takes a dotlock on the keybox the host's own keyboxd holds.
         host, runtime = tmp_path / "host", tmp_path / "run"
         _build_host_gnupg(host)
-        table = _mount_table(tmp_path, [("/", "ext4"), (str(host), "fakeowner")])
+        table = _mount_table(tmp_path, [("/", "ext4"), (str(host), "virtiofs")])
         assert self._seed(tmp_path, table, str(host), runtime) == str(runtime / "gnupg")
         derived = runtime / "gnupg"
         assert not derived.is_symlink()
         assert (derived / "private-keys-v1.d" / "ABC123.key").read_bytes() == b"secret-key"
 
     def test_the_host_home_is_never_written_to_on_either_path(self, tmp_path: Path) -> None:
-        for fstype in ("ext4", "fakeowner"):
+        for fstype in ("ext4", "virtiofs"):
             host, runtime = tmp_path / f"host-{fstype}", tmp_path / f"run-{fstype}"
             _build_host_gnupg(host)
             before = {q.relative_to(host): q.stat().st_mtime_ns for q in host.rglob("*")}
@@ -303,7 +304,7 @@ class TestSeedContainerGnupgHome:
         # standing where a copy belongs, or a stale copy shadowing an adopted home.
         host, runtime = tmp_path / "host", tmp_path / "run"
         _build_host_gnupg(host)
-        shared = _mount_table(tmp_path / "a", [("/", "ext4"), (str(host), "fakeowner")])
+        shared = _mount_table(tmp_path / "a", [("/", "ext4"), (str(host), "virtiofs")])
         local = _mount_table(tmp_path / "b", [("/", "ext4")])
         derived = runtime / "gnupg"
 

@@ -11,7 +11,6 @@ _ROOT = Path(teatree.__file__).parent
 # Existing non-forge integrations. The list only shrinks: a new module-level call anywhere else fails.
 _NON_FORGE_INTEGRATIONS = frozenset(
     {
-        "backends/msteams/presence.py",
         "backends/slack/client.py",
         "backends/slack/http.py",
         "backends/slack/reactions.py",

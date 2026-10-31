@@ -15,8 +15,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import yaml
-
 from teatree.cli.doctor import deploy_liveness
 
 _DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
@@ -62,15 +60,6 @@ class TestTheWatchdogJudgesTheHeartbeat:
 
     def test_a_cleared_record_is_not(self, tmp_path: Path) -> None:
         assert not _watchdog_marker_fresh(tmp_path, "")
-
-
-def test_every_container_learns_the_host_os() -> None:
-    compose = yaml.safe_load((_DEPLOY_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
-
-    for name, service in compose["services"].items():
-        if name == "teatree-ro-executor":
-            continue  # its env is an allowlist the core verifies (tests/test_deploy_ro_executor.py)
-        assert service["environment"].get("TEATREE_HOST_OS") == "${TEATREE_HOST_OS:-unknown}", name
 
 
 def _heartbeat_harness(tmp_path: Path, *, kill_is_a_no_op: bool) -> str:

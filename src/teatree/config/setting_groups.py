@@ -295,9 +295,9 @@ def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> "tomlkit_items
     on read. A group wrapper is decidable without a marker — it is a table whose name is not
     a declared setting.
 
-    A ``dict``-valued SETTING (``speak`` / ``mr_reminder``) is a genuine nested setting, not
+    A ``dict``-valued SETTING (``mr_reminder``) is a genuine nested setting, not
     a group, so it renders at the table's top level after the group wrappers rather than
-    inside one. That keeps ``[teatree.speak]`` reachable at the path it has always had.
+    inside one. That keeps ``[teatree.mr_reminder]`` reachable at the path it has always had.
 
     The ONE renderer behind both TOML surfaces — the ``config_setting`` export dump and the
     shipped ``defaults.toml`` writer — so a snapshot can never flatten what the export

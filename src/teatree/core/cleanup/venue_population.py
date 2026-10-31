@@ -3,7 +3,7 @@
 CANDIDATES are the checkouts under the roots this venue provisions into: a walk that stops at
 each checkout, plus the worktrees the clones found there register under those roots. It is
 bounded on purpose — from the container, home and a registered row's parent reach the host
-workspace through a Docker Desktop file share, where the walk outlived the tick deadline and
+workspace through a bind-mounted file share, where the walk outlived the tick deadline and
 where a host agent's working directory is invisible to the process table.
 
 PROTECTORS are every checkout whose artifact link could point at a candidate: the candidates,

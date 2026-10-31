@@ -13,7 +13,6 @@ import datetime as dt
 import functools
 import inspect
 import os
-import sys
 import threading
 import time
 from collections import Counter
@@ -66,8 +65,6 @@ from teatree.loops.worker import (
     agent_executor_queues,
     loops_executor_count,
 )
-from teatree.utils.host_pressure import read_host_pressure
-from teatree.utils.host_pressure_sampler import HostSampler
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.singleton import pid_alive
 from teatree.utils.thread_db import close_thread_db_connections
@@ -167,7 +164,6 @@ def _make_worker(*, script, sleep, **seam_overrides):
         reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
-        publish_host_pressure=seam_overrides.get("publish_host_pressure") or (lambda: None),
         start_live_ingress=seam_overrides.get("start_live_ingress") or (lambda: None),
         read_agent_queues=seam_overrides.get("read_agent_queues") or (lambda: _AGENTS),
     )
@@ -175,24 +171,6 @@ def _make_worker(*, script, sleep, **seam_overrides):
         seams = dataclasses.replace(seams, loops_executors=seam_overrides["loops_executors"])
     holder.append(LoopWorker(seams))
     return holder[0], built, handles
-
-
-def test_supervisor_poll_produces_headless_linux_feed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    proc = tmp_path / "proc"
-    proc.mkdir()
-    (proc / "meminfo").write_text("MemAvailable: 8388608 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
-    (proc / "vmstat").write_text("pswpin 0\npswpout 0\n")
-    (proc / "loadavg").write_text("1.0 0.5 0.25 1/100 100\n")
-    target = tmp_path / "host-pressure.json"
-    monkeypatch.setattr(os, "cpu_count", lambda: 8)
-    sampler = HostSampler(proc_root=proc, path=target)
-    worker, _, _ = _make_worker(
-        script=[False], sleep=lambda _seconds: None, publish_host_pressure=sampler.publish_if_due
-    )
-
-    worker.run()
-
-    assert read_host_pressure(path=target) is not None
 
 
 def test_supervisor_reclaims_dead_owner_leases_each_poll() -> None:
@@ -217,18 +195,6 @@ def test_supervisor_survives_a_reclaim_error() -> None:
         reclaim_leases=_boom,
     )
     worker.run()  # a reclaim error must never crash the supervisor
-    assert all(handle.joined for handle in handles)
-
-
-def test_supervisor_survives_a_host_pressure_publish_error() -> None:
-    def fail_publish() -> None:
-        reason = "host feed unavailable"
-        raise OSError(reason)
-
-    worker, _built, handles = _make_worker(
-        script=[True], sleep=lambda _seconds: None, publish_host_pressure=fail_publish
-    )
-    worker.run()
     assert all(handle.joined for handle in handles)
 
 
@@ -270,18 +236,6 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
     worker_mod._start_live_ingress()
     assert len([peer for peer in live_mailbox.shared_broker().identities() if peer["harness"] == "orchestrator"]) == 1
     assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux host sampler")
-def test_default_worker_seam_publishes_host_pressure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    target = tmp_path / "host-pressure.json"
-    monkeypatch.setenv("T3_HOST_PRESSURE_PATH", str(target))
-
-    WorkerSeams().publish_host_pressure()
-
-    reading = read_host_pressure(path=target)
-    assert reading is not None
-    assert reading.cores >= 1
 
 
 def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
@@ -463,7 +417,7 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
 _AGENTS = ("default",) * 3 + ("cheap",)
 
 
-@pytest.mark.parametrize("cause", ["swap", "weekly-quota"])
+@pytest.mark.parametrize("cause", ["memory", "weekly-quota"])
 def test_a_brake_keeps_the_whole_control_plane_so_one_slow_tick_cannot_starve_the_rest(cause: str) -> None:
     # Braked to ONE loops executor, a 300 s resource_pressure tick held every other timer (#98).
     denied = AdmissionDecision(admit=False, reason="braked", ceiling=1, braked=True, cause=cause)
@@ -557,16 +511,6 @@ def test_stop_signal_tears_the_pool_down() -> None:
     worker.run()
     assert all(not executor.running for executor in built)
     assert all(handle.joined for handle in handles)
-
-
-def test_critical_kernel_memory_pressure_retires_the_cheap_lane_but_keeps_control() -> None:
-    denied = AdmissionDecision(admit=False, reason="kernel critical", ceiling=1, braked=True, cause="memory-pressure")
-    worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, loops_executors=3
-    )
-    worker.run()
-
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
 
 
 def test_an_executor_that_survives_the_join_and_the_tick_kill_exits_non_zero() -> None:

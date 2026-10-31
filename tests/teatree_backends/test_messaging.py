@@ -38,7 +38,6 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.resolve_user_id("alice") == ""
     assert backend.resolve_unique_active_user_id("alice") == ""
     assert backend.resolve_usergroup_id("reviewers") == ""
-    assert backend.post_audio_dm(channel="C", filepath="/tmp/x.m4a", text="hi", title="t") == {}
 
 
 def test_slack_satisfies_messaging_protocol() -> None:

@@ -220,8 +220,8 @@ def is_self_originated(message: RawAPIDict, identity: OwnSlackIdentity | None) -
 def is_tts_audio_file(file_entry: object) -> bool:
     """True iff a Slack ``files`` entry is an audio attachment (#2089).
 
-    The Slack-TTS feature attaches a synthesised ``speech.m4a`` rendition
-    of a message's own text. A file is audio when its ``mimetype`` starts
+    A bot-authored message in an older thread can carry a synthesised
+    ``speech.m4a`` rendition of its own text. A file is audio when its ``mimetype`` starts
     ``audio/`` or its ``filetype`` is a known audio extension — both forms
     Slack stamps on uploaded audio. Accepts any ``files`` list element
     (Slack types them as ``object``) and returns ``False`` for non-dicts.

@@ -1,7 +1,7 @@
 ---
 name: ship
 description: Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests. Use when user says "commit", "push", "PR", "merge request", "pull request", "finalize", "deliver", "ship", or is in the delivery phase.
-compatibility: macOS/Linux, git, glab or gh CLI, CI system.
+compatibility: Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules

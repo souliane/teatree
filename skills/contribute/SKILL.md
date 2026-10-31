@@ -1,7 +1,7 @@
 ---
 name: contribute
 description: Push retro improvements to a branch, open a PR, and optionally create upstream issues. Use when user says "contribute", "push improvements", "push skills", or after retro creates a local commit.
-compatibility: macOS/Linux, git, gh CLI (for PRs and upstream issues).
+compatibility: Linux, git, gh CLI (for PRs and upstream issues).
 requires:
   - retro
 metadata:

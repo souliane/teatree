@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from teatree.utils.ram_probe import DockerWorkerSizing, available_cpu_count, host_total_ram_mib
+from teatree.utils.ram_probe import DockerWorkerSizing, available_cpu_count
 from tests._deploy_space import install_build_space_stub
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +28,7 @@ COMPOSE_FILE = DEPLOY / "docker-compose.yml"
 DEPLOY_SH = DEPLOY / "deploy.sh"
 FF_CHECKOUT_SH = DEPLOY / "fast-forward-checkout.sh"
 RAM_PROBE = REPO_ROOT / "src" / "teatree" / "utils" / "ram_probe.py"
+HOST_RAM_MIB = 32 * 1024
 
 
 class TestComposeInterpolatesDerivedCaps:
@@ -67,7 +68,7 @@ class TestDeployShRunDerivesWorkerCaps:
     `docker compose up` must equal the cap ram_probe derives here.
     """
 
-    def _stage(self, tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str], int, int]:
+    def _stage(self, tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         repo = tmp_path / "repo"
         (repo / "deploy").mkdir(parents=True)
         (repo / "src" / "teatree" / "utils").mkdir(parents=True)
@@ -79,20 +80,22 @@ class TestDeployShRunDerivesWorkerCaps:
         shutil.copy(FF_CHECKOUT_SH, repo / "deploy" / "fast-forward-checkout.sh")
         shutil.copy(DEPLOY / "git-pins.sh", repo / "deploy" / "git-pins.sh")
         shutil.copy(DEPLOY_SH.with_name("deploy-lock.sh"), repo / "deploy" / "deploy-lock.sh")
-        # Host pressure installation is outside this sizing test and must not
-        # register a real launchd agent on the macOS test host.
-        _write_exec(repo / "deploy" / "install-host-pressure.zsh", "#!/bin/zsh\nexit 0\n")
         _write_exec(repo / "deploy" / "sync-hook-env.sh", "#!/usr/bin/env bash\nexit 0\n")
-        shutil.copy(RAM_PROBE, repo / "src" / "teatree" / "utils" / "ram_probe.py")
+        meminfo = tmp_path / "meminfo"
+        meminfo.write_text(
+            f"MemTotal: {HOST_RAM_MIB * 1024} kB\nMemAvailable: {HOST_RAM_MIB * 512} kB\n", encoding="utf-8"
+        )
+        ram_probe_source = RAM_PROBE.read_text(encoding="utf-8").replace(
+            '_MEMINFO_PATH = "/proc/meminfo"', f'_MEMINFO_PATH = "{meminfo}"'
+        )
+        assert str(meminfo) in ram_probe_source, "the staged sizer would read this box's real RAM"
+        (repo / "src" / "teatree" / "utils" / "ram_probe.py").write_text(ram_probe_source, encoding="utf-8")
         (repo / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         (repo / "deploy" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
         (repo / "deploy" / "teatree.env").write_text("", encoding="utf-8")
 
         record_cpus = tmp_path / "recorded_cpus"
         record_mem = tmp_path / "recorded_mem"
-        physical_ram_mib = host_total_ram_mib()
-        # Big enough to host a floor-clearing cap, so this exercises the export and not the refusal.
-        daemon_ram_mib = min(physical_ram_mib - 1, 12 * 1024)
         daemon_cpus = max(1, available_cpu_count() // 2)
         bindir = tmp_path / "bin"
         bindir.mkdir()
@@ -102,10 +105,7 @@ class TestDeployShRunDerivesWorkerCaps:
             "#!/usr/bin/env bash\n"
             'for a in "$@"; do\n'
             '  case "$a" in\n'
-            '    info) case "$*" in\n'
-            f'      *NCPU*) printf %s "${{STUB_DAEMON_CPUS:-{daemon_cpus}}}";;\n'
-            f'      *) printf %s "{daemon_ram_mib * 1024 * 1024}";;\n'
-            "    esac; exit 0;;\n"
+            f'    info) printf %s "${{STUB_DAEMON_CPUS:-{daemon_cpus}}}"; exit 0;;\n'
             f'    up) printf %s "$TEATREE_WORKER_CPUS" > "{record_cpus}"; '
             f'printf %s "$TEATREE_WORKER_MEM_LIMIT" > "{record_mem}"; exit 0;;\n'
             "    exec) echo '{\"running\": true}'; exit 0;;\n"
@@ -147,10 +147,10 @@ class TestDeployShRunDerivesWorkerCaps:
         # staged runs in the same xdist session make the second exit early having reached
         # nothing under test.
         env["TEATREE_DEPLOY_LOCK"] = str(tmp_path / "deploy.lock")
-        return repo, record_cpus, record_mem, env, physical_ram_mib, daemon_ram_mib
+        return repo, record_cpus, record_mem, env
 
     def test_run_exports_host_derived_cpus_into_compose_up(self, tmp_path: Path) -> None:
-        repo, record_cpus, record_mem, env, physical_ram_mib, daemon_ram_mib = self._stage(tmp_path)
+        repo, record_cpus, record_mem, env = self._stage(tmp_path)
         bash = shutil.which("bash")
         assert bash is not None
         proc = subprocess.run(
@@ -164,17 +164,11 @@ class TestDeployShRunDerivesWorkerCaps:
         assert proc.returncode == 0, f"deploy.sh failed:\n{proc.stdout}\n{proc.stderr}"
         assert record_cpus.exists(), f"the compose convergence was never reached:\n{proc.stdout}\n{proc.stderr}"
         # deploy.sh runs uncapped here just as on the host; the value it exported is
-        # exactly what ram_probe derives in-process from the host and the stub engine.
-        assert record_cpus.read_text() == str(
-            DockerWorkerSizing.worker_cpus(daemon_cpus=max(1, available_cpu_count() // 2))
-        )
-        assert daemon_ram_mib < physical_ram_mib
-        expected_mem = DockerWorkerSizing.worker_sizing(
-            total_ram_mib=physical_ram_mib,
-            daemon_ram_mib=daemon_ram_mib,
-        ).mem_limit_mib
-        if expected_mem > 0:
-            assert record_mem.read_text() == f"{expected_mem}m"
+        # exactly what ram_probe derives in-process from the host.
+        assert record_cpus.read_text() == str(DockerWorkerSizing.worker_cpus())
+        expected_mem = DockerWorkerSizing.worker_sizing(total_ram_mib=HOST_RAM_MIB).mem_limit_mib
+        assert expected_mem > 0
+        assert record_mem.read_text() == f"{expected_mem}m"
 
     def _stage_with_stub_sizer(self, tmp_path: Path, body: str) -> tuple[Path, Path, dict[str, str]]:
         """Stage the real deploy.sh against a DETERMINISTIC sizer.
@@ -183,7 +177,7 @@ class TestDeployShRunDerivesWorkerCaps:
         the RAM of whatever box runs it. These two exercise the branch, so the sizer is a
         stub and the outcome is the same everywhere.
         """
-        repo, record_cpus, _record_mem, env, _physical_ram_mib, _daemon_ram_mib = self._stage(tmp_path)
+        repo, record_cpus, _record_mem, env = self._stage(tmp_path)
         # deploy.sh runs this file with `python3 <path>`, so the stub is PYTHON — a shell
         # stub would raise SyntaxError and silently exercise the degrade branch instead.
         (repo / "src" / "teatree" / "utils" / "ram_probe.py").write_text(body, encoding="utf-8")
@@ -203,7 +197,7 @@ class TestDeployShRunDerivesWorkerCaps:
 
     def test_an_operator_exported_cpu_cap_reaches_compose_up(self, tmp_path: Path) -> None:
         """RED before the fix: the sizer's derived line was eval'd over the operator's value."""
-        repo, record_cpus, _record_mem, env, _physical_ram_mib, _daemon_ram_mib = self._stage(tmp_path)
+        repo, record_cpus, _record_mem, env = self._stage(tmp_path)
         env["TEATREE_WORKER_CPUS"] = "2"
 
         proc = self._run(repo, env)
@@ -216,14 +210,14 @@ class TestDeployShRunDerivesWorkerCaps:
 
         RED before #151: deploy.sh discarded both the exit code (``|| true``) and stderr
         (``2>/dev/null``), so a refusal was indistinguishable from success and the stack
-        came up on compose's 18g default — effectively uncapped on the very VM that could
+        came up on compose's 18g default — effectively uncapped on the very host that could
         not hold a 6 GiB one.
         """
         repo, record_cpus, env = self._stage_with_stub_sizer(
             tmp_path,
             "import sys\n"
             'sys.stdout.write("TEATREE_WORKER_CPUS=7\\n")\n'
-            'sys.stderr.write("raise Docker memory allocation to at least 10497 MiB\\n")\n'
+            'sys.stderr.write("use a host with at least 10497 MiB\\n")\n'
             "raise SystemExit(3)\n",
         )
 

@@ -12,7 +12,7 @@
 # compose file's relative `volumes:` against its own cwd — a container path — and
 # hands the daemon e.g.
 #     /home/teatree/workspace/t3-workspaces/<ticket>/<repo>/.data
-# which does not exist on the host. Docker Desktop answers
+# which does not exist on the host. The daemon answers
 #     mounts denied: the path ... is not shared from the host
 # and every worktree stack fails to start, while the same compose file works when
 # run from the host. On the box the two coordinates coincide, so this never fires

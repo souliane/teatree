@@ -1,9 +1,8 @@
 """Branches CI doesn't exercise without explicit help.
 
 These tests force code paths that locally take a different branch than they
-do in a fresh CI checkout (macOS symlinks under ``/private``, worktree
-``.git`` pointer files, having multiple registered overlays). Without these
-the project's coverage floor passes locally but slips in CI — the kind of
+do in a fresh CI checkout (worktree ``.git`` pointer files, having multiple
+registered overlays). Without these the project's coverage floor passes locally but slips in CI — the kind of
 drift the coverage guardrail (``tests/test_coverage_floor_guard.py``) is
 designed to prevent, but only if the targeted branches are reachable from
 the test suite at all.
@@ -243,45 +242,16 @@ class TestProbeHostCliFailSafePaths:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", lambda data: data[0]["oid"]) == "abc123"
 
 
-class TestCandidatePathsMacosSymlinks:
-    """``_candidate_paths`` builds path variants for macOS symlink mismatches.
-
-    On Linux CI ``/var`` is a directory; on macOS it symlinks to ``/private/var``.
-    The ``Path.resolve`` / ``Path.exists`` branches only execute when those
-    symlink relationships hold — patched here on ``teatree.core.worktree.worktree_paths``
-    (the module that now owns ``_candidate_paths``) so the branches are reached
-    on every platform, not only on a developer's macOS box.
-    """
-
-    def test_appends_resolved_path_when_different_from_input(self) -> None:
+class TestCandidatePathsResolveSymlinks:
+    def test_a_symlinked_path_matches_its_target_spelling(self, tmp_path: Path) -> None:
         from teatree.core.worktree import worktree_paths  # noqa: PLC0415
 
-        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
-            mock_path.return_value.resolve.return_value = Path("/private/var/folders/x")
-            mock_path.return_value.exists.return_value = False
-            out = worktree_paths._candidate_paths("/var/folders/x")
+        target = tmp_path / "real"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
 
-        assert "/var/folders/x" in out
-        assert "/private/var/folders/x" in out
+        out = worktree_paths._candidate_paths(str(link))
 
-    def test_strips_private_prefix_when_path_starts_with_private(self) -> None:
-        from teatree.core.worktree import worktree_paths  # noqa: PLC0415
-
-        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
-            mock_path.return_value.resolve.return_value = Path("/private/var/folders/y")
-            mock_path.return_value.exists.return_value = False
-            out = worktree_paths._candidate_paths("/private/var/folders/y")
-
-        assert "/private/var/folders/y" in out
-        assert "/var/folders/y" in out
-
-    def test_appends_private_prefixed_path_when_it_exists_on_disk(self) -> None:
-        from teatree.core.worktree import worktree_paths  # noqa: PLC0415
-
-        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
-            instance = mock_path.return_value
-            instance.resolve.return_value = Path("/var/folders/z")
-            instance.exists.return_value = True
-            out = worktree_paths._candidate_paths("/var/folders/z")
-
-        assert "/private/var/folders/z" in out
+        assert str(link) in out
+        assert str(target.resolve()) in out

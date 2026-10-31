@@ -211,7 +211,7 @@ def test_push_gate_closes_the_lock_for_every_stage() -> None:
         if line.startswith(
             (
                 '"${UV_PROJECT_RUN[@]}" run pytest',
-                '"$timeout_bin" --kill-after',
+                "timeout --kill-after",
                 '"${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run',
             )
         )

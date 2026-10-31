@@ -2,7 +2,7 @@
 name: mode
 description: The operating mode — one of five named presets (present / afk / maintenance / token-outage / off) deciding which loops run. Use when switching mode for a holiday or an unattended run, configuring the weekly schedule, answering the deferred-question backlog, or debugging the mode resolver.
 eval_exempt: thin chairside reference for the `t3 loop preset` and `t3 teatree questions` commands; behaviour is enforced by the PreToolUse question hook and pinned by scenarios/askuserquestion_slack_resolution.yaml, not by this skill's prose
-compatibility: any
+compatibility: Linux
 metadata:
   version: 0.0.3
 requires:

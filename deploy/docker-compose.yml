@@ -41,8 +41,6 @@ name: teatree
 # covering a venue the others cannot (a bare `docker run`; the tree the entrypoint
 # seeds). tests/test_deploy_gnupg_lock_isolation.py holds the three in sync.
 x-teatree-create-env: &teatree-create-env
-  # Host launchers export uname; bare compose gets a nonempty fail-closed value.
-  TEATREE_HOST_OS: ${TEATREE_HOST_OS:-unknown}
   TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
   GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
   TEATREE_TRANSCRIPT_SOURCE: ${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}
@@ -137,9 +135,9 @@ x-teatree-common: &teatree-common
   # `TEATREE_HOST_HOME` is the host home whose tree carries this state. On the box
   # it is the deploy user's home, `/home/teatree` (the default here, and what
   # deploy/deploy.sh exports from `$HOME`), so path identity holds and the box is
-  # unaffected. Off-box — an operator laptop whose home is `/Users/<name>` — the
-  # sources follow the real host home while the targets stay canonical; only path
-  # IDENTITY is given up there, and the CLI wrapper deploy/t3 exports the value.
+  # unaffected. Off-box — another Linux user's home — the sources follow the real host
+  # home while the targets stay canonical; only path IDENTITY is given up there, and the
+  # CLI wrapper deploy/t3 exports the value.
   volumes:
     # The source tree the container executes. Default: the `teatree_src` named
     # volume — the box's self-updating runtime clone (the entrypoint fast-forwards
@@ -423,13 +421,11 @@ services:
     # the service that runs `worktree provision` (docker build) and
     # `worktree start` (compose up).
     #
-    # The GID is the socket's owning group as seen INSIDE the container, which is
-    # not always the host's: on Linux the two agree (same kernel, so a `stat` on
-    # the host socket is authoritative), while Docker Desktop serves the socket
-    # from its own VM where it is root:root — gid 0. The default is therefore 0,
-    # correct on Docker Desktop with nothing exported; on Linux
-    # both deploy.sh and deploy/t3 resolve the real gid and export it. Adding a supplementary group is strictly narrower than
-    # the watchdog's `user: "0:0"` — the process keeps its own UID.
+    # The GID is the socket's owning group as seen INSIDE the container: the daemon
+    # shares the host kernel, so a `stat` on the host socket is authoritative, and both
+    # deploy.sh and deploy/t3 resolve the real gid and export it (default 0). Adding a
+    # supplementary group is strictly narrower than the watchdog's `user: "0:0"` — the
+    # process keeps its own UID.
     #
     # Handing a container the host docker socket IS root-equivalent on the host,
     # and there is no materially safer shape that still works here: a socket
@@ -603,10 +599,9 @@ services:
     mem_limit: 1g
     cpus: "0.5"
 
-  # In-daemon self-heal watchdog — the cross-platform (Linux + macOS) replacement
-  # for the Linux-only systemd timer (#3289). The Docker daemon is the only
-  # supervisor present on both platforms, so the watchdog lives in the daemon as a
-  # sidecar container the daemon keeps alive independently of the stack it watches.
+  # In-daemon self-heal watchdog — the replacement for the systemd timer (#3289). The
+  # watchdog lives in the daemon as a sidecar container the daemon keeps alive
+  # independently of the stack it watches.
   #
   # Deliberately a STANDALONE block (NOT the x-teatree-common anchor): the anchor
   # would drag in the DB/credential/session bind mounts, the teatree.env secrets,
@@ -779,7 +774,7 @@ volumes:
   # worktrees from. A named volume, NOT a bind of the host's `~/workspace`,
   # because sharing checkouts across the boundary CANNOT work: a git worktree
   # records an absolute `gitdir` pointer into its source clone, so a host-created
-  # worktree reads as `fatal: not a git repository: /Users/...` in the container
+  # worktree reads as `fatal: not a git repository: /home/<user>/...` in the container
   # and vice versa. Each side owning its clones is the only self-consistent
   # arrangement; the container fills this volume by cloning what it needs
   # (`overlay.provisioning.repo_clone_url` -> `core.worktree.clone_provision`).

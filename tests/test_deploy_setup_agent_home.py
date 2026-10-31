@@ -33,8 +33,6 @@ def test_setup_refuses_a_host_bound_agent_home(tmp_path: Path, mount: tuple[str,
     wrapper = deploy / "t3"
     copy_wrapper(WRAPPER, wrapper)
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
-    (deploy / "install-host-pressure.zsh").write_text("#!/bin/zsh\nexit 0\n")
-    (deploy / "install-host-pressure.zsh").chmod(0o755)
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     docker = stub_dir / "docker"

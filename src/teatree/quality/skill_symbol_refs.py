@@ -44,7 +44,7 @@ Exempt (never flagged):
     is required, and documents why the reference resolves to nothing — a
     deliberately fictional illustration, an entry-point group, a config-section
     header.
-- a dotted name inside a bracketed header (``[teatree.speak]``,
+- a dotted name inside a bracketed header (``[teatree.mr_reminder]``,
     ``[project.entry-points."teatree.overlays"]``) — a config section or
     entry-point group, not an importable name.
 - a dotted name whose last segment is a file extension (``teatree.pth``).

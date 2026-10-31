@@ -117,7 +117,7 @@ src/teatree/           Python package (the Django app + CLI)
     loader.py          Overlay-config-driven backend resolution (cached via lru_cache)
     github/            GitHub code-host client + `sync.py` (GitHubSyncBackend, the SyncBackend ABC from teatree.types)
     gitlab/            GitLab code-host client, CI pipeline operations, per-concern sync modules
-    slack/, notion/, msteams/, sentry.py, sharepoint.py, figma.py   Other integrations
+    slack/, notion/, sentry.py, sharepoint.py, figma.py   Other integrations
   agents/              Agent runtime
     runner.py          Headless in-process runs behind the `Harness` seam (structured JSON envelope)
     harness.py         The `Harness` / `HarnessSession` protocols the runtimes implement
