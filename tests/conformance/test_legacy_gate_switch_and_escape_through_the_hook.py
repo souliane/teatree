@@ -50,10 +50,16 @@ def seed_config_db(path: Path, rows: dict[str, object]) -> Path:
 
 def run_pretooluse_hook(tmp_path: Path, payload: dict, stored: dict[str, object]) -> subprocess.CompletedProcess[str]:
     home = tmp_path / "hook-home"
+    state = tmp_path / "hook-state"
     home.mkdir()
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("T3_", "CLAUDE"))}
-    env |= {"HOME": str(home), "T3_CONFIG_DB": str(seed_config_db(tmp_path / "config.sqlite3", stored))}
-    request = payload | {"session_id": "sess-legacy-switch", "cwd": str(tmp_path)}
+    state.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("T3_", "CLAUDE", "TEATREE_"))}
+    env |= {
+        "HOME": str(home),
+        "T3_CONFIG_DB": str(seed_config_db(tmp_path / "config.sqlite3", stored)),
+        "T3_HOOK_STATE_DIR": str(state),
+    }
+    request = payload | {"session_id": f"sess-{tmp_path.name}", "cwd": str(tmp_path)}
     return subprocess.run(
         [sys.executable, str(HOOK_ROUTER), "--event", "PreToolUse"],
         input=json.dumps(request),
@@ -90,6 +96,7 @@ def test_a_row_stored_under_the_legacy_key_steers_the_hook_verdict(
 ) -> None:
     result = run_pretooluse_hook(tmp_path, payload, stored)
 
+    assert "CIRCUIT BREAKER" not in result.stderr
     if refused_by is None:
         assert (result.returncode, result.stdout) == (0, "")
     else:
@@ -102,6 +109,9 @@ def armed_gates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pat
     home = tmp_path / "armed-home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    state = tmp_path / "armed-state"
+    state.mkdir()
+    monkeypatch.setattr(router, "STATE_DIR", state)
     monkeypatch.setenv("T3_CONFIG_DB", str(seed_config_db(tmp_path / "config.sqlite3", {})))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ATTENDED", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
