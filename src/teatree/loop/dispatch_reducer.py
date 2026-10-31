@@ -98,11 +98,10 @@ def dispatch_pending_task(signal: ScanSignal) -> list[DispatchAction] | None:
     carrying the row's ``phase`` and ``ticket_role``. The agent is resolved
     through the single canonical ``(role, phase) → agent`` authority
     (``subagent_for_phase``): coding → t3:coder, testing → t3:tester,
-    reviewing → t3:reviewer, shipping → t3:shipper. No author phase falls
-    through to a single chaining orchestrator — that is the shadowing this
-    restores. A pair with no registered agent (free-form phase, or a missing
-    role) returns ``None`` so it falls through to the statusline fallback for
-    operator triage rather than being misrouted.
+    reviewing → t3:reviewer, shipping → t3:shipper. A pair with no registered
+    agent (free-form phase, or a missing role) returns ``None`` so it falls
+    through to the statusline fallback for operator triage rather than being
+    misrouted.
     """
     role = str(signal.payload.get("ticket_role", ""))
     phase = str(signal.payload.get("phase", ""))

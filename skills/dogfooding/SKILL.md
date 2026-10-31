@@ -263,7 +263,7 @@ Verify against the source before quoting in a bug report — these can drift.
   - `my_pr.open` → `in_flight`
   - `slack.mention`, `slack.dm` → `action_needed` (also dispatched to `t3:reviewer` when the message body contains a PR URL)
   - `reviewer_pr.new_sha`, `reviewer_pr.unreviewed` → agent `t3:reviewer`
-  - `pending_task`, `assigned_issue.ready` → agent `t3:orchestrator`
+  - `pending_task` → its phase's agent; `issue_intake.admitted` → zone `t3:orchestrator`
   - `notion.unrouted` → webhook `n8n`
   - A kind absent from `STATUSLINE_ZONE_BY_KIND` (`src/teatree/loop/dispatch_tables.py`) falls back per dispatch path: `_dispatch_one` → `in_flight`, `dispatch_answering` → `action_needed` (the dual-dispatch mirror uses `in_flight`). `src/teatree/loop/dispatch.py` (the consult order) plus its `dispatch_tables`/`dispatch_reducer`/`dispatch_gates` siblings are the source of truth — quote them, don't memorise them. A genuinely unmapped *new* kind is the bug to flag, not the fallback itself.
 
