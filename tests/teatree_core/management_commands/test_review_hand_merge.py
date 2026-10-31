@@ -98,6 +98,14 @@ class TestHandMergeRecordsOneVerdict:
 
         assert result["recorded"] is True
 
+    @pytest.mark.parametrize("qualifier", ["issue", "ticket", "ticket issue", "Issue"])
+    def test_an_order_naming_its_ticket_issue_is_accepted(self, tmp_path: Path, qualifier: str) -> None:
+        order = f"merge PR #{_PR_ID} at {_HEAD[:10]} ({qualifier} #5000)"
+
+        result = _hand_merge(tmp_path, _envelope(), order_text=order)
+
+        assert result["recorded"] is True
+
 
 class TestHandMergeRefusesBeforeAnyWrite:
     def test_a_rejected_nit_refuses_with_no_verdict_row(self, tmp_path: Path) -> None:
@@ -161,6 +169,12 @@ class TestHandMergeRefusesBeforeAnyWrite:
         assert "STALE_ORDER" in str(result["error"])
         assert cited in str(result["error"])
         assert _verdict_count() == 0
+
+    def test_a_stale_pr_is_named_without_the_issue_it_was_cited_beside(self, tmp_path: Path) -> None:
+        result = _hand_merge(tmp_path, _envelope(), order_text="merge PR #5999 for issue #5000")
+
+        assert "#5999" in str(result["error"])
+        assert "#5000" not in str(result["error"])
 
 
 class TestOneNitCheckServesBothCallers:

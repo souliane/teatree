@@ -30,6 +30,7 @@ STALE_ORDER_PREFIX = "STALE_ORDER: "
 _NOT_APPLIED_KEYS = ("rubric_grades", "hold_dispositions", "evidence_gaps")
 _SHA_TOKEN = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b", re.IGNORECASE)
 _PR_TOKEN = re.compile(r"(?:\b(?:PR|MR)\s*|[#!]|/pull/|/merge_requests/)(\d+)\b", re.IGNORECASE)
+_ISSUE_TOKEN = re.compile(r"\b(?:issue|ticket)s?\s+#\d+\b", re.IGNORECASE)
 _ENVELOPE_SCHEMA = {**REVIEW_VERDICT_SCHEMA_PROPERTY, "additionalProperties": False}
 _JSON_TYPES: Mapping[str, Callable[[object], bool]] = {
     "object": lambda value: isinstance(value, dict),
@@ -135,7 +136,9 @@ def _live_head(request: HandMergeRequest, envelope: ReviewVerdictEnvelope) -> st
 
 def _require_live_order(request: HandMergeRequest, head: str) -> None:
     cited_shas = [sha for sha in _SHA_TOKEN.findall(request.order_text) if not head.lower().startswith(sha.lower())]
-    cited_prs = [f"#{pr}" for pr in _PR_TOKEN.findall(request.order_text) if int(pr) != request.pr_id]
+    cited_prs = [
+        f"#{pr}" for pr in _PR_TOKEN.findall(_ISSUE_TOKEN.sub("", request.order_text)) if int(pr) != request.pr_id
+    ]
     if stale := [*cited_shas, *cited_prs]:
         message = (
             f"{STALE_ORDER_PREFIX}the order text cites {', '.join(stale)} but {request.slug}#{request.pr_id} "
