@@ -197,9 +197,11 @@ def _message_peer(context: ActionContext, arguments: Mapping[str, object]) -> st
     receipt = context.messenger(target, text, context.key)
     if not receipt.accepted:
         raise ActionRefusedError(receipt.detail)
-    if request is not None:
-        close_answered_request(request)
-    return f"Sent your message to the agent working on <{target.issue_url}|#{target.ticket_number}>."
+    link = f"<{target.issue_url}|#{target.ticket_number}>"
+    if request is None:
+        return f"Sent your message to the agent working on {link}."
+    close_answered_request(request)
+    return f"Answered the open request from the agent working on {link}."
 
 
 _PROCESSORS: Mapping[CoordinatorActionKind, Callable[[ActionContext, Mapping[str, object]], str]] = {

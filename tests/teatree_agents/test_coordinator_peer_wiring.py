@@ -122,7 +122,7 @@ class TestTheCoordinatorsReplyReachesTheAskingTask(TestCase):
 
         assert received == ["Follow order B."]
         assert answering_inbox == []
-        assert f"Sent your message to the agent working on <{_WORK_URL}|#4084>." in backend.replies[0][2]
+        assert f"Answered the open request from the agent working on <{_WORK_URL}|#4084>." in backend.replies[0][2]
         assert open_request(work.pk) is None
         DeferredQuestion.objects.filter(pk=request.pk).update(
             created_at=timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)

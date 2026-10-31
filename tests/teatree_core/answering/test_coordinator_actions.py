@@ -722,7 +722,7 @@ class TestMessagePeerAnswersAnEscalationOnTheAskersOwnTicket(TestCase):
     def test_the_reply_goes_to_the_asking_tasks_ticket_and_closes_the_request(self) -> None:
         receipts = self._reply()
 
-        assert receipts == [f"Sent your message to the agent working on <{_WORK_URL}|#4084>."]
+        assert receipts == [f"Answered the open request from the agent working on <{_WORK_URL}|#4084>."]
         (call,) = self.messenger.calls
         assert call[:2] == (self.work.pk, "Follow order B.")
         assert not self._still_open()
