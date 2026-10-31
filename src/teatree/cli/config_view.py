@@ -22,7 +22,6 @@ from typing import Any
 from teatree.config import FEATURE_FLAGS, get_effective_settings
 from teatree.config.mr_reminder import MrReminderConfig
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
-from teatree.types import SpeakConfig
 from teatree.utils.django_bootstrap import ensure_django
 
 _REGENERABLE_CACHE_FILES: tuple[str, ...] = (
@@ -49,8 +48,6 @@ class ConfigView:
 def _json_safe(value: object) -> object:
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, SpeakConfig):
-        return value.to_dict()
     if isinstance(value, MrReminderConfig):
         return value.to_dict()
     return value

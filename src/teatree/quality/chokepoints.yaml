@@ -62,7 +62,7 @@
     - teatree.backends.slack.bot
     - teatree.core.notify
     - teatree.core.reply_transport
-    - teatree.core.speak
+    - teatree.core.on_behalf_egress
     - teatree.messaging.notify_with_fallback
     - teatree.loop.slack_answer.cycle
     - teatree.loop.scanners.red_card

@@ -279,7 +279,6 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
     "pos_int": ([3, "3", 0, -1], []),  # fail-SAFE: never raises, degrades to its default
     "owner_wait_minutes": ([30, 1], [True, "30", 0, -1, 2.5, None]),  # fail-SAFE: degrades to 60 and logs
     "harness": (["claude_sdk", "pydantic_ai", "custom_name"], [5]),
-    "speak": ([{}, {"local": "off"}, {"local": "dm", "slack": True}], ["x", [], 5]),
     "mr_reminder": ([{}, {"channels": {}}, {"default_channel": "c"}], ["x", [], 5]),
     "provider": ([None, "api_key", "subscription_oauth"], ["__bogus__"]),
     "harness_skill_exclusions": (
@@ -302,7 +301,6 @@ _KIND_BY_QUALNAME = {
     "parse_operator_oauth_apps": "operator_oauth_apps",
     "_parse_header_map": "header_map",
     "parse_harness_name": "harness",
-    "parse_speak_setting": "speak",
     "parse_mr_reminder_setting": "mr_reminder",
     "_parse_harness_skill_exclusions": "harness_skill_exclusions",
     "parse_self_improve_owner_wait_minutes": "owner_wait_minutes",

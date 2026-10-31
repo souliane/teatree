@@ -18,10 +18,9 @@ Three shipped instances, all the same shape:
     TABLE, so it could never observe it. Both mirror and reader are now deleted —
     the instance is cited for its SHAPE, which this lane exists to catch again.
 
-The repo already invented the countermeasure — ``tests/test_speak_hook_config_parity.py``
-pins the hook-side ``speak`` duplicate against the config-side source of truth,
-and ``tests/config/test_cold_hook_settings.py`` does it for the cold kill-switch
-registry. What was missing is TOTALITY: nothing forced a NEW cross-tier artifact
+The repo already invented the countermeasure — ``tests/config/test_cold_hook_settings.py``
+pins the hook-side duplicate against the config-side source of truth for the cold
+kill-switch registry. What was missing is TOTALITY: nothing forced a NEW cross-tier artifact
 to acquire such a pin, so coverage accreted one concept at a time and the gaps
 were invisible.
 

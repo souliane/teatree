@@ -69,7 +69,6 @@ from tests._db_template import MIGRATED_TEMPLATE_KEY, build_or_reuse_template, r
 from tests._hook_clock import HookClock
 from tests._machine_probe import pinned_load_and_cores, pinned_ram_headroom
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
-from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 from tests.secret_memory_store import MemoryStore
 
@@ -890,13 +889,12 @@ def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Arm the cross-test thread sentinels and session resource guard.
+    """Arm the cross-test thread sentinel and session resource guard.
 
     Always on, both for the same reason: each catches a failure that lands on a
     random bystander in a random shard, so a sentinel that has to be switched on
     could only ever be switched on after the fact. See ``tests/_thread_db_sentinel.py``
-    (a worker thread that STRANDS a DB handle) and ``tests/_speak_thread_sentinel.py``
-    (a test that LEAKS a local-playback thread into the next test, #4277).
+    (a worker thread that STRANDS a DB handle).
     """
     if settings.SETTINGS_MODULE != "tests.django_settings":
         message = (
@@ -906,7 +904,6 @@ def pytest_configure(config: pytest.Config) -> None:
         )
         raise pytest.UsageError(message)
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
-    config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
     config.pluginmanager.register(_session_resource_guard, "session-resource-guard")
 
 

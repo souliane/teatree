@@ -59,7 +59,6 @@ Every outbound message is wrapped to a **maximum line length of 90 characters**,
 You do not call anything to get this. The wrap is applied at each Slack transport that carries a message body, so a **new sender inherits it by construction** rather than having to remember a helper:
 
 - `SlackBotBackend._post` — the single funnel every in-app `chat.postMessage` passes through, so `notify_user`, `post_routed`, `post_reply` and a raw `post_message` all get the same treatment,
-- `audio_upload.upload_audio_dm` — the audio DM's `initial_comment`; with `speak.slack` on, the whole DM goes out this way and never touches `chat.postMessage`,
 - `client.post_webhook_message` — the incoming-webhook post, raw `httpx` outside the backend transport.
 
 Exceeding 90 is fine where breaking would hurt. These are never broken and never count as a violation:

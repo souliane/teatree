@@ -234,7 +234,6 @@ EXEMPT: dict[str, str] = {
         "app-ready-populated deterministic-phase runner registry (#3570); process-stable — the one test "
         "that varies it patches the binding rather than mutating it"
     ),
-    "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
     "teatree.skill_support.pin_shadow:_running_code_manifest": (
         "@cache of the apm.yml beside the running code; derived from __file__, so process-stable"
     ),

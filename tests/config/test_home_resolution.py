@@ -19,7 +19,6 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.config.enums import Mode
 from teatree.core.models import ConfigSetting
-from teatree.types import LocalPlayback
 
 from ._shared import _seed_config_db
 
@@ -57,10 +56,6 @@ class TestSpeakDbHome(TestCase):
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
-    def test_speak_resolves_from_db_row(self) -> None:
-        ConfigSetting.objects.set_value("speak", value={"local": "dm"})
-        assert get_effective_settings().speak.local is LocalPlayback.DM
-
     def test_statusline_chain_resolves_from_db_row(self) -> None:
         ConfigSetting.objects.set_value("statusline_chain", value=["db/*.sh"])
         assert get_effective_settings().statusline_chain == ["db/*.sh"]
@@ -72,16 +67,13 @@ class TestOverlayScopeLayering(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         self.monkeypatch = monkeypatch
 
-    def test_overlay_db_row_for_speak_merges_onto_global(self) -> None:
-        # The per-overlay ``speak`` row MERGES onto the global base — only the keys
-        # the overlay row sets override. Here the legacy global row sets local=all + slack on;
-        # the overlay row sets only slack off, so local becomes ``dm`` and slack flips off.
-        ConfigSetting.objects.set_value("speak", value={"local": "all", "slack": True})
-        ConfigSetting.objects.set_value("speak", value={"slack": False}, scope="my-overlay")
+    def test_overlay_db_row_for_mr_reminder_replaces_the_global_row_whole(self) -> None:
+        ConfigSetting.objects.set_value("mr_reminder", value={"default_channel": "C_GLOBAL", "channels": {"a": "x"}})
+        ConfigSetting.objects.set_value("mr_reminder", value={"default_channel": "C_OVERLAY"}, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        speak = get_effective_settings().speak
-        assert speak.local is LocalPlayback.DM
-        assert speak.slack is False
+        reminder = get_effective_settings().mr_reminder
+        assert reminder.default_channel == "C_OVERLAY"
+        assert reminder.channels == ()
 
 
 class TestDbHomeKeyInOverlayRegistryIsLoud:
@@ -162,20 +154,12 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
 
 
 class TestSpeakAndMrReminderDbHome(TestCase):
-    """``speak`` keeps its per-overlay MERGE semantics; ``mr_reminder`` resolves from a global row."""
+    """``mr_reminder`` resolves from a global row."""
 
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         self.monkeypatch = monkeypatch
-
-    def test_speak_overlay_row_merges_onto_base(self) -> None:
-        ConfigSetting.objects.set_value("speak", value={"local": "dm", "slack": False})
-        ConfigSetting.objects.set_value("speak", value={"slack": True}, scope="my-overlay")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        speak = get_effective_settings().speak
-        assert speak.local is LocalPlayback.DM
-        assert speak.slack is True
 
     def test_mr_reminder_resolves_from_db_row(self) -> None:
         ConfigSetting.objects.set_value("mr_reminder", value={"channels": {"acme/widget": "#widget-mrs"}})

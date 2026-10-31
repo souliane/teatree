@@ -24,7 +24,7 @@ def test_generated_table_carries_exactly_default_category_keys() -> None:
     assert set(table) == set(_DEFAULT_KEYS)
     assert not set(table) & set(_NON_DEFAULT_KEYS)
     assert table["agent_harness"] == "claude_sdk"
-    assert table["speak"] == {"local": "off", "slack": False}
+    assert table["mr_reminder"] == {"default_channel": "", "channels": {}}
 
 
 def test_nested_and_flat_tables_have_identical_keys_and_values() -> None:
@@ -32,24 +32,22 @@ def test_nested_and_flat_tables_have_identical_keys_and_values() -> None:
 autoload = false
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk"
-[teatree.speak]
-local = "off"
-slack = false
+[teatree.mr_reminder]
+default_channel = "C1"
 """)["teatree"]
     flat = tomllib.loads("""[teatree]
 agent_harness = "claude_sdk"
 autoload = false
-[teatree.speak]
-local = "off"
-slack = false
+[teatree.mr_reminder]
+default_channel = "C1"
 """)["teatree"]
-    expected = {"agent_harness": "claude_sdk", "autoload": False, "speak": {"local": "off", "slack": False}}
+    expected = {"agent_harness": "claude_sdk", "autoload": False, "mr_reminder": {"default_channel": "C1"}}
     assert flatten_settings_table(nested) == flatten_settings_table(flat) == expected
 
 
 def test_declared_subtable_remains_a_value() -> None:
-    table = {"Workspace": {"autoload": True}, "speak": {"local": "all"}}
-    assert flatten_settings_table(table) == {"autoload": True, "speak": {"local": "all"}}
+    table = {"Workspace": {"autoload": True}, "mr_reminder": {"default_channel": "C1"}}
+    assert flatten_settings_table(table) == {"autoload": True, "mr_reminder": {"default_channel": "C1"}}
 
 
 def test_flat_table_is_unchanged() -> None:

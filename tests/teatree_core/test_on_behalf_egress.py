@@ -72,6 +72,7 @@ class _RouteAwareFake:
     routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
     react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    post_message_calls: list[tuple[str, str, str]] = field(default_factory=list)
 
     def _is_self_dm(self, channel: str) -> bool:
         return bool(channel) and channel in {self.dm_channel_id, self.user_id}
@@ -91,6 +92,7 @@ class _RouteAwareFake:
         return _DM_CHANNEL
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        self.post_message_calls.append((channel, text, thread_ts))
         return {"ok": True, "ts": "1700000000.0001"}
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
@@ -234,20 +236,20 @@ class TestSelfDmCarveOut(TestCase):
         approval = OnBehalfApproval.objects.get(target=_DM_CHANNEL, action="adhoc_slack_react")
         assert approval.consumed_at is None
 
-    def test_self_dm_post_emits_ungated_via_shared_dm_chokepoint(self) -> None:
-        # The self-DM post routes through teatree.core.speak.deliver_user_dm
-        # (the shared bot→user DM chokepoint), which posts via post_message —
-        # ungated and unaudited, consuming no approval and writing no
-        # on_behalf_post BotPing. With the speak feature off (default), no
-        # audio attach and no local read fire.
+    def test_self_dm_post_is_one_ungated_post_message(self) -> None:
+        # The self-DM post is a single post_message — ungated and unaudited,
+        # consuming no approval and writing no on_behalf_post BotPing. The fake has
+        # no audio method, so any attach attempt would raise.
         fake = _RouteAwareFake()
         response = OnBehalfSlackEgress(fake).post(
             channel=_DM_CHANNEL,
             text="hi",
             target=_DM_CHANNEL,
             action="cli_notify_post",
+            thread_ts="1.1",
         )
-        assert response.get("ok") is True
+        assert response == {"ok": True, "ts": "1700000000.0001"}
+        assert fake.post_message_calls == [(_DM_CHANNEL, "hi", "1.1")]
         assert fake.post_routed_calls == []
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
 
@@ -320,8 +322,7 @@ class TestThreadedAnswerRetiresQuestion(TestCase):
 
     The ``notify post --thread-ts`` answer route is the only egress that
     deliberately threads a self-DM under a queued question, so the retire
-    fires iff the DM is genuinely an answer — never for an unrelated INFO
-    DM (see ``test_speak_chokepoint_does_not_retire``). Both gates are
+    fires iff the DM is genuinely an answer. Both gates are
     stamped: ``loop_replied_at`` (the cycle stops re-delegating an answerer
     Task) and ``answered_at`` (the Stop-hook gate stops nagging).
     """

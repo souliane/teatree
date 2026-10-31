@@ -20,7 +20,6 @@ Only the Slack HTTP boundary (``httpx``) is mocked.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 import httpx
@@ -65,14 +64,6 @@ def _capturing_json_post(captured: list[_Call]) -> object:
         return httpx.Response(200, json={"ok": True, "ts": "1.2"}, request=httpx.Request("POST", url))
 
     return fake_post
-
-
-def _upload_url_reserver() -> object:
-    def fake_get(url: str, **kwargs: object) -> httpx.Response:
-        reserved = {"ok": True, "upload_url": "https://files.example.com/upload/1", "file_id": "F1"}
-        return httpx.Response(200, json=reserved, request=httpx.Request("GET", url))
-
-    return fake_get
 
 
 def _recording(calls: list[str], verb: str) -> object:
@@ -145,29 +136,8 @@ class TestTransportWrapsEveryEgress:
 class TestTheOtherTextBearingEgressesWrap:
     """``chat.postMessage`` is not the only wire call that carries a message body.
 
-    The audio DM posts its text as ``files.completeUploadExternal``'s
-    ``initial_comment`` and never reaches ``chat.postMessage`` at all, so a
-    ``speak.slack``-on DM went out entirely unwrapped. The incoming webhook
-    posts raw over ``httpx``, outside the backend transport.
+    The incoming webhook posts raw over ``httpx``, outside the backend transport.
     """
-
-    def test_audio_dm_initial_comment_wraps(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: list[_Call] = []
-        monkeypatch.setattr(slack_http.httpx, "get", _upload_url_reserver())
-        monkeypatch.setattr(slack_http.httpx, "post", _capturing_json_post(captured))
-        audio = tmp_path / "speech.m4a"
-        audio.write_bytes(b"audio")
-        _backend().post_audio_dm(channel=_SELF_DM, filepath=str(audio), text=_LONG_PROSE)
-        assert slack_line_violations(cast("str", captured[-1].json["initial_comment"])) == []
-
-    def test_audio_dm_initial_comment_keeps_every_word(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: list[_Call] = []
-        monkeypatch.setattr(slack_http.httpx, "get", _upload_url_reserver())
-        monkeypatch.setattr(slack_http.httpx, "post", _capturing_json_post(captured))
-        audio = tmp_path / "speech.m4a"
-        audio.write_bytes(b"audio")
-        _backend().post_audio_dm(channel=_SELF_DM, filepath=str(audio), text=_LONG_PROSE)
-        assert cast("str", captured[-1].json["initial_comment"]).split() == _LONG_PROSE.split()
 
     def test_webhook_message_wraps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []

@@ -23,7 +23,7 @@ from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.setting_groups import grouped_key_order, grouped_settings_table, setting_group_path
 
 _MAX_REPORTED = 5
-_SUBTABLE_KEYS = ("mr_reminder", "speak")
+_SUBTABLE_KEYS = ("mr_reminder",)
 
 
 def _file_text() -> str:
@@ -33,8 +33,8 @@ def _file_text() -> str:
 def _teatree_block() -> str:
     """The GROUP region of ``[teatree]`` — the nested wrappers, before the sub-table settings.
 
-    ``speak`` / ``mr_reminder`` are declared settings whose value is a table, so they render
-    after the wrappers; their inner keys are values, not settings, and are excluded here.
+    ``mr_reminder`` is a declared setting whose value is a table, so it renders
+    after the wrappers; its inner keys are values, not settings, and are excluded here.
     """
     section = _file_text()[_file_text().index("\n[teatree.") :]
     return section[: section.index(f"\n[teatree.{_SUBTABLE_KEYS[0]}]")]

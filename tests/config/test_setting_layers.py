@@ -16,24 +16,11 @@ from teatree.config.settings import UserSettings
 
 
 class TestApplyStructuredSettings:
-    """``speak`` merges up the layers; ``mr_reminder`` takes the highest layer."""
+    """``mr_reminder`` takes the highest layer."""
 
     def test_no_layer_carries_a_table_leaves_the_defaults(self) -> None:
         base = UserSettings()
-        assert apply_structured_settings(base, ({}, {}, {}), base.speak) == base
-
-    def test_speak_merges_each_layer_onto_the_one_below(self) -> None:
-        base = UserSettings()
-        layers = ({"speak": {"local": "dm"}}, {"speak": {"slack": True}}, {})
-        speak = apply_structured_settings(base, layers, base.speak).speak
-        # The higher layer sets only `slack`, so the lower layer's `local` survives.
-        assert speak.local == "dm"
-        assert speak.slack is True
-
-    def test_speak_highest_layer_wins_on_a_shared_key(self) -> None:
-        base = UserSettings()
-        layers = ({"speak": {"local": "dm"}}, {}, {"speak": {"local": "off"}})
-        assert apply_structured_settings(base, layers, base.speak).speak.local == "off"
+        assert apply_structured_settings(base, ({}, {}, {})) == base
 
     def test_mr_reminder_takes_the_highest_layer_with_no_merge(self) -> None:
         base = UserSettings()
@@ -42,13 +29,13 @@ class TestApplyStructuredSettings:
             {"mr_reminder": {"default_channel": "from-global"}},
             {},
         )
-        reminder = apply_structured_settings(base, layers, base.speak).mr_reminder
+        reminder = apply_structured_settings(base, layers).mr_reminder
         assert reminder.default_channel == "from-global"
         assert reminder.channels == ()  # highest layer wins WHOLE — no merge with the layer below
 
     def test_a_non_dict_value_is_ignored(self) -> None:
         base = UserSettings()
-        settings = apply_structured_settings(base, ({"speak": "off", "mr_reminder": []}, {}, {}), base.speak)
+        settings = apply_structured_settings(base, ({"mr_reminder": []}, {}, {}))
         assert settings == base
 
 
