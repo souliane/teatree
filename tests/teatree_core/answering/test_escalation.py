@@ -10,7 +10,6 @@ from django.utils import timezone
 from teatree.core.answering.escalation import (
     _KIND_SUBJECT,
     ESCALATION_DEADLINE,
-    INTERNAL_KIND,
     KINDS,
     MARKER_PREFIX,
     UNSERVED_PREFIX,
@@ -24,6 +23,7 @@ from teatree.core.answering.escalation import (
     settle_expired_escalations,
     settle_request,
 )
+from teatree.core.modelkit.escalation_kinds import INTERNAL_KIND
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import Task, Ticket

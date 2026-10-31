@@ -12,6 +12,7 @@ from typing import Final
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.escalation_kinds import KINDS
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import ANSWERING_PHASES
 from teatree.core.modelkit.question_card import QuestionCard
@@ -20,8 +21,6 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_handoff import CARD_DISCUSSION_PREFIX, schedule_card_discussion
 
 ESCALATION_DEADLINE: Final = timedelta(minutes=30)
-INTERNAL_KIND: Final = "internal"
-KINDS: Final = (INTERNAL_KIND, *OwnerDecision)
 MARKER_PREFIX: Final = "esc:"
 UNSERVED_PREFIX: Final = "escalation_unserved: "
 _OWNER_MARKER_PREFIX: Final = "esc-owner:"

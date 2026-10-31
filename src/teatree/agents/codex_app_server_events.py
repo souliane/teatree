@@ -9,8 +9,8 @@ from typing import Any
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
 from teatree.agents.codex_escalation_tools import ESCALATE_SPEC
 from teatree.agents.codex_post_tool import report_completed_item
-from teatree.agents.coordinator_escalation import ESCALATE, escalate
 from teatree.agents.live_mailbox_client import MailboxError
+from teatree.core.modelkit.escalation_kinds import ESCALATE
 from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,8 @@ async def mailbox_tool_result(
         or tool not in _allowed_mailbox_tools(options.mailbox_phase)
     ):
         return None
+    from teatree.agents.coordinator_escalation import escalate  # noqa: PLC0415 — Django-bound
+
     try:
         value = (
             await escalate(mailbox, **arguments)

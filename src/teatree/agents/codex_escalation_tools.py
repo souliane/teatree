@@ -2,8 +2,7 @@
 
 from typing import Any
 
-from teatree.agents.coordinator_escalation import ESCALATE
-from teatree.core.answering.escalation import KINDS
+from teatree.core.modelkit.escalation_kinds import ESCALATE, KINDS
 
 ESCALATE_SPEC: tuple[str, str, dict[str, Any], list[str]] = (
     ESCALATE,

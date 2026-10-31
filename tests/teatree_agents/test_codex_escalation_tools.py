@@ -1,6 +1,9 @@
 """The Codex lane's escalate tool: offered by phase grant, answered through the shared escalation (#5685)."""
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +29,16 @@ from tests.factories import SessionFactory, TaskFactory, TicketFactory
 
 def _tool_names(phase: str | None) -> set[str]:
     return {tool["name"] for tool in dynamic_mailbox_tools(phase)}
+
+
+def test_the_codex_session_helpers_import_with_no_django_configured() -> None:
+    env = {name: value for name, value in os.environ.items() if name != "DJANGO_SETTINGS_MODULE"}
+    for module in ("teatree.agents.codex_app_server", "teatree.agents.codex_app_server_events"):
+        done = subprocess.run(
+            [sys.executable, "-c", f"import {module}"], env=env, capture_output=True, text=True, check=False
+        )
+
+        assert done.returncode == 0, f"{module} needs Django at import: {done.stderr[-300:]}"
 
 
 class TestWhichCodexPhasesAreOfferedEscalate(TransactionTestCase):

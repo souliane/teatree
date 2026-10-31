@@ -20,6 +20,7 @@ from teatree.core.answering.escalation import (
     resume_coordinator,
 )
 from teatree.core.modelkit.coordinator_action import MESSAGE_PEER_MAX_CHARS
+from teatree.core.modelkit.escalation_kinds import ESCALATE
 from teatree.core.modelkit.phase_tools import mcp_write_tool_granted
 from teatree.core.modelkit.phases import ANSWERING_PHASES, normalize_phase
 from teatree.core.models import Task
@@ -27,7 +28,6 @@ from teatree.core.models.deferred_question import DeferredQuestion
 
 logger = logging.getLogger(__name__)
 
-ESCALATE = "escalate"
 _PEER_WAIT_SECONDS = 2
 _DEADLINE_MINUTES = int(ESCALATION_DEADLINE.total_seconds() // 60)
 

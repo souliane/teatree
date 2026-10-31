@@ -4,8 +4,9 @@ from django.test import TestCase
 
 from teatree.agents.data_fence import fenced
 from teatree.agents.prompt import build_system_context, build_task_prompt
-from teatree.core.answering.escalation import INTERNAL_KIND, record_request
+from teatree.core.answering.escalation import record_request
 from teatree.core.modelkit.coordinator_action import ACTION_SPECS
+from teatree.core.modelkit.escalation_kinds import INTERNAL_KIND
 from teatree.core.models import Session, Task, Ticket
 from teatree.utils.url_slug import slack_conversation_anchor
 from tests.factories import SessionFactory, TaskFactory

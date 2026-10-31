@@ -17,11 +17,11 @@ from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.escalation import (
     ESCALATION_DEADLINE,
-    INTERNAL_KIND,
     open_request,
     record_request,
     settle_expired_escalations,
 )
+from teatree.core.modelkit.escalation_kinds import INTERNAL_KIND
 from teatree.core.models import DeferredQuestion, Session, Task, ThreadBinding, Ticket
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import slack_conversation_anchor
