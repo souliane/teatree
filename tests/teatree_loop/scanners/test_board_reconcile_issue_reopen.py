@@ -5,6 +5,7 @@ issue behind one reached no path at all. These lanes pin the revival, its cap an
 escalation at the cap, the fail-closed probe, and rule E's share of the per-run probe budget.
 """
 
+import threading
 from unittest.mock import patch
 
 from django.db import transaction
@@ -151,6 +152,23 @@ class TestReopenedIssueRule(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
         assert [t.action for t in report.applied] == [BoardAction.REVIVED_REOPENED]
+
+    def test_the_reopen_reads_overlap(self) -> None:
+        both_in_flight = threading.Barrier(2, timeout=5)
+        answered: list[str] = []
+        urls = [f"{self.URL}{n}" for n in range(2)]
+        for url in urls:
+            self._delivered(url=url)
+
+        def read(_overlay: object, issue_url: str) -> IssueReopenState:
+            both_in_flight.wait()
+            answered.append(issue_url)
+            return IssueReopenState.UNKNOWN
+
+        with overlays_registered(), patch.object(issue_reopen, "issue_reopen_state", read):
+            reconcile_board()
+
+        assert sorted(answered) == urls
 
     def test_an_unknown_verdict_never_revives(self) -> None:
         """Fail-CLOSED: only a DEFINITE reopened counts, so an unreachable forge is inert."""

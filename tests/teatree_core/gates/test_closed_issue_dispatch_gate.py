@@ -121,6 +121,12 @@ class TestRefusesAClosedIssueImplementingDispatch(TestCase):
         assert refusal is not None
         assert "not_planned" in refusal
 
+    def test_refusal_names_the_board_reconcile_as_what_retires_the_ticket(self) -> None:
+        refusal = _refusal(_ticket(), host=_Host({"state": "closed"}))
+        assert refusal is not None
+        assert "the board reconcile retires the ticket on its next pass" in refusal
+        assert "disposition scan" not in refusal
+
     def test_refusal_names_both_remedies_and_the_salvage_step(self) -> None:
         ticket = _ticket()
         refusal = _refusal(ticket, host=_Host({"state": "closed"}))
