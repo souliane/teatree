@@ -28,9 +28,16 @@ _WITHHELD_RESOLVER = "owner_card_check"
 
 HealCheck = Callable[[Sequence[DeferredQuestion]], dict[int, str]]
 
+
+def finished_owner_subjects(rows: Sequence[DeferredQuestion]) -> dict[int, str]:
+    owner = DeferredQuestion.Audience.OWNER_QUESTION
+    return {row.pk: reason for row in rows if row.audience == owner and (reason := finished_subject_reason(row))}
+
+
 HEAL_CHECKS: tuple[tuple[str, HealCheck], ...] = (
     ("provision_healed", provision_failures_healed),
     ("phase_wedge_healed", phase_wedges_healed),
+    ("subject_terminal", finished_owner_subjects),
 )
 
 
@@ -48,14 +55,8 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
 
 def live_owner_questions() -> list[DeferredQuestion]:
     """The pending owner-audience backlog, healed or finished rows withdrawn."""
-    live: list[DeferredQuestion] = []
     rows = DeferredQuestion.owner_pending().select_related("parked_task__ticket", "task_session__ticket")
-    for row in withdraw_healed(rows):
-        if reason := finished_subject_reason(row):
-            row.mark_stale(reason, resolver_id="subject_terminal")
-        else:
-            live.append(row)
-    return live
+    return withdraw_healed(rows)
 
 
 def withhold(row: DeferredQuestion, problems: Sequence[str]) -> bool:
