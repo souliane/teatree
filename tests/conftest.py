@@ -772,6 +772,19 @@ def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterato
 
 
 @pytest.fixture(autouse=True)
+def _no_open_peer_heads_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Let a merge or fix dispatch see no overlapping peer PR; ``@pytest.mark.real_open_heads`` opts out."""
+    if "real_open_heads" in request.keywords:
+        yield
+        return
+    with (
+        patch("teatree.core.merge.execution.overlap_refusal", return_value=None),
+        patch("teatree.loop.persistence.overlap_refusal", return_value=None),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _owner_is_never_in_quiet_hours(request: pytest.FixtureRequest) -> Iterator[None]:
     """Let the owner-question drains send at any wall-clock hour; ``@pytest.mark.real_quiet_hours`` opts out."""
     if "real_quiet_hours" in request.keywords:

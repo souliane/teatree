@@ -13,11 +13,15 @@ so ``persist_agent_actions`` returned ``[]`` and created no rows — every
 ``created`` / ``Task.objects.filter(...)`` assertion here was RED before the fix.
 """
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.forge_readability import LiveHeadRead
@@ -39,6 +43,7 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 from tests.factories import planned_ticket
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
+from tests.teatree_core.merge.overlap_helpers import RecordingForge, forge_for, make_three_heads
 from tests.teatree_loop._review_fixture import complete_review_task
 
 
@@ -107,6 +112,47 @@ class TestDebugZoneRevived(TestCase):
         assert created == []
         assert not RedMrFixAttempt.objects.filter(pr_url="https://x/pr/12").exists()
         assert "persist:t3:debug" in errors
+
+
+@pytest.mark.real_open_heads
+class TestDebugZoneHoldsOnOverlap(TestCase):
+    """A red PR that conflicts with an older open PR is held, unclaimed, until the older one merges."""
+
+    def _persist(self, pr_id: int, forge: RecordingForge) -> list[Task]:
+        pr_url = f"https://github.com/acme/widget/pull/{pr_id}"
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {pr_url}",
+            payload={"pr_url": pr_url, "head_sha": f"sha-{pr_id}", "overlay": "acme"},
+        )
+        with (
+            patch.object(CodeHostQuery, "for_ref", return_value=SimpleNamespace(backend=forge)),
+            patch("teatree.core.merge.head_overlap.matching_clone", return_value=self.clone),
+        ):
+            return persist_agent_actions(_agent_actions(signal))
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.clone, self.shas = make_three_heads(Path(self._tmp.name))
+
+    def test_the_newer_conflicting_pr_is_held_without_burning_its_marker(self) -> None:
+        created = self._persist(12, forge_for(self.shas))
+
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url__endswith="/pull/12").exists()
+
+    def test_the_older_pr_is_dispatched(self) -> None:
+        created = self._persist(11, forge_for(self.shas))
+
+        assert [task.phase for task in created] == ["planning"]
+        assert RedMrFixAttempt.objects.filter(pr_url__endswith="/pull/11").count() == 1
+
+    def test_an_unreadable_head_list_holds_the_fix(self) -> None:
+        created = self._persist(11, RecordingForge([], unreadable=True))
+
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url__endswith="/pull/11").exists()
 
 
 class TestDebugZoneLandsOnTheOwningTicket(TestCase):

@@ -36,10 +36,12 @@ from teatree.core.merge.bound_token import bind_repository_merge_token
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.head_overlap import overlap_refusal
 from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
+from teatree.core.merge.pr_landed import record_pr_landed
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
@@ -364,7 +366,7 @@ def execute_bound_merge(
     ``assert_merge_preconditions``, which the keystone runs first).
 
     Every path out of this function that returns a merged SHA records the landing on
-    the ``PullRequest`` ledger (:func:`_record_pr_landed`) — the same chokepoint
+    the ``PullRequest`` ledger (:func:`~teatree.core.merge.pr_landed.record_pr_landed`) — the same chokepoint
     argument the gates above rest on, applied to the one post-merge fact that was
     written only by the keystone before (#3984).
     """
@@ -403,10 +405,10 @@ def execute_bound_merge(
         if attempt > 0:
             landed = _already_merged_at(query=query, expected_head_oid=expected_head_oid)
             if landed:
-                return _record_pr_landed(ref, landed)
+                return record_pr_landed(ref, landed)
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
-            return _record_pr_landed(
+            return record_pr_landed(
                 ref,
                 _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid, message=message, squash=squash),
             )
@@ -423,35 +425,6 @@ def execute_bound_merge(
             )
     msg = f"merge of {slug}#{pr_id} exhausted {MERGE_TRANSIENT_ATTEMPTS} transient retries"  # pragma: no cover
     raise MergeTransientError(msg)  # pragma: no cover — the final attempt re-raises before the loop can fall through
-
-
-def _record_pr_landed(ref: PrRef, merged_sha: str) -> str:
-    """Stamp *ref*'s ledger rows MERGED; return *merged_sha* unchanged (#3984).
-
-    THE "a PR landed" recorder, deliberately at the one chokepoint every merge route
-    already crosses. Recording it only in the keystone post hook left the sweep's two
-    no-CLEAR routes — the solo-overlay bypass and the uv-audit raw fallback, both of
-    which reach the forge through :meth:`PrApiClient.merge_pr_bound` → here —
-    writing nothing, so a PR the sweep demonstrably merged kept a row reading ``open``
-    and every consumer asking "has this ticket's PR landed?" answered ``False``. Placing
-    it here means a future third route cannot silently reintroduce that.
-
-    Record-and-proceed: the forge merge is already irreversible, so a ledger failure is
-    logged and never raised — propagating it would strand the keystone post hook the
-    caller still has to run, which loses more than a stale row the reconcile pass
-    (:meth:`PullRequestQuerySet.reconcile_forge_states`) then converges.
-    """
-    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    try:
-        PullRequest.objects.record_forge_merge(slug=ref.slug, pr_id=ref.pr_id)
-    except Exception:
-        logger.exception(
-            "merge landed for %s#%s but its PullRequest ledger row could not be marked merged",
-            ref.slug,
-            ref.pr_id,
-        )
-    return merged_sha
 
 
 def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
@@ -596,6 +569,8 @@ def _merge_ticket_pr_inner(
     else:
         clear.bind_merge_mode(squash=squash)
         merge_query = CodeHostQuery.for_ref(ref)
+        if refusal := overlap_refusal(ref=ref, ticket=clear.ticket, host=merge_query.backend):
+            raise MergePreconditionError(refusal)
         if clear.actor_kind:
             clear.merge_forge_account = verified_merge_forge_account(merge_query)
             clear.save(update_fields=["merge_forge_account"])

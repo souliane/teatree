@@ -1,10 +1,10 @@
 import logging
 from typing import TYPE_CHECKING, TypedDict
 
+from teatree.core.models.carrier_extra import TicketCarrierExtra
 from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.extra_key_warning import warn_stripped_extra_keys
-from teatree.core.models.repo_expansion import TicketRepoExtra
 from teatree.core.models.sweep_types import SweepDispatchWindow, SweepFoldProposalRecord, SweepPendingRun
 from teatree.types import VisualQASummary
 
@@ -105,7 +105,7 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
-class TicketExtra(TicketRepoExtra, total=False):
+class TicketExtra(TicketCarrierExtra, total=False):
     sweep_dispatch_window: SweepDispatchWindow
     sweep_fold_proposals: dict[str, SweepFoldProposalRecord]
     sweep_pending_run: SweepPendingRun

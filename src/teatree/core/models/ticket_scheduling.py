@@ -11,6 +11,7 @@ from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.reread_first import reread_first_reason
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
+from teatree.core.models.carrier_freeze import refuse_frozen_mint
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
@@ -267,6 +268,7 @@ class TicketSchedulingModel(TicketFacet):
             msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
             raise InvalidTransitionError(msg)
         refuse_unplanned_mint(self, phase=phase)
+        refuse_frozen_mint(self, phase=phase)
         reason = reread_first_reason(reason, self.extra)
         if gate is not None:
             get_gate(gate)(self)

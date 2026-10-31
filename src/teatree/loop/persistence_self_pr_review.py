@@ -22,7 +22,8 @@ from django.db import transaction
 from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.persistence import _get_or_create_ticket, _owning_overlay
+from teatree.loop.persistence import _get_or_create_ticket
+from teatree.loop.persistence_overlay import owning_overlay
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 from teatree.loop.scanners.head_lineage import review_head_is_carried
 from teatree.loop.scanners.pr_sweep_review_gate import report_exhausted_review_rounds
@@ -50,7 +51,7 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
         ticket, _created = _get_or_create_ticket(
             pr_url,
             role=Ticket.Role.REVIEWER,
-            overlay=_owning_overlay(pr_url, overlay),
+            overlay=owning_overlay(pr_url, overlay),
             extra={"reviewed_sha": head_sha, "self_pr_review_variant": variant},
         )
         if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase="reviewing"):
