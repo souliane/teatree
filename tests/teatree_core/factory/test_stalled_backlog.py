@@ -5,8 +5,17 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_WINDOW, stranded_ticket_count
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.factory.health_signal import HealthSignal
+from teatree.core.factory.operational_health import collect_signals
+from teatree.core.factory.parked_tickets import AGED_PARK
+from teatree.core.factory.stalled_backlog import (
+    STALLED_BACKLOG_THRESHOLD,
+    STALLED_BACKLOG_WINDOW,
+    stranded_ticket_count,
+)
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
+from teatree.core.models import PullRequest, Session, Task, Ticket
+from teatree.core.models.known_issue import KnownIssue
 
 
 class TestStrandedTicketCount(TestCase):
@@ -22,6 +31,51 @@ class TestStrandedTicketCount(TestCase):
     def test_a_failed_task_outside_the_window_is_stranded(self) -> None:
         self._queued(2)
         assert stranded_ticket_count() == 2
+
+    def test_a_recent_halted_failure_is_parked_not_stranded(self) -> None:
+        self._queued(2)
+        Task.objects.update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 0
+
+    def test_an_aged_halted_failure_is_parked_not_stranded(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        Task.objects.update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 0
+
+    def test_a_halted_failure_stays_parked_whatever_else_the_ticket_holds(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        Task.objects.update(execution_reason=HALT_STAMP)
+        for ticket in Ticket.objects.all():
+            PullRequest.objects.create(ticket=ticket, url=f"https://example.com/pull/{ticket.pk}", repo="o/r", iid="1")
+            Ticket.objects.filter(pk=ticket.pk).update(issue_url=f"loop://test/{ticket.pk}")
+        assert stranded_ticket_count() == 0
+
+    def test_only_the_unstamped_failures_keep_counting(self) -> None:
+        self._queued(3)
+        halted = Ticket.objects.order_by("pk")[:2]
+        Task.objects.filter(ticket__in=halted).update(execution_reason=HALT_STAMP)
+        assert stranded_ticket_count() == 1
+
+    def test_an_aged_failure_nobody_parked_keeps_counting(self) -> None:
+        self._queued(2, age=AGED_PARK + timedelta(days=1))
+        assert stranded_ticket_count() == 2
+
+    def test_a_cancelled_failure_is_a_decision_not_a_stranding(self) -> None:
+        self._queued(2)
+        Task.objects.update(failure_kind=FailureKind.CANCELLED)
+        assert stranded_ticket_count() == 0
+
+    def test_newest_task_uses_creation_time_before_primary_key(self) -> None:
+        self._queued(1)
+        ticket = Ticket.objects.get()
+        later_pk = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=later_pk.pk).update(created_at=timezone.now() - timedelta(hours=4))
+        assert stranded_ticket_count() == 1
+
+    def test_synthetic_ticket_still_counts_as_a_stalled_lane(self) -> None:
+        self._queued(1)
+        Ticket.objects.update(issue_url="loop://test")
+        assert stranded_ticket_count() == 1
 
     def test_a_recent_failure_is_still_in_flight(self) -> None:
         # The window exists so a retry that has not been requeued yet never counts.
@@ -60,3 +114,28 @@ class TestStrandedTicketCount(TestCase):
             done = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.COMPLETED)
             Task.objects.filter(pk=done.pk).update(created_at=timezone.now() - timedelta(hours=2, minutes=30))
         assert stranded_ticket_count() == 0
+
+
+class TestStalledBacklogSignal(TestCase):
+    def _tickets_with_newest_failure(self, count: int, *, execution_reason: str) -> None:
+        for i in range(count):
+            ticket = Ticket.objects.create(
+                issue_url=f"https://example.com/sig/{execution_reason or 'plain'}/{i}", state=Ticket.State.WORK_STARTED
+            )
+            session = Session.objects.create(overlay="test", ticket=ticket)
+            task = Task.objects.create(
+                ticket=ticket, session=session, status=Task.Status.FAILED, execution_reason=execution_reason
+            )
+            Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=3))
+
+    def _stalled_backlog(self) -> list[HealthSignal]:
+        return [signal for signal in collect_signals().signals if signal.fingerprint == "stalled-backlog"]
+
+    def test_three_halt_stamped_tickets_raise_no_stalled_backlog_signal(self) -> None:
+        self._tickets_with_newest_failure(STALLED_BACKLOG_THRESHOLD, execution_reason=HALT_STAMP)
+        assert self._stalled_backlog() == []
+
+    def test_three_unstamped_tickets_still_raise_the_critical_signal(self) -> None:
+        self._tickets_with_newest_failure(STALLED_BACKLOG_THRESHOLD, execution_reason="")
+        (signal,) = self._stalled_backlog()
+        assert signal.severity == KnownIssue.Severity.CRITICAL

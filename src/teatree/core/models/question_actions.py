@@ -1,8 +1,11 @@
 """Dedupe and answer helpers for durable owner action questions."""
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Self
 
 from django.db import models
+from django.db.models import Value
+from django.db.models.functions import Concat
 
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, owner_kept_decision
@@ -16,6 +19,7 @@ if TYPE_CHECKING:
     from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 
 ACTION_OUTCOMES = ("carried_out", "declined", "refused")
+RELEASED_MARKER_PREFIX = "released:"
 
 
 def is_action_question(row: "DeferredQuestion") -> bool:
@@ -63,6 +67,27 @@ def held_question(
 
 
 class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
+    def answered_without_deciding(self, answers: Collection[str]) -> Self:
+        """Answered rows whose answer is not one of *answers* given in Slack: a reply that decided nothing."""
+        decided = self.model.answered_in_slack(answers).values("pk")
+        return self.filter(answered_at__isnull=False).exclude(pk__in=decided)
+
+    def retired_by_age_ceiling(self) -> Self:
+        """Rows the age backstop dismissed unanswered: a non-decision, so the signal they covered may be asked again."""
+        return self.filter(
+            dismissed_at__isnull=False, audits__action="dismissed", audits__resolver_id="age_ceiling"
+        ).distinct()
+
+    def release_markers(self) -> int:
+        """Free these rows' dedupe markers so the signal they covered is asked again as a fresh question."""
+        return self.update(dedupe_marker=Concat(Value(RELEASED_MARKER_PREFIX), "dedupe_marker"))
+
+    def release_undecided(self, answers: Collection[str]) -> int:
+        """Ask again after a non-decision: a reply that is not one of *answers*, or an age-ceiling retirement."""
+        undecided = self.answered_without_deciding(answers).values("pk")
+        aged = self.retired_by_age_ceiling().values("pk")
+        return self.filter(models.Q(pk__in=undecided) | models.Q(pk__in=aged)).release_markers()
+
     def awaiting_action_outcome(self) -> Self:
         return (
             self.filter(
