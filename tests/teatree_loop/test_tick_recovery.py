@@ -19,7 +19,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.models import ModeOverride, Session, Task, TaskAttempt, Ticket
+from teatree.core.answering.escalation import ESCALATION_DEADLINE, UNSERVED_PREFIX, record_request
+from teatree.core.models import DeferredQuestion, ModeOverride, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.core.models.transition import TicketTransition
 from teatree.core.tasks import drain_queue_body
@@ -40,6 +41,26 @@ class TestReapStaleTaskClaims(TestCase):
         data_dir = patch.dict(os.environ, {"T3_DATA_DIR": temporary.name})
         data_dir.start()
         self.addCleanup(data_dir.stop)
+
+    def test_a_request_past_its_escalation_deadline_is_settled_by_the_recovery_step(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5685")
+        asker = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, agent_id="planning"),
+            phase="planning",
+            status=Task.Status.CLAIMED,
+        )
+        request = record_request(asker, kind="internal", message="Which migration order should I follow?")
+        DeferredQuestion.objects.filter(pk=request.pk).update(
+            created_at=timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)
+        )
+
+        with patch("teatree.core.worktree.recovery_sweeps.run_boot_sweeps"):
+            _reap_stale_task_claims()
+
+        asker.refresh_from_db()
+        assert asker.status == Task.Status.FAILED
+        assert asker.failure_reason.startswith(UNSERVED_PREFIX)
 
     def test_prelude_runs_once_inside_interval_and_refreshes_after_it(self) -> None:
         with (

@@ -28,6 +28,7 @@ from teatree.agents import review_envelope_recorder
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import cold_reader
 from teatree.core import notify as notify_module
+from teatree.core.answering.escalation import record_request
 from teatree.core.gates.review_request_batch_gate import WORK_GROUP_MAX_MEMBERS, work_group_ready
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -129,6 +130,10 @@ def _withhold_an_answer_draft() -> None:
         task_session=task.session,
         dedupe_marker=f"answer-draft:{task.pk}",
     )
+
+
+def _escalate_from_a_running_task() -> None:
+    record_request(_task("planning"), kind="internal", message="Which migration order should I follow?")
 
 
 def _deny_a_loop_driven_ask() -> None:
@@ -304,6 +309,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
         _wedge_a_finished_phase
     ),
     ("src/teatree/core/provision/failure_question.py", "record_provision_failure_question"): _fail_a_provision,
+    ("src/teatree/core/answering/escalation.py", "record_request"): _escalate_from_a_running_task,
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,
