@@ -26,6 +26,7 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _triage_assessor_jobs_for_overlay,
 )
 from teatree.loop.domain_ship_jobs import _colleague_egress_selected, _ship_jobs_for_overlay
+from teatree.loop.incoming_event_handling import handle_incoming_event
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError, overlay_followup_jobs
 from teatree.loop.question_drain import sweep_owner_questions
@@ -98,7 +99,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
     user_id = resolve_user_id()
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
-        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
+        _ScannerJob(scanner=IncomingEventsScanner(runner=handle_incoming_event), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
