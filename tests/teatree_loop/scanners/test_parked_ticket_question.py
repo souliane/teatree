@@ -1,0 +1,327 @@
+from datetime import timedelta
+from unittest.mock import patch
+
+import pytest
+from django.db import connection
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP
+from teatree.core.models import PullRequest, Session, Task, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.owner_dm_sweep import run_sweep
+from teatree.loop.scanners.parked_ticket_question import ParkedTicketQuestionScanner
+from teatree.loops.housekeeping.loop import MINI_LOOP
+
+_DIRTY_PROBE = "teatree.core.models.ticket_worktree_checks.collect_dirty_worktree_paths"
+
+
+class ParkedTicketQuestionTest(TestCase):
+    def _parked(self, *, title: str = "", earlier_task: str = "") -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(
+            issue_url=f"https://example.com/issues/{Ticket.objects.count() + 1}",
+            state=Ticket.State.WORK_STARTED,
+            short_description=title,
+        )
+        session = Session.objects.create(overlay="test", ticket=ticket)
+        if earlier_task:
+            Task.objects.create(ticket=ticket, session=session, status=earlier_task)
+        task = Task.objects.create(
+            ticket=ticket, session=session, status=Task.Status.FAILED, execution_reason=HALT_STAMP
+        )
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=15))
+        return ticket, task
+
+    def _answer(self, answer: str, *, channel: str = DeferredQuestion.ResolvedVia.SLACK) -> None:
+        DeferredQuestion.objects.update(answered_at=timezone.now(), answer_text=answer, resolved_via=channel)
+
+    def test_registered_job_asks_once_and_has_no_ticket_identifiers_in_card(self) -> None:
+        self._parked()
+        jobs = [job for job in MINI_LOOP.build_jobs() if job.scanner.name == "parked_ticket_question"]
+        assert len(jobs) == 1
+        jobs[0].scanner.scan()
+        jobs[0].scanner.scan()
+        row = DeferredQuestion.objects.get()
+        assert row.evidence["decision"] == "irreversible"
+        assert "created over two weeks ago" in row.question
+        assert "created over two weeks ago" in row.evidence["checked"][0]
+        assert "Retire them" in row.options_json
+        assert "queue the removal of their checkouts" in row.options_json
+        assert "issues/" not in str(row.evidence)
+
+    def test_owner_retires_only_unchanged_tasks_listed_in_card(self) -> None:
+        retained, _ = self._parked()
+        changed, task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.create(ticket=changed, session=task.session, status=Task.Status.PENDING)
+        self._answer("Retire them")
+        scanner.scan()
+        retained.refresh_from_db()
+        changed.refresh_from_db()
+        assert retained.state == Ticket.State.IGNORED
+        assert changed.state == Ticket.State.WORK_STARTED
+        scanner.scan()
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_retirement_rechecks_the_newest_task_after_selection(self) -> None:
+        ticket, stale_task = self._parked()
+        ParkedTicketQuestionScanner().scan()
+        self._answer("Retire them")
+        Task.objects.create(ticket=ticket, session=stale_task.session, status=Task.Status.PENDING)
+        ParkedTicketQuestionScanner(tasks=lambda: [stale_task]).scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_a_ticket_whose_newest_task_completed_is_not_retired(self) -> None:
+        ticket, stale_task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.create(ticket=ticket, session=stale_task.session, status=Task.Status.COMPLETED)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_a_ticket_in_pr_opened_with_no_recorded_pull_request_is_not_retired(self) -> None:
+        ticket, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.PR_OPENED)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PR_OPENED
+
+    def test_a_ticket_with_a_queued_task_is_not_retired(self) -> None:
+        ticket, _ = self._parked(earlier_task=Task.Status.COMPLETED)
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.filter(ticket=ticket, status=Task.Status.COMPLETED).update(status=Task.Status.PENDING)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_an_owner_answer_logs_which_tickets_it_retired(self) -> None:
+        first, _ = self._parked()
+        second, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        with self.assertLogs("teatree.core.factory.parked_ticket_decision", level="INFO") as logs:
+            scanner.scan()
+        assert [line for line in logs.output if f"retired tickets [{first.pk}, {second.pk}]" in line]
+
+    def test_retirement_rechecks_for_an_open_pull_request_after_selection(self) -> None:
+        ticket, stale_task = self._parked()
+        ParkedTicketQuestionScanner().scan()
+        self._answer("Retire them")
+        PullRequest.objects.create(ticket=ticket, url="https://example.com/pull/1", repo="o/r", iid="1")
+        ParkedTicketQuestionScanner(tasks=lambda: [stale_task]).scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_keep_them_parked_is_remembered_per_ticket(self) -> None:
+        kept, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Keep them parked")
+        scanner.scan()
+        assert DeferredQuestion.objects.count() == 1
+        _newer, newer_task = self._parked()
+        scanner.scan()
+        asked = DeferredQuestion.objects.order_by("pk").last()
+        assert asked is not None
+        assert asked.evidence["private_context"]["task_pairs"] == [[newer_task.ticket_id, newer_task.pk]]
+        assert DeferredQuestion.objects.count() == 2
+        kept.refresh_from_db()
+        assert kept.state == Ticket.State.WORK_STARTED
+
+    def test_other_answer_and_local_channel_leave_tickets_parked(self) -> None:
+        ticket, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Keep them parked")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        DeferredQuestion.objects.all().delete()
+        scanner.scan()
+        self._answer("Retire them", channel=DeferredQuestion.ResolvedVia.LOCAL)
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_card_names_the_tickets_so_the_owner_can_check_what_is_retired(self) -> None:
+        self._parked(title="Speed up the import")
+        self._parked(title="Fix the date picker")
+        ParkedTicketQuestionScanner().scan()
+        quoted = DeferredQuestion.objects.get().evidence["quoted"]
+        assert "Speed up the import" in quoted
+        assert "Fix the date picker" in quoted
+
+    def test_card_is_settled_and_replaced_when_the_parked_set_changes(self) -> None:
+        left, left_task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.create(ticket=left, session=left_task.session, status=Task.Status.PENDING)
+        _arrived, arrived_task = self._parked()
+        scanner.scan()
+        card = DeferredQuestion.owner_pending().get()
+        assert card.evidence["private_context"]["task_pairs"] == [[arrived_task.ticket_id, arrived_task.pk]]
+
+    def test_card_is_settled_when_no_ticket_is_parked_any_more(self) -> None:
+        ticket, task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.create(ticket=ticket, session=task.session, status=Task.Status.PENDING)
+        scanner.scan()
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_a_settled_card_is_asked_afresh_when_the_same_tickets_park_again(self) -> None:
+        ticket, task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        retry = Task.objects.create(ticket=ticket, session=task.session, status=Task.Status.PENDING)
+        scanner.scan()
+        retry.delete()
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_retire_answer_is_applied_once_and_not_replayed_when_a_pull_request_closes(self) -> None:
+        waiting, _ = self._parked()
+        self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        pull_request = PullRequest.objects.create(ticket=waiting, url="https://example.com/pull/1", repo="o/r", iid="1")
+        self._answer("Retire them")
+        scanner.scan()
+        PullRequest.objects.filter(pk=pull_request.pk).update(state=PullRequest.State.CLOSED)
+        scanner.scan()
+        waiting.refresh_from_db()
+        assert waiting.state == Ticket.State.WORK_STARTED
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_retire_answer_that_retired_nothing_is_asked_afresh_when_the_pull_request_closes(self) -> None:
+        waiting, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        pull_request = PullRequest.objects.create(ticket=waiting, url="https://example.com/pull/1", repo="o/r", iid="1")
+        self._answer("Retire them")
+        scanner.scan()
+        PullRequest.objects.filter(pk=pull_request.pk).update(state=PullRequest.State.CLOSED)
+        scanner.scan()
+        waiting.refresh_from_db()
+        assert waiting.state == Ticket.State.WORK_STARTED
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_local_answer_decides_nothing_and_the_card_is_asked_again(self) -> None:
+        ticket, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them", channel=DeferredQuestion.ResolvedVia.LOCAL)
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_retiring_a_ticket_with_unsaved_work_still_retires_and_asks_once_about_the_work(self) -> None:
+        ticket, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        with patch(_DIRTY_PROBE, return_value=["/checkouts/work/teatree"]):
+            scanner.scan()
+            scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"issue-closed-unshipped-work:{ticket.pk}").count() == 1
+
+    def test_a_failure_while_retiring_keeps_the_answer_for_the_next_scan(self) -> None:
+        first, _ = self._parked()
+        second, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        with (
+            patch.object(Ticket, "ignore", side_effect=RuntimeError("database is locked")),
+            pytest.raises(RuntimeError),
+        ):
+            scanner.scan()
+        scanner.scan()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.state == second.state == Ticket.State.IGNORED
+
+    def test_the_checkout_probe_runs_outside_any_transaction(self) -> None:
+        self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        open_blocks: list[int] = []
+
+        def probe(_ticket: Ticket) -> list[str]:
+            open_blocks.append(len(connection.savepoint_ids))
+            return []
+
+        baseline = len(connection.savepoint_ids)
+        with patch(_DIRTY_PROBE, side_effect=probe):
+            scanner.scan()
+        assert open_blocks == [baseline]
+
+    def test_unsaved_work_questions_survive_the_hourly_sweep_one_per_ticket(self) -> None:
+        self._parked(title="Speed up the import")
+        self._parked(title="Fix the date picker")
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        with patch(_DIRTY_PROBE, return_value=["/checkouts/work/teatree"]):
+            scanner.scan()
+        DeferredQuestion.objects.update(created_at=timezone.now() - timedelta(hours=5))
+        assert run_sweep().resolved == 0
+        unsaved = DeferredQuestion.owner_pending().filter(dedupe_marker__startswith="issue-closed-unshipped-work:")
+        assert sorted(card.evidence["quoted"] for card in unsaved) == ["Fix the date picker", "Speed up the import"]
+
+    def test_a_card_the_age_ceiling_retired_is_asked_again(self) -> None:
+        self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        DeferredQuestion.objects.get().mark_stale("unanswered through 3 escalations", resolver_id="age_ceiling")
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_card_the_owner_dismissed_is_not_asked_again(self) -> None:
+        self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        DeferredQuestion.consume(DeferredQuestion.objects.get().pk, dismissed_reason="not now")
+        scanner.scan()
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_a_card_already_shown_to_the_owner_outlives_a_change_of_the_parked_set(self) -> None:
+        retained, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        shown = DeferredQuestion.objects.get()
+        shown.mark_mirrored(channel="D1", slack_ts="1.0")
+        arrived, _ = self._parked()
+        scanner.scan()
+        assert list(DeferredQuestion.owner_pending()) == [shown]
+        self._answer("Retire them")
+        scanner.scan()
+        retained.refresh_from_db()
+        arrived.refresh_from_db()
+        assert (retained.state, arrived.state) == (Ticket.State.IGNORED, Ticket.State.WORK_STARTED)
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_a_title_carrying_slack_markup_is_left_off_the_card(self) -> None:
+        self._parked(title="<!channel> Fix the thing")
+        ParkedTicketQuestionScanner().scan()
+        assert "<" not in DeferredQuestion.objects.get().evidence.get("quoted", "")
+
+    def test_the_card_counts_one_ticket_in_the_singular(self) -> None:
+        self._parked()
+        ParkedTicketQuestionScanner().scan()
+        assert DeferredQuestion.objects.get().evidence["checked"][0].startswith("1 ticket has ")

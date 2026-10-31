@@ -42,7 +42,7 @@ from datetime import datetime
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.models import Directive, DirectiveDispatch
+from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch
 from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY
 from teatree.core.models.ticket import Ticket
 from teatree.loops.directive_loop.configure import apply_activation
@@ -291,6 +291,14 @@ def _advance_execution(
 
 def _advance_clarifying(directive: Directive) -> DirectiveTickResult:
     """Re-interpret once every clarify question is answered; else wait on the human."""
+    dismissed = DeferredQuestion.objects.filter(
+        options_hash__startswith=f"directive_clarify:{directive.pk}:{directive.generation}:",
+        answered_at__isnull=True,
+        dismissed_at__isnull=False,
+    ).first()
+    if dismissed is not None:
+        directive.reject(f"clarification not answered: {dismissed.dismissed_reason}")
+        return DirectiveTickResult(action="rejected", directive_id=directive.pk)
     if not clarifications_answered(directive):
         return DirectiveTickResult(action="waiting", reason="awaiting_clarification", directive_id=directive.pk)
     return _report_dispatch(directive, reinterpret_after_clarification(directive), armed="reinterpret_dispatched")
@@ -327,6 +335,9 @@ def _advance_implementing(
     directive: Directive, *, merged_probe: Callable[[Directive], bool] | None
 ) -> DirectiveTickResult:
     """Move to CONFIGURING once the mechanism ticket has merged; else wait."""
+    if directive.ticket is not None and directive.ticket.state == Ticket.State.IGNORED:
+        directive.reject("mechanism ticket was abandoned")
+        return DirectiveTickResult(action="rejected", directive_id=directive.pk)
     if not (merged_probe or _ticket_merged)(directive):
         return DirectiveTickResult(action="waiting", reason="implement_in_flight", directive_id=directive.pk)
     directive.begin_configuring()

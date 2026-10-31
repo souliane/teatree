@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from teatree.cli import app as cli_app
 from teatree.cli.doctor import self_heal
 from teatree.cli.doctor.self_heal import check_as_json, run_self_heal_checks
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP
 from teatree.core.models import Task, TaskAttempt, Ticket
 from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
@@ -387,6 +388,13 @@ class StaleLoopTimerCheckTest(TestCase):
 
 
 class FailedTaskOnLiveTicketCheckTest(TestCase):
+    def test_parked_failed_task_warns_without_failing(self) -> None:
+        ticket = TicketFactory(state=Ticket.State.CODED)
+        TaskFactory(ticket=ticket, status="failed", execution_reason=HALT_STAMP)
+        ok, out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is True
+        assert "WARN" in out
+
     def test_failed_task_on_live_ticket_fails(self) -> None:
         ticket = TicketFactory(state=Ticket.State.CODED)
         TaskFactory(ticket=ticket, status="failed")

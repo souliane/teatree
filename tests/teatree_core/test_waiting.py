@@ -77,6 +77,14 @@ class TestGatherWaiting:
         assert entry.row_id == row.pk
         assert entry.owner_only is False
 
+    def test_a_subject_that_is_not_a_link_is_not_offered_as_one(self) -> None:
+        DeferredQuestion.record("Do you approve this change?", card=replace(owner_card(), subject="directive:7"))
+
+        [entry] = gather_waiting("")
+        [owner_entry] = gather_owner_waiting()
+
+        assert entry.url == owner_entry.url == ""
+
     def test_unreadable_owner_card_remains_owner_only(self) -> None:
         row = DeferredQuestion.objects.create(
             question="Can I continue?", audience=DeferredQuestion.Audience.OWNER_QUESTION

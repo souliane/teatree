@@ -45,14 +45,11 @@ from teatree.core.factory.halted_retries import halted_retry_signals, stuck_tick
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.factory.host_pressure_health import host_pressure_signals
+from teatree.core.factory.parked_ticket_decision import parked_ticket_signals
 from teatree.core.factory.pending_pr_health import pending_pr_overdue_signals
 from teatree.core.factory.secret_key_health import secret_key_signals
 from teatree.core.factory.stack_skill_coverage import stack_skill_coverage_signals
-from teatree.core.factory.stalled_backlog import (
-    STALLED_BACKLOG_THRESHOLD,
-    STALLED_BACKLOG_WINDOW,
-    stranded_ticket_count,
-)
+from teatree.core.factory.stalled_backlog import stalled_backlog_signals
 from teatree.core.factory.stalled_checkout import stalled_checkout_signals
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
@@ -298,36 +295,6 @@ def _consecutive_harness_crash_signals() -> SignalCollection:
     )
 
 
-def _stalled_backlog_signals() -> SignalCollection:
-    """One CRITICAL when admitted work has been left with no execution path (#4704).
-
-    What "stranded" means, and why neither ``_failed_task_signals`` nor
-    ``StaleTicketsScanner`` covers it, is :mod:`teatree.core.factory.stalled_backlog`.
-    Fail-open, naming itself ``unread`` on a read it could not make.
-    """
-    try:
-        stalled = stranded_ticket_count()
-    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
-        warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
-        return SignalCollection(unread=("_stalled_backlog_signals",))
-    if stalled < STALLED_BACKLOG_THRESHOLD:
-        return SignalCollection()
-    hours = int(STALLED_BACKLOG_WINDOW.total_seconds() // 3600)
-    return SignalCollection(
-        (
-            HealthSignal(
-                fingerprint="stalled-backlog",
-                severity=KnownIssue.Severity.CRITICAL,
-                kind="stalled_backlog",
-                summary=(
-                    f"{stalled} tickets stranded in started — newest task failed over {hours}h ago "
-                    "and nothing is pending or claimed; the dispatch lane is not running"
-                ),
-            ),
-        )
-    )
-
-
 def _harness_provider_consistency_signals() -> SignalCollection:
     """One CRITICAL per scope whose effective (agent_harness, agent_harness_provider) pair is inconsistent (#3688).
 
@@ -468,7 +435,8 @@ _COLLECTORS = (
     _stale_tick_signals,
     _failed_task_signals,
     _consecutive_harness_crash_signals,
-    _stalled_backlog_signals,
+    stalled_backlog_signals,
+    parked_ticket_signals,
     stalled_checkout_signals,
     halted_retry_signals,
     stuck_ticket_halt_signals,
