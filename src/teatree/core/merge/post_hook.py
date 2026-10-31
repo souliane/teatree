@@ -135,7 +135,7 @@ def record_merge_and_advance(
     idempotent DB write retries).
     """
     from teatree.core.merge.partial_merge import (  # noqa: PLC0415 — deferred: off `t3 mcp serve` startup
-        hold_for_remainder,
+        blocks_settlement,
         read_merged_pr,
     )
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
@@ -190,9 +190,7 @@ def record_merge_and_advance(
                 logger.warning("merge keystone: %s#%s merged but resolved no owning ticket", locked.slug, locked.pr_id)
                 return ""
             _consume_head_evidence(ticket, locked.reviewed_sha)
-            if reading.leaves_remainder and hold_for_remainder(
-                ticket, reading, merged_pr=f"{repo_slug or locked.slug}#{locked.pr_id}"
-            ):
+            if blocks_settlement(ticket, reading, merged_pr=f"{repo_slug or locked.slug}#{locked.pr_id}"):
                 return ticket.state
             # Bind the phase attestation to the merged HEAD/workstream it was
             # earned against (the §17.6 enforcement candidate (7), absorbed

@@ -2,9 +2,6 @@
 
 from typing import TypedDict
 
-from teatree.core.intake.factory_admission import payload_labels, resolve_umbrella_labels
-from teatree.core.intake.umbrella import umbrella_reason
-from teatree.core.issue_writes.issue_candidate_selection import description_of
 from teatree.core.merge.partial_merge import (
     MergedPrReading,
     PrLink,
@@ -12,7 +9,7 @@ from teatree.core.merge.partial_merge import (
     hold_for_remainder,
     preview_remainder_hold,
 )
-from teatree.core.merge.partial_merge_report import PartialMergeMatch, inspect_settled_ticket
+from teatree.core.merge.partial_merge_report import InspectionOutcome, PartialMergeMatch, inspect_settled_ticket
 from teatree.core.models import Ticket
 
 
@@ -23,6 +20,7 @@ class UnsettleResult(TypedDict, total=False):
     remainder: list[str]
     dry_run: bool
     error: str
+    unreadable: bool
 
 
 def _candidate(ticket_id: int) -> tuple[Ticket | None, str]:
@@ -37,20 +35,6 @@ def _candidate(ticket_id: int) -> tuple[Ticket | None, str]:
     if not ticket.issue_url.startswith(("https://", "http://")):
         return None, "ticket has no forge issue URL"
     return ticket, ""
-
-
-def _inspected_match(ticket: Ticket) -> tuple[PartialMergeMatch | None, str]:
-    inspection = inspect_settled_ticket(ticket)
-    if inspection.match is None or inspection.issue is None:
-        return None, inspection.reason or "ticket inspection failed"
-    issue = inspection.issue
-    if umbrella := umbrella_reason(
-        body=description_of(issue),
-        labels=payload_labels(issue),
-        umbrella_labels=resolve_umbrella_labels(ticket.overlay),
-    ):
-        return None, f"umbrella issue: {umbrella}"
-    return inspection.match, ""
 
 
 def _remainder(match: PartialMergeMatch, reason: str) -> tuple[list[str], str]:
@@ -68,9 +52,13 @@ def unsettle_ticket(ticket_id: int, *, reason: str, dry_run: bool) -> UnsettleRe
     ticket, refusal = _candidate(ticket_id)
     if ticket is None:
         return {"error": refusal}
-    match, refusal = _inspected_match(ticket)
-    if match is None:
-        return {"error": refusal}
+    inspection = inspect_settled_ticket(ticket)
+    match = inspection.match
+    if match is None or inspection.issue is None:
+        reason_text = inspection.reason or "ticket inspection failed"
+        return {"error": reason_text, "unreadable": inspection.outcome is InspectionOutcome.UNREADABLE}
+    if umbrella := inspection.issue.umbrella(ticket):
+        return {"error": f"umbrella issue: {umbrella}"}
     remainder, refusal = _remainder(match, reason)
     if refusal:
         return {"error": refusal}

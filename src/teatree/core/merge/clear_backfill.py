@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.merge.partial_merge import blocks_settlement, read_merged_pr
 from teatree.core.models import MergeAudit, MergeClear, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
 
@@ -97,9 +98,14 @@ def _row(
 
 
 def _advance_ticket(clear: MergeClear, ticket: "Ticket") -> tuple[str, str]:
-    """Reconcile *ticket* toward MERGED; return ``(landed_state, detail)``."""
-    if not MergeAudit.objects.filter(clear=clear).exists():
+    """Reconcile *ticket* toward MERGED unless its merge leaves the issue open; return ``(landed_state, detail)``."""
+    audit = MergeAudit.objects.filter(clear=clear).first()
+    if audit is None:
         return "", "linked (no merge audit on this CLEAR — superseded sibling)"
+    reading = read_merged_pr(clear, audit.repo_slug)
+    if blocks_settlement(ticket, reading, merged_pr=f"{audit.repo_slug or clear.slug}#{clear.pr_id}"):
+        held = ticket.state if reading.leaves_remainder else ""
+        return held, f"linked (merge not settled: {reading.unreadable or 'the issue has items left open'})"
     try:
         ticket.reconcile_merged()
     except TransitionNotAllowed:

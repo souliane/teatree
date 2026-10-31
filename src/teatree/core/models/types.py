@@ -184,6 +184,9 @@ class TicketExtra(TicketRepoExtra, total=False):
     # ``ReviewedPrHeadScanner``'s rotation clock — least-recently-checked first,
     # so its per-tick cap cannot pin one window of a longer watch list.
     head_checked_at: str
+    # Rule G's rotation clock — least-recently-checked settled ticket first, so the
+    # per-run inspection cap walks the whole backlog.
+    settled_checked_at: str
     retro_scheduled: bool
     tracker_404: bool
     more_prs_coming: bool

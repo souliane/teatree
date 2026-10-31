@@ -15,12 +15,13 @@ piece is a driver that asks the FORGE about the ticket's own item — which is w
 rule B below is. (The 205 ``review_delivered`` rows are all ``role = reviewer``: that
 state is the reviewer terminal, so they are correctly not merge candidates.)
 
-Six rules, one path, applied in cheapest-first order:
+Seven rules, one path, applied in cheapest-first order:
 
 Rule A — a linked ``PullRequest`` row is MERGED, unless the ticket was reopened over
     every such row (#5031). The #3540 sweep: a ticket entered via a non-ladder phase
     whose PR merged outside the keystone has no automatic exit from its entry state.
-    The scan reads no forge, but the merge-evidence gate does when none is stored.
+    The scan reads no forge, but the merge-evidence gate does when none is stored, and an
+    issue-linked ticket is judged against its last merged pull request first (see below).
 Rule B — the ticket's OWN ``issue_url`` names a PR the forge says MERGED. The
     load-bearing rule: the gap rule A cannot see is a ticket with no ``PullRequest``
     row at all, which is the shape of every card the board rendered as NOT STARTED
@@ -41,9 +42,18 @@ Rule F — a PRE-SHIP ticket whose own ISSUE the forge says CLOSED. The shape no
     other rule can reach, because B/C read an issue URL as an unknown PR, D polls
     only the post-ship states, and E only DELIVERED — so a backlog prune left twelve
     rows ``plan_recorded`` behind closed issues, each a permanent dispatch source (#4711).
-    Rules E and F live in the sibling ``board_reconcile_issue_reopen`` and
-    ``board_reconcile_issue_close`` modules; every rule calls the shared application
-    machinery in ``board_reconcile_apply``.
+Rule G — a SETTLED author ticket (merged, retro_recorded) whose own ISSUE is still open and
+    whose last merged pull request left an acceptance item out (#5670). Sends it back to
+    planning, a bounded batch per run, least recently checked first.
+    Rules E, F and G live in the sibling ``board_reconcile_issue_reopen``,
+    ``board_reconcile_issue_close`` and ``board_reconcile_partial_merge`` modules; every rule
+    calls the shared application machinery in ``board_reconcile_apply``.
+
+Rules A and B settle a ticket from a merged pull request, so for an issue-linked ticket they
+first ask what the merge keystone asks (``partial_merge.blocks_settlement``): a merge that
+leaves an item out holds the ticket, and one the forge cannot answer for is reported as
+refused. That read costs one forge call, so it spends the run's probe budget and the
+network-free per-tick render pass leaves such a ticket for the next full run.
 
 Every rule is idempotent by construction: each candidate queryset excludes the state
 its rule targets, so a second consecutive run finds nothing. Forge reads are
@@ -74,12 +84,18 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
+from teatree.core.issue_coverage import holds_on_issue
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
+from teatree.loop.scanners.board_reconcile_partial_merge import (
+    ReadBudget,
+    settled_remainder_transitions,
+    settlement_block,
+)
 from teatree.loop.scanners.board_reconcile_pr_rows import settle_live_pr_rows
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
 from teatree.url_classify import Forge, forge_of
@@ -134,21 +150,23 @@ def reconcile_board(
 
     *overlay* scopes the sweep to one overlay's tickets, so a multi-overlay fan-out
     PARTITIONS the work instead of each slice re-probing the whole board; blank
-    sweeps every overlay. *probe_forge* off runs only the no-network rule A, which
-    is what the per-tick render pass wants; the cadenced scanner and the CLI run the
-    full set.
+    sweeps every overlay. *probe_forge* off runs only rule A with no forge read, which
+    is what the per-tick render pass wants (an issue-linked ticket waits for a full run);
+    the cadenced scanner and the CLI run the full set.
     """
-    transitions = list(_merged_pr_row_transitions(overlay=overlay, dry_run=dry_run))
-    probes = 0
+    reads = ReadBudget(probe_budget if probe_forge else 0)
+    transitions = list(_merged_pr_row_transitions(overlay=overlay, dry_run=dry_run, reads=reads))
+    probes = reads.used
     if probe_forge:
-        forge_transitions, probes = _forge_truth_transitions(
-            overlay=overlay, dry_run=dry_run, probe_budget=probe_budget
+        forge_transitions, forge_probes = _forge_truth_transitions(
+            overlay=overlay, dry_run=dry_run, probe_budget=probe_budget - reads.used, reads=reads
         )
         transitions.extend(forge_transitions)
+        probes += forge_probes
     return BoardReconcileReport(transitions=tuple(transitions), probes=probes, dry_run=dry_run)
 
 
-def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransition]:
+def _merged_pr_row_transitions(*, overlay: str, dry_run: bool, reads: ReadBudget) -> list[BoardTransition]:
     """Rule A — every ticket with a MERGED ``PullRequest`` row not yet at its own terminal.
 
     Both target states are excluded, one per role branch: ``MERGED`` for the author
@@ -177,13 +195,15 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
         lambda ticket: (
             None
             if all_merges_reopened_over(ticket)
-            else _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run)
+            else _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run, reads=reads)
         ),
     )
 
 
-def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) -> tuple[list[BoardTransition], int]:
-    """Rules B/C/D/E/F — the live forge reads, bounded by *probe_budget*.
+def _forge_truth_transitions(
+    *, overlay: str, dry_run: bool, probe_budget: int, reads: ReadBudget
+) -> tuple[list[BoardTransition], int]:
+    """Rules B/C/D/E/F/G — the live forge reads, bounded by *probe_budget*.
 
     Newest-ticket-first, because a freshly merged PR is what makes the board
     untrustworthy minute to minute; the budget is what keeps an unbounded backlog
@@ -209,7 +229,7 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
     pr_tickets = [t for t in without_voided(candidates) if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
     states = {ticket.issue_url: pr_open_state(ticket.issue_url) for ticket in pr_tickets}
 
-    transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
+    transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run, reads=reads))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     remaining = probe_budget - len(states)
     reserved_for_f = min(max(remaining // 2, 0), _rule_f_candidate_count(overlay))
@@ -224,7 +244,14 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
         already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
     )
     transitions.extend(closed)
-    return transitions, len(states) + reopen_probes + close_probes
+    held, held_probes = settled_remainder_transitions(
+        overlay=overlay,
+        dry_run=dry_run,
+        probe_budget=remaining - reopen_probes - close_probes,
+        already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
+    )
+    transitions.extend(held)
+    return transitions, len(states) + reopen_probes + close_probes + held_probes
 
 
 def _rule_f_candidate_count(overlay: str) -> int:
@@ -265,6 +292,7 @@ def _from_pr_state(
     states: dict[str, PrOpenState],
     *,
     dry_run: bool,
+    reads: ReadBudget,
 ) -> BoardTransition | None:
     """Rules B and C — act only on a DEFINITE forge verdict.
 
@@ -274,7 +302,7 @@ def _from_pr_state(
     """
     state = states.get(ticket.issue_url, PrOpenState.UNKNOWN)
     if state is PrOpenState.MERGED:
-        return _on_merge_signal(ticket, reason="forge says the PR merged", dry_run=dry_run)
+        return _on_merge_signal(ticket, reason="forge says the PR merged", dry_run=dry_run, reads=reads)
     if state is PrOpenState.CLOSED:
         return _on_close_signal(ticket, reason="forge says the PR closed unmerged", dry_run=dry_run)
     return None
@@ -286,7 +314,7 @@ def _is_reviewer(ticket: "Ticket") -> bool:
     return ticket.role == Ticket.Role.REVIEWER
 
 
-def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
+def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool, reads: ReadBudget) -> BoardTransition | None:
     """Route a merged-PR signal by ROLE — the author merged it; the reviewer only read it.
 
     A reviewer ticket tracks teatree's review of SOMEONE ELSE's PR, so landing it on
@@ -296,7 +324,7 @@ def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTr
     """
     if _is_reviewer(ticket):
         return _close_review(ticket, reason=reason, dry_run=dry_run)
-    return _advance_to_merged(ticket, reason=reason, dry_run=dry_run)
+    return _advance_to_merged(ticket, reason=reason, dry_run=dry_run, reads=reads)
 
 
 def _on_close_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
@@ -379,12 +407,17 @@ def _issue_done_urls(tickets: "list[Ticket]") -> set[str]:
     }
 
 
-def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
+def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool, reads: ReadBudget) -> BoardTransition | None:
     """Drive one ticket to MERGED, or report the intent under *dry_run*."""
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     if ticket.state == Ticket.State.MERGED or not can_proceed(ticket.reconcile_merged):
         return None
+    if holds_on_issue(ticket):
+        if not reads.take():
+            return None
+        if (blocked := settlement_block(ticket, reason=reason, dry_run=dry_run)) is not None:
+            return blocked
     from_state = ticket.state
     if dry_run:
         return planned(ticket, Ticket.State.MERGED, BoardAction.ADVANCED_MERGED, reason)
