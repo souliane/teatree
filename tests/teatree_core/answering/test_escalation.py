@@ -15,6 +15,8 @@ from teatree.core.answering.escalation import (
     MARKER_PREFIX,
     UNSERVED_PREFIX,
     EscalationRefusedError,
+    answerable_request,
+    close_answered_request,
     coordinator_task,
     open_request,
     record_request,
@@ -142,6 +144,104 @@ class TestOpenRequests(TestCase):
         DeferredQuestion.record("Is this fine?", parked_task=asker, dedupe_marker="needs-input:1:abc")
 
         assert open_request(asker.ticket_id) is None
+
+
+class TestAnAnswerableRequest(TestCase):
+    def _worker(self, asker: Task, phase: str, status: str = Task.Status.CLAIMED) -> Task:
+        session = SessionFactory.create(ticket=asker.ticket, agent_id=phase)
+        return TaskFactory.create(ticket=asker.ticket, session=session, phase=phase, status=status)
+
+    def test_an_open_request_whose_asker_is_the_only_running_task_is_answerable(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+
+        assert answerable_request(asker.ticket_id) == row
+
+    def test_the_answering_task_that_reads_it_is_not_a_second_asker(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        self._worker(asker, "answering")
+
+        assert answerable_request(asker.ticket_id) == row
+
+    def test_tasks_of_the_ticket_that_already_finished_do_not_count(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        self._worker(asker, "coding", Task.Status.COMPLETED)
+
+        assert answerable_request(asker.ticket_id) == row
+
+    def test_another_running_task_of_the_ticket_leaves_nobody_to_name_as_the_asker(self) -> None:
+        asker = _asker()
+        record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        self._worker(asker, "coding")
+
+        assert answerable_request(asker.ticket_id) is None
+
+    def test_an_asker_that_stopped_running_leaves_the_request_unanswerable(self) -> None:
+        asker = _asker()
+        record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        self._worker(asker, "coding")
+        Task.objects.filter(pk=asker.pk).update(status=Task.Status.COMPLETED)
+
+        assert answerable_request(asker.ticket_id) is None
+
+    def test_a_request_whose_asking_task_is_gone_is_unanswerable(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        DeferredQuestion.objects.filter(pk=row.pk).update(parked_task=None)
+
+        assert answerable_request(asker.ticket_id) is None
+
+    def test_a_ticket_with_no_open_request_has_nothing_to_answer(self) -> None:
+        assert answerable_request(_asker().ticket_id) is None
+
+    def test_a_request_past_its_deadline_is_unanswerable(self) -> None:
+        asker = _asker()
+        _age(record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE), ESCALATION_DEADLINE + timedelta(seconds=1))
+
+        assert answerable_request(asker.ticket_id) is None
+
+
+class TestAnsweringARequestClosesIt(TestCase):
+    def test_the_deadline_then_raises_no_card_and_fails_no_task(self) -> None:
+        for kind in (INTERNAL_KIND, OwnerDecision.ARCHITECTURE.value):
+            asker = _asker()
+            row = record_request(asker, kind=kind, message=_MESSAGE)
+
+            close_answered_request(row)
+            _age(row, ESCALATION_DEADLINE + timedelta(minutes=1))
+
+            assert settle_expired_escalations() == 0
+            asker.refresh_from_db()
+            assert asker.status == Task.Status.CLAIMED
+            assert not DeferredQuestion.owner_pending().exists()
+
+    def test_the_request_is_closed_by_the_coordinator_and_no_longer_open(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+
+        close_answered_request(row)
+
+        row.refresh_from_db()
+        assert not row.is_pending
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        assert row.dismissed_reason == "answered by the coordinator"
+        assert [audit.resolver_id for audit in row.audits.all()] == ["coordinator_reply"]
+        assert open_request(asker.ticket_id) is None
+
+    def test_a_request_the_deadline_already_settled_is_left_as_it_was(self) -> None:
+        asker = _asker()
+        row = record_request(asker, kind=OwnerDecision.ARCHITECTURE, message=_MESSAGE)
+        _age(row, ESCALATION_DEADLINE + timedelta(minutes=1))
+        settle_expired_escalations()
+        row.refresh_from_db()
+        settled_reason = row.dismissed_reason
+
+        close_answered_request(row)
+
+        row.refresh_from_db()
+        assert row.dismissed_reason == settled_reason
 
 
 class TestTheThreadsCoordinatorTask(TestCase):

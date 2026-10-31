@@ -17,6 +17,7 @@ from typing import Protocol
 
 from django.db import transaction
 
+from teatree.core.answering.escalation import answerable_request, close_answered_request
 from teatree.core.answering.question_coordinator import coordinate_answer, matching_owner_basis
 from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.modelkit.coordinator_action import (
@@ -165,9 +166,18 @@ def _settle_card(context: ActionContext, arguments: Mapping[str, object]) -> str
     return f"Settled card {settled.pk} with your earlier answer: {settled.answer_text}"
 
 
+def _reply_target(asker_ticket: Ticket, named: str) -> Ticket:
+    if named != asker_ticket.issue_url:
+        message = "an open request lets the reply go to that ticket only"
+        raise ActionRefusedError(message)
+    return asker_ticket
+
+
 def _message_peer(context: ActionContext, arguments: Mapping[str, object]) -> str:
-    conversation = context.task.ticket
-    if not conversation.is_conversation():
+    ticket = context.task.ticket
+    on_conversation = ticket.is_conversation()
+    request = None if on_conversation else answerable_request(ticket.pk)
+    if request is None and not on_conversation:
         message = "the task's ticket is not a conversation"
         raise ActionRefusedError(message)
     named, text = arguments.get("ticket"), arguments.get("text")
@@ -180,13 +190,15 @@ def _message_peer(context: ActionContext, arguments: Mapping[str, object]) -> st
     if len(text) > MESSAGE_PEER_MAX_CHARS:
         message = f"message_peer text is over {MESSAGE_PEER_MAX_CHARS} characters"
         raise ActionRefusedError(message)
-    target = _named_ticket(conversation, named)
+    target = _named_ticket(ticket, named) if request is None else _reply_target(ticket, named)
     if context.messenger is None:
         message = "no live mailbox is connected in this process"
         raise ActionRefusedError(message)
     receipt = context.messenger(target, text, context.key)
     if not receipt.accepted:
         raise ActionRefusedError(receipt.detail)
+    if request is not None:
+        close_answered_request(request)
     return f"Sent your message to the agent working on <{target.issue_url}|#{target.ticket_number}>."
 
 

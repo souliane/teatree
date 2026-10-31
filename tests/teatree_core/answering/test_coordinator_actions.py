@@ -1,17 +1,27 @@
 """The coordinator proposes, code disposes: each action runs once from the closed table or runs nothing (#5685)."""
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.coordinator_actions import AUDIT_KEY, PeerReceipt, run_coordinator_actions
+from teatree.core.answering.escalation import (
+    ESCALATION_DEADLINE,
+    INTERNAL_KIND,
+    open_request,
+    record_request,
+    settle_expired_escalations,
+)
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
 from teatree.core.models import DeferredQuestion, Session, Task, ThreadBinding, Ticket
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests._owner_channel import owner_card
+from tests.factories import SessionFactory, TaskFactory
 
 _CHANNEL = "D-owner"
 _WORK_URL = "https://github.com/souliane/teatree/issues/4084"
@@ -556,6 +566,35 @@ class TestMessagePeerReachesAnAgentOnABoundTicketThroughTheMailbox(TestCase):
         assert self._send() == []
         assert len(self.messenger.calls) == 1
 
+    def test_a_message_from_a_conversation_leaves_an_escalation_request_open(self) -> None:
+        asker = TaskFactory.create(
+            ticket=self.work,
+            session=SessionFactory.create(ticket=self.work, agent_id="planning"),
+            phase="planning",
+            status=Task.Status.CLAIMED,
+        )
+        record_request(asker, kind=INTERNAL_KIND, message="Which order should I follow")
+
+        assert self._send() == [f"Sent your message to the agent working on <{_WORK_URL}|#4084>."]
+
+        assert open_request(self.work.pk) is not None
+
+    def test_a_request_of_the_conversations_own_task_does_not_make_the_conversation_a_peer(self) -> None:
+        conversation = self.task.ticket
+        asker = TaskFactory.create(
+            ticket=conversation,
+            session=SessionFactory.create(ticket=conversation, agent_id="planning"),
+            phase="planning",
+            status=Task.Status.CLAIMED,
+        )
+        record_request(asker, kind=INTERNAL_KIND, message="Which order should I follow")
+
+        receipts = self._send(ticket=conversation.issue_url)
+
+        assert self.messenger.calls == []
+        assert receipts == ["Could not run message_peer: the conversation does not identify that work ticket."]
+        assert open_request(conversation.pk) is not None
+
     def test_a_ticket_recorded_as_the_conversations_work_item_is_reachable(self) -> None:
         self.task.ticket.merge_extra(
             merge_into_dicts={"slack_answer": {"question": "tell it", "work_issue_url": _WORK_URL}}
@@ -649,3 +688,117 @@ class TestMessagePeerReachesAnAgentOnABoundTicketThroughTheMailbox(TestCase):
 
         assert self.messenger.calls == []
         assert receipts == ["Could not run message_peer: message_peer takes no channel."]
+
+
+class TestMessagePeerAnswersAnEscalationOnTheAskersOwnTicket(TestCase):
+    def setUp(self) -> None:
+        self.work = Ticket.objects.create(overlay="t3-teatree", issue_url=_WORK_URL, short_description="Fix rounding")
+        self.asker = self._running("planning")
+        self.coordinator = TaskFactory.create(
+            ticket=self.work, session=SessionFactory.create(ticket=self.work, agent_id="answering"), phase="answering"
+        )
+        self.request = record_request(
+            self.asker, kind=OwnerDecision.ARCHITECTURE, message="Which order should I follow"
+        )
+        self.messenger = _Messenger()
+
+    def _running(self, phase: str) -> Task:
+        session = SessionFactory.create(ticket=self.work, agent_id=phase)
+        return TaskFactory.create(ticket=self.work, session=session, phase=phase, status=Task.Status.CLAIMED)
+
+    def _reply(self, *, messenger: _Messenger | None = None, **arguments: object) -> list[str]:
+        request = {"kind": "message_peer", "ticket": _WORK_URL, "text": "Follow order B.", **arguments}
+        return run_coordinator_actions(
+            self.coordinator, [request], messenger=self.messenger if messenger is None else messenger
+        )
+
+    def _still_open(self) -> bool:
+        return open_request(self.work.pk) is not None
+
+    def _past_its_deadline(self) -> None:
+        late = timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)
+        DeferredQuestion.objects.filter(pk=self.request.pk).update(created_at=late)
+
+    def test_the_reply_goes_to_the_asking_tasks_ticket_and_closes_the_request(self) -> None:
+        receipts = self._reply()
+
+        assert receipts == [f"Sent your message to the agent working on <{_WORK_URL}|#4084>."]
+        (call,) = self.messenger.calls
+        assert call[:2] == (self.work.pk, "Follow order B.")
+        assert not self._still_open()
+
+    def test_an_answered_request_raises_no_owner_card_and_fails_no_task_at_its_deadline(self) -> None:
+        self._reply()
+        self._past_its_deadline()
+
+        assert settle_expired_escalations() == 0
+
+        self.asker.refresh_from_db()
+        assert self.asker.status == Task.Status.CLAIMED
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_another_ticket_is_never_the_target_and_the_request_stays_open(self) -> None:
+        other = Ticket.objects.create(
+            overlay="t3-teatree", issue_url="https://github.com/souliane/teatree/issues/9", short_description="Other"
+        )
+
+        receipts = self._reply(ticket=other.issue_url)
+
+        assert receipts == ["Could not run message_peer: an open request lets the reply go to that ticket only."]
+        assert self.messenger.calls == []
+        assert self._still_open()
+
+    def test_a_request_past_its_deadline_cannot_be_answered(self) -> None:
+        self._past_its_deadline()
+
+        assert self._reply() == ["Could not run message_peer: the task's ticket is not a conversation."]
+        assert self.messenger.calls == []
+
+    def test_a_second_running_task_on_the_ticket_leaves_no_asker_to_name(self) -> None:
+        self._running("coding")
+
+        assert self._reply() == ["Could not run message_peer: the task's ticket is not a conversation."]
+        assert self.messenger.calls == []
+        assert self._still_open()
+
+    def test_a_send_the_agent_did_not_accept_leaves_the_request_open(self) -> None:
+        refusing = _Messenger(PeerReceipt(accepted=False, detail="the agent has not read it yet; it stays queued"))
+
+        receipts = self._reply(messenger=refusing)
+
+        assert receipts == ["Could not run message_peer: the agent has not read it yet; it stays queued."]
+        assert self._still_open()
+
+    def test_with_no_mailbox_connected_the_request_stays_open(self) -> None:
+        receipts = run_coordinator_actions(
+            self.coordinator, [{"kind": "message_peer", "ticket": _WORK_URL, "text": "Follow order B."}]
+        )
+
+        assert receipts == ["Could not run message_peer: no live mailbox is connected in this process."]
+        assert self._still_open()
+
+    def test_the_length_bound_holds_for_a_reply(self) -> None:
+        assert self._reply(text="x" * 1001) == [
+            "Could not run message_peer: message_peer text is over 1000 characters."
+        ]
+        assert self.messenger.calls == []
+        assert self._still_open()
+
+    def test_the_same_reply_is_sent_once(self) -> None:
+        self._reply()
+
+        assert self._reply() == []
+        assert len(self.messenger.calls) == 1
+
+    def test_no_other_kind_runs_from_a_work_ticket_even_with_an_open_request(self) -> None:
+        for kind, arguments in (
+            ("bind_thread", {"ticket": _WORK_URL}),
+            ("queue_task", {"ticket": _WORK_URL}),
+            ("settle_card", {"card": "1"}),
+        ):
+            with self.subTest(kind=kind):
+                receipts = run_coordinator_actions(self.coordinator, [{"kind": kind, **arguments}])
+
+                assert len(receipts) == 1
+                assert receipts[0].startswith(f"Could not run {kind}: ")
+        assert not Task.objects.filter(phase="planning", status=Task.Status.PENDING).exists()

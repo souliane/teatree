@@ -26,6 +26,7 @@ MARKER_PREFIX: Final = "esc:"
 UNSERVED_PREFIX: Final = "escalation_unserved: "
 _OWNER_MARKER_PREFIX: Final = "esc-owner:"
 _RESOLVER: Final = "escalation_deadline"
+_ANSWERED_RESOLVER: Final = "coordinator_reply"
 _KIND_SUBJECT: Final = {
     OwnerDecision.CREDENTIALS: "who may use a credential",
     OwnerDecision.MONEY_OR_PLAN: "spending or a plan",
@@ -75,6 +76,18 @@ def open_request(ticket_id: int) -> DeferredQuestion | None:
     """The newest request of *ticket_id* that is still waiting and inside its deadline."""
     open_ones = _requests().filter(parked_task__ticket_id=ticket_id, created_at__gt=_deadline_cutoff())
     return open_ones.order_by("-created_at").first()
+
+
+def answerable_request(ticket_id: int) -> DeferredQuestion | None:
+    """The open request of *ticket_id* when its asker is the one task running there outside the answering phase."""
+    if (request := open_request(ticket_id)) is None:
+        return None
+    running = Task.objects.filter(ticket_id=ticket_id, status=Task.Status.CLAIMED).exclude(phase__in=ANSWERING_PHASES)
+    return request if list(running.values_list("pk", flat=True)) == [request.parked_task_id] else None
+
+
+def close_answered_request(row: DeferredQuestion) -> None:
+    row.mark_stale("answered by the coordinator", resolver_id=_ANSWERED_RESOLVER)
 
 
 def _answering(ticket_id: int) -> models.QuerySet[Task]:
