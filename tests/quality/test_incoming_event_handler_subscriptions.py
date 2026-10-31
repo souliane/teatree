@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """A handler registered for a GitHub event the hook never subscribes to would be dead code."""
 
 from collections.abc import Iterable
