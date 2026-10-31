@@ -388,7 +388,7 @@ class TestSettleCardAnswersFromARecordedOwnerDecision(TestCase):
         assert f"Settled card {pending.pk} with your earlier answer" in self.backend.replies[0][2]
 
     def test_every_way_of_naming_the_card_counts(self) -> None:
-        for wording in ("card {id}", "Card #{id}", "question {id}", "#{id}", "settle #{id}, thanks"):
+        for wording in ("card {id}", "Card #{id}", "Question {id}", "cards {id}", "#{id}", "settle #{id}, thanks"):
             with self.subTest(wording=wording):
                 self._answered_before()
                 pending = self._pending()
@@ -419,7 +419,7 @@ class TestSettleCardAnswersFromARecordedOwnerDecision(TestCase):
         assert receipts == ["Could not run settle_card: the owner's message does not name that card."]
 
     def test_a_number_that_is_not_a_card_mention_does_not_name_the_card(self) -> None:
-        for wording in ("see issue {id}", "https://github.com/o/r/issues/{id}", "card {id}0", "{id}"):
+        for wording in ("see issue {id}", "https://github.com/o/r/issues/{id}", "card {id}0", "discard {id}", "{id}"):
             with self.subTest(wording=wording):
                 self._answered_before()
                 pending = self._pending()

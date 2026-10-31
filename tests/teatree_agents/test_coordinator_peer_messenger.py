@@ -109,8 +109,13 @@ class TestTheMessageGoesToExactlyOneLiveAgentOnTheTicket(TestCase):
     def test_a_mailbox_that_cannot_be_used_is_reported_not_raised(self) -> None:
         for failure in (RuntimeError("did not start"), OSError("socket"), ValueError("room"), MailboxError("gone")):
             with self.subTest(failure=type(failure).__name__):
-                with patch.object(live_mailbox, "shared_broker", side_effect=failure):
+                with (
+                    patch.object(live_mailbox, "shared_broker", side_effect=failure),
+                    self.assertLogs("teatree.agents.coordinator_peer_messenger", "WARNING") as logged,
+                ):
                     receipt = send_to_ticket_peer(self.ticket, "Use approach B.", "k1")
+
+                assert f"ticket {self.ticket.pk}" in logged.output[0]
 
                 assert (receipt.accepted, receipt.detail) == (False, "the live mailbox could not be reached")
 
