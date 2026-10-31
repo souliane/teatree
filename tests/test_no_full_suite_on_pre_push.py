@@ -96,6 +96,7 @@ _TOTALITY_ANCHORS = frozenset(
         "test_gate_registry_walk.py",
         "test_capability_surface_walk.py",
         "test_consumer_caller_walk.py",
+        "test_harness_boundary.py",
     }
 )
 

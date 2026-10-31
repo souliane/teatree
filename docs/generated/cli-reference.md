@@ -283,6 +283,10 @@ Usage: t3 push [OPTIONS]
  4 gate-refused, 5 non-fast-forward, 6 not-on-remote (and 6 for a
  remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
 
+ After the remote read-back, the open PR's head is compared with the pushed
+ sha: a PR head that lags exits 6 naming both shas, a head that cannot be
+ read exits 7, and a branch with no open PR passes with a note.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                    PATH  Repository to push (default: where t3 was    │
 │                                 invoked).                                    │

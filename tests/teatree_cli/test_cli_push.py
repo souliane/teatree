@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,9 +11,11 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.push import push
+from teatree.core.forge_pr_probe import GithubOpenPrHead, PrProbe
 from teatree.core.forge_push import PushOutcome
 from teatree.core.forge_push_verdict import PUSH_EXIT_CODES, CredentialSource, PushFailure
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
+from teatree.core.push.pr_head_check import PrHeadStatus, PrHeadVerdict, confirm_pr_head
 from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()
@@ -45,6 +48,79 @@ def _refusal(failure: PushFailure = PushFailure.CONFIG) -> PushOutcome:
         detail="remote 'origin' embeds a credential in its URL",
         failure=failure,
     )
+
+
+@pytest.fixture(autouse=True)
+def _open_pr_at_the_pushed_sha() -> Iterator[None]:
+    verdict = PrHeadVerdict(PrHeadStatus.MATCHES, "the open PR is at the pushed sha")
+    with patch("teatree.cli.push.confirm_pr_head", return_value=verdict):
+        yield
+
+
+class TestPushConfirmsThePullRequestHead:
+    def test_an_open_pr_lagging_the_pushed_sha_exits_non_zero_naming_both_shas(self) -> None:
+        lagging = "b" * 40
+        github_head = GithubOpenPrHead(
+            "https://github.com/souliane/teatree/pull/9", "souliane/teatree", "feature", lagging
+        )
+
+        with (
+            patch("teatree.cli.push.push_branch", return_value=_success()),
+            patch("teatree.cli.push.confirm_pr_head", wraps=confirm_pr_head),
+            patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=github_head),
+        ):
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == PUSH_EXIT_CODES[PushFailure.REMOTE_SHA_MISMATCH]
+        assert "a" * 40 in result.output
+        assert lagging in result.output
+
+    def test_an_unreadable_pr_head_exits_non_zero_as_unverifiable(self) -> None:
+        with (
+            patch("teatree.cli.push.push_branch", return_value=_success()),
+            patch("teatree.cli.push.confirm_pr_head", wraps=confirm_pr_head),
+            patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=None),
+            patch("teatree.core.push.pr_head_check.find_open_pr_for_branch", return_value=PrProbe.unknown()),
+        ):
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == PUSH_EXIT_CODES[PushFailure.UNVERIFIABLE]
+        assert PrHeadStatus.UNVERIFIABLE.value in result.output.lower()
+
+    def test_no_open_pr_passes_and_says_so(self) -> None:
+        with (
+            patch("teatree.cli.push.push_branch", return_value=_success()),
+            patch("teatree.cli.push.confirm_pr_head", wraps=confirm_pr_head),
+            patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=None),
+            patch("teatree.core.push.pr_head_check.find_open_pr_for_branch", return_value=PrProbe.none()),
+        ):
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == 0
+        assert "no open PR" in result.output
+
+    def test_a_refused_push_never_reads_the_pr(self) -> None:
+        with (
+            patch("teatree.cli.push.push_branch", return_value=_refusal()),
+            patch("teatree.cli.push.confirm_pr_head") as confirm,
+        ):
+            runner.invoke(_app, [])
+
+        confirm.assert_not_called()
+
+    def test_json_carries_the_pr_head_verdict(self) -> None:
+        lagging = GithubOpenPrHead(
+            "https://github.com/souliane/teatree/pull/9", "souliane/teatree", "feature", "b" * 40
+        )
+
+        with (
+            patch("teatree.cli.push.push_branch", return_value=_success()),
+            patch("teatree.cli.push.confirm_pr_head", wraps=confirm_pr_head),
+            patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=lagging),
+        ):
+            result = runner.invoke(_app, ["--json"])
+
+        assert json.loads(result.output)["pr_head"]["status"] == PrHeadStatus.LAGS.value
 
 
 class TestPushCommand:
