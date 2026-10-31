@@ -67,11 +67,11 @@ def _framed(row: DeferredQuestion, task: Task, asker: PeerIdentity) -> str:
     )
 
 
-def _live_coordinator(peers: list[PeerIdentity], task: Task, asker: PeerIdentity) -> PeerIdentity | None:
+def _live_coordinator(peers: list[PeerIdentity], ticket_id: int, exclude: str) -> PeerIdentity | None:
     for peer in peers:
         if (
-            peer["address"] != asker["address"]
-            and peer.get("ticket") == str(task.ticket_id)
+            peer["address"] != exclude
+            and peer.get("ticket") == str(ticket_id)
             and normalize_phase(peer.get("phase", "")) in ANSWERING_PHASES
             and peer.get("can_receive", True)
         ):
@@ -79,18 +79,17 @@ def _live_coordinator(peers: list[PeerIdentity], task: Task, asker: PeerIdentity
     return None
 
 
-async def _sent_to_live_coordinator(
-    client: MailboxClient, task: Task, asker: PeerIdentity, row: DeferredQuestion
+async def tell_live_coordinator(
+    client: MailboxClient, *, ticket_id: int, text: str, key: str, exclude: str = ""
 ) -> bool:
+    """Whether a live answering peer of *ticket_id*, other than *exclude*, accepted *text* in time."""
     try:
-        peer = _live_coordinator(await client.peers(), task, asker)
+        peer = _live_coordinator(await client.peers(), ticket_id, exclude)
         if peer is None:
             return False
-        receipt = await client.send(
-            peer["address"], _framed(row, task, asker), f"escalation:{row.pk}", timeout_seconds=_PEER_WAIT_SECONDS
-        )
+        receipt = await client.send(peer["address"], text, key, timeout_seconds=_PEER_WAIT_SECONDS)
     except MailboxError:
-        logger.warning("Escalation %s could not reach a live coordinator", row.pk, exc_info=True)
+        logger.warning("Message %s could not reach a live coordinator", key, exc_info=True)
         return False
     return receipt["outcome"].startswith("accepted_")
 
@@ -99,7 +98,14 @@ async def escalate(client: MailboxClient, *, kind: str, message: str) -> Escalat
     asker = await client.self_identity()
     task = await sync_to_async(_asking_task, thread_sensitive=True)(asker)
     row = await sync_to_async(record_request, thread_sensitive=True)(task, kind=kind, message=message)
-    if await _sent_to_live_coordinator(client, task, asker, row):
+    told = await tell_live_coordinator(
+        client,
+        ticket_id=task.ticket_id,
+        text=_framed(row, task, asker),
+        key=f"escalation:{row.pk}",
+        exclude=asker["address"],
+    )
+    if told:
         return {"request_id": row.pk, "delivery": "peer", "deadline_minutes": _DEADLINE_MINUTES}
     resumed = await sync_to_async(resume_coordinator, thread_sensitive=True)(
         task.ticket_id, event_id=f"escalation:{row.pk}", message=_framed(row, task, asker)

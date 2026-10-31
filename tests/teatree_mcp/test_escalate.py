@@ -10,7 +10,7 @@ from asgiref.sync import async_to_sync
 from django.test import TransactionTestCase
 from mcp.server.mcpserver.exceptions import ToolError
 
-from teatree.agents.live_control import LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import LiveTask
 from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
 from teatree.agents.live_mailbox import LiveMailboxBroker, MailboxIdentity
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -19,24 +19,10 @@ from teatree.core.modelkit.phase_tools import mcp_write_tools_for_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.mcp.server import build_server
+from tests._escalation_peers import AcceptingSession, live_task_of
 from tests.factories import SessionFactory, TaskFactory, TicketFactory
 from tests.teatree_agents._live_owner import OwnerLoop
 from tests.teatree_mcp._call_tool_result import payloads
-
-
-class _AcceptingSession:
-    def __init__(self) -> None:
-        self.delivered: list[str] = []
-        self.reject = False
-
-    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
-        del input_id, wait
-        if self.reject:
-            raise SteerRejectedError(RejectCode.NOT_ACCEPTED_IN_TIME)
-        self.delivered.append(text)
-
-    async def interrupt(self) -> None:
-        return None
 
 
 def _running(phase: str = "planning") -> Task:
@@ -46,17 +32,13 @@ def _running(phase: str = "planning") -> Task:
     )
 
 
-def _task_of(task: Task) -> LiveTask:
-    return LiveTask(pk=task.pk, ticket=task.ticket_id, phase=task.phase, harness="claude_sdk", model="m")
-
-
 class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
     def setUp(self) -> None:
         self.registry = LiveSessionRegistry()
         runtime = self.enterContext(tempfile.TemporaryDirectory())
         self.broker = self.enterContext(LiveMailboxBroker(runtime_dir=Path(runtime), registry=lambda: self.registry))
         self.asker = _running()
-        self.asker_identity = self._register(self.asker, _task_of(self.asker))
+        self.asker_identity = self._register(self.asker, live_task_of(self.asker))
 
     def _register(self, task: Task, live: LiveTask) -> MailboxIdentity:
         return self.broker.register(
@@ -80,8 +62,8 @@ class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
             phase="answering",
             status=Task.Status.CLAIMED,
         )
-        session = _AcceptingSession()
-        live = _task_of(coordinator)
+        session = AcceptingSession()
+        live = live_task_of(coordinator)
         self._register(coordinator, live)
 
         with OwnerLoop(self.registry, live, session):
