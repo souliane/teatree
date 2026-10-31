@@ -8,8 +8,8 @@ orphan-branch path all read it.
 
 import logging
 
+from teatree.core.gates.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.gates.rubric_gate import plan_is_bypassed
-from teatree.core.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import TicketExtra
 

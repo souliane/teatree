@@ -84,7 +84,7 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
-from teatree.core.issue_coverage import holds_on_issue
+from teatree.core.gates.issue_coverage import holds_on_issue
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal

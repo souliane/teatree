@@ -1,6 +1,6 @@
 import pytest
 
-from teatree.core.issue_coverage import acceptance_items, plain, uncovered, unechoed
+from teatree.core.gates.issue_coverage import acceptance_items, plain, uncovered, unechoed
 
 _ISSUE = """Intro paragraph.
 

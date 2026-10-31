@@ -1,4 +1,4 @@
-"""Stand in for the forge's issue read that the acceptance-item checks make (``core.issue_coverage``)."""
+"""Stand in for the forge's issue read that the acceptance-item checks make (``core.gates.issue_coverage``)."""
 
 import contextlib
 from collections.abc import Generator
@@ -23,7 +23,7 @@ def issue_read(payload: dict[str, str] | Exception) -> Generator[MagicMock]:
     else:
         host.get_issue.return_value = payload
     with (
-        patch("teatree.core.issue_coverage.get_backend_provider", return_value=_Provider(host)),
-        patch("teatree.core.issue_coverage.get_overlay_for_ticket", return_value=object()),
+        patch("teatree.core.gates.issue_coverage.get_backend_provider", return_value=_Provider(host)),
+        patch("teatree.core.gates.issue_coverage.get_overlay_for_ticket", return_value=object()),
     ):
         yield host

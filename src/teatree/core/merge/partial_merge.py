@@ -16,7 +16,14 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.issue_coverage import IssueRead, IssueUnreadableError, holds_on_issue, plain, read_issue, unechoed
+from teatree.core.gates.issue_coverage import (
+    IssueRead,
+    IssueUnreadableError,
+    holds_on_issue,
+    plain,
+    read_issue,
+    unechoed,
+)
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.last_merged_pr import last_merged_pr

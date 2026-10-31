@@ -44,7 +44,7 @@ import logging
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from teatree.core.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
+from teatree.core.gates.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.honesty_escalation import HonestyEscalation

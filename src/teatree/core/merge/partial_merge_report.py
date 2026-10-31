@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypedDict
 
-from teatree.core.issue_coverage import IssueRead
+from teatree.core.gates.issue_coverage import IssueRead
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.last_merged_pr import last_merged_pr
 from teatree.core.merge.partial_merge import MergedPrReading

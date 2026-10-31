@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from django.db.models import F
 from django.utils import timezone
 
-from teatree.core.merge.partial_merge import blocks_settlement, read_last_merged_pr
-from teatree.core.merge.partial_merge_reconcile import unsettle_ticket
 from teatree.core.models import Ticket
 from teatree.loop.scanners.board_reconcile_apply import collect, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
@@ -67,6 +65,11 @@ def _held(ticket: Ticket, *, from_state: str, to_state: str, reason: str, applie
 
 def settlement_block(ticket: Ticket, *, reason: str, dry_run: bool) -> BoardTransition | None:
     """The row for a ticket the merge must not settle, or ``None`` when it may move to ``merged``."""
+    from teatree.core.merge.partial_merge import (  # noqa: PLC0415 — deferred: off the tick import
+        blocks_settlement,
+        read_last_merged_pr,
+    )
+
     reading, merged_pr = read_last_merged_pr(ticket)
     from_state = ticket.state
     if not blocks_settlement(ticket, reading, merged_pr=merged_pr or ticket.issue_url, dry_run=dry_run):
@@ -117,6 +120,10 @@ def settled_remainder_transitions(
 
 
 def _unsettle(ticket: Ticket, *, dry_run: bool) -> BoardTransition | None:
+    from teatree.core.merge.partial_merge_reconcile import (  # noqa: PLC0415 — deferred: off the tick import
+        unsettle_ticket,
+    )
+
     reason = "settled with the issue open"
     if not dry_run:
         ticket.merge_extra(set_keys={"settled_checked_at": timezone.now().isoformat()})
