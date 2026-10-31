@@ -40,10 +40,9 @@ def send_to_ticket_peer(ticket: Ticket, text: str, key: str) -> PeerReceipt:
         sender = broker.register(room=_NO_TICKET_ROOM, harness="coordinator", label="coordinator message")
         try:
             # A fresh thread: the caller may already sit inside a running event loop, where asyncio.run refuses.
+            client = MailboxClient(sender.socket_path, sender.token)
             with ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(
-                    asyncio.run, _deliver(MailboxClient(sender.socket_path, sender.token), ticket.pk, text, key)
-                ).result()
+                return pool.submit(lambda: asyncio.run(_deliver(client, ticket.pk, text, key))).result()
         finally:
             broker.unregister(sender.address)
     except (MailboxError, OSError, RuntimeError, ValueError):

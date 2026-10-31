@@ -2,7 +2,7 @@
 
 import asyncio
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,7 +18,7 @@ from teatree.core.models import Ticket
 
 
 @contextmanager
-def _broker() -> Iterator[live_mailbox.LiveMailboxBroker]:
+def _broker() -> Generator[live_mailbox.LiveMailboxBroker]:
     with (
         tempfile.TemporaryDirectory(prefix="t3-peer-", dir="/tmp") as directory,
         live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory)) as broker,

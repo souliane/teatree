@@ -29,4 +29,7 @@ def test_the_typed_request_names_the_same_keys_as_the_schema() -> None:
 
 
 def test_the_result_schema_offers_the_actions_channel() -> None:
-    assert RESULT_JSON_SCHEMA["properties"]["actions"] is ACTIONS_SCHEMA_PROPERTY
+    properties = RESULT_JSON_SCHEMA["properties"]
+
+    assert isinstance(properties, dict)
+    assert properties["actions"] is ACTIONS_SCHEMA_PROPERTY
