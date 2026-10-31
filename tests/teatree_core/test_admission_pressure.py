@@ -13,6 +13,7 @@ import pytest
 
 from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
+    BRAKE_PRECEDENCE,
     DEGRADE_AT,
     HALT_AT,
     MACHINE_BRAKE_CAUSES,
@@ -56,6 +57,13 @@ def _quota(**kwargs: object) -> QuotaSignal:
 def _machine(**kwargs: object) -> MachineSignal:
     base: dict[str, object] = {"cores": 8, "load1": 1.0, "ram_available_gb": 20.0}
     return MachineSignal(**{**base, **kwargs})
+
+
+def test_load_and_memory_are_the_only_machine_brakes() -> None:
+    # Swap activity and kernel memory pressure were fed only by the host-pressure feed, which is gone.
+    assert {"load", "memory"} == MACHINE_BRAKE_CAUSES
+    assert not {"swap", "memory-pressure"} & set(BRAKE_PRECEDENCE)
+    assert not {"swap_mib_per_s", "vm_pressure_level"} & set(MachineSignal.__dataclass_fields__)
 
 
 def _at_pace_deny() -> QuotaSignal:

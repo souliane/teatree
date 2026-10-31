@@ -1,7 +1,7 @@
 ---
 name: interactive
 description: "Shared Claude Code and Codex contract for an attended TeaTree session: it carries every duty of `t3:coordinating` (factory watch, unblocking, owner cards, filing and enqueuing, the mailbox) and adds what only a session with a person at the keyboard needs — no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
-compatibility: any
+compatibility: macOS/Linux
 requires:
   - rules
   - coordinating
@@ -173,6 +173,10 @@ Claude hooks are registered in `hooks/hooks.json` (shipped with the plugin). Thi
 ## Interactive vs Headless Output
 
 The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.
+
+## Platform: the one place macOS is supported
+
+The factory runs on Linux only; macOS is supported for the interactive skill alone — the hooks, skills and statusline an attended session runs on a developer machine. An attended session may also run on a remote Linux host reached from the dashboard, so every host-side script of this surface obeys one portability rule: bash 3.2 and Python 3.9 compatible, no GNU-only flags (`sed -i`, `date -d`, `readlink -f`), and every such path must also work on Linux. macOS-specific code lives here and nowhere else: no operating-system interface, no per-OS backend.
 
 ## Related Skills
 

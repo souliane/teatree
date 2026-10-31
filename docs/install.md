@@ -6,6 +6,8 @@
 - **Overlays** (like `t3-acme`) are separate packages that depend on teatree
 - Overlays register via Python entry points — `t3` discovers them automatically
 
+The factory is Linux only (the worker, the loops, the deploy scripts and the container image); macOS is supported for the interactive skill alone — the hooks, skills and statusline an attended session uses.
+
 ## Install paths
 
 ### Use only (no source code)

@@ -1,7 +1,7 @@
 ---
 name: e2e-review
 description: Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval.
-compatibility: macOS/Linux, Playwright, Node.js, git.
+compatibility: Linux, Playwright, Node.js, git.
 requires:
   - review
   - e2e

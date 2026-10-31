@@ -1,7 +1,7 @@
 ---
 name: architecture-design
 description: Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written.
-compatibility: macOS/Linux, any teatree-managed repo.
+compatibility: Linux, any teatree-managed repo.
 requires:
   - rules
   - writing-plans

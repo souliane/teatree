@@ -1,7 +1,7 @@
 ---
 name: triaging-issues
 description: Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval record the rationale in the issue description and run `gh issue close/edit` then stamp the row. Use when user says "triage issues", "triaging issues", "review triage recommendations", "assess needs-triage", or catches up on the triage-assessor batch.
-compatibility: macOS/Linux, git, gh CLI.
+compatibility: Linux, git, gh CLI.
 requires:
   - rules
   - platforms

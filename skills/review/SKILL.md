@@ -1,7 +1,7 @@
 ---
 name: review
 description: Code review — self-review before finalization, giving review, receiving review feedback. Use when user says "review", "check the code", "feedback", "review comments", "quality check", or is in a review cycle.
-compatibility: macOS/Linux, git, testing tools for verification.
+compatibility: Linux, git, testing tools for verification.
 requires:
   - workspace
   - platforms

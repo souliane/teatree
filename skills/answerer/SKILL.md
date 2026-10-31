@@ -1,7 +1,7 @@
 ---
 name: answerer
 description: Draft a reply to an inbound question, DM the user for approval, post on confirmation. Use when the loop routes a `question` intent to phase `answering`, or when asked to answer a Slack/GitLab thread on the user's behalf.
-compatibility: macOS/Linux, git, chat/issue-tracker integration (Slack, GitLab, GitHub).
+compatibility: Linux, git, chat/issue-tracker integration (Slack, GitLab, GitHub).
 requires:
   - workspace
   - rules

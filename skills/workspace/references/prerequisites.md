@@ -6,14 +6,14 @@
 
 ## Platform Support
 
-macOS and Linux. Shell scripts use `#!/usr/bin/env bash` for portability — never hardcode a platform-specific path like `/opt/homebrew/bin/bash`.
+The factory — the worker, the loops, the deploy scripts, the image and the dev tooling — is Linux only. macOS is supported for the interactive skill alone: the hooks, skills and statusline an attended session runs on a developer machine, whose host scripts stay bash 3.2 and Python 3.9 compatible with no GNU-only flags. Shell scripts use `#!/usr/bin/env bash` for portability — never hardcode a platform-specific path like `/opt/homebrew/bin/bash`.
 
-Scripts that need Bash 5+ features (associative arrays) include a version guard that auto-detects and re-execs with a modern bash from well-known locations (`/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/home/linuxbrew/.linuxbrew/bin/bash`). Use platform-agnostic alternatives for common utilities: `md5sum` on Linux vs `md5 -q` on macOS, `stat -c '%Y'` on Linux vs `stat -f '%m'` on macOS.
+Interactive-side scripts that need Bash 4+ features (associative arrays) include a version guard that auto-detects and re-execs with a modern bash from well-known locations (`/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/home/linuxbrew/.linuxbrew/bin/bash`), and use platform-agnostic alternatives for common utilities: `md5sum` on Linux vs `md5 -q` on macOS, `stat -c '%Y'` on Linux vs `stat -f '%m'` on macOS. <!-- privacy-scan:allow — the documented Linuxbrew prefix -->
 
 ## Required Tools
 
-- `bash` 5+ (macOS: `brew install bash` and ensure it's first on `$PATH`; system `/bin/bash` is 3.x)
-- GNU `timeout` (coreutils; macOS: `brew install coreutils`, then put the gnubin directory first on PATH — `brew --prefix coreutils`/libexec/gnubin — or `dev/push-gate.sh` finds only `gtimeout`, which it also accepts) — `dev/push-gate.sh` caps its conformance core with it and refuses to run unbounded without it
+- `bash` 5+
+- GNU `timeout` (coreutils) — `dev/push-gate.sh` caps its conformance core with it and refuses to run unbounded without it
 - `zsh` or `bash` (scripts are shell functions sourced into the current shell)
 - `git` (worktree lifecycle, branch detection, cleanup)
 - `docker` with `docker compose` plugin
@@ -27,15 +27,14 @@ Scripts that need Bash 5+ features (associative arrays) include a version guard 
 - `uv` (used only to auto-install `dslr` when missing)
 - `jq` (required only by agent platform integration scripts, e.g., statusline hooks)
 - `md5sum` or `md5` (dirty-state hashing in statusline; auto-detected per platform)
-- `ttyd` (the dashboard's loopback "Debug session" terminal — `apt install ttyd` /
-  `brew install ttyd`). Required to run `e2e/dash/test_terminal.py`'s launch spec,
+- `ttyd` (the dashboard's loopback "Debug session" terminal — `apt install ttyd`). Required to run `e2e/dash/test_terminal.py`'s launch spec,
   which skips visibly without it. CI (`.github/workflows/ci.yml`) and the deploy
   image (`deploy/Dockerfile`) both install it, so the authoritative lanes never skip.
 - Agent platform hook support (e.g., Claude Code hooks in `hooks/scripts/`)
 
 ## Shell Script Portability Checklist
 
-When writing or modifying shell scripts, verify:
+When writing or modifying a shell script on the interactive side (`hooks/`, `scripts/hooks/lib/`), verify:
 
 1. **Shebang:** `#!/usr/bin/env bash` — never a hardcoded path.
 2. **Bash version features:** If the script uses `declare -A` (associative arrays), add the Bash 4+ version guard with re-exec (see `hooks/scripts/statusline.sh` for the pattern).

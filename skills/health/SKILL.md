@@ -1,7 +1,7 @@
 ---
 name: health
 description: Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry. Use when the statusline health chip is yellow/red, or the user asks "what's wrong", "why is health red", "is the factory healthy", "known issues".
-compatibility: any
+compatibility: Linux
 requires:
   - rules
 eval_exempt: thin detail/reference skill — points at the `health` CLI; no standalone agent behaviour to grade.

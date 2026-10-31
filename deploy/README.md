@@ -12,8 +12,7 @@ This is **teatree-only** — no customer or product overlays. The only registere
 overlay is the built-in `t3-teatree`.
 
 The factory is **Linux only**: the deploy scripts, the image and the compose stack run on
-a Linux host with the Docker daemon sharing the host kernel. macOS is supported for the
-interactive skill (hooks, skills, statusline) alone.
+a Linux host with the Docker daemon sharing the host kernel. macOS is supported for the interactive skill alone (hooks, skills, statusline).
 
 ## Disk headroom before a build
 

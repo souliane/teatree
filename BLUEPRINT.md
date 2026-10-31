@@ -29,6 +29,8 @@ A personal code factory for multi-repo projects. It turns a ticket URL into a me
 
 **Code-host neutrality.** Pull requests are the canonical concept. Both **GitHub** and **GitLab** are first-class in core; GitLab MRs map onto the PR abstraction at the Protocol layer.
 
+**Platform.** The factory — the worker, the loops, the deploy scripts and the container image — is Linux only; there is no operating-system interface and no per-OS backend. macOS is supported for the interactive skill alone (the hooks, skills and statusline an attended session uses), whose host scripts stay bash 3.2 and Python 3.9 compatible with no GNU-only flags.
+
 **Messaging-backend pluggability.** Mentions, DMs, and outgoing posts go through a `MessagingBackend` Protocol declared per overlay. Slack (Socket Mode bot) is the first implementation. A `Noop` default lets overlays opt out.
 
 **Core principle.** Infrastructure is deterministic code; development work is skill-guided. State management, port allocation, provisioning, task routing, code-host sync, and messaging integration are Python code with >90% branch coverage. The actual development — coding with TDD, debugging, reviewing, shipping — is driven by skills that encode methodology, guardrails, and domain knowledge.

@@ -2,7 +2,7 @@
 name: slack-formatting
 description: Rendering tables and formatting messages for Slack — the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack.
 eval_exempt: pure formatting-reference companion auto-loaded for overlay work; carries no standalone agent behaviour of its own
-compatibility: any
+compatibility: Linux
 metadata:
   version: 0.0.1
 ---

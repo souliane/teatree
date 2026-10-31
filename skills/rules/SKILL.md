@@ -1,7 +1,7 @@
 ---
 name: rules
 description: Cross-cutting agent safety rules — the always-embedded core carrying every non-negotiable's trigger and verdict, each naming the skills/rules/references/ file with its full text. Auto-loaded as a dependency by other skills.
-compatibility: any
+compatibility: Linux
 metadata:
   version: 0.0.1
 ---
@@ -219,7 +219,7 @@ Visibility, ownership and collaboration are independent: a private or owned repo
 
 ## Commit Before Declaring Done (Non-Negotiable)
 
-Commit as soon as implementation is verified, and always before any long pre-push step — uncommitted work in a reaped worktree leaves nothing for `git fsck`. Full text: `skills/rules/references/worktrees-and-commits.md`.
+Commit as soon as implementation is verified, and before any long pre-push step — uncommitted work in a reaped worktree leaves nothing for `git fsck`. Full text: `skills/rules/references/worktrees-and-commits.md`.
 
 ## Worktree-First Work (Non-Negotiable)
 

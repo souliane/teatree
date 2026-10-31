@@ -14,6 +14,8 @@ the code lives in a public repo in case any of it is useful to anyone else.
 
 Experimental: APIs and config keys may change without backwards-compatibility guarantees — the only obligation is that all registered overlays are updated in the same change.
 
+The factory is Linux only (the worker, the loops, the deploy scripts and the container image); macOS is supported for the interactive skill alone — the hooks, skills and statusline an attended session uses.
+
 Teatree sits at the shell, alongside the editor. It turns a ticket URL into a
 merged pull request by creating synchronized worktrees across the repos a ticket
 touches, provisioning isolated databases and ports, driving the work through

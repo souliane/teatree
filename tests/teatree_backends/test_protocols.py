@@ -394,6 +394,10 @@ def test_code_host_without_forge_is_not_backend() -> None:
     assert not isinstance(host_without_forge, CodeHostBackend)
 
 
+def test_messaging_backend_has_no_audio_post() -> None:
+    assert not hasattr(MessagingBackend, "post_audio_dm")
+
+
 def test_messaging_backend_protocol_is_structural() -> None:
     assert isinstance(_FakeMessaging(), MessagingBackend)
 
