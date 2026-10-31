@@ -15,6 +15,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexSession
 from teatree.agents.harness import HarnessSession, PydanticAiHarnessSession
 from teatree.agents.live_control import ControlOutcome, FollowUpSession, LiveSessionController, LiveTask, RejectCode
 from teatree.agents.live_idle import IdleWindowBudget, can_idle, hold_idle_window
+from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from tests.teatree_agents._sdk_fake import assistant_text, result_message
@@ -25,11 +26,12 @@ class _CapableSession:
         return None
 
 
-def test_only_the_claude_session_class_supports_a_follow_up_turn() -> None:
+def test_the_steerable_session_classes_of_every_harness_support_a_follow_up_turn() -> None:
     assert issubclass(ClaudeSdkSession, FollowUpSession)
+    assert issubclass(SteerablePydanticAiSession, FollowUpSession)
+    assert issubclass(CodexAppServerSession, FollowUpSession)
+    assert issubclass(SharedCodexSession, FollowUpSession)
     assert not issubclass(PydanticAiHarnessSession, FollowUpSession)
-    assert not issubclass(CodexAppServerSession, FollowUpSession)
-    assert not issubclass(SharedCodexSession, FollowUpSession)
 
 
 def _controller(capture: StreamCapture) -> LiveSessionController:

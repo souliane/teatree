@@ -75,6 +75,7 @@ class SharedCodexAppServer:
         self._session_state_lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
         self._opens_in_flight = 0
+        self._turns_in_flight: set[str] = set()
         self._opens_lock = threading.Lock()
         self._submissions: dict[Future[Any], Coroutine[Any, Any, Any]] = {}
         self._submissions_lock = threading.Lock()
@@ -152,6 +153,8 @@ class SharedCodexAppServer:
                 return
             params = event.get("params")
             thread_id = params.get("threadId") if isinstance(params, dict) else None
+            if event.get("method") == "turn/completed" and isinstance(thread_id, str):
+                self._turn_ended(thread_id)
             queue = self._events.get(thread_id) if isinstance(thread_id, str) else None
             if queue is not None:
                 queue.put_nowait(event)
@@ -271,9 +274,25 @@ class SharedCodexAppServer:
 
     async def request(self, options: CodexAppServerOptions, method: str, params: AppServerPayload) -> AppServerPayload:
         async def request_on_owner() -> AppServerPayload:
-            return await self._required_transport().request_protocol(method, params)
+            if method != "turn/start":
+                return await self._required_transport().request_protocol(method, params)
+            thread_id = str(params["threadId"])
+            self._turn_started(thread_id)
+            try:
+                return await self._required_transport().request_protocol(method, params)
+            except BaseException:
+                self._turn_ended(thread_id)
+                raise
 
         return await self._call(options, request_on_owner)
+
+    def _turn_started(self, thread_id: str) -> None:
+        with self._opens_lock:
+            self._turns_in_flight.add(thread_id)
+
+    def _turn_ended(self, thread_id: str) -> None:
+        with self._opens_lock:
+            self._turns_in_flight.discard(thread_id)
 
     async def next_event(self, options: CodexAppServerOptions, thread_id: str) -> AppServerPayload:
         async def next_on_owner() -> AppServerPayload:
@@ -312,6 +331,7 @@ class SharedCodexAppServer:
         async def close_on_owner() -> None:
             async with self._session_state_lock:
                 queue = self._events.pop(thread_id, None)
+                self._turn_ended(thread_id)
                 self._required_transport().unregister_thread(thread_id)
                 if queue is not None:
                     queue.put_nowait(_StreamFailure(CodexAppServerError.stopped()))
@@ -383,7 +403,7 @@ class SharedCodexAppServer:
     @property
     def busy(self) -> bool:
         with self._opens_lock:
-            return bool(self._events) or self._opens_in_flight > 0
+            return bool(self._turns_in_flight) or self._opens_in_flight > 0
 
     @property
     def stopped(self) -> bool:
@@ -451,8 +471,9 @@ _managers_lock = threading.Lock()
 def shared_codex_app_server(code_home: Path, forge_env: Mapping[str, str] | None = None) -> SharedCodexAppServer:
     """The worker's one App Server for *code_home*, restarted when the routed forge token changed.
 
-    Two servers cannot share a Codex home (one credential writer), so a different token retires an
-    idle server and fails a busy one fast instead of starting a second.
+    Two servers cannot share a Codex home (one credential writer), so a different token retires a
+    server with no turn running (a thread held idle for a follow-up is closed) and fails one with a
+    turn running fast instead of starting a second.
     """
     key = (os.getpid(), code_home.resolve())
     credential = forge_token_fingerprint(forge_env)

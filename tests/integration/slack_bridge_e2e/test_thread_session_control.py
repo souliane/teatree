@@ -32,7 +32,7 @@ from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, SessionCommand, Task
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
-from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
+from teatree.loop.slack_answer.cycle import SlackAnswerReport, run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness, assistant_text
 from tests.teatree_loop.slack_answer.test_cycle import _USER_UID, RecordingBackend, _resolver
@@ -52,9 +52,9 @@ class _ScriptedSession(InterruptibleSession):
         self.steered.append(text)
 
 
-def _runtime() -> HeartbeatRuntime:
+def _runtime(watchdog: LoopWatchdog = _WATCHDOG) -> HeartbeatRuntime:
     return HeartbeatRuntime(
-        watchdog=_WATCHDOG,
+        watchdog=watchdog,
         heartbeat_interval=0.05,
         sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
         renew_lease=lambda _task: None,
@@ -63,12 +63,23 @@ def _runtime() -> HeartbeatRuntime:
 
 
 @contextmanager
-def _worker_socket() -> Generator[Path]:
+def _worker_socket(*, worker_pid: int | None = None) -> Generator[Path]:
     with tempfile.TemporaryDirectory(prefix="t3e-", dir="/tmp") as directory:
         live_dir = Path(directory)
-        ingress = OperatorIngress(shared_registry, worker_pid=os.getpid())
+        ingress = OperatorIngress(shared_registry, worker_pid=os.getpid() if worker_pid is None else worker_pid)
         with LiveMailboxBroker(runtime_dir=live_dir, ingress=ingress):
             yield live_dir
+
+
+def _claimed_thread_task(fingerprint: str) -> Task:
+    reading = InboundReading(
+        intent=InboundIntent.INSTRUCTION, answerable=False, work_summary="build feature", source=ReadingSource.MODEL
+    )
+    task = dispatch_work(
+        reading=reading, fingerprint=fingerprint, origin=WorkOrigin("", "C1", "100.0", ("100.0",), "build feature")
+    )
+    task.claim(claimed_by="worker-A", lease_seconds=900)
+    return task
 
 
 class ThreadSessionControlTests(TestCase):
@@ -78,7 +89,7 @@ class ThreadSessionControlTests(TestCase):
         self.backend = RecordingBackend()
         self.next_ts = 101
 
-    def _say(self, text: str, live_dir: Path | None) -> str:
+    def _cycle(self, text: str, live_dir: Path | None) -> SlackAnswerReport:
         ts = f"{self.next_ts}.0"
         self.next_ts += 1
         row = PendingChatInjection.record(
@@ -88,7 +99,10 @@ class ThreadSessionControlTests(TestCase):
         self.backend.message_meta[ts] = {"ts": ts, "thread_ts": "100.0"}
         client = (lambda: LiveClient(live_dir=live_dir)) if live_dir is not None else LiveClient
         with patch("teatree.loop.slack_answer.session_routing.LiveClient", client):
-            run_slack_answer_cycle(messaging_resolver=_resolver(self.backend))
+            return run_slack_answer_cycle(messaging_resolver=_resolver(self.backend))
+
+    def _say(self, text: str, live_dir: Path | None) -> str:
+        self._cycle(text, live_dir)
         return self.backend.replies[-1][2]
 
     def _await_live(self, task: Task) -> None:
@@ -99,15 +113,7 @@ class ThreadSessionControlTests(TestCase):
         pytest.fail("the scripted session never published itself")
 
     def test_pause_and_resume_from_the_thread_survive_a_worker_restart(self) -> None:
-        reading = InboundReading(
-            intent=InboundIntent.INSTRUCTION, answerable=False, work_summary="build feature", source=ReadingSource.MODEL
-        )
-        task = dispatch_work(
-            reading=reading,
-            fingerprint="thread-control",
-            origin=WorkOrigin("", "C1", "100.0", ("100.0",), "build feature"),
-        )
-        task.claim(claimed_by="worker-A", lease_seconds=900)
+        task = _claimed_thread_task("thread-control")
         session = _ScriptedSession()
 
         def drive() -> HarnessOutcome:
@@ -155,3 +161,28 @@ class ThreadSessionControlTests(TestCase):
             "Also update the docs": "queued",
             "resume": "queued_resume",
         }
+
+    def test_a_refused_control_channel_is_a_cycle_error_and_never_starts_a_second_writer(self) -> None:
+        task = _claimed_thread_task("thread-refused")
+        session = _ScriptedSession()
+        short_run = LoopWatchdog(max_runtime_seconds=3, max_turns=0, max_cost_usd=0.0)
+
+        def drive() -> HarnessOutcome:
+            harness = OneSessionHarness(session)
+            return asyncio.run(
+                drive_with_heartbeat(task, "p", ClaudeAgentOptions(), harness, runtime=_runtime(short_run))
+            )
+
+        with _worker_socket(worker_pid=os.getppid()) as live_dir, ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(drive)
+            self._await_live(task)
+            report = self._cycle("Use the new API", live_dir)
+            running.result(timeout=30)
+
+        assert report.errors == 1
+        assert report.steered == 0
+        assert self.backend.replies == []
+        assert session.steered == []
+        assert Task.objects.count() == 1
+        assert not SessionCommand.objects.exists()
+        assert PendingChatInjection.loop_unreplied().count() == 1
