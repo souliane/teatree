@@ -765,7 +765,7 @@ def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterato
         yield
         return
     with patch(
-        "teatree.core.gates.merge_message_gate.scan_outbound_text",
+        "teatree.core.publishing.live_text.scan_outbound_text",
         side_effect=lambda *, target_repo, **_: PrivacyGateResult(target_repo=target_repo, is_public=False),
     ):
         yield

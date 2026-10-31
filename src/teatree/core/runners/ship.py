@@ -1,5 +1,4 @@
 import logging
-import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
@@ -18,6 +17,7 @@ from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.publishing.live_text import CLOSE_KEYWORD_RE
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
@@ -38,20 +38,6 @@ if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
-
-# Single source of truth for close-keyword detection, shared with the
-# pre-push gate (``_close_keyword_gate.py``) so the gate and the auto-rewrite
-# stay in lockstep (#1090). The ``(?::\s*|\s+)`` separator matches the colon
-# form GitLab's default ``issue_closing_pattern`` accepts — ``Closes: #N``
-# auto-closes the issue on merge — while leaving ``Closes : #N`` (a space
-# BEFORE the colon, which GitLab's real ``(:?) +`` grammar does not auto-close)
-# unmatched. The verb set is the past-tense-inclusive superset
-# (``close[sd]?|fix(?:e[sd])?|resolve[sd]?``) GitHub/GitLab both recognise.
-CLOSE_KEYWORD_RE = re.compile(
-    r"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+)"
-    r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
-    re.IGNORECASE,
-)
 
 
 def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:

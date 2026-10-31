@@ -511,6 +511,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "publish": DjangoGroup(
+        "Write a PR body, issue body or comment: scan, write, read back, rescan.",
+        [
+            ("pr-body", "Replace a PR body with the scanned, read-back text of --body-file."),
+            ("issue-body", "Replace an issue body with the scanned, read-back text of --body-file."),
+            ("comment", "Post --body-file as a PR or issue comment, scanned before and after the write."),
+        ],
+        core_dispatch=True,
+    ),
     "memory": DjangoGroup(
         "Cold-tier memory recall (#2746).",
         [

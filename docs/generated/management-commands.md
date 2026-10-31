@@ -445,6 +445,16 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 Persist declared Notion pass-key routes without replacing database overrides.
 
+## `publish`
+
+``t3 <overlay> publish`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `comment` | Post BODY_FILE as a comment on a PR or issue, scanned before and after the write |
+| `pr-body` | Replace a PR body with the scanned, read-back text of BODY_FILE |
+| `issue-body` | Replace an issue body with the scanned, read-back text of BODY_FILE |
+
 ## `questions`
 
 ``t3 teatree questions`` group root.

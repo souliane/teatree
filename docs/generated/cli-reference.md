@@ -7744,6 +7744,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
 │ honesty         Situational honesty-critical escalation (#2263).             │
+│ publish         Write a PR body, issue body or comment: scan, write, read    │
+│                 back, rescan.                                                │
 │ memory          Cold-tier memory recall (#2746).                             │
 │ learnings       Durable per-repo knowledge store, DB-placed (#2892).         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -15706,6 +15708,81 @@ Usage: t3 teatree honesty escalate [OPTIONS]
 │ --task           INTEGER  Optional task id to scope the escalation to.       │
 │ --session        TEXT     Session id (defaults to the active session).       │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree publish`
+
+```
+Usage: t3 teatree publish [OPTIONS] COMMAND [ARGS]...
+
+ Write a PR body, issue body or comment: scan, write, read back, rescan.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ pr-body     Replace a PR body with the scanned, read-back text of            │
+│             --body-file.                                                     │
+│ issue-body  Replace an issue body with the scanned, read-back text of        │
+│             --body-file.                                                     │
+│ comment     Post --body-file as a PR or issue comment, scanned before and    │
+│             after the write.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish pr-body`
+
+```
+Usage: t3 teatree publish pr-body [OPTIONS] TARGET
+
+ Replace a PR body with the scanned, read-back text of BODY_FILE.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish issue-body`
+
+```
+Usage: t3 teatree publish issue-body [OPTIONS] TARGET
+
+ Replace an issue body with the scanned, read-back text of BODY_FILE.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish comment`
+
+```
+Usage: t3 teatree publish comment [OPTIONS] TARGET
+
+ Post BODY_FILE as a comment on a PR or issue, scanned before and after the
+ write.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

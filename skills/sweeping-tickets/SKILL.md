@@ -63,7 +63,7 @@ Do the fold mechanically so nothing is lost to a free-hand rewrite:
 ```bash
 t3 <overlay> ticket fold --host-body host.md --member-body member.md \
   --member-ref '#4247' --member-title '<title>' --out merged.md
-gh issue edit <HOST> --repo <owner>/<repo> --body-file merged.md
+t3 <overlay> publish issue-body <HOST_URL> --body-file merged.md
 # re-read the host off the forge and PROVE the member's body landed:
 gh issue view <HOST> --repo <owner>/<repo> --json body -q .body > host-now.md
 t3 <overlay> ticket fold-check --host-body host-now.md --member-body member.md
@@ -110,7 +110,7 @@ kept apart on purpose.
    approves.
 5. **No row is retired without a VERIFIED fold (Non-Negotiable).** The default
    path performs **zero real closures**: every reduction moves the member's
-   body into its host and proves it landed (`ticket fold` → `gh issue edit` →
+   body into its host and proves it landed (`ticket fold` → `publish issue-body` →
    `ticket fold-check`) before the standalone goes. This holds for the
    already-shipped class too — a merged PR is a *citation on the fold*, not a
    licence to discard the row's content. Retiring the row is a colleague-visible
@@ -231,7 +231,7 @@ gh issue view <HOST_N> --repo <owner>/<repo> --json body -q .body > host.md
 gh issue view <N> --repo <owner>/<repo> --json body -q .body > member.md
 t3 <overlay> ticket fold --host-body host.md --member-body member.md \
   --member-ref '#<N>' --member-title '<member title>' --out merged.md
-gh issue edit <HOST_N> --repo <owner>/<repo> --body-file merged.md
+t3 <overlay> publish issue-body <HOST_URL> --body-file merged.md
 
 # PROVE the fold landed before retiring anything (rule 5) — non-zero on a loss.
 gh issue view <HOST_N> --repo <owner>/<repo> --json body -q .body > host-now.md

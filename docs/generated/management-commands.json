@@ -879,6 +879,24 @@
       "subcommands": []
     },
     {
+      "help": "``t3 <overlay> publish`` group root.",
+      "name": "publish",
+      "subcommands": [
+        {
+          "help": "Post BODY_FILE as a comment on a PR or issue, scanned before and after the write",
+          "name": "comment"
+        },
+        {
+          "help": "Replace a PR body with the scanned, read-back text of BODY_FILE",
+          "name": "pr-body"
+        },
+        {
+          "help": "Replace an issue body with the scanned, read-back text of BODY_FILE",
+          "name": "issue-body"
+        }
+      ]
+    },
+    {
       "help": "``t3 teatree questions`` group root.",
       "name": "questions",
       "subcommands": [
