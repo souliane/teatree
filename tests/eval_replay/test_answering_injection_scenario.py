@@ -115,3 +115,7 @@ def test_a_run_that_does_nothing_fails(tmp_path: Path) -> None:
 
 def test_a_reply_with_no_answer_text_fails(tmp_path: Path) -> None:
     assert not _passed(_spec(), json.dumps({"answer": {"text": "", "thread_ref": "1.0"}}), tmp_path)
+
+
+def test_a_result_with_text_but_no_answer_object_fails(tmp_path: Path) -> None:
+    assert not _passed(_spec(), json.dumps({"summary": "ok", "text": "Not ready yet, sorry."}), tmp_path)

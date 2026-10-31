@@ -13,7 +13,7 @@ from django.test import TestCase
 from teatree.agents import live_mailbox
 from teatree.agents.coordinator_peer_messenger import send_to_ticket_peer
 from teatree.agents.live_delivery import MailboxIdentity
-from teatree.agents.live_mailbox_client import MailboxClient
+from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.models import Ticket
 
 
@@ -106,16 +106,28 @@ class TestTheMessageGoesToExactlyOneLiveAgentOnTheTicket(TestCase):
 
         assert remaining == [agent.address]
 
-    def test_a_mailbox_that_cannot_start_is_reported_not_raised(self) -> None:
-        with patch.object(live_mailbox, "shared_broker", side_effect=RuntimeError("Live mailbox broker did not start")):
-            receipt = send_to_ticket_peer(self.ticket, "Use approach B.", "k1")
+    def test_a_mailbox_that_cannot_be_used_is_reported_not_raised(self) -> None:
+        for failure in (RuntimeError("did not start"), OSError("socket"), ValueError("room"), MailboxError("gone")):
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(live_mailbox, "shared_broker", side_effect=failure):
+                    receipt = send_to_ticket_peer(self.ticket, "Use approach B.", "k1")
 
-        assert (receipt.accepted, receipt.detail) == (False, "the live mailbox could not be reached")
+                assert (receipt.accepted, receipt.detail) == (False, "the live mailbox could not be reached")
+
+    def test_a_refusal_that_is_not_a_queue_names_its_code_and_waits_two_seconds_for_acceptance(self) -> None:
+        refused = {"id": 4, "to": "x", "outcome": "rejected", "code": "session_closed", "queued_in_inbox": False}
+        with _broker() as broker:
+            broker.register(room=str(self.ticket.pk), harness="claude_sdk", label="coding task 7")
+            with patch.object(MailboxClient, "send", return_value=refused) as send:
+                receipt = send_to_ticket_peer(self.ticket, "Use approach B.", "k1")
+
+        assert (receipt.accepted, receipt.detail) == (False, "the agent did not take it (session_closed)")
+        assert send.call_args.kwargs["timeout_seconds"] == 2
 
     def test_it_works_from_inside_a_running_event_loop(self) -> None:
-        async def from_a_coroutine() -> bool:
+        async def from_a_coroutine() -> str:
             await asyncio.sleep(0)
-            return send_to_ticket_peer(self.ticket, "Use approach B.", "k1").accepted
+            return send_to_ticket_peer(self.ticket, "Use approach B.", "k1").detail
 
         with _broker():
-            assert asyncio.run(from_a_coroutine()) is False
+            assert asyncio.run(from_a_coroutine()) == "no live agent is working on that ticket"
