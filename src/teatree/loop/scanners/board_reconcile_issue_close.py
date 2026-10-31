@@ -33,6 +33,7 @@ from teatree.core.backend_protocols import IssueOpenState
 from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.worktree.unshipped_work import escalate_unshipped_work_once, unshipped_work_paths
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
+from teatree.loop.scanners.board_reconcile_reads import read_per_overlay
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
 if TYPE_CHECKING:
@@ -110,23 +111,15 @@ def _read_url(ticket: "Ticket") -> str:
 def _closed_issue_verdicts(tickets: "list[Ticket]") -> tuple[dict[str, IssueCloseVerdict], int]:
     """The subset of *tickets*' issue URLs their own overlay's forge reports CLOSED, and the reads spent.
 
-    Grouped by the ticket's own overlay for the same reason rules D/E group: each URL is
-    judged by the overlay that owns it, and a ticket whose overlay is not installed here is
-    simply not judged. Only a DEFINITE CLOSED counts — an OPEN issue is live work, and the
+    Each URL is judged by the overlay that owns it, and a ticket whose overlay is not installed
+    here is simply not judged. Only a DEFINITE CLOSED counts — an OPEN issue is live work, and the
     UNKNOWN every failure collapses to leaves the ticket exactly where it is.
 
-    The second element counts the reads actually ISSUED, not the candidates considered, so
+    The second element counts the reads that completed, not the candidates considered, so
     the run's reported probe spend never charges for a URL nothing judged.
     """
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: registry read at call time
-
-    overlays = get_all_overlays()
-    verdicts: dict[str, IssueCloseVerdict] = {}
-    for ticket in tickets:
-        if ticket.overlay not in overlays or _read_url(ticket) in verdicts:
-            continue
-        verdicts[_read_url(ticket)] = issue_close_verdict(overlays[ticket.overlay], _read_url(ticket))
-    closed = {url: verdict for url, verdict in verdicts.items() if verdict.state is IssueOpenState.CLOSED}
+    verdicts = read_per_overlay(tickets, issue_close_verdict, url_of=_read_url)
+    closed = {_read_url(ticket): verdict for ticket, verdict in verdicts if verdict.state is IssueOpenState.CLOSED}
     return closed, len(verdicts)
 
 

@@ -413,18 +413,18 @@ Post each reply via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_I
 When giving review on a colleague's MR and the verdict is approve, record it through the sanctioned CLI — never raw `glab mr approve` / `gh pr review --approve` (prohibited for state-changing review actions):
 
 ```bash
-t3 review approve <REPO> <MR_IID>      # approve
-t3 review unapprove <REPO> <MR_IID>    # revoke your approval
+t3 review approve <REPO> <MR_IID> [--forge github|gitlab]   # approve
+t3 review unapprove <REPO> <MR_IID>                          # revoke the approval (GitLab only)
 ```
 
-**Review-first precondition (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Either of two footprints clears the gate:
+**Review-first precondition on GitLab (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Either of two footprints clears the gate:
 
 - a **published note/discussion** authored by your identity (a genuine inline finding — still fine, never auto-posted just to clear this gate);
 - a **draft note** authored by your identity (a colleague-invisible review — no public comment);
 
 An `OnBehalfApproval` records consent but does not itself prove review. If it refuses, leave a genuine review via `t3 review post-comment` (default draft, #1207), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
-**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the posture pre-gate (souliane/teatree#960). No autonomy tier opens colleague egress (#3895), so under a forbidding posture the command refuses unattended at every tier with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or select a permitting posture with `t3 loop preset use present --reason <why>`. Raising the `autonomy` tier removes the per-MR ask, not this gate.
+**On-behalf gate — the person consents, never the agent.** An approval is an outward post under a person's identity, so both commands act only through that operator's own OAuth grant (never `$GITLAB_TOKEN` or a stored personal token) and only on a recorded consent (souliane/teatree#960). **The person records the consent** with `t3 review approve-on-behalf <repo>!<n> approve --approver <platform:handle>` (or says so in plain text and you show them that command), then runs `t3 login <forge> --approvals` once; you never record the consent and never choose the operator (maker != checker). The operator is the ticket's requester, or, when none is recorded, the one operator holding an unconsumed consent for that target and action (two refuse, naming both). With no consent or no grant the command refuses naming the remedy and posts nothing. No posture or autonomy tier (#3895) opens it: a permitting posture without a consent still refuses, and a forbidding one does not stop a recorded consent. On GitHub the grant is a GitHub App user token, the approval is read back as APPROVED before the consent is spent, and `unapprove` refuses because GitHub offers no un-approve call.
 
 ### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)
 

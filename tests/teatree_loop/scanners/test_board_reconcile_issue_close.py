@@ -12,7 +12,8 @@ so they pin the forge read and the rule together.
 """
 
 import contextlib
-from collections.abc import Generator
+import threading
+from collections.abc import Callable, Generator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -26,9 +27,12 @@ from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners import board_reconcile, board_reconcile_issue_close
 from teatree.loop.scanners.board_reconcile import reconcile_board
+from teatree.loop.scanners.board_reconcile_reads import APPLY_MARGIN_SECONDS, READ_WORKERS
 from teatree.loop.scanners.board_reconcile_report import BoardAction
+from teatree.loop.scanners.scan_deadline import scanner_deadline
 from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests._owner_channel import assert_a_plain_card
+from tests.teatree_loop._board_reconcile_clock import FakeClock, read_clock
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4084"
 _DIRTY_PROBE = "teatree.core.models.ticket_worktree_checks.collect_dirty_worktree_paths"
@@ -56,15 +60,39 @@ class _Overlay:
         return issue_data.get("state") in {"closed", "completed"}
 
 
+class _UrlHost:
+    """A forge that records every issue read, closes the URLs in *closed* and runs *on_read* per read."""
+
+    def __init__(self, *, closed: set[str], on_read: Callable[[], None] = lambda: None) -> None:
+        self.closed = closed
+        self.reads: list[str] = []
+        self.answered: list[str] = []
+        self._on_read = on_read
+        self._lock = threading.Lock()
+
+    def get_issue(self, issue_url: str) -> object:
+        with self._lock:
+            self.reads.append(issue_url)
+        self._on_read()
+        with self._lock:
+            self.answered.append(issue_url)
+        return _NOT_PLANNED if issue_url in self.closed else _OPEN
+
+
 @contextlib.contextmanager
-def _forge(payload: object) -> Generator[None]:
-    """Stand in for the live forge: every issue read answers *payload*, no PR is open."""
+def _forge_host(host: object) -> Generator[None]:
+    """Stand in for the live forge: every issue read goes to *host*, no PR is open."""
     with (
         patch.object(board_reconcile, "pr_open_state", lambda _url: PrOpenState.UNKNOWN),
         patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": _Overlay()}),
-        patch("teatree.backends.issue_reads.get_code_host_for_url", return_value=_Host(payload)),
+        patch("teatree.backends.issue_reads.get_code_host_for_url", return_value=host),
     ):
         yield
+
+
+def _forge(payload: object) -> contextlib.AbstractContextManager[None]:
+    """Stand in for the live forge: every issue read answers *payload*, no PR is open."""
+    return _forge_host(_Host(payload))
 
 
 class TestClosedIssueRetiresPreShipTicket(TestCase):
@@ -283,6 +311,74 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IGNORED
         assert [t.action for t in report.applied if t.ticket_id == ticket.pk] == [BoardAction.IGNORED_ISSUE_CLOSED]
+
+
+class TestTheJanitorSpendsItsDeadlineOnTheBoundedRulesFirst(TestCase):
+    """Rule D reads every post-ship ticket unbudgeted, so it must come last and the reads must overlap.
+
+    The incident: one pass took 137 s against a 60 s scan deadline because rule D's serial
+    reads ran before rules E and F, so the tick abandoned the scanner with nothing applied
+    and a ticket behind a closed issue stayed live for hours.
+    """
+
+    def _retirable(self, *, url: str = _ISSUE) -> Ticket:
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=url)
+
+    def _post_ship(self, count: int) -> list[str]:
+        urls = [f"https://github.com/souliane/teatree/issues/7{n:03d}" for n in range(count)]
+        Ticket.objects.bulk_create(
+            [Ticket(overlay="t3-teatree", state=Ticket.State.PR_OPENED, issue_url=url) for url in urls]
+        )
+        return urls
+
+    def test_the_closed_issue_is_read_and_retired_before_any_completion_read(self) -> None:
+        retired = self._retirable()
+        completion_urls = self._post_ship(3)
+        host = _UrlHost(closed={_ISSUE})
+
+        with _forge_host(host):
+            reconcile_board()
+
+        retired.refresh_from_db()
+        assert retired.state == Ticket.State.IGNORED
+        assert host.reads[0] == _ISSUE
+        assert sorted(host.reads[1:]) == sorted(completion_urls)
+
+    def test_a_deadline_during_the_completion_reads_keeps_the_retirement_and_stops_the_reads(self) -> None:
+        scan_deadline_seconds, seconds_per_read = 60.0, 2.0
+        retired = self._retirable()
+        self._post_ship(40)
+        clock = FakeClock()
+        host = _UrlHost(closed={_ISSUE}, on_read=lambda: clock.advance(seconds_per_read))
+
+        with _forge_host(host), read_clock(clock), scanner_deadline(clock.now + scan_deadline_seconds):
+            reconcile_board()
+
+        retired.refresh_from_db()
+        reads_before_the_apply_margin = int((scan_deadline_seconds - APPLY_MARGIN_SECONDS) / seconds_per_read)
+        assert retired.state == Ticket.State.IGNORED
+        assert len(host.reads) <= reads_before_the_apply_margin + READ_WORKERS
+        assert len(host.reads) < scan_deadline_seconds / seconds_per_read
+
+    def test_the_closed_issue_reads_overlap(self) -> None:
+        urls = [f"{_ISSUE}{n}" for n in range(2)]
+        for url in urls:
+            self._retirable(url=url)
+        host = _UrlHost(closed=set(urls), on_read=threading.Barrier(2, timeout=5).wait)
+
+        with _forge_host(host):
+            reconcile_board()
+
+        assert sorted(host.answered) == urls
+
+    def test_the_completion_reads_overlap(self) -> None:
+        urls = self._post_ship(2)
+        host = _UrlHost(closed=set(), on_read=threading.Barrier(2, timeout=5).wait)
+
+        with _forge_host(host):
+            reconcile_board()
+
+        assert sorted(host.answered) == urls
 
 
 @contextlib.contextmanager

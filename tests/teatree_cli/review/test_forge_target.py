@@ -176,7 +176,7 @@ class TestTokenComesFromTheOwningOverlay:
 
 
 class TestApprovalUsesTheOwnerNotTheAuthoringCredential:
-    """The review/approve surface reads the OWNER credential, never the authoring one.
+    """The review-note surface reads the OWNER credential, never the authoring one.
 
     An overlay that authors one repo's MRs under a bot does so for one reason: the forge
     bars an MR's AUTHOR from approving it, so a distinct author is what keeps the owner's

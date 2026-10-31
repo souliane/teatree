@@ -80,8 +80,9 @@ def read_token(repo: str) -> ReadOutcome[str]:
     ``get_gitlab_token_for_remote()``. That override names the AUTHORING credential, and
     the forge bars an MR's author from approving it, so routing this surface through it
     would record every review and approval under the bot: the one identity that must
-    never carry an approval. Reviewing and approving stay the owner's account, acted as
-    by the agent. Pinned by
+    never carry an approval. Review notes stay the owner's account, acted as by the agent;
+    approvals never read this credential — they use the consenting operator's own grant
+    (:func:`teatree.cli.review.operator_action.run_operator_action`). Pinned by
     ``tests/teatree_cli/review/test_forge_target.py::TestApprovalUsesTheOwnerNotTheAuthoringCredential``.
     """
     if explicit := os.environ.get("GITLAB_TOKEN", ""):

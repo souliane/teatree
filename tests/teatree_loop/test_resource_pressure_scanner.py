@@ -169,19 +169,13 @@ class DiskProbePathTests(TestCase):
         This is the founding bug's shape: 384.0 GB from the container rootfs while the host
         volume holding the checkouts had 42.3. It is used (better than none) and reported.
         """
-        # Thresholds pinned to zero: `/` is a REAL reading here, so an ambient full disk
-        # would add a pressure_warn and decide the assertion instead of the probe.
-        scanner = ResourcePressureScanner(
-            disk_warn_free_gb=0.0,
-            disk_crit_free_gb=0.0,
-            ram_warn_avail_gb=0.0,
-            ram_crit_avail_gb=0.0,
-        )
+        # `/` answers a pinned 100 GB: its real free space is the runner's, and the build floor beats any threshold.
         with (
             patch(f"{_MODULE}.worktree_root", return_value=Path("/nonexistent-teatree-probe-4244")),
+            patch(f"{_MODULE}.read_disk_free_gb", side_effect=lambda path: 100.0 if path == "/" else None),
             patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
         ):
-            signals = scanner.scan()
+            signals = ResourcePressureScanner().scan()
             reading = measure_resources()
 
         assert reading.disk_probe_degraded, reading

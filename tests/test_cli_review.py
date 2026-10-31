@@ -1036,19 +1036,3 @@ class TestRequireToken:
             result = runner.invoke(app, ["review", "post-comment", "org/repo", "1", "body"])
             assert result.exit_code == 1
             assert "No GitLab token" in result.output
-
-    def test_approve_rejected(self, monkeypatch):
-        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = MagicMock(stderr="", returncode=1)
-            result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
-            assert result.exit_code == 1
-            assert "No GitLab token" in result.output
-
-    def test_unapprove_rejected(self, monkeypatch):
-        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = MagicMock(stderr="", returncode=1)
-            result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
-            assert result.exit_code == 1
-            assert "No GitLab token" in result.output
