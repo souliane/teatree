@@ -38,13 +38,16 @@ REREAD_FIRST_CLAUSE: Final[str] = (
 _HOLD_EXTRA_KEYS: Final[tuple[str, ...]] = ("shipping_hold",)
 
 
+def with_reread_first(reason: str) -> str:
+    """*reason* with the re-read-first clause appended once; every producer of a hold-minted task calls it."""
+    return reason if REREAD_FIRST_CLAUSE in reason else f"{reason}\n{REREAD_FIRST_CLAUSE}"
+
+
 def reread_first_reason(reason: str, extra: Mapping[str, object] | None) -> str:
     """*reason* with the re-read-first clause appended when the ticket's *extra* records a hold."""
-    if not extra or REREAD_FIRST_CLAUSE in reason:
-        return reason
-    if not any(key in extra for key in _HOLD_EXTRA_KEYS):
-        return reason
-    return f"{reason}\n{REREAD_FIRST_CLAUSE}"
+    if extra and any(key in extra for key in _HOLD_EXTRA_KEYS):
+        return with_reread_first(reason)
+    return reason
 
 
 #: ``Ticket.extra`` key carrying the phase and reason a producer asked for across the planning rung.
@@ -213,7 +216,9 @@ class TicketSchedulingModel(TicketFacet):
 
         No ``plan_currency`` gate: a corrective re-entry, like :meth:`schedule_implementing`'s.
         """
-        return self._schedule_phase_task("coding", review.rework_reason(), review_task, require_author=True)
+        return self._schedule_phase_task(
+            "coding", with_reread_first(review.rework_reason()), review_task, require_author=True
+        )
 
     def requeue_self_review_rework(self: "Ticket", review: "SelfReview", *, dry_run: bool = False) -> SelfReviewRework:
         """Supersede the ticket's active tasks and re-queue *review*'s rework, or return the one in flight.

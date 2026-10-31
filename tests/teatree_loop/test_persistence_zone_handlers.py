@@ -31,6 +31,7 @@ from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.ticket_scheduling import REREAD_FIRST_CLAUSE
 from teatree.core.on_behalf_gate_recorded import owner_voice_permitted
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
@@ -940,6 +941,19 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         assert "push once" in reason
         assert "Never reply to or resolve a thread" in reason
         assert "reply-to-discussion" not in reason
+
+    def test_review_findings_re_read_the_branch_before_acting_whatever_the_posture(self) -> None:
+        for pr_id, permitted in ((209, True), (210, False)):
+            reason = self._reason(permitted=permitted, pr_id=pr_id)
+            assert reason.count(REREAD_FIRST_CLAUSE) == 1
+
+    def test_the_other_fix_kinds_carry_no_re_read_clause(self) -> None:
+        for pr_id, signal_kind, fix_kind in (
+            (211, "my_pr.failed", RedMrFixAttempt.Kind.CI_RED),
+            (212, "my_pr.conflicted", RedMrFixAttempt.Kind.MERGE_CONFLICT),
+        ):
+            reason = self._reason(permitted=False, pr_id=pr_id, signal_kind=signal_kind, fix_kind=fix_kind)
+            assert REREAD_FIRST_CLAUSE not in reason
 
     def test_other_fix_kinds_keep_their_remedy_under_a_permitting_posture(self) -> None:
         for pr_id, signal_kind, fix_kind in (

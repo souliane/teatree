@@ -6,6 +6,7 @@ from teatree.agents.fixer_brief import FixerBrief
 from teatree.core import on_behalf_gate_recorded
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models import RedMrFixAttempt
+from teatree.core.models.ticket_scheduling import with_reread_first
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import ActionPayload
 from teatree.utils.url_slug import pr_ref_from_url
@@ -57,6 +58,8 @@ def fix_reason(payload: ActionPayload, pr_url: str) -> str:
     if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and on_behalf_gate_recorded.owner_voice_permitted():
         reason = _VOICED_REVIEW_FINDINGS_REASON
     reason = reason.format(pr_url=pr_url)
+    if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS:
+        return with_reread_first(reason)
     if fix_kind != RedMrFixAttempt.Kind.MERGE_CONFLICT:
         return reason
     return FixerBrief(
