@@ -19,10 +19,9 @@ Cold-import safe: the module top imports stdlib only — ``teatree`` is reached
 through a deferred import after the ``sys.path`` bootstrap.
 """
 
-import contextlib
 import sys
-from pathlib import Path
 
+from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
 
 # Alias the bare and ``hooks.scripts.`` identities so a test patching a helper here
@@ -47,20 +46,11 @@ def _prompt_of(data: dict) -> str:
 
 def _warning_for(prompt: str) -> str | None:
     """The lint warning for *prompt*, or ``None`` when it is anchored or asserts nothing."""
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
+    with teatree_src_on_path():
         from teatree.hooks import brief_anchor_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
         verdict = brief_anchor_scanner.find_unanchored_assertions(prompt)
         return None if verdict is None else brief_anchor_scanner.format_warning(verdict)
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def handle_brief_anchor_lint(data: dict) -> bool:

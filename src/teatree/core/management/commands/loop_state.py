@@ -85,7 +85,7 @@ def _require_known_loop(command: TyperCommand, name: str, *, json_output: bool) 
 
     Every verb — the mutating ``pause``/``resume``/``disable`` and the
     read-only ``status`` — validates the name against the real ``Loop`` rows here
-    so a typo (``t3 loop pause <typo>``) can never report success and pause
+    so a typo (``t3 loop pause <typo> --emergency``) can never report success and pause
     nothing, and ``loop-state <typo>`` can never resolve to a fall-through
     ``ENABLED`` for a loop that does not exist. Exits ``2`` (the loop-command
     refusal convention), naming the loop and pointing at ``t3 loops list``.

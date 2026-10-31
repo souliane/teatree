@@ -348,6 +348,51 @@ class OperatorOAuthTestCase(TestCase):
         assert response.status_code == 403
         assert not OperatorGrant.objects.exists()
 
+    def test_approval_consent_refuses_another_operators_forge_account(self) -> None:
+        alice = self._invited_github_operator("alice", "123")
+        self._invited_github_operator("bob", "456")
+        self.client.force_login(alice)
+        with self._forge_account({"id": 456, "login": "bob"}):
+            state = parse_qs(urlsplit(self.client.get("/login/oauth/github/approvals/").headers["Location"]).query)[
+                "state"
+            ][0]
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+        assert response.status_code == 403
+        assert not OperatorGrant.objects.exists()
+
+    def test_approval_consent_starts_only_for_a_signed_in_superuser(self) -> None:
+        staff = get_user_model().objects.create_user("staff", password=None, is_staff=True)
+        for user in (None, staff):
+            with self.subTest(user=user):
+                if user is not None:
+                    self.client.force_login(user)
+                response = self.client.get("/login/oauth/github/approvals/")
+                assert response.status_code == 403
+                assert "operator_oauth_pending" not in self.client.session
+
+    def test_a_login_started_signed_out_cannot_finish_under_another_signed_in_session(self) -> None:
+        alice = self._invited_github_operator("alice", "123")
+        self._invited_github_operator("bob", "456")
+        state = self._start_github_login()
+        self.client.force_login(alice)
+        with self._forge_account({"id": 456, "login": "bob"}) as post:
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+        assert response.status_code == 403
+        assert self.client.session["_auth_user_id"] == str(alice.pk)
+        post.assert_not_called()
+
+    def test_an_expired_login_state_exchanges_nothing_and_signs_nobody_in(self) -> None:
+        self._invited_github_operator("alice", "123")
+        state = self._start_github_login()
+        session = self.client.session
+        session["operator_oauth_pending"]["expires"] = 0
+        session.save()
+        with self._forge_account({"id": 123, "login": "alice"}) as post:
+            response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+        assert response.status_code == 403
+        assert "_auth_user_id" not in self.client.session
+        post.assert_not_called()
+
     def test_provisioned_handle_binds_forge_id_on_first_sign_in(self) -> None:
         user = self._invited_github_operator("alice", "")
         with self._forge_account({"id": 123, "login": "Alice"}):

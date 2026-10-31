@@ -86,7 +86,7 @@ class TestDenyReason:
         reason = deny_reason(finding)
 
         assert "t3 worker" in reason
-        assert "t3 loop resume" in reason
+        assert "t3 loop preset use" in reason
         assert "gate-escape:block-cron-loop-shell" in reason
 
     def test_reactive_reason_names_the_slot_command(self) -> None:

@@ -47,6 +47,14 @@ EXCLUDED_DOC_PREFIXES: tuple[str, ...] = ("docs/generated/",)
 # backtick; the captured words are normalized by the token-walker afterwards.
 _T3_IN_BACKTICKS = re.compile(r"`(t3 [^`]+)`")
 
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+_ENV_PREFIX = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
+
+# What ends a fenced command line: a trailing shell comment, a pipe, a chain, or a redirect.
+# A redirect needs leading whitespace so the closing `>` of an `<overlay>` placeholder stays in the command.
+_COMMAND_TAIL = re.compile(r"\s+#\s|\s*(?:\||&&|;|<<)\s*|\s+[\d&]?>")
+
 # Tokens that terminate the command path: an ASCII/unicode ellipsis (a generic
 # CLI mention, not a specific command), an angle/brace placeholder, a shell var,
 # an option/flag, a redirect/pipe, or a quoted arg value. A token matching this
@@ -131,6 +139,31 @@ class CommandValidityReport:
 def iter_backticked_t3_commands(text: str) -> list[str]:
     """Every backticked ``t3 …`` run command in *text* (stripped of backticks)."""
     return [m.group(1).strip() for m in _T3_IN_BACKTICKS.finditer(text)]
+
+
+def iter_fenced_t3_commands(text: str) -> list[str]:
+    """Every ``t3 …`` command a fenced code block runs, minus its trailing comment, pipe and line continuations."""
+    commands: list[str] = []
+    opener = ""
+    pending = ""
+    for line in text.splitlines():
+        if fence := _FENCE.match(line):
+            marker, rest = fence.groups()
+            if not opener:
+                opener = marker
+            elif marker[0] == opener[0] and len(marker) >= len(opener) and not rest.strip():
+                opener = ""
+            pending = ""
+            continue
+        joined = _ENV_PREFIX.sub("", f"{pending} {line.strip().removeprefix('$ ')}".strip())
+        pending = ""
+        if not opener or not joined.startswith("t3 "):
+            continue
+        if joined.endswith("\\"):
+            pending = joined.removesuffix("\\").strip()
+            continue
+        commands.append(_COMMAND_TAIL.split(joined)[0].strip())
+    return commands
 
 
 def resolve_command_path(raw: str, valid: set[str], groups: set[str]) -> str | None:
@@ -273,7 +306,7 @@ def validate_doc_commands(
             text = md.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for raw in iter_backticked_t3_commands(text):
+        for raw in (*iter_backticked_t3_commands(text), *iter_fenced_t3_commands(text)):
             resolves = citation_resolves(raw, valid, groups)
             if resolves is None:
                 continue

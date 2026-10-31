@@ -71,7 +71,8 @@ def deny_reason(finding: CronLoopShellFinding) -> str:
             "a subprocess."
         )
         remedy = (
-            "Enable the loop the normal way (`t3 loop resume <name>`) and ensure a worker runs (`t3 worker ensure`)."
+            "Enable the loop through the active preset (`t3 loop preset use <preset>`) "
+            "and ensure a worker runs (`t3 worker ensure`)."
         )
     else:
         why = (
@@ -80,7 +81,7 @@ def deny_reason(finding: CronLoopShellFinding) -> str:
         )
         remedy = (
             "Check `t3 worker status`; it is already driven. Register this slot only on a box whose "
-            "worker is down (`t3 loop resume <name>` for a DB loop)."
+            "worker is down (`t3 loop preset use <preset>` for a DB loop)."
         )
     return (
         f"BLOCKED: this cron/wakeup shells `{finding.command}` — {why} {remedy} "

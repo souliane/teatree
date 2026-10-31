@@ -996,13 +996,9 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
 
     The Slack-MCP arm is reached via the ``mcp__.*[Ss]lack.*`` matcher (#171).
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_quote_scanner_pretool(data)
+        with _teatree_src_on_path():
+            return _run_quote_scanner_pretool(data)
     except Exception as exc:  # noqa: BLE001 — crash-proof hook: any failure degrades, never breaks the tool call
         # Fail OPEN on any internal error (a crashing hook is worse than no
         # scan), but NOT silently: an unscanned body on the PUBLIC-egress publish
@@ -1017,10 +1013,6 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 "fix the underlying error, or verify the body by hand before it reaches a public surface.\n"
             )
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _run_quote_scanner_pretool(data: dict) -> bool:
@@ -1097,19 +1089,11 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     quote-scanner ledger so cold review can audit what the gate saw.
 
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_dispatch_quote_scanner(data)
+        with _teatree_src_on_path():
+            return _run_dispatch_quote_scanner(data)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _run_dispatch_quote_scanner(data: dict) -> bool:
@@ -1186,19 +1170,11 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     if not session_id:
         return False
 
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_dispatch_quote_scanner_on_task_create(data)
+        with _teatree_src_on_path():
+            return _run_dispatch_quote_scanner_on_task_create(data)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
@@ -1773,23 +1749,15 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
     if not skills:
         return []
 
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added: list[str] = []
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-        added.append(str(src_dir))
     try:
-        from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415 — deferred: cold-hook import
-        from teatree.skill_support.index import build_skill_index  # noqa: PLC0415 — deferred: cold-hook import
+        with _teatree_src_on_path():
+            from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415 — deferred: cold-hook import
+            from teatree.skill_support.index import build_skill_index  # noqa: PLC0415 — deferred: cold-hook import
 
-        index = build_skill_index(_skill_search_dirs())
-        return resolve_requires(skills, index)
+            index = build_skill_index(_skill_search_dirs())
+            return resolve_requires(skills, index)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return list(skills)
-    finally:
-        for extra in added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(extra)
 
 
 def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) -> None:
@@ -3001,19 +2969,11 @@ def handle_closure_reverify_stop(data: dict) -> bool | None:
     Fail-safe-to-silent: any malformed input or missing transcript returns
     ``None`` so the Stop chain is never crashed.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_closure_reverify_stop(data)
+        with _teatree_src_on_path():
+            return _run_closure_reverify_stop(data)
     except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _run_closure_reverify_stop(data: dict) -> bool | None:

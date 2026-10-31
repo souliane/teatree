@@ -110,3 +110,34 @@ class OperatorGrantTestCase(TestCase):
 
         with pytest.raises(PermissionError, match="does not belong"):
             grant.token_for("approve", "org/repo!7", "slack:U-ALICE", key=self.key)
+
+    def _gitlab_grant_with_consent(self, action: str = "approve") -> OperatorGrant:
+        OperatorIdentity.objects.create(user=self.alice, platform="gitlab", handle="alice", external_id="1")
+        OnBehalfApproval.record("org/repo!7", action, "gitlab:alice")
+        return OperatorGrant.objects.store(
+            user=self.alice,
+            forge="gitlab",
+            tokens=OperatorGrantTokens("access-alice", "refresh-alice", self.expires_at, scope="api"),
+            key=self.key,
+        )
+
+    def test_token_for_approval_refuses_a_demoted_operator(self) -> None:
+        grant = self._gitlab_grant_with_consent()
+        self.alice.is_superuser = False
+        self.alice.save(update_fields=["is_superuser"])
+
+        with pytest.raises(PermissionError, match="does not belong"):
+            grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)
+
+    def test_token_for_approval_spends_its_consent_once(self) -> None:
+        grant = self._gitlab_grant_with_consent()
+        OnBehalfApproval.objects.update(consumed_at=timezone.now())
+
+        with pytest.raises(PermissionError, match="no consent"):
+            grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)
+
+    def test_token_for_serves_only_approve_and_unapprove(self) -> None:
+        grant = self._gitlab_grant_with_consent("post_comment")
+
+        with pytest.raises(PermissionError, match="cannot authorize"):
+            grant.token_for("post_comment", "org/repo!7", "gitlab:alice", key=self.key)

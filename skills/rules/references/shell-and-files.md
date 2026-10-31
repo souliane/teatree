@@ -103,7 +103,8 @@ The `t3 worker` owns loop cadence. A harness cron / `/loop` / `ScheduleWakeup` t
 # do X — check first; a RUNNING worker means register nothing:
 t3 worker status          # `worker: RUNNING (pid 7)` → the worker drives all three; stop here
 t3 worker ensure          # not running? this is the fix — not a cron
-t3 loop resume <name>     # a genuinely needed loop becomes a DB `Loop` row, the normal t3 way
+t3 loop preset use <preset>  # the normal handle: the active preset enables the loops the work needs
+t3 loop override <name> on --reason <why>  # the per-loop exception: a DB `Loop` row that never expires
 # never Y — a cron/wakeup that shells a loop command the worker owns:
 #   CronCreate(prompt="Run `t3 loops tick --loop dispatch`")   ← FORBIDDEN: PR-28 retired the cron mirror
 #   /loop 30s Run `t3 loop drain-queue run`.                   ← FORBIDDEN while a worker is alive
