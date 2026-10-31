@@ -19,6 +19,7 @@ from teatree.cli.review.operator_approval import (
     publish_operator_approval,
 )
 from teatree.cli.review.service import ReviewService
+from teatree.core.mode_resolution import owner_voice_forbidden
 from teatree.core.modelkit.gate_verdict import ReadOutcome
 from teatree.core.models import (
     ConfigSetting,
@@ -31,7 +32,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.utils.sealing import MasterKey
-from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 class ApprovalAPI:
@@ -82,7 +83,7 @@ class TestOperatorApproval(TestCase):
         Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/merge_requests/7", requested_by="gitlab:alice")
         self.key = MasterKey(b"a" * 32)
 
-    def _grant(self, user: AbstractBaseUser, access: str) -> None:
+    def _grant(self, user: AbstractBaseUser, access: str, *, scope: str = "api") -> None:
         OperatorGrant.objects.store(
             user=user,
             forge="gitlab",
@@ -90,7 +91,7 @@ class TestOperatorApproval(TestCase):
                 access_token=access,
                 refresh_token=f"{access}-refresh",
                 expires_at=timezone.now() + timedelta(hours=1),
-                scope="api",
+                scope=scope,
             ),
             key=self.key,
         )
@@ -189,6 +190,41 @@ class TestOperatorApproval(TestCase):
             read_token.assert_not_called()
         assert api.posts == 0
         assert not OnBehalfApproval.objects.filter(consumed_at__isnull=False).exists()
+
+    def test_grant_without_the_api_scope_refuses_and_keeps_the_consent(self) -> None:
+        self._grant(self.alice, "alice-access", scope="read_user")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "approval scope" in result.output
+        assert tokens == []
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_a_forbidding_posture_does_not_stop_a_recorded_consent(self) -> None:
+        seed_forbidding_posture()
+        assert owner_voice_forbidden()
+        self._grant(self.alice, "alice-access")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 0, result.output
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+
+    def test_a_permitting_posture_does_not_stand_in_for_the_consent(self) -> None:
+        self._grant(self.alice, "alice-access")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "No consent" in result.output
+        assert tokens == []
 
     def test_blank_requester_resolves_to_the_sole_consenting_operators_grant(self) -> None:
         Ticket.objects.update(requested_by="")

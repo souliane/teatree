@@ -251,6 +251,18 @@ class OperatorOAuthTestCase(TestCase):
         assert b"refresh-secret" not in bytes(grant.ciphertext)
         assert post.call_args.kwargs["data"]["code"] == "approval-code"
 
+    def test_gitlab_approval_consent_asks_for_the_api_scope_that_sign_in_does_not(self) -> None:
+        user = get_user_model().objects.create_superuser("alice", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="gitlab", handle="alice", external_id="1")
+        self.client.force_login(user)
+
+        approvals = self.client.get("/login/oauth/gitlab/approvals/")
+        sign_in = self.client.get("/login/oauth/gitlab/start/")
+
+        assert urlsplit(approvals.headers["Location"]).netloc == "gitlab.example"
+        assert parse_qs(urlsplit(approvals.headers["Location"]).query)["scope"] == ["api"]
+        assert parse_qs(urlsplit(sign_in.headers["Location"]).query)["scope"] == ["read_user"]
+
     def test_approval_consent_without_master_key_reports_remedy_and_stores_nothing(self) -> None:
         user = self._invited_github_operator("alice", "123")
         self.client.force_login(user)
