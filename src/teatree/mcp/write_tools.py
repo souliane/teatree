@@ -30,7 +30,10 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from teatree.agents.coordinator_escalation import escalate
+from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.config.setting_taxonomy import owner_only_reason
+from teatree.core.answering.escalation import EscalationRefusedError
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
@@ -371,6 +374,25 @@ async def _review_request_post(
     )()
 
 
+async def _escalate(kind: str, message: str) -> dict[str, Any]:
+    """Ask the coordinator for help from a running task; the request waits for its answer, then reaches the owner.
+
+    ``kind`` is ``internal`` or the decision you need: credentials, money_or_plan, public_post, irreversible,
+    architecture (those five may come to the owner as a question once nobody answers in time), or product_scope.
+    ``message`` is the one question, in plain words. Writes one internal request and tells a live coordinator,
+    else resumes the thread's coordinator task; it never acts for you. A repeat of the same call returns the same
+    request. The answer arrives in your mailbox. The answering phase cannot call this.
+    """
+    client = MailboxClient.from_env()
+    if client is None:
+        msg = "escalate is for a task bound to a live mailbox"
+        raise ToolError(msg)
+    try:
+        return dict(await escalate(client, kind=kind, message=message))
+    except (EscalationRefusedError, MailboxError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
 @dataclass(frozen=True)
 class _WriteTool:
     """One teatree-own MCP write tool: name, async handler, hint, gated seam.
@@ -476,6 +498,12 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _review_request_post,
         _WRITE,
         "call_command('review_request_post') — #1094 dedup + #960 on-behalf + review-state",
+    ),
+    _WriteTool(
+        "escalate",
+        _escalate,
+        _WRITE,
+        "core.answering.escalation.record_request — one internal request row, delivery only",
     ),
 )
 

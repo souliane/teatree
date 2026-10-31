@@ -30,9 +30,10 @@ _PEER_MAILBOX_TOOLS: Final[frozenset[str]] = frozenset(
     {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
 )
 #: Peer text changes delivery state, not repository state; it never runs a tool for the sender.
+#: ``escalate`` writes one internal request row and one message; it rides with the inbox that carries the reply.
 _MCP_WRITE_TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "requesting_review": frozenset({"review_request_post"}),
-    **dict.fromkeys(("planning", "reviewing", "critic_reviewing"), _PEER_MAILBOX_TOOLS),
+    **dict.fromkeys(("planning", "reviewing", "critic_reviewing"), _PEER_MAILBOX_TOOLS | {"escalate"}),
 }
 
 #: Every capability tool name Lane B can expose. A phase's allowance is a subset;
@@ -213,3 +214,8 @@ def disallowed_tools_for_phase(phase: str) -> frozenset[str]:
 def mcp_write_tools_for_phase(phase: str) -> frozenset[str]:
     """Named non-read-only MCP tools a phase without :data:`MCP_WRITE` still reaches."""
     return _MCP_WRITE_TOOLS_BY_PHASE.get(normalize_phase(phase), frozenset())
+
+
+def mcp_write_tool_granted(phase: str, tool: str) -> bool:
+    """Whether a dispatch in *phase* reaches the write tool *tool*: the full grant, or the tool named for it."""
+    return MCP_WRITE in tools_for_phase(phase) or tool in mcp_write_tools_for_phase(phase)
