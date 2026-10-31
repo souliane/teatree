@@ -38,6 +38,10 @@ def owner_stop_refusal(reason: str) -> str:
     return f"{OWNER_STOP_REFUSAL_PREFIX}{reason}. {OWNER_STOP_SHAPE} {' '.join(owner_stop_limits_lines())}"
 
 
+def owner_stop_refusal_reason(refusal: str) -> str:
+    return refusal.removeprefix(OWNER_STOP_REFUSAL_PREFIX).partition(f". {OWNER_STOP_SHAPE}")[0]
+
+
 class OwnerCard(TypedDict, total=False):
     why: str
     blocker: str
