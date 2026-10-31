@@ -9,6 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents import live_mailbox
+from teatree.agents.data_fence import data_rule, fenced
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.core.answering.escalation import ESCALATION_DEADLINE, record_request
 from teatree.core.models import DmContext, PendingChatInjection, Session, SessionCommand, Task, Ticket
@@ -79,7 +80,8 @@ class TestAnOpenEscalationRoutesToTheCoordinator(_Thread):
         child = Task.objects.get(parent_task=self.coordinator)
         assert child.phase == "answering"
         assert _OWNER_TEXT in child.execution_reason
-        assert "OWNER MESSAGE" in child.execution_reason
+        assert fenced("OWNER MESSAGE", _OWNER_TEXT) in child.execution_reason
+        assert data_rule("OWNER MESSAGE") in child.execution_reason
         row.refresh_from_db()
         assert row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
         assert not SessionCommand.objects.filter(task=self.asker).exists()
@@ -105,8 +107,9 @@ class TestAnOpenEscalationRoutesToTheCoordinator(_Thread):
             self._cycle()
 
         self.client.steer.assert_not_called()
-        assert _OWNER_TEXT in session.delivered[0]
-        assert not Task.objects.filter(parent_task=self.coordinator).exists()
+        quoted_fence = "\n".join(f"> {line}" for line in fenced("OWNER MESSAGE", _OWNER_TEXT).splitlines())
+        assert quoted_fence in session.delivered[0]
+        assert not Task.objects.filter(parent_task__isnull=False).exists()
 
     def test_the_message_reaches_the_asker_when_nobody_can_be_told(self) -> None:
         Task.objects.filter(pk=self.coordinator.pk).update(phase="planning")

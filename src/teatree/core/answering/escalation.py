@@ -67,10 +67,14 @@ def _requests() -> models.QuerySet[DeferredQuestion]:
     return DeferredQuestion.internal_pending().filter(dedupe_marker__startswith=MARKER_PREFIX)
 
 
-def open_request(ticket_id: int, *, now: datetime | None = None) -> DeferredQuestion | None:
+def _deadline_cutoff() -> datetime:
+    return timezone.now() - ESCALATION_DEADLINE
+
+
+def open_request(ticket_id: int) -> DeferredQuestion | None:
     """The newest request of *ticket_id* that is still waiting and inside its deadline."""
-    cutoff = (now or timezone.now()) - ESCALATION_DEADLINE
-    return _requests().filter(parked_task__ticket_id=ticket_id, created_at__gt=cutoff).order_by("-created_at").first()
+    open_ones = _requests().filter(parked_task__ticket_id=ticket_id, created_at__gt=_deadline_cutoff())
+    return open_ones.order_by("-created_at").first()
 
 
 def _answering(ticket_id: int) -> models.QuerySet[Task]:
@@ -134,8 +138,7 @@ def settle_request(row: DeferredQuestion) -> bool:
     return True
 
 
-def settle_expired_escalations(*, now: datetime | None = None) -> int:
+def settle_expired_escalations() -> int:
     """Close each request past its deadline; the number closed."""
-    cutoff = (now or timezone.now()) - ESCALATION_DEADLINE
-    expired = _requests().filter(created_at__lte=cutoff).select_related("parked_task")
+    expired = _requests().filter(created_at__lte=_deadline_cutoff())
     return sum(settle_request(row) for row in list(expired))

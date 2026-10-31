@@ -100,14 +100,14 @@ class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
         assert DeferredQuestion.objects.count() == 1
 
     def test_a_refusal_comes_back_as_a_tool_error(self) -> None:
-        with pytest.raises(ToolError, match="valid kinds"):
+        with pytest.raises(ToolError, match="invalid kind 'spend_money' — valid kinds: internal"):
             self._call({"kind": "spend_money", "message": "Go ahead?"})
         assert not DeferredQuestion.objects.exists()
 
     def test_a_mailbox_that_is_gone_comes_back_as_a_tool_error(self) -> None:
         server = self._server("planning")
         dead = {MAILBOX_SOCKET_ENV: "/nonexistent/mailbox.sock", MAILBOX_AUTH_ENV: "token"}
-        with patch.dict("os.environ", dead), pytest.raises(ToolError, match="unavailable"):
+        with patch.dict("os.environ", dead), pytest.raises(ToolError, match="Live mailbox is unavailable"):
             async_to_sync(server.call_tool)("escalate", {"kind": "internal", "message": "Help?"})
         assert not DeferredQuestion.objects.exists()
 

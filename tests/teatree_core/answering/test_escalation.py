@@ -48,6 +48,7 @@ class TestTheRequestRow(TestCase):
         assert DeferredQuestion.objects.count() == 1
         assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert row.parked_task_id == asker.pk
+        assert row.task_session_id == asker.session_id
         assert row.question == _MESSAGE
         assert row.dedupe_marker.startswith(MARKER_PREFIX)
         assert row.evidence == {"escalation": {"kind": INTERNAL_KIND, "task": asker.pk}}
@@ -152,6 +153,35 @@ class TestTheThreadsCoordinatorTask(TestCase):
     def test_a_ticket_with_no_answering_task_has_none(self) -> None:
         assert coordinator_task(_asker().ticket_id) is None
 
+    def test_another_tickets_answering_task_is_never_the_coordinator(self) -> None:
+        other = TicketFactory(state=Ticket.State.WORK_STARTED)
+        TaskFactory(
+            ticket=other,
+            session=SessionFactory(ticket=other, agent_id="answering"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+
+        assert coordinator_task(_asker().ticket_id) is None
+        assert resume_coordinator(_asker().ticket_id, event_id="escalation:7", message="x") is None
+
+    def test_a_later_request_resumes_the_continuation_that_already_ran(self) -> None:
+        asker = _asker()
+        TaskFactory(
+            ticket=asker.ticket,
+            session=SessionFactory(ticket=asker.ticket, agent_id="answering"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+        first = resume_coordinator(asker.ticket_id, event_id="escalation:7", message="first request")
+        assert first is not None
+        Task.objects.filter(pk=first.pk).update(status=Task.Status.COMPLETED)
+
+        second = resume_coordinator(asker.ticket_id, event_id="escalation:8", message="second request")
+
+        assert second is not None
+        assert second.parent_task_id == first.pk
+
     def test_resuming_it_queues_one_child_carrying_the_request(self) -> None:
         asker = _asker()
         parent = TaskFactory(
@@ -236,7 +266,8 @@ class TestTheDeadline(TestCase):
         asker.refresh_from_db()
         assert asker.status == Task.Status.CLAIMED
 
-    def test_every_raisable_kind_makes_a_card_the_owner_checks_accept(self) -> None:
+    def test_every_raisable_kind_makes_a_card_the_owner_checks_accept_that_names_its_subject(self) -> None:
+        questions = set()
         for decision in OWNER_RAISABLE_DECISIONS:
             with self.subTest(decision=decision):
                 DeferredQuestion.objects.all().delete()
@@ -244,7 +275,10 @@ class TestTheDeadline(TestCase):
 
                 settle_expired_escalations()
 
-                assert DeferredQuestion.owner_pending().get().evidence["decision"] == decision.value
+                card = DeferredQuestion.owner_pending().get()
+                assert card.evidence["decision"] == decision.value
+                questions.add(card.question)
+        assert len(questions) == len(OWNER_RAISABLE_DECISIONS)
 
     def test_a_kind_that_is_not_owner_raisable_fails_the_asker_with_a_typed_reason_and_no_card(self) -> None:
         for kind in (INTERNAL_KIND, OwnerDecision.PRODUCT_SCOPE.value):
@@ -286,6 +320,13 @@ class TestTheDeadline(TestCase):
         assert not DeferredQuestion.owner_pending().exists()
         asker.refresh_from_db()
         assert asker.status == Task.Status.CLAIMED
+
+    def test_a_request_deleted_before_it_was_settled_is_not_settled(self) -> None:
+        _asker_task, row = self._expired(OwnerDecision.ARCHITECTURE)
+        DeferredQuestion.objects.filter(pk=row.pk).delete()
+
+        assert settle_request(row) is False
+        assert not DeferredQuestion.owner_pending().exists()
 
     def test_a_request_that_stopped_pending_before_it_was_settled_is_not_settled_again(self) -> None:
         _asker_task, row = self._expired(OwnerDecision.ARCHITECTURE)
