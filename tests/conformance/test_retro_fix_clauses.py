@@ -11,7 +11,10 @@ WASTE_RECORDED_WITH_COST = "Every waste is recorded with its cost before it beco
 _CLAUSES = (
     ("skills/retro/SKILL.md", WASTE_RECORDED_WITH_COST),
     ("skills/dreaming/SKILL.md", WASTE_RECORDED_WITH_COST),
-    ("skills/test/SKILL.md", "A regression that only reproduces in a primary checkout is verified in one."),
+    (
+        "skills/test/SKILL.md",
+        "is verified in one; a green run in a worktree proves nothing about it.",
+    ),
     (
         "skills/code/SKILL.md",
         'A guard that cannot distinguish "nothing matched" from "nothing was read" reports a false clean',

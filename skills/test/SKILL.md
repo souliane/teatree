@@ -216,8 +216,6 @@ Never hand-roll the `docker run`: the runner pins the image, project environment
 
 "Make the pipeline green" means fix the root cause — not skip, xfail, or `pragma: no cover` the test. Urgency means being faster at diagnosing, not cutting corners. A test that fails on the default branch is pre-existing and reported as such, not silenced.
 
-A regression that only reproduces in a primary checkout is verified in one.
-
 ### Fix-Push-Monitor Loop
 
 When CI fails:
