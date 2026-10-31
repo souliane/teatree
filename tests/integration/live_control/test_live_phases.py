@@ -34,7 +34,7 @@ class LivePhaseTests(TestCase):
         finally:
             broker.unregister(identity.address)
         writable = {tool.name for tool in tools if not tool.annotations or not tool.annotations.read_only_hint}
-        assert writable == {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+        assert writable == {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait", "escalate"}
         run_pair("claude_sdk", "claude_sdk", phase=phase, sender_phase=phase, round_trip=True)
 
     def test_planning_sends_and_receives_with_mailbox_only_writes(self) -> None:

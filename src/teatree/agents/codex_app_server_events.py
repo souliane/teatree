@@ -7,7 +7,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
+from teatree.agents.codex_escalation_tools import ESCALATE_SPEC
 from teatree.agents.codex_post_tool import report_completed_item
+from teatree.agents.coordinator_escalation import ESCALATE, escalate
 from teatree.agents.live_mailbox_client import MailboxError
 from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 
@@ -35,6 +37,7 @@ _MAILBOX_TOOLS = {
         {"after_id": {"type": "integer"}, "timeout_seconds": {"type": "number"}},
         [],
     ),
+    ESCALATE: ESCALATE_SPEC,
 }
 
 
@@ -102,7 +105,11 @@ async def mailbox_tool_result(
     ):
         return None
     try:
-        value = await getattr(mailbox, specification[0])(**arguments)
+        value = (
+            await escalate(mailbox, **arguments)
+            if tool == ESCALATE
+            else await getattr(mailbox, specification[0])(**arguments)
+        )
         return {"contentItems": [{"type": "inputText", "text": json.dumps(value)}], "success": True}
     except (MailboxError, TypeError, ValueError) as exc:
         return {"contentItems": [{"type": "inputText", "text": str(exc)}], "success": False}

@@ -30,6 +30,7 @@ from teatree.agents.live_mailbox_client import MailboxClient
                 "agent_mailbox_send",
                 "agent_mailbox_inbox",
                 "agent_mailbox_wait",
+                "escalate",
             },
         ),
         (
@@ -40,6 +41,7 @@ from teatree.agents.live_mailbox_client import MailboxClient
                 "agent_mailbox_send",
                 "agent_mailbox_inbox",
                 "agent_mailbox_wait",
+                "escalate",
             },
         ),
         (
@@ -50,6 +52,7 @@ from teatree.agents.live_mailbox_client import MailboxClient
                 "agent_mailbox_send",
                 "agent_mailbox_inbox",
                 "agent_mailbox_wait",
+                "escalate",
             },
         ),
     ],

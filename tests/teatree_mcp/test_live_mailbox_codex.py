@@ -192,7 +192,8 @@ def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path
     messages, received = asyncio.run(run())
     [start] = _requests(log, "thread/start")
     assert {tool["name"] for tool in start["params"]["dynamicTools"]} == {
-        f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")
+        *(f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")),
+        "escalate",
     }
     assert received[0]["text"] == "nonce-from-codex"
     assert any("accepted_inbox_read" in str(message) for message in messages)
