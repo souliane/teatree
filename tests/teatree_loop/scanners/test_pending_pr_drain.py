@@ -22,6 +22,7 @@ from teatree.core.models import PendingPullRequest
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.core.owner_dm_sweep import run_sweep
+from teatree.core.owner_question_message import render_text, shown_problems_for
 from teatree.loop.scanners import PendingPrDrainScanner
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -71,12 +72,25 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert run_sweep().resolved == 0
         assert DeferredQuestion.owner_pending().count() == 2
 
-    def test_card_names_the_branch_so_the_owner_can_tell_obligations_apart(self) -> None:
+    def test_card_text_carries_no_branch_path_or_id(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)
         call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
         PendingPullRequest.objects.update(drain_attempts=MAX_DRAIN_ATTEMPTS)
         PendingPrDrainScanner().scan()
-        assert branch in DeferredQuestion.objects.get().evidence["quoted"]
+        row = DeferredQuestion.objects.get()
+        text = render_text(row)
+        assert branch not in text
+        assert str(repo) not in text
+        assert shown_problems_for(row) == []
+
+    def test_card_quotes_the_intended_title_so_the_owner_can_tell_obligations_apart(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        PendingPullRequest.objects.update(drain_attempts=MAX_DRAIN_ATTEMPTS, spec={"title": "feat: add the feature"})
+        PendingPrDrainScanner().scan()
+        text = render_text(DeferredQuestion.objects.get())
+        assert "> feat: add the feature" in text
+        assert branch not in text
 
     def test_owner_stop_reminding_discharges_the_obligation(self) -> None:
         _origin, repo, branch = _first_push_repo(self._tmp_path)

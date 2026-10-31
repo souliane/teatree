@@ -16,10 +16,10 @@ The tell here is durable and structural: the ticket was queued, its newest task 
 and nothing is pending, claimed, or retrying. Requiring FAILED rather than merely terminal
 keeps a ticket a human is hand-working (newest task COMPLETED) out of the count.
 
-Two failures leave the count because the owner is already being asked: a CANCELLED one, and
-a ticket the retire-or-keep card of :mod:`teatree.core.factory.parked_ticket_decision` covers. A halted
-failure younger than that, or on a ticket with an open pull request the card skips, still counts,
-so a lane that is down keeps raising the aggregate signal.
+A newest failure that is explicitly parked — stamped ``[repair-halt-parked]`` or CANCELLED — is a recorded
+decision, not a stranding, at any age: the retire-or-keep card of
+:mod:`teatree.core.factory.parked_ticket_decision` asks the owner about the aged ones. An unstamped
+failure still counts, so a lane that is down keeps raising the aggregate signal.
 
 Separated from :mod:`teatree.core.factory.operational_health` the way
 ``reclaim_is_stalled`` is — the aggregator folds the collected signals into a verdict;
@@ -33,8 +33,7 @@ from django.db.models import Exists, Max, OuterRef, Subquery
 from django.utils import timezone
 
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
-from teatree.core.factory.parked_tickets import aged_parked_tasks
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 
@@ -58,13 +57,14 @@ def stranded_ticket_count() -> int:
             # The NEWEST status, not "has a failed task": a later completion retires the failure.
             newest_task_status=Subquery(newest.values("status")[:1]),
             newest_task_failure_kind=Subquery(newest.values("failure_kind")[:1]),
+            newest_task_reason=Subquery(newest.values("execution_reason")[:1]),
         )
         # The window is what separates a stranded ticket from one whose retry is in flight.
         .filter(newest_task_at__lt=now - STALLED_BACKLOG_WINDOW)
         .filter(newest_task_status=Task.Status.FAILED)
         .exclude(Exists(own_tasks.filter(status__in=Task.Status.active())))
-        .exclude(pk__in=[task.ticket_id for task in aged_parked_tasks()])
         .exclude(newest_task_failure_kind=FailureKind.CANCELLED)
+        .exclude(newest_task_reason__contains=HALT_STAMP)
         .count()
     )
 

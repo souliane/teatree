@@ -43,7 +43,10 @@ def parked_ticket_signals() -> SignalCollection:
                 fingerprint="parked-tickets-await-owner",
                 severity=KnownIssue.Severity.WARNING,
                 kind="parked_tickets",
-                summary=f"{_tickets_have(count)} failed newest tasks created over 14 days ago",
+                summary=(
+                    f"{_tickets_have(count)} failed newest tasks created over 14 days ago"
+                    " — whether to retire or keep them parked is the owner's decision"
+                ),
             ),
         )
     )

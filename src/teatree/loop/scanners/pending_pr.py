@@ -19,21 +19,22 @@ never retried in silence.
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 from django.utils import timezone
 
-from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
+from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS, PendingPullRequest
+from teatree.core.worktree.stuck_pr_notice import (
+    ask_owner_about_stuck_prs,
+    discharge_stopped,
+    settle_discharged_stuck_pr_notices,
+)
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.models import PendingPullRequest
 
 logger = logging.getLogger(__name__)
 
 
-def _due(row: "PendingPullRequest") -> bool:
+def _due(row: PendingPullRequest) -> bool:
     if row.drain_attempts < MAX_DRAIN_ATTEMPTS or row.last_attempt_at is None:
         return True
     minutes = min(5 * 2 ** min(row.drain_attempts - MAX_DRAIN_ATTEMPTS, 9), 24 * 60)
@@ -48,13 +49,6 @@ class PendingPrDrainScanner:
     name: str = "pending_pr_drain"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
-        from teatree.core.worktree.stuck_pr_notice import (  # noqa: PLC0415 — owner cards use ORM at tick time
-            ask_owner_about_stuck_prs,
-            discharge_stopped,
-            settle_discharged_stuck_pr_notices,
-        )
-
         try:
             retired = PendingPullRequest.objects.retire_absent()
             discharge_stopped(self._overdue())
@@ -81,9 +75,7 @@ class PendingPrDrainScanner:
             )
         return signals
 
-    def _overdue(self) -> "list[PendingPullRequest]":
-        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
-
+    def _overdue(self) -> list[PendingPullRequest]:
         return list(PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit])
 
     @staticmethod
@@ -104,7 +96,7 @@ class PendingPrDrainScanner:
         ]
 
     @staticmethod
-    def _drain_one(row: "PendingPullRequest") -> bool:
+    def _drain_one(row: PendingPullRequest) -> bool:
         """Re-run ``ensure-pr`` for one owed branch; ``True`` when the obligation is discharged.
 
         ``ensure-pr`` is the whole creation path — classification included — so a

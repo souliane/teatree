@@ -54,7 +54,7 @@ def ask_owner_about_stuck_pr(row: PendingPullRequest) -> DeferredQuestion | None
             CardOption(STOP_REMINDING, "I retire this reminder and leave the branch untouched."),
         ),
         subject=f"pending-pr:{row.pk}",
-    ).with_quote(_QUESTION, row.branch)
+    ).with_quote(_QUESTION, row.intended_title)
     try:
         return DeferredQuestion.record(_QUESTION, dedupe_marker=_marker(row), card=card)
     except DeferredQuestionError:

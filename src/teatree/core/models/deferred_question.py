@@ -455,14 +455,10 @@ class DeferredQuestion(models.Model):
             row.save(update_fields=["resolved_via"])
             return row
 
-    def mark_applied(self) -> bool:
-        """Stamp ``applied_at`` single-use: whoever owns this card has acted on its answer."""
+    def mark_posted(self) -> bool:
+        """Stamp ``applied_at``: the answer was posted to the asking session's mailbox (not that it was read)."""
         manager = type(self).objects.using(self._state.db)
         return bool(manager.filter(pk=self.pk, applied_at__isnull=True).update(applied_at=timezone.now()))
-
-    def mark_posted(self) -> bool:
-        """The answer was posted to the asking session's mailbox (not that it was read)."""
-        return self.mark_applied()
 
     def post_to_asking_session(self) -> None:
         try:

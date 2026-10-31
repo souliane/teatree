@@ -9,6 +9,7 @@ from teatree.core.factory.parked_tickets import aged_parked_tasks, silent_freeze
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.known_issue import KnownIssue
 
 
 class ParkedTicketSelectionTest(TestCase):
@@ -70,10 +71,29 @@ class ParkedTicketSelectionTest(TestCase):
     def test_aged_parks_raise_one_owner_decision_signal(self) -> None:
         self._failed(reason=HALT_STAMP)
         self._failed(kind=FailureKind.CANCELLED)
-        (summary,) = self._parked_signals()
-        assert summary.startswith("2 tickets have ")
-        assert "created over 14 days ago" in summary
-        assert "await your decision" not in summary
+        (signal,) = [row for row in collect_signals().signals if row.fingerprint == "parked-tickets-await-owner"]
+        assert signal.severity == KnownIssue.Severity.WARNING
+        assert signal.summary.startswith("2 tickets have ")
+        assert "created over 14 days ago" in signal.summary
+        assert "retire or keep them parked is the owner's decision" in signal.summary
+
+    def test_the_owner_decision_signal_is_gone_once_no_ticket_is_parked(self) -> None:
+        task = self._failed(reason=HALT_STAMP)
+        assert self._parked_signals()
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.IGNORED)
+        assert self._parked_signals() == []
+
+    def test_a_keep_answer_given_outside_slack_leaves_the_signal(self) -> None:
+        for channel in (DeferredQuestion.ResolvedVia.LOCAL, DeferredQuestion.ResolvedVia.AGENT):
+            with self.subTest(channel=channel):
+                DeferredQuestion.objects.all().delete()
+                Task.objects.all().delete()
+                self._failed(reason=HALT_STAMP)
+                ask_owner_about_parked(aged_parked_tasks())
+                DeferredQuestion.objects.update(
+                    answered_at=timezone.now(), answer_text=KEEP_ANSWER, resolved_via=channel
+                )
+                assert self._parked_signals()
 
     def test_a_keep_answer_clears_the_signal_for_the_tickets_it_ruled_on(self) -> None:
         self._failed(reason=HALT_STAMP)
