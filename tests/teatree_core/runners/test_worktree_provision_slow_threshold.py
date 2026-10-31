@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from teatree.core.provision.provision_report import ProvisionReport, StepResult
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
 
@@ -35,3 +37,15 @@ def test_an_unreadable_threshold_stays_quiet_below_the_declared_default() -> Non
 
 def test_a_readable_threshold_wins_over_the_declared_default() -> None:
     assert not _persist(_report_taking(50), configured=60, declared=45).called
+
+
+@pytest.mark.parametrize("configured", [0, -1])
+def test_a_non_positive_threshold_alerts_past_the_declared_default(configured: int) -> None:
+    alert = _persist(_report_taking(50), configured=configured, declared=45)
+
+    assert alert.call_args.kwargs["detail"].endswith("exceeded the 45s threshold")
+
+
+@pytest.mark.parametrize("configured", [0, -1])
+def test_a_non_positive_threshold_stays_quiet_below_the_declared_default(configured: int) -> None:
+    assert not _persist(_report_taking(40), configured=configured, declared=45).called

@@ -29,16 +29,16 @@ logger = logging.getLogger(__name__)
 def _resolve_slow_threshold_seconds() -> int:
     """The configured slow-provision alert threshold (seconds), defensively coerced.
 
-    A non-numeric or unreadable setting (e.g. an under-specified settings
-    mock in a caller's test) degrades to the declared default rather than
-    crashing the provision — the alert is a best-effort nicety, never a
-    correctness gate.
+    A non-numeric, non-positive or unreadable setting degrades to the declared
+    default rather than crashing the provision or alerting on every run — the
+    alert is a best-effort nicety, never a correctness gate.
     """
     declared = UserSettings().provision_slow_threshold_seconds
     try:
-        return int(getattr(get_effective_settings(), "provision_slow_threshold_seconds", declared))
+        threshold = int(getattr(get_effective_settings(), "provision_slow_threshold_seconds", declared))
     except (TypeError, ValueError):
         return declared
+    return threshold if threshold > 0 else declared
 
 
 def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> bool:

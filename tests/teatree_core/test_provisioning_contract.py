@@ -30,7 +30,7 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.management.commands._e2e_runners import build_e2e_env as _build_e2e_env
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayE2E, OverlayRuntime, ProvisionStep, RunCommands
-from teatree.core.provision.provision_report import StepResult
+from teatree.core.provision.provision_report import ProvisionReport, StepResult
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
 from teatree.core.runners.worktree_start import WorktreeStartRunner
@@ -327,9 +327,11 @@ class WorktreeProvisionRunnerContractTests(TestCase):
 
     def test_slow_provision_fires_out_of_band_alert(self) -> None:
         overlay = FullStackOverlay(self.order_file)
+        slow = ProvisionReport(steps=[StepResult(name="slow", success=True, duration=700.0)])
         with (
             patch("teatree.core.runners.worktree_provision.alert_provision_user") as mock_alert,
             patch("teatree.core.runners.worktree_provision.get_effective_settings") as mock_settings,
+            patch("teatree.core.runners.worktree_provision.run_provision_steps", return_value=slow),
         ):
             mock_settings.return_value = SimpleNamespace(provision_slow_threshold_seconds=-1)
             result = self._run(overlay)
