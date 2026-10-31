@@ -45,12 +45,9 @@ _CANONICAL_TO_TRANSITION: dict[str, str] = {
 
 #: The single source of truth mapping a ticket ``(role, phase)`` pair to the
 #: sub-agent the loop dispatches for it. Every author phase routes to its OWN
-#: phase agent — the loop is the per-phase dispatcher, never a single
-#: orchestrator that chains coder→tester→reviewer→shipper inline (BLUEPRINT
-#: §5.2 / §17.8 invariant 10: phase agents are invoked by the headless
-#: executor when a phase task is claimed; the orchestrator does synthesis and
-#: dispatch, not execution). Keyed on the canonical phase token so a task
-#: stored with any accepted spelling resolves through ``normalize_phase``.
+#: phase agent: the headless executor invokes it when a phase task is claimed
+#: (BLUEPRINT §5.2 / §17.8 invariant 10). Keyed on the canonical phase token so
+#: a task stored with any accepted spelling resolves through ``normalize_phase``.
 SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "planning"): "t3:planner",
     ("reviewer", "reviewing"): "t3:reviewer",
@@ -147,11 +144,6 @@ SCANNER_DISPATCHED_PHASES: frozenset[str] = frozenset(
 KNOWN_PHASES: frozenset[str] = (
     CANONICAL_PHASES | frozenset(phase for _role, phase in SUBAGENT_BY_PHASE) | SCANNER_DISPATCHED_PHASES
 )
-
-#: The chaining orchestrator must never be the target of an author phase
-#: dispatch — that is the shadowing the per-phase restoration removes. A
-#: conformance test asserts no author phase routes here.
-CHAINING_ORCHESTRATOR: str = "t3:orchestrator"
 
 
 class PhaseCost(StrEnum):
