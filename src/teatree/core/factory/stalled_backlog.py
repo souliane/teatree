@@ -37,7 +37,6 @@ from teatree.core.factory.parked_tickets import aged_parked_tasks
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
-from teatree.utils.throttled_log import warn_throttled
 
 #: A ticket whose newest task FAILED this long ago, with nothing pending or claimed, has
 #: no execution path left — long enough that a retry in flight never trips it.
@@ -79,8 +78,8 @@ def stalled_backlog_signals() -> SignalCollection:
     """
     try:
         stalled = stranded_ticket_count()
-    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
-        warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
+    except Exception:
+        logger.exception("stalled-backlog health read failed — skipped")
         return SignalCollection(unread=("stalled_backlog_signals",))
     if stalled < STALLED_BACKLOG_THRESHOLD:
         return SignalCollection()

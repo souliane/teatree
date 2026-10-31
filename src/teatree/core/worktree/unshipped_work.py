@@ -18,8 +18,8 @@ def unshipped_work_paths(ticket: Ticket) -> list[str]:
     """The ticket's worktrees holding uncommitted tracked changes; empty when unreadable."""
     try:
         return ticket_worktree_checks.collect_dirty_worktree_paths(ticket)
-    except Exception:  # noqa: BLE001 — an unreadable checkout must never abort the retirement
-        logger.warning("Could not read worktree state for ticket %s — retiring without the probe", ticket.pk)
+    except Exception:
+        logger.exception("Could not read worktree state for ticket %s — retiring without the probe", ticket.pk)
         return []
 
 
