@@ -32,6 +32,7 @@ from teatree.core.setting_control import SettingControl
 from teatree.core.settings.settings_compare import (
     CONFIRM_GATED_REASON,
     ENV_SOURCE,
+    RENDER_CAP,
     WITHHELD_REASON,
     Cell,
     CompareFilters,
@@ -626,6 +627,37 @@ class TestKindFilteringPrecedesTheRenderCap(_RowBuilderCase):
         assert view.differing_rows == 501
         assert view.compared_rows == 501
         assert view.identical == 0
+        assert not view.truncated
+
+
+class TestTheRenderCapLimitsOnlyIdenticalRows(_RowBuilderCase):
+    def _keys(self, prefix: str, count: int) -> tuple[str, ...]:
+        return tuple(f"{prefix}_{index:03d}" for index in range(count))
+
+    def _view_over(self, local_values: dict[str, str], peer_values: dict[str, str], *, differs_only: bool) -> Any:
+        keys = tuple(local_values)
+        local = _box(LOCAL_LABEL, {"": local_values}, declares=keys)
+        peer = _box("peer", {"": peer_values}, declares=keys)
+        return self._view(local, peer, filters=CompareFilters(differs_only=differs_only))
+
+    def test_every_differing_row_is_shown_beside_a_capped_run_of_identical_ones(self) -> None:
+        same, differing = self._keys("same", 600), self._keys("differs", 3)
+        view = self._view_over(
+            {**dict.fromkeys(same, "x"), **dict.fromkeys(differing, "left")},
+            {**dict.fromkeys(same, "x"), **dict.fromkeys(differing, "right")},
+            differs_only=False,
+        )
+
+        assert sum(row.differs for row in view.rows) == 3
+        assert sum(not row.differs for row in view.rows) == RENDER_CAP
+        assert view.truncated
+        assert view.total_rows == 603
+
+    def test_a_differences_only_view_is_never_capped(self) -> None:
+        keys = self._keys("differs", RENDER_CAP + 100)
+        view = self._view_over(dict.fromkeys(keys, "left"), dict.fromkeys(keys, "right"), differs_only=True)
+
+        assert len(view.rows) == RENDER_CAP + 100
         assert not view.truncated
 
 
