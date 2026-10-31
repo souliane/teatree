@@ -112,8 +112,7 @@ class OperatorGrant(models.Model):
         if action not in {"approve", "unapprove"} or not target or self.expires_at <= timezone.now():
             message = "operator grant cannot authorize this action"
             raise PermissionError(message)
-        required_scope = "api" if self.forge == "gitlab" else "repo"
-        if required_scope not in self.scope.replace(",", " ").split():
+        if self.forge == "gitlab" and "api" not in self.scope.replace(",", " ").split():
             message = "operator grant lacks the approval scope"
             raise PermissionError(message)
         try:

@@ -11,13 +11,28 @@ from django.utils import timezone
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.review.operator_approval import OperatorApprover, publish_operator_approval
+from teatree.cli.review.audit import ReviewArtifactNotVerifiedError
+from teatree.cli.review.operator_approval import (
+    OperatorApprover,
+    claim_publish_audit,
+    identity_refusal,
+    publish_operator_approval,
+)
 from teatree.cli.review.service import ReviewService
+from teatree.core.mode_resolution import owner_voice_forbidden
 from teatree.core.modelkit.gate_verdict import ReadOutcome
-from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, OperatorGrant, OperatorIdentity, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    OnBehalfApproval,
+    OnBehalfAudit,
+    OperatorGrant,
+    OperatorIdentity,
+    PullRequest,
+    Ticket,
+)
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.utils.sealing import MasterKey
-from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 class ApprovalAPI:
@@ -68,7 +83,7 @@ class TestOperatorApproval(TestCase):
         Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/merge_requests/7", requested_by="gitlab:alice")
         self.key = MasterKey(b"a" * 32)
 
-    def _grant(self, user: AbstractBaseUser, access: str) -> None:
+    def _grant(self, user: AbstractBaseUser, access: str, *, scope: str = "api") -> None:
         OperatorGrant.objects.store(
             user=user,
             forge="gitlab",
@@ -76,7 +91,7 @@ class TestOperatorApproval(TestCase):
                 access_token=access,
                 refresh_token=f"{access}-refresh",
                 expires_at=timezone.now() + timedelta(hours=1),
-                scope="api",
+                scope=scope,
             ),
             key=self.key,
         )
@@ -157,19 +172,180 @@ class TestOperatorApproval(TestCase):
         assert "no GitLab operator login" in result.output
         assert tokens == []
 
-    def test_owner_legacy_approval_works_without_a_recorded_requester(self) -> None:
+    def test_personal_token_never_approves_without_a_grant(self) -> None:
         Ticket.objects.update(requested_by="")
-        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
         api = ApprovalAPI()
-        with (
-            patch.object(
-                ReviewService, "read_gitlab_token", return_value=ReadOutcome(value="owner-token", failed=False)
-            ),
-            patch.object(ReviewService, "_get_api", return_value=api),
-        ):
-            result = CliRunner().invoke(app, ["review", "approve", "org/repo", "7"])
+        for action in ("approve", "unapprove"):
+            OnBehalfApproval.record("org/repo!7", action, "gitlab:alice")
+            with (
+                patch.dict(os.environ, {"GITLAB_TOKEN": "owner-personal-token"}),
+                patch.object(
+                    ReviewService, "read_gitlab_token", return_value=ReadOutcome(value="owner-token", failed=False)
+                ) as read_token,
+                patch.object(ReviewService, "_get_api", return_value=api),
+            ):
+                result = CliRunner().invoke(app, ["review", action, "org/repo", "7"])
+            assert result.exit_code == 1, result.output
+            assert "t3 login gitlab --approvals" in result.output
+            read_token.assert_not_called()
+        assert api.posts == 0
+        assert not OnBehalfApproval.objects.filter(consumed_at__isnull=False).exists()
+
+    def test_grant_without_the_api_scope_refuses_and_keeps_the_consent(self) -> None:
+        self._grant(self.alice, "alice-access", scope="read_user")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "approval scope" in result.output
+        assert tokens == []
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_a_forbidding_posture_does_not_stop_a_recorded_consent(self) -> None:
+        seed_forbidding_posture()
+        assert owner_voice_forbidden()
+        self._grant(self.alice, "alice-access")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
         assert result.exit_code == 0, result.output
-        assert api.posts == 1
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+
+    def test_a_permitting_posture_does_not_stand_in_for_the_consent(self) -> None:
+        self._grant(self.alice, "alice-access")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "No consent" in result.output
+        assert tokens == []
+
+    def test_blank_requester_resolves_to_the_sole_consenting_operators_grant(self) -> None:
+        Ticket.objects.update(requested_by="")
+        self._grant(self.alice, "alice-access")
+        self._grant(self.bob, "bob-access")
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 0, result.output
+        assert set(tokens) == {"alice-access"}
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+        assert OnBehalfAudit.objects.get(approval=approval).approver_id == "gitlab:alice"
+
+    def test_blank_requester_with_two_consenting_operators_posts_nothing(self) -> None:
+        Ticket.objects.update(requested_by="")
+        self._grant(self.alice, "alice-access")
+        self._grant(self.bob, "bob-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:bob")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "gitlab:alice" in result.output
+        assert "gitlab:bob" in result.output
+        assert tokens == []
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_blank_requester_without_a_consent_names_the_approve_on_behalf_remedy(self) -> None:
+        Ticket.objects.update(requested_by="")
+        self._grant(self.alice, "alice-access")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "approve-on-behalf org/repo!7 approve --approver" in result.output
+        assert tokens == []
+
+    def test_blank_requester_with_a_bare_consent_identity_names_the_platform_handle_remedy(self) -> None:
+        Ticket.objects.update(requested_by="")
+        self._grant(self.alice, "alice-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "platform:handle" in result.output
+        assert tokens == []
+
+    def test_unknown_forge_is_refused_without_posting(self) -> None:
+        self._grant(self.alice, "alice-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result = CliRunner().invoke(app, ["review", "approve", "org/repo", "7", "--forge", "bitbucket"])
+
+        assert result.exit_code == 1
+        assert "unknown forge 'bitbucket'" in result.output
+
+    def test_target_with_two_owning_tickets_refuses_without_guessing_the_operator(self) -> None:
+        mirror = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/9")
+        for ticket, host in (
+            (Ticket.objects.get(requested_by="gitlab:alice"), "gitlab.com"),
+            (mirror, "mirror.example"),
+        ):
+            PullRequest.objects.create(
+                ticket=ticket, url=f"https://{host}/org/repo/-/merge_requests/7", repo="org/repo", iid="7"
+            )
+        self._grant(self.alice, "alice-access")
+        OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        result, tokens = self._invoke("approve")
+
+        assert result.exit_code == 1
+        assert "multiple owning tickets" in result.output
+        assert tokens == []
+
+    def test_claim_lost_to_a_concurrent_publisher_writes_nothing(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        OnBehalfApproval.objects.filter(pk=approval.pk).update(consumed_at=timezone.now())
+        writes: list[str] = []
+
+        def post() -> tuple[str, int]:
+            writes.append("posted")
+            return "OK", 0
+
+        message, code = claim_publish_audit(approval, post)
+
+        assert code == 1
+        assert "No consent from gitlab:alice" in message
+        assert writes == []
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_unverified_artifact_releases_the_consent_and_returns_the_reason(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        def unverified() -> tuple[str, int]:
+            message = "approval not on the MR"
+            raise ReviewArtifactNotVerifiedError(message)
+
+        message, code = claim_publish_audit(approval, unverified)
+
+        assert (message, code) == ("approval not on the MR", 1)
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+        assert not OnBehalfAudit.objects.exists()
+
+    def test_write_crash_releases_the_consent_and_propagates(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+
+        def crash() -> tuple[str, int]:
+            message = "forge unreachable"
+            raise ConnectionError(message)
+
+        with self.assertRaisesMessage(ConnectionError, "forge unreachable"):
+            claim_publish_audit(approval, crash)
+
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+        assert not OnBehalfAudit.objects.exists()
 
     def test_unapproval_uses_requester_grant_and_consumes_consent(self) -> None:
         self._grant(self.alice, "alice-access")
@@ -257,6 +433,16 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is None
 
+    def test_identity_refusal_only_equates_forge_identities_of_one_operator(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE-2")
+        OperatorIdentity.objects.create(user=self.alice, platform="gitlab", handle="alice-alt", external_id="3")
+        slack_pair = OperatorApprover("slack:U-ALICE", "slack:U-ALICE")
+        forge_pair = OperatorApprover("slack:U-ALICE", "gitlab:alice")
+
+        assert identity_refusal(slack_pair, "slack:U-ALICE-2")
+        assert identity_refusal(forge_pair, "gitlab:alice-alt") == ""
+
     def test_grant_with_another_forge_identity_refuses_and_preserves_consent(self) -> None:
         self._grant(self.alice, "alice-access")
         approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
@@ -270,22 +456,6 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is None
         assert not OnBehalfAudit.objects.exists()
-
-    def test_legacy_service_approve_does_not_consume_operator_consent(self) -> None:
-        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
-        api = ApprovalAPI()
-        service = ReviewService("personal-token", repo="org/repo")
-
-        with (
-            patch.object(service, "_get_api", return_value=api),
-            patch.object(api, "post_status", wraps=api.post_status) as post,
-        ):
-            message, code = service.approve("org/repo", 7)
-
-        assert code == 0, message
-        post.assert_called_once()
-        approval.refresh_from_db()
-        assert approval.consumed_at is None
 
     def test_publisher_refuses_personal_token_even_with_consent(self) -> None:
         approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
@@ -335,19 +505,3 @@ class TestOperatorApproval(TestCase):
         ):
             message, code = publish_operator_approval(service, "org/repo", 7, "approve", "gitlab:alice")
         assert code == 0, message
-
-    def test_legacy_service_unapprove_does_not_consume_operator_consent(self) -> None:
-        approval = OnBehalfApproval.record("org/repo!7", "unapprove", "gitlab:alice")
-        api = ApprovalAPI()
-        service = ReviewService("personal-token", repo="org/repo")
-
-        with (
-            patch.object(service, "_get_api", return_value=api),
-            patch.object(api, "post_status", wraps=api.post_status) as post,
-        ):
-            message, code = service.unapprove("org/repo", 7)
-
-        assert code == 0, message
-        post.assert_called_once()
-        approval.refresh_from_db()
-        assert approval.consumed_at is None

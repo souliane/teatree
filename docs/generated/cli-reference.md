@@ -822,8 +822,10 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      ``--live`` requires Slack approval.                     │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
-│ approve              Approve a GitLab MR — only after you have reviewed it.  │
-│ unapprove            Revoke your approval on a GitLab MR.                    │
+│ approve              Approve an MR/PR through the consenting operator's own  │
+│                      OAuth grant.                                            │
+│ unapprove            Revoke the consenting operator's approval on a GitLab   │
+│                      MR, through their own grant.                            │
 │ checkout             Materialise a detached review worktree at the exact     │
 │                      reviewed head.                                          │
 │ merge-tree           Extract the merge result of --base and --head into a    │
@@ -1000,23 +1002,19 @@ Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
 ```
 Usage: t3 review approve [OPTIONS] REPO MR
 
- Approve a GitLab MR — only after you have reviewed it.
+ Approve an MR/PR through the consenting operator's own OAuth grant.
 
- Precondition: a review note/discussion authored by your identity must
- already exist on the MR (review before approve). Gated by
- the active posture (BLOCK under a forbidding one,
- souliane/teatree#960/#1013) — record an approval via
- ``t3 review approve-on-behalf <repo>!<mr> approve --approver
- <user-id>`` to satisfy the gate without selecting a permitting
- posture.
+ Needs a consent from `t3 review approve-on-behalf` and the operator's
+ `t3 login <forge> --approvals` grant. No personal token is read.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
+│ *    repo      TEXT     Project path (e.g., my-org/my-repo) [required]       │
+│ *    mr        INTEGER  Merge request or pull request number [required]      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --forge        TEXT  Forge hosting the repo: github or gitlab. Default: the  │
+│                      declared forge, else gitlab.                            │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1025,22 +1023,22 @@ Usage: t3 review approve [OPTIONS] REPO MR
 ```
 Usage: t3 review unapprove [OPTIONS] REPO MR
 
- Revoke your approval on a GitLab MR.
+ Revoke the consenting operator's approval on a GitLab MR, through their own
+ grant.
 
- No review precondition (revoking is the safe direction). Gated by
- the active posture (BLOCK under a forbidding one,
- souliane/teatree#960/#1013) — record an approval via
- ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
- <user-id>`` to satisfy the gate without selecting a permitting
- posture.
+ Needs a consent from `t3 review approve-on-behalf` and the operator's
+ `t3 login gitlab --approvals` grant. GitHub has no un-approve call.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│ *    repo      TEXT     Project path (e.g., my-org/my-repo) [required]       │
+│ *    mr        INTEGER  Merge request number (GitLab only; GitHub offers no  │
+│                         un-approve call)                                     │
 │                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --forge        TEXT  Forge hosting the repo: github or gitlab. Default: the  │
+│                      declared forge, else gitlab.                            │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

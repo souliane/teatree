@@ -74,9 +74,9 @@ def _secret(app: dict[str, str], forge: str) -> str:
 
 
 def _scope(forge: str, purpose: str) -> str:
-    if purpose == "login":
-        return "read:user" if forge == "github" else "read_user"
-    return "repo read:user offline_access" if forge == "github" else "api"
+    if forge == "github":
+        return "read:user"
+    return "read_user" if purpose == "login" else "api"
 
 
 @require_GET
@@ -278,8 +278,9 @@ def _complete_authorization(
 ) -> HttpResponse:
     if pending.get("purpose") == "approvals":
         if not request.user.is_authenticated or request.user.pk != user.pk or not tokens.refresh_token:
+            remedy = " (register a GitHub App with expiring user tokens)" if forge == "github" else ""
             return HttpResponseForbidden(
-                "approval consent must match the signed-in operator and include a refresh grant"
+                f"approval consent must match the signed-in operator and include a refresh grant{remedy}"
             )
         try:
             OperatorGrant.objects.store(user=user, forge=forge, tokens=tokens, key=master_key_source().load())
