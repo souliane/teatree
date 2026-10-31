@@ -57,6 +57,7 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
     from teatree.core.models.pending_pull_request import PendingPullRequestManager, SerializedPrSpec
+    from teatree.core.models.types import TicketExtra
     from teatree.core.overlay import OverlayBase
     from teatree.types import RawAPIDict
 
@@ -232,14 +233,14 @@ def _ticket_for_branch(branch_name: str, repo_path: str = ".") -> "Ticket | None
     return ticket_owning_pr_branch(branch_name, slug=git_remote.slug_from_remote(git.remote_url(repo=repo_path)))
 
 
-def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> dict | None:
+def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> "TicketExtra | None":
     """Return the owning ticket's ``extra`` for an orphan-branch PR, with ``more_prs_coming`` derived and recorded.
 
     A genuinely orphan branch (no row) yields ``None`` — ``should_close_ticket`` then applies the
     close-on-merge default driven solely by the overlay setting.
     """
     ticket = _ticket_for_branch(branch_name, repo_path)
-    return None if ticket is None else dict(record_more_prs_coming(ticket))
+    return None if ticket is None else record_more_prs_coming(ticket)
 
 
 def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, str]:

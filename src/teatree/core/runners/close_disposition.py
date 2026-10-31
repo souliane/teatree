@@ -7,16 +7,16 @@ orphan-branch path all read it.
 """
 
 import logging
-from collections.abc import Mapping
 
 from teatree.core.gates.rubric_gate import plan_is_bypassed
 from teatree.core.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.types import TicketExtra
 
 logger = logging.getLogger(__name__)
 
 
-def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
+def should_close_ticket(extra: TicketExtra | None, *, setting_enabled: bool) -> bool:
     """Whether the ``Closes/Fixes #N`` keywords stay so the platform closes the issue on merge.
 
     ``False`` when the overlay setting is off or ``extra['more_prs_coming']`` is set; the keywords are then
@@ -42,8 +42,8 @@ def more_prs_coming_for(ticket: Ticket) -> bool:
     return bool(uncovered(items, stated_texts(ticket)))
 
 
-def record_more_prs_coming(ticket: Ticket) -> Mapping[str, object]:
+def record_more_prs_coming(ticket: Ticket) -> TicketExtra:
     """Persist the derived flag and return the ticket's extra as the ship reads it."""
     flag = more_prs_coming_for(ticket)
     ticket.merge_extra(set_keys={"more_prs_coming": flag})
-    return {**(ticket.extra or {}), "more_prs_coming": flag}
+    return TicketExtra(**{**(ticket.extra or {}), "more_prs_coming": flag})

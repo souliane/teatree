@@ -187,9 +187,28 @@ def _typed_extra_sources(node: ast.expr) -> bool:
     return isinstance(node, ast.Call) and _typed_extra_call(node)
 
 
+def _annotated_as_extra(annotation: ast.expr | None) -> bool:
+    """Whether a parameter annotation, quoted or not, names one of the ``extra`` TypedDicts."""
+    return annotation is not None and any(
+        (isinstance(sub, ast.Name) and sub.id in _EXTRA_TYPED_DICTS)
+        or (
+            isinstance(sub, ast.Constant)
+            and isinstance(sub.value, str)
+            and sub.value.split(" ")[0] in _EXTRA_TYPED_DICTS
+        )
+        for sub in ast.walk(annotation)
+    )
+
+
 def _typed_extra_names(tree: ast.Module) -> set[str]:
-    """Local names bound from an ``extra`` a TypedDict constrains."""
-    names: set[str] = set()
+    """Local names bound from an ``extra`` a TypedDict constrains, and parameters annotated as one."""
+    names: set[str] = {
+        arg.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        if _annotated_as_extra(arg.annotation)
+    }
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign | ast.AnnAssign) or node.value is None:
             continue
@@ -231,18 +250,47 @@ def written_keys(tree: ast.Module, constants: Mapping[str, str] | None = None) -
     )
 
 
+_EXTRA_KEYWORDS = frozenset({"extra", "defaults", *_MERGE_EXTRA_KEY_PARAMS})
+
+
+def _dict_displays(value: ast.expr) -> list[ast.Dict]:
+    """The dict displays *value* evaluates to: itself, either arm of a conditional, or a ``cast`` of one."""
+    value = _unwrap_cast(value)
+    if isinstance(value, ast.Dict):
+        return [value]
+    if isinstance(value, ast.IfExp):
+        return _dict_displays(value.body) + _dict_displays(value.orelse)
+    if isinstance(value, ast.BoolOp):
+        return [display for operand in value.values for display in _dict_displays(operand)]
+    return []
+
+
+def _display_keys(display: ast.Dict, constants: Mapping[str, str]) -> list[tuple[int, str]]:
+    return [(key.lineno, name) for key in display.keys if key and (name := _key_name(key, constants))]
+
+
 def writer_keys(tree: ast.Module, constants: Mapping[str, str]) -> list[tuple[int, str]]:
-    """Every key *tree* could write into an ``extra``: a key of any dict display or any subscript store.
+    """Every key *tree* could write into an ``extra``: a dict bound to a name or handed to an ``extra`` parameter.
 
     A declaration check must not flag what it cannot attribute to a model, so it walks the narrow
     shapes above. A writer check errs the other way, because a write reaches an ``extra`` through
-    annotated locals, helpers and returned dicts no receiver rule can follow. A key no dict display
-    and no subscript store in the tree ever names has no writer on any path.
+    annotated locals, helpers and returned dicts no receiver rule can follow: a dict display that is
+    assigned (to a name or an attribute), passed as ``extra=`` / ``defaults=`` / ``set_keys=`` and kin,
+    or a subscript store. A display that is only returned or passed positionally overlays a read, it
+    persists nothing, so it is not a writer.
     """
     found = written_keys(tree, constants)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Dict):
-            found += [(key.lineno, name) for key in node.keys if key and (name := _key_name(key, constants))]
+        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+            found += [key for display in _dict_displays(node.value) for key in _display_keys(display, constants)]
+        elif isinstance(node, ast.Call):
+            found += [
+                key
+                for kw in node.keywords
+                if kw.arg in _EXTRA_KEYWORDS
+                for display in _dict_displays(kw.value)
+                for key in _display_keys(display, constants)
+            ]
         elif (
             isinstance(node, ast.Subscript)
             and isinstance(node.ctx, ast.Store)
