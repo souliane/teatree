@@ -39,6 +39,7 @@ from teatree.core.models.errors import (
     NoCurrentPlanError,
     NoPlanArtifactError,
     QualityGateError,
+    TaskMintRefusedError,
 )
 from teatree.core.models.eval_run import (
     CostRegression,
@@ -367,6 +368,7 @@ __all__ = [
     "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
+    "TaskMintRefusedError",
     "ThreadBinding",
     "Ticket",
     "TicketArtifacts",

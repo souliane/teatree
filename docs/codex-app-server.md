@@ -109,6 +109,10 @@ In the worker's Codex sandbox, MCP is unavailable. New threads receive mailbox
 dynamic tools, and the worker retains their inbox until the task exits. Resumed
 threads keep their creation-time tool catalog; their peer messages use the push
 path without claiming an inbox copy.
+A phase the table grants `escalate` also receives it as a dynamic tool
+(`src/teatree/agents/codex_escalation_tools.py`). The call writes one internal request and tells a
+live answering peer of the ticket, else resumes the thread's answering task; a refusal returns
+as a failed tool result. The answering phase is never offered it.
 For `not_accepted_in_time` with `queued_in_inbox` true, the message remains queued and a same key retry keeps waiting.
 With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
 

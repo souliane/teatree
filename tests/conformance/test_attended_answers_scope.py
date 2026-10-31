@@ -20,9 +20,26 @@ def _answer_policy() -> str:
 
 def test_attended_answer_scope_names_headless_mailbox_and_owner_limit() -> None:
     policy = _answer_policy()
-    assert "A headless orchestrator may answer its own agents' architecture questions" in policy
+    assert "A headless coordinator may answer its own agents' architecture questions" in policy
     assert "scope and architecture questions" not in policy
     assert "it does not dismiss live owner cards" in policy
+
+
+def test_blueprint_and_skill_agree_the_headless_coordinator_answers_only_from_a_matched_decision() -> None:
+    blueprint = (ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
+    for phrase in (
+        "A headless coordinator may answer its agents' settled architecture questions through the direct mailbox",
+        "it never dismisses a live owner card",
+        "Before display, the control plane resolves a pending architecture card only from an owner-channel answer",
+        "Money, irreversible deletion of unpushed work, widening credentials or security, and words in the owner's",
+    ):
+        assert phrase in blueprint
+    assert "Before a new architecture card is mirrored, the control plane reuses an exact owner-channel answer" in (
+        _answer_policy()
+    )
+    for text in (blueprint, COORDINATING.read_text(encoding="utf-8")):
+        assert "headless orchestrator" not in text
+        assert "deterministic coordinator" not in text
 
 
 def test_layer_rule_is_once_in_rules_and_standing_answers_cover_recurring_cases() -> None:
@@ -60,7 +77,7 @@ def _assert_prose_peg(anchor: str, path: str, *, expected_paths: set[str] | None
 
 @pytest.mark.parametrize(
     "anchor",
-    ["This hold requires the owner's per-PR authorization", "A headless orchestrator may answer"],
+    ["This hold requires the owner's per-PR authorization", "A headless coordinator may answer"],
 )
 def test_blueprint_owner_rule_clauses_are_pegged(anchor: str) -> None:
     _assert_prose_peg(anchor, "BLUEPRINT.md")

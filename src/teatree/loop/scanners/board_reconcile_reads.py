@@ -66,18 +66,26 @@ def read_concurrently[T, R](items: Sequence[T], read: Callable[[T], R]) -> list[
     return results
 
 
-def read_per_overlay[R](
-    tickets: "Sequence[Ticket]", read: "Callable[[OverlayBase, str], R]"
-) -> "list[tuple[Ticket, R]]":
-    """Read each distinct ``(overlay, issue URL)`` of *tickets* through its own overlay.
+def _issue_url(ticket: "Ticket") -> str:
+    return ticket.issue_url
 
-    A ticket whose overlay is not installed here is simply not judged.
+
+def read_per_overlay[R](
+    tickets: "Sequence[Ticket]",
+    read: "Callable[[OverlayBase, str], R]",
+    *,
+    url_of: "Callable[[Ticket], str]" = _issue_url,
+) -> "list[tuple[Ticket, R]]":
+    """Read each distinct ``(overlay, URL)`` of *tickets* through its own overlay.
+
+    The URL is the ticket's issue URL unless *url_of* names another, so rows that share one forge issue
+    share one read. A ticket whose overlay is not installed here is simply not judged.
     """
     overlays = overlay_loader.get_all_overlays()
     first_per_read: dict[tuple[str, str], Ticket] = {}
     for ticket in tickets:
         if ticket.overlay in overlays:
-            first_per_read.setdefault((ticket.overlay, ticket.issue_url), ticket)
+            first_per_read.setdefault((ticket.overlay, url_of(ticket)), ticket)
     return read_concurrently(
-        list(first_per_read.values()), lambda ticket: read(overlays[ticket.overlay], ticket.issue_url)
+        list(first_per_read.values()), lambda ticket: read(overlays[ticket.overlay], url_of(ticket))
     )

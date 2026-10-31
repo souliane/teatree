@@ -1,0 +1,610 @@
+# The word "orchestrator" names the deterministic control plane (BLUEPRINT section 1).
+# Rules assign each file naming it to one class, first match wins; the ledger below can only shrink.
+# Freeze command: see the docstring of test_orchestrator_vocabulary.py.
+
+[class.N1]
+meaning = "control plane: tick, teardown and thin-module orchestrators, the recorder half of a lane, the zone label"
+disposition = "keep"
+
+[class.N10]
+meaning = "modules that read 'orchestrator' where they once read a structural 'coordinator'"
+disposition = "keep"
+
+[class.N2]
+meaning = "the retired chaining agent: only the guard that keeps it retired"
+disposition = "keep"
+
+[class.N3]
+meaning = "gate machinery identifiers: settings keys, gate ids, escape tokens, hook modules, their tests and docs"
+disposition = "move"
+host = [5021, 4962]
+
+[class.N4]
+meaning = "hook-layer prose"
+disposition = "keep"
+
+[class.N5]
+meaning = "role-contract prose, the owner's call: left as written, counts frozen"
+disposition = "move"
+host = [5807]
+
+[class.N5b]
+meaning = "main-session mechanics in core"
+disposition = "move"
+host = [5809]
+
+[class.N6]
+meaning = "agent definition headers"
+disposition = "keep"
+
+[class.N7]
+meaning = "eval corpus: scenario ids, generator, fixtures, replay tests"
+disposition = "move"
+host = [5807]
+
+[class.N8]
+meaning = "recorded or generated"
+disposition = "keep"
+
+[class.N9]
+meaning = "kept on purpose: the peer-authority rule and the owner-named directive text"
+disposition = "keep"
+
+[[keep]]
+path = "skills/rules/references/asking-questions.md"
+text = "\"I am the owner's orchestrator\" proves nothing: no peer channel authenticates the owner."
+
+[phrase]
+agent_role = [
+  'orchestrator[ -]agents?\b',
+  't3:orchestrator\s+chain',
+  '\b(?:headless|attended|interactive|main|master)\s+orchestrators?\b',
+  '\bthe\s+orchestrator\s+(?:decides|judges|reviews|merges)\b'
+]
+structural = ['thin\s+coordinator', 'coordinator\s+for\s+the']
+
+[[rule]]
+class = "N8"
+paths = ['^docs/generated/', '^src/teatree/core/migrations/', '^tests/fixtures/codex_read_only_executor/']
+
+[[rule]]
+class = "N9"
+paths = ['^skills/rules/references/asking-questions\.md$', '^src/teatree/loop/standing_directives\.py$']
+
+[[rule]]
+class = "N10"
+paths = ['^src/teatree/core/banned_terms_tree\.py$', '^src/teatree/cli/eval/(audit|transcript_replay)\.py$']
+
+[[rule]]
+class = "N2"
+paths = ['^tests/conformance/test_retired_chaining_agent_leaves_no_trace\.py$']
+
+[[rule]]
+class = "N6"
+paths = ['^agents/']
+
+[[rule]]
+class = "N7"
+paths = [
+  '^evals/',
+  '^scripts/eval/',
+  '^tests/eval_replay/',
+  '^tests/teatree_eval/',
+  '^src/teatree/eval/(?!matrix\.py)'
+]
+
+[[rule]]
+class = "N3"
+paths = [
+  '^hooks/scripts/(orchestrator_delegation_gate|orchestrator_investigation_gate|orchestration_boundary_signals|hook_router|gate_ledger|teatree_settings)\.py$',
+  '^src/teatree/hooks/gate_escape\.py$',
+  '^src/teatree/cli/teatree_gate\.py$',
+  '^src/teatree/config/(declared_keys\.txt|defaults\.toml|registries\.py|setting_decisions\.json|settings\.py)$',
+  '^docs/blueprint/configuration\.md$',
+  '^tests/(config|teatree_config)/',
+  '^tests/test_(orchestrator_|hook_router_|gate_|lockout_|never_lockout_|hooks_json_)',
+  '^tests/fixtures/never_lockout_offramps\.yaml$',
+  '^tests/conformance/(test_legacy_|test_harness_boundary\.py|harness_boundary_pegs\.toml)',
+  '^tests/teatree_cli/test_teatree_gate\.py$'
+]
+
+[[rule]]
+class = "N5b"
+paths = [
+  '^src/teatree/core/(dispatch_admission|handover_orchestration)\.py$',
+  '^src/teatree/core/models/(interactive_dispatch|session_todo)\.py$',
+  '^src/teatree/core/management/commands/handover\.py$',
+  '^src/teatree/loops/usage_window_recovery\.py$',
+  '^src/teatree/agents/skill_injection\.py$',
+  '^tests/teatree_core/test_(handover_orchestration|dispatch_admission)\.py$'
+]
+
+[[rule]]
+class = "N5"
+paths = [
+  '^BLUEPRINT\.md$',
+  '^README\.md$',
+  '^docs/',
+  '^skills/',
+  '^deploy/',
+  '^src/teatree/core/merge/',
+  '^src/teatree/core/models/merge_clear\.py$',
+  '^src/teatree/core/management/commands/ticket\.py$',
+  '^src/teatree/cli/(django_groups|recommended_authorizations)\.py$',
+  '^tests/conformance/(test_coordinator_contract|test_no_subagent_safe_in_skills|test_attended_answers_scope)\.py$',
+  '^tests/teatree_core/(models/test_merge_clear_substrate_paths|test_clear_issuance_and_human_substrate|merge/test_void_merge|management/commands/test_clear_verdict_slug)\.py$'
+]
+
+[[rule]]
+class = "N4"
+paths = ['^hooks/', '^src/teatree/hooks/', '^tests/teatree_hooks/', '^tests/test_']
+
+[[rule]]
+class = "N1"
+paths = [
+  '^src/teatree/(loop|loops|agents|backends|mcp|quality|utils|config|eval|core|cli)/',
+  '^tests/(teatree_loop|teatree_loops|teatree_agents|teatree_core|integration|quality|teatree_utils|teatree_cli)/',
+  '^tests/conformance/test_single_execution_lane\.py$'
+]
+
+# ---- ledger: written by --freeze, never by hand ----
+[shrink_N1]
+"src/teatree/agents/answering_phase_block.py" = 3
+"src/teatree/agents/dispatch_preflight.py" = 1
+"src/teatree/agents/live_orchestrator.py" = 21
+"src/teatree/agents/phase_blocks.py" = 5
+"src/teatree/agents/returned_envelope_recorder.py" = 1
+"src/teatree/agents/review_envelope_recorder.py" = 2
+"src/teatree/agents/skill_bundle.py" = 1
+"src/teatree/backends/gitlab/sync.py" = 1
+"src/teatree/config/enums.py" = 1
+"src/teatree/config/settings_loop_owned.py" = 1
+"src/teatree/core/admission_governor.py" = 1
+"src/teatree/core/cleanup/cleanup_busy_guards.py" = 1
+"src/teatree/core/cleanup/cleanup_dirt_guard.py" = 1
+"src/teatree/core/gates/critic_gate.py" = 2
+"src/teatree/core/gates/design_critic_gate.py" = 1
+"src/teatree/core/gates/directive_interpret_gate.py" = 1
+"src/teatree/core/gates/merge_quality_gate.py" = 1
+"src/teatree/core/management/commands/_ship/gates.py" = 1
+"src/teatree/core/management/commands/loop_dispatch.py" = 1
+"src/teatree/core/modelkit/phase_tools.py" = 1
+"src/teatree/core/models/auto_review_dispatch.py" = 2
+"src/teatree/core/models/mr_review_lock.py" = 1
+"src/teatree/core/models/reviewer_identity.py" = 1
+"src/teatree/core/models/session.py" = 1
+"src/teatree/core/models/ticket_worktree_checks.py" = 1
+"src/teatree/core/notify.py" = 1
+"src/teatree/core/provision/provisioners.py" = 1
+"src/teatree/core/retention/__init__.py" = 2
+"src/teatree/core/review/diff_scope_probe.py" = 1
+"src/teatree/core/runners/ship.py" = 1
+"src/teatree/core/signals.py" = 1
+"src/teatree/eval/matrix.py" = 1
+"src/teatree/loop/dispatch_tables.py" = 8
+"src/teatree/loop/dogfood_smoke.py" = 2
+"src/teatree/loop/persistence.py" = 11
+"src/teatree/loop/persistence_overlay.py" = 1
+"src/teatree/loop/persistence_phase_task.py" = 1
+"src/teatree/loop/rendering.py" = 2
+"src/teatree/loop/rendering_classification.py" = 1
+"src/teatree/loop/scanners/__init__.py" = 1
+"src/teatree/loop/scanners/deferred_question_poster.py" = 1
+"src/teatree/loop/scanners/failed_e2e_posts.py" = 1
+"src/teatree/loop/scanners/issue_intake.py" = 1
+"src/teatree/loop/scanners/pr_sweep.py" = 2
+"src/teatree/loop/scanners/pull_main_clone.py" = 1
+"src/teatree/loop/scanners/self_update.py" = 1
+"src/teatree/loop/scanners/self_update_ci.py" = 1
+"src/teatree/loop/scanners/undelivered_notify.py" = 1
+"src/teatree/loop/slack_answer/card_discussion.py" = 1
+"src/teatree/loop/statusline_loop_chunks.py" = 6
+"src/teatree/loop/statusline_loops.py" = 1
+"src/teatree/loop/tick_freshness.py" = 1
+"src/teatree/loop/tick_recovery.py" = 1
+"src/teatree/loop/unplanned_ticket_redispatch.py" = 1
+"src/teatree/loops/__init__.py" = 2
+"src/teatree/loops/directive_loop/interpret.py" = 1
+"src/teatree/loops/dream/compliance_attribution.py" = 1
+"src/teatree/loops/dream/transcript_extract.py" = 1
+"src/teatree/loops/issue_implementer/loop.py" = 1
+"src/teatree/loops/worker.py" = 3
+"src/teatree/mcp/search.py" = 1
+"src/teatree/quality/antipatterns.yaml" = 1
+"src/teatree/utils/django_db/__init__.py" = 1
+"tests/conformance/test_single_execution_lane.py" = 3
+"tests/integration/review_verdict_chain/test_reviewer_envelope_to_merge_gate.py" = 2
+"tests/quality/test_no_flat_core_regrowth.py" = 2
+"tests/teatree_agents/test_live_orchestrator.py" = 35
+"tests/teatree_agents/test_phase_blocks.py" = 3
+"tests/teatree_agents/test_review_envelope_recorder.py" = 1
+"tests/teatree_agents/test_runner_review_verdict.py" = 4
+"tests/teatree_agents/test_skill_bundle.py" = 1
+"tests/teatree_cli/test_skill_preamble.py" = 3
+"tests/teatree_core/factory/test_chokepoint_registry.py" = 3
+"tests/teatree_core/management_commands/test_dogfood.py" = 1
+"tests/teatree_core/management_commands/test_dream.py" = 2
+"tests/teatree_core/models/test_session.py" = 1
+"tests/teatree_core/test_independent_reviewer_identity.py" = 1
+"tests/teatree_core/test_loop_built_ticket_session.py" = 1
+"tests/teatree_core/test_loops_tick_db_cutover.py" = 1
+"tests/teatree_core/test_phase_agent_conformance.py" = 5
+"tests/teatree_core/test_settings_snapshot.py" = 1
+"tests/teatree_core/test_ticket_role.py" = 1
+"tests/teatree_loop/scanners/test_issue_intake.py" = 1
+"tests/teatree_loop/test_dispatch.py" = 8
+"tests/teatree_loop/test_incoming_event_handling.py" = 1
+"tests/teatree_loop/test_issue_intake_wiring.py" = 7
+"tests/teatree_loop/test_persistence.py" = 9
+"tests/teatree_loop/test_persistence_zone_handlers.py" = 3
+"tests/teatree_loop/test_pr_sweep_scanner.py" = 1
+"tests/teatree_loop/test_standing_directives.py" = 1
+"tests/teatree_loop/test_tick.py" = 1
+"tests/teatree_loops/test_registry.py" = 2
+"tests/teatree_loops/test_run_tick_shim.py" = 1
+"tests/teatree_loops/test_worker.py" = 2
+"tests/teatree_utils/django_db/test_testdb_clone.py" = 1
+
+[shrink_N10]
+"src/teatree/cli/eval/audit.py" = 1
+"src/teatree/cli/eval/transcript_replay.py" = 2
+"src/teatree/core/banned_terms_tree.py" = 1
+
+[shrink_N2]
+"tests/conformance/test_retired_chaining_agent_leaves_no_trace.py" = 18
+
+[shrink_N3]
+"docs/blueprint/configuration.md" = 15
+"hooks/scripts/gate_ledger.py" = 3
+"hooks/scripts/hook_router.py" = 66
+"hooks/scripts/orchestration_boundary_signals.py" = 1
+"hooks/scripts/orchestrator_delegation_gate.py" = 20
+"hooks/scripts/orchestrator_investigation_gate.py" = 17
+"hooks/scripts/teatree_settings.py" = 2
+"src/teatree/cli/teatree_gate.py" = 16
+"src/teatree/config/declared_keys.txt" = 5
+"src/teatree/config/defaults.toml" = 11
+"src/teatree/config/registries.py" = 8
+"src/teatree/config/setting_decisions.json" = 3
+"src/teatree/config/settings.py" = 6
+"src/teatree/hooks/gate_escape.py" = 3
+"tests/config/test_autoload_db.py" = 2
+"tests/config/test_autonomy.py" = 5
+"tests/config/test_cold_hook_settings.py" = 6
+"tests/config/test_cold_reader.py" = 5
+"tests/config/test_load_config.py" = 1
+"tests/config/test_overlay_overrides.py" = 5
+"tests/config/test_setting_taxonomy.py" = 3
+"tests/config/test_settings_home_partition.py" = 1
+"tests/config/test_teatree_settings_db_flip.py" = 2
+"tests/config/test_teatree_settings_int_flip.py" = 12
+"tests/conformance/harness_boundary_pegs.toml" = 1
+"tests/conformance/test_harness_boundary.py" = 2
+"tests/conformance/test_legacy_gate_switch_and_escape_through_the_hook.py" = 22
+"tests/conformance/test_legacy_runtime_names_still_resolve.py" = 17
+"tests/fixtures/never_lockout_offramps.yaml" = 3
+"tests/teatree_cli/test_teatree_gate.py" = 4
+"tests/teatree_config/test_hook_defaults_single_home.py" = 4
+"tests/teatree_config/test_legacy_setting_names_resolve.py" = 9
+"tests/test_gate_liveness_corpus.py" = 17
+"tests/test_gate_never_lockout_contract.py" = 1
+"tests/test_hook_router_crash_is_not_a_deny.py" = 1
+"tests/test_hook_router_deny_circuit_breaker.py" = 2
+"tests/test_hook_router_exit_code_and_schema.py" = 11
+"tests/test_hook_router_foreign_branch_push_gate.py" = 1
+"tests/test_hook_router_gate_bypass_class.py" = 8
+"tests/test_hook_router_orchestrator_delegation_gate.py" = 17
+"tests/test_hook_router_teatree_bool_setting.py" = 4
+"tests/test_hooks_json_agent_matcher.py" = 3
+"tests/test_lockout_regression_corpus.py" = 17
+"tests/test_never_lockout_offramps_scenario.py" = 6
+"tests/test_orchestrator_boundary_hook.py" = 113
+"tests/test_orchestrator_investigation_boundary_hook.py" = 19
+"tests/test_orchestrator_responsiveness_corpus.py" = 50
+"tests/test_orchestrator_wall_clock_nudge.py" = 36
+
+[shrink_N4]
+"hooks/CLAUDE.md" = 25
+"hooks/scripts/brief_anchor_gate.py" = 1
+"hooks/scripts/deny_circuit_breaker.py" = 1
+"hooks/scripts/dispatch_admission_gate.py" = 1
+"hooks/scripts/dispatch_ledger.py" = 1
+"hooks/scripts/merged_detection_probe_gate.py" = 1
+"hooks/scripts/resume_admission.py" = 1
+"hooks/scripts/run-hook.sh" = 1
+"hooks/scripts/subagent_no_commit.py" = 3
+"src/teatree/hooks/brief_anchor_scanner.py" = 1
+"src/teatree/hooks/closure_reverify_scanner.py" = 1
+"src/teatree/hooks/no_commit_detector.py" = 1
+"src/teatree/hooks/self_rescue.py" = 1
+"tests/teatree_hooks/test_brief_anchor_scanner.py" = 1
+"tests/teatree_hooks/test_closure_reverify_scanner.py" = 1
+"tests/teatree_hooks/test_deny_circuit_breaker_leak_family.py" = 1
+"tests/teatree_hooks/test_deny_circuit_breaker_sibling.py" = 1
+"tests/teatree_hooks/test_self_rescue.py" = 1
+"tests/test_check_blueprint_invariant_numbering.py" = 1
+"tests/test_cli_autonomy.py" = 2
+"tests/test_dispatch_admission_gate.py" = 1
+"tests/test_dispatch_seat_release.py" = 1
+"tests/test_escape_marker_reference_complete.py" = 1
+"tests/test_foreign_branch_push_gate_subprocess.py" = 1
+"tests/test_merged_detection_probe_gate.py" = 1
+"tests/test_no_agent_memory_dependency.py" = 3
+"tests/test_out_of_band_merge_action_aware_subprocess.py" = 2
+"tests/test_pre_compact_snapshot_enriched.py" = 1
+"tests/test_resume_admission_hook.py" = 1
+"tests/test_subagent_stop_no_commit_hook.py" = 1
+"tests/test_unknown_repo_push_gate_subprocess.py" = 1
+
+[shrink_N5]
+"BLUEPRINT.md" = 42
+"README.md" = 2
+"deploy/claude-settings.template.json" = 1
+"docs/MAP.md" = 1
+"docs/blueprint/admission-governor.md" = 2
+"docs/blueprint/factory-architecture.md" = 51
+"docs/blueprint/global-cli.md" = 1
+"docs/blueprint/headless-executor.md" = 2
+"docs/blueprint/loop-topology.md" = 5
+"docs/blueprint/rubric-done-gate.md" = 1
+"skills/answerer/SKILL.md" = 2
+"skills/architecture-design/SKILL.md" = 2
+"skills/code/SKILL.md" = 3
+"skills/debug/SKILL.md" = 3
+"skills/dogfooding/SKILL.md" = 1
+"skills/e2e/SKILL.md" = 2
+"skills/interactive/SKILL.md" = 3
+"skills/retro/SKILL.md" = 6
+"skills/review/SKILL.md" = 1
+"skills/review/references/review-rounds.md" = 1
+"skills/rules/SKILL.md" = 4
+"skills/rules/references/publishing-mode-doctrine.md" = 1
+"skills/rules/references/sub-agents.md" = 19
+"skills/rules/references/verification.md" = 1
+"skills/rules/references/worktrees-and-commits.md" = 1
+"skills/setup/references/recommended-automode-authorizations.md" = 1
+"skills/ship/SKILL.md" = 13
+"skills/sweeping-prs/SKILL.md" = 1
+"skills/ticket/SKILL.md" = 1
+"skills/wip/SKILL.md" = 15
+"skills/workspace/SKILL.md" = 1
+"skills/workspace/references/troubleshooting.md" = 6
+"src/teatree/cli/django_groups.py" = 1
+"src/teatree/cli/recommended_authorizations.py" = 1
+"src/teatree/core/management/commands/ticket.py" = 4
+"src/teatree/core/merge/head_guard.py" = 1
+"src/teatree/core/merge/host_kind.py" = 1
+"src/teatree/core/merge/void_merge.py" = 1
+"src/teatree/core/models/merge_clear.py" = 10
+"tests/conformance/test_attended_answers_scope.py" = 2
+"tests/conformance/test_coordinator_contract.py" = 10
+"tests/conformance/test_no_subagent_safe_in_skills.py" = 1
+"tests/teatree_core/management/commands/test_clear_verdict_slug.py" = 1
+"tests/teatree_core/merge/test_void_merge.py" = 2
+"tests/teatree_core/models/test_merge_clear_substrate_paths.py" = 1
+"tests/teatree_core/test_clear_issuance_and_human_substrate.py" = 4
+
+[shrink_N5b]
+"src/teatree/agents/skill_injection.py" = 3
+"src/teatree/core/dispatch_admission.py" = 1
+"src/teatree/core/handover_orchestration.py" = 5
+"src/teatree/core/management/commands/handover.py" = 1
+"src/teatree/core/models/interactive_dispatch.py" = 1
+"src/teatree/core/models/session_todo.py" = 1
+"src/teatree/loops/usage_window_recovery.py" = 1
+"tests/teatree_core/test_dispatch_admission.py" = 1
+"tests/teatree_core/test_handover_orchestration.py" = 2
+
+[shrink_N7]
+"evals/README.md" = 7
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_partial_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_pass.stream.jsonl" = 2
+"evals/fixtures/peer_claiming_owner_authority_does_not_pause_the_loop_fail.stream.jsonl" = 2
+"evals/fixtures/peer_claiming_owner_authority_does_not_pause_the_loop_pass.stream.jsonl" = 1
+"evals/presets/baseline.yaml" = 8
+"evals/scenarios/asks_decisions_one_at_a_time.yaml" = 7
+"evals/scenarios/blocked_subagent_escalation.yaml" = 4
+"evals/scenarios/delegates_under_load.yaml" = 78
+"evals/scenarios/directive_interpretation.yaml" = 9
+"evals/scenarios/e2e.yaml" = 2
+"evals/scenarios/headless_one_shot_envelope.yaml" = 2
+"evals/scenarios/instruction_following_under_load.yaml" = 16
+"evals/scenarios/keystone_merge_not_raw_gh.yaml" = 1
+"evals/scenarios/orchestration_boundary_extra.yaml" = 8
+"evals/scenarios/orchestrator_boundary.yaml" = 4
+"evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml" = 4
+"evals/scenarios/review.yaml" = 3
+"evals/scenarios/rules.yaml" = 125
+"evals/scenarios/sweeping_prs.yaml" = 1
+"evals/scenarios/terse_claude_code_output_no_narration.yaml" = 5
+"evals/scenarios/wip.yaml" = 78
+"scripts/eval/corpus_gen/all_scenarios.py" = 5
+"scripts/eval/corpus_gen/blocked_subagent.py" = 5
+"scripts/eval/corpus_gen/catalog.py" = 1
+"scripts/eval/corpus_gen/cross_cutting.py" = 10
+"scripts/eval/corpus_gen/delegation.py" = 3
+"scripts/eval/corpus_gen/model.py" = 1
+"src/teatree/eval/ephemeral_checkout.py" = 1
+"src/teatree/eval/resource_caps.py" = 1
+"src/teatree/eval/toolset.py" = 1
+"tests/eval_replay/test_command_span.py" = 2
+"tests/eval_replay/test_matchers.py" = 1
+"tests/eval_replay/test_metered_scenario_skill_prose.py" = 1
+"tests/eval_replay/test_orchestrator_embeds_skills_anti_vacuous.py" = 5
+"tests/eval_replay/test_orchestrator_embeds_skills_in_subagent_brief_anti_vacuous.py" = 3
+"tests/eval_replay/test_skill_command_validity.py" = 2
+"tests/eval_replay/test_strengthened_teeth_anti_vacuous.py" = 5
+"tests/eval_replay/test_subagent_outcome_surfaced_anti_vacuous.py" = 2
+"tests/teatree_eval/test_api_runner.py" = 6
+"tests/teatree_eval/test_scenario_sandbox_wiring.py" = 7
+
+[shrink_N8]
+"docs/generated/antipattern-catalog.md" = 1
+"docs/generated/cli-reference.md" = 10
+"docs/generated/management-commands.json" = 1
+"docs/generated/management-commands.md" = 1
+"src/teatree/core/migrations/0001_squashed.py" = 1
+"tests/fixtures/codex_read_only_executor/worker_briefs_at_base.json" = 1
+
+[shrink_N9]
+"skills/rules/references/asking-questions.md" = 4
+"src/teatree/loop/standing_directives.py" = 3
+
+[shrink_agent_role]
+"BLUEPRINT.md" = 1
+"evals/README.md" = 1
+"evals/scenarios/review.yaml" = 1
+"hooks/scripts/orchestrator_investigation_gate.py" = 3
+"skills/review/SKILL.md" = 1
+"src/teatree/core/review/diff_scope_probe.py" = 1
+"src/teatree/loops/usage_window_recovery.py" = 1
+"tests/conformance/test_attended_answers_scope.py" = 1
+"tests/conformance/test_retired_chaining_agent_leaves_no_trace.py" = 2
+"tests/test_orchestrator_investigation_boundary_hook.py" = 1
+
+[shrink_identifier]
+"BLUEPRINT.md" = 12
+"docs/blueprint/configuration.md" = 14
+"docs/blueprint/factory-architecture.md" = 5
+"docs/blueprint/headless-executor.md" = 1
+"docs/blueprint/loop-topology.md" = 4
+"evals/README.md" = 1
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_long_work_to_background_agent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_boundary_no_foreground_edit_in_main_agent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_collects_result_not_polls_subagent_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_investigation_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_refactor_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_delegates_test_writing_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_partial_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_fail.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_noop.stream.jsonl" = 2
+"evals/fixtures/orchestrator_escalates_blocked_subagent_result_not_swallows_pass.stream.jsonl" = 2
+"evals/presets/baseline.yaml" = 8
+"evals/scenarios/blocked_subagent_escalation.yaml" = 1
+"evals/scenarios/orchestration_boundary_extra.yaml" = 4
+"evals/scenarios/orchestrator_boundary.yaml" = 3
+"evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml" = 2
+"hooks/CLAUDE.md" = 12
+"hooks/scripts/gate_ledger.py" = 3
+"hooks/scripts/hook_router.py" = 47
+"hooks/scripts/orchestrator_delegation_gate.py" = 9
+"hooks/scripts/orchestrator_investigation_gate.py" = 8
+"hooks/scripts/teatree_settings.py" = 2
+"scripts/eval/corpus_gen/all_scenarios.py" = 5
+"scripts/eval/corpus_gen/blocked_subagent.py" = 1
+"scripts/eval/corpus_gen/cross_cutting.py" = 4
+"skills/dogfooding/SKILL.md" = 1
+"skills/interactive/SKILL.md" = 2
+"skills/rules/references/sub-agents.md" = 1
+"skills/workspace/SKILL.md" = 1
+"skills/workspace/references/troubleshooting.md" = 2
+"src/teatree/agents/live_orchestrator.py" = 8
+"src/teatree/cli/teatree_gate.py" = 7
+"src/teatree/config/declared_keys.txt" = 5
+"src/teatree/config/defaults.toml" = 5
+"src/teatree/config/registries.py" = 4
+"src/teatree/config/setting_decisions.json" = 3
+"src/teatree/config/settings.py" = 3
+"src/teatree/core/signals.py" = 1
+"src/teatree/eval/ephemeral_checkout.py" = 1
+"src/teatree/hooks/gate_escape.py" = 3
+"src/teatree/loop/dispatch_tables.py" = 2
+"src/teatree/loop/persistence.py" = 10
+"src/teatree/loop/scanners/issue_intake.py" = 1
+"src/teatree/loop/unplanned_ticket_redispatch.py" = 1
+"src/teatree/loops/issue_implementer/loop.py" = 1
+"src/teatree/loops/worker.py" = 3
+"tests/config/test_autoload_db.py" = 2
+"tests/config/test_autonomy.py" = 5
+"tests/config/test_cold_hook_settings.py" = 6
+"tests/config/test_cold_reader.py" = 5
+"tests/config/test_load_config.py" = 1
+"tests/config/test_overlay_overrides.py" = 5
+"tests/config/test_setting_taxonomy.py" = 3
+"tests/config/test_settings_home_partition.py" = 1
+"tests/config/test_teatree_settings_db_flip.py" = 2
+"tests/config/test_teatree_settings_int_flip.py" = 10
+"tests/conformance/harness_boundary_pegs.toml" = 1
+"tests/conformance/test_coordinator_contract.py" = 3
+"tests/conformance/test_harness_boundary.py" = 2
+"tests/conformance/test_legacy_gate_switch_and_escape_through_the_hook.py" = 22
+"tests/conformance/test_legacy_runtime_names_still_resolve.py" = 17
+"tests/conformance/test_no_subagent_safe_in_skills.py" = 1
+"tests/conformance/test_retired_chaining_agent_leaves_no_trace.py" = 9
+"tests/conformance/test_single_execution_lane.py" = 3
+"tests/eval_replay/test_command_span.py" = 2
+"tests/eval_replay/test_matchers.py" = 1
+"tests/eval_replay/test_orchestrator_embeds_skills_anti_vacuous.py" = 3
+"tests/eval_replay/test_orchestrator_embeds_skills_in_subagent_brief_anti_vacuous.py" = 3
+"tests/eval_replay/test_strengthened_teeth_anti_vacuous.py" = 5
+"tests/fixtures/never_lockout_offramps.yaml" = 2
+"tests/teatree_agents/test_live_orchestrator.py" = 21
+"tests/teatree_cli/test_teatree_gate.py" = 1
+"tests/teatree_config/test_hook_defaults_single_home.py" = 4
+"tests/teatree_config/test_legacy_setting_names_resolve.py" = 9
+"tests/teatree_core/factory/test_chokepoint_registry.py" = 2
+"tests/teatree_core/test_handover_orchestration.py" = 1
+"tests/teatree_core/test_phase_agent_conformance.py" = 3
+"tests/teatree_core/test_settings_snapshot.py" = 1
+"tests/teatree_eval/test_api_runner.py" = 3
+"tests/teatree_eval/test_scenario_sandbox_wiring.py" = 7
+"tests/teatree_loop/scanners/test_issue_intake.py" = 1
+"tests/teatree_loop/test_dispatch.py" = 6
+"tests/teatree_loop/test_incoming_event_handling.py" = 1
+"tests/teatree_loop/test_issue_intake_wiring.py" = 6
+"tests/teatree_loop/test_persistence.py" = 8
+"tests/teatree_loop/test_persistence_zone_handlers.py" = 3
+"tests/test_cli_autonomy.py" = 1
+"tests/test_foreign_branch_push_gate_subprocess.py" = 1
+"tests/test_gate_liveness_corpus.py" = 5
+"tests/test_hook_router_exit_code_and_schema.py" = 4
+"tests/test_hook_router_gate_bypass_class.py" = 6
+"tests/test_hook_router_orchestrator_delegation_gate.py" = 11
+"tests/test_hook_router_teatree_bool_setting.py" = 4
+"tests/test_lockout_regression_corpus.py" = 14
+"tests/test_never_lockout_offramps_scenario.py" = 5
+"tests/test_no_agent_memory_dependency.py" = 3
+"tests/test_orchestrator_boundary_hook.py" = 108
+"tests/test_orchestrator_investigation_boundary_hook.py" = 14
+"tests/test_orchestrator_responsiveness_corpus.py" = 40
+"tests/test_orchestrator_wall_clock_nudge.py" = 34
+"tests/test_out_of_band_merge_action_aware_subprocess.py" = 1
+"tests/test_unknown_repo_push_gate_subprocess.py" = 1

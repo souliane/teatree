@@ -9,14 +9,18 @@ from weakref import WeakKeyDictionary
 from django.utils import timezone
 
 from teatree.agents import live_mailbox
+from teatree.agents.coordinator_escalation import tell_live_coordinator
+from teatree.agents.data_fence import data_rule, fenced
 from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
-from teatree.core.models import NoPlanArtifactError, PendingChatInjection
+from teatree.core.answering.escalation import open_request, resume_coordinator
+from teatree.core.models import PendingChatInjection, TaskMintRefusedError, ThreadBinding
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import schedule_card_discussion
 from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, CardThreadStop, UnmatchedCardThread
 from teatree.loop.slack_answer.coalescing import _Unit
+from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
 
 if TYPE_CHECKING:
@@ -140,7 +144,7 @@ def _resume_responsible_task(row: DeferredQuestion, unit: _Unit) -> bool:
             event_id=f"{unit.overlay}:{unit.channel}:{unit.slack_ts}",
             message=_message(row, unit),
         )
-    except NoPlanArtifactError:
+    except TaskMintRefusedError:
         logger.warning("Card %s discussion could not resume its responsible task", row.pk)
         return False
     return True
@@ -188,12 +192,69 @@ def _tell_owner_nobody_is_listening(backend: "MessagingBackend", unit: _Unit, qu
         )
 
 
+def _reply_message(request: DeferredQuestion, unit: _Unit) -> str:
+    return (
+        f"The owner replied in the Slack thread {unit.lead.thread_ts} on channel {unit.channel} while escalation "
+        f"{request.pk} is open.\n{fenced('OWNER MESSAGE', unit.text)}\n{data_rule('OWNER MESSAGE')}\n"
+        f"Answer in the same thread; use `t3 <overlay> notify reply '<answer>' "
+        f"--idempotency-key escalation-reply:{unit.slack_ts}:reply --thread-ts {unit.lead.thread_ts}`."
+    )
+
+
+def _route_to_coordinator(request: DeferredQuestion, ticket_id: int, unit: _Unit) -> bool:
+    key = f"escalation-reply:{unit.overlay}:{unit.channel}:{unit.slack_ts}"
+    message = _reply_message(request, unit)
+    try:
+        broker = live_mailbox.shared_broker()
+        with _SENDER_LOCK:
+            identity = _router_sender(broker, key)
+            told = asyncio.run(
+                tell_live_coordinator(
+                    MailboxClient(identity.socket_path, identity.token), ticket_id=ticket_id, text=message, key=key
+                )
+            )
+    except (MailboxError, OSError, RuntimeError, ValueError):
+        logger.warning("Escalation %s reply was not accepted by a live coordinator", request.pk, exc_info=True)
+        told = False
+    return told or resume_coordinator(ticket_id, event_id=key, message=message) is not None
+
+
+def _route_open_escalation(unit: _Unit, report: "SlackAnswerReport") -> bool:
+    """Send the owner's message to the coordinator while the thread's ticket has an open escalation request."""
+    if control_verb(unit.text) is not None:
+        return False
+    ticket_id = (
+        ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts)
+        .values_list("ticket_id", flat=True)
+        .first()
+    )
+    if ticket_id is None:
+        return False
+    request = open_request(ticket_id)
+    if request is None:
+        return False
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
+        return True
+    try:
+        routed = _route_to_coordinator(request, ticket_id, unit)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    if not routed:
+        _unmark_unit_loop_replied(unit)
+        return False
+    report.dispatched += 1
+    return True
+
+
 def route_card_result(
     backend: "MessagingBackend",
     unit: _Unit,
     result: UnmatchedCardThread | AmbiguousCards | BoundAnswer | None,
     report: "SlackAnswerReport",
 ) -> bool:
+    if result is None:
+        return _route_open_escalation(unit, report)
     if not isinstance(result, UnmatchedCardThread) or result.reason is not CardThreadStop.OPTIONS_ONLY:
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):

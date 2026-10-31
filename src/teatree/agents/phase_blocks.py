@@ -13,6 +13,7 @@ import json
 import logging
 from collections.abc import Callable
 
+from teatree.agents.answering_phase_block import answering_phase_lines
 from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive, _testing_phase_lines
 from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
@@ -30,7 +31,6 @@ from teatree.agents.envelope_contract import (
 )
 from teatree.agents.read_only_draft_blocks import BACKLOG_SWEEP_LINES, REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
-from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.gates.repro_gate import failing_run_required
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -40,7 +40,6 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
-from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_plan import plan_for_task
 
@@ -161,54 +160,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     )
 
 
-# Injected into an answering brief: the answering phase is denied the
-# shell (agents/answerer.md tools = Read/Grep/Glob only), so it CANNOT post the
-# reply itself via the Replier / `t3 <overlay> notify` CLI. It RETURNS the draft
-# in the result envelope instead; the orchestrator (``attempt_recorder`` →
-# ``_maybe_record_answer_draft``) posts your draft directly to the owner
-# in-thread — answering the owner is not a post on the owner's behalf, so it
-# is never approval-gated or deferred (an on-behalf reply to a third party
-# still routes through the DeferredQuestion approval path).
-# Symmetric to ``_review_verdict_return_lines`` — without this directive the
-# shell-denied answerer returns a prose summary with no ``answer`` field and the
-# phase evidence gate refuses ("missing required evidence for phase 'answering'").
-_ANSWER_RETURN_LINES: tuple[str, ...] = (
-    "",
-    "RETURN YOUR REPLY AS A DRAFT (this phase has no shell — do NOT try to post via",
-    "`t3 <overlay> notify`, the Replier, or any CLI; you cannot post, you HAND BACK the draft):",
-    "add an `answer` object to your final JSON result. The orchestrator posts your draft",
-    "directly to the owner, in-thread, on your behalf:",
-    '  "answer": {"text": "<the drafted reply, in the user\'s voice — no AI signature>",',
-    '             "thread_ref": "<the inbound thread ts/ref this reply targets, or \'\' if none>"}',
-    "The `text` MUST be non-empty — a summary-only result with no `answer` drops the reply and",
-    "the phase is refused. If you cannot answer (missing context, a decision only the user can",
-    "make), draft a clarifying-question reply as the `answer` text rather than returning nothing.",
-)
-
-# Injected into an answering brief whose dispatching message implied work (#4527):
-# the reply alone leaves the request nowhere intake can find it, so the phase also
-# has to say what the request BECOMES. The agent cannot file it — the recorder does,
-# from this channel.
-_WORK_ITEM_RETURN_LINES: tuple[str, ...] = (
-    "",
-    "THIS REQUEST IMPLIES WORK, so ALSO add a `work_item` object to your final JSON result.",
-    "Search the open backlog FIRST and prefer extending an existing issue over filing a near-duplicate:",
-    '  "work_item": {"existing_issue_url": "<the backlog issue this belongs to>"}',
-    "or, when nothing fits:",
-    '  "work_item": {"title": "<imperative one-line title>", "body": "<what to do and why>"}',
-    "or, when the reply genuinely settles it and nothing needs building:",
-    '  "work_item": {"no_work_reason": "<why no work is needed>"}',
-    "The body must PARAPHRASE — never paste the owner's message verbatim; this files onto a",
-    "PUBLIC repo. A result with no `work_item` is refused and the task is re-dispatched.",
-)
-
 # Injected into a planning brief (#3584): the phase evidence gate
 # (``PHASE_REQUIRED_EVIDENCE["planning"]``) refuses a run whose result envelope
 # omits ``plan_text``, so the planner MUST place the full plan under that key —
 # not only as prose or a PlanArtifact. Without this reinforcing directive the
 # planner produced a plan but returned a summary-only envelope, and the attempt
 # was refused for "missing required evidence for phase 'planning'" then re-run.
-# Symmetric to ``_review_verdict_return_lines`` / ``_ANSWER_RETURN_LINES``.
+# Symmetric to ``_review_verdict_return_lines`` / the answering block (``answering_phase_block``).
 _PLAN_RETURN_LINES: tuple[str, ...] = (
     "",
     "RETURN YOUR PLAN IN THE ENVELOPE (the phase evidence gate refuses a run with no `plan_text`):",
@@ -235,7 +193,7 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
 # Injected into a scanning_news brief (#3584): the shell-denied scanner
 # cannot enqueue candidates itself, so it RETURNS them, and the phase evidence
 # gate (``PHASE_REQUIRED_EVIDENCE["scanning_news"]``) refuses a run whose envelope
-# omits ``article_suggestions``. Symmetric to ``_ANSWER_RETURN_LINES``.
+# omits ``article_suggestions``. Symmetric to the answering block (``answering_phase_block``).
 _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
     "",
     "DECIDE EACH NEWS CANDIDATE (this phase has no shell; return decisions for the server to settle):",
@@ -461,41 +419,6 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     )
 
 
-def _answering_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
-    """The ``PHASE: answering`` block — draft, then RETURN the answer envelope.
-
-    The shell-denied answerer cannot post the reply itself; it hands the draft
-    back and the orchestrator posts on confirmation. Surfaces the inbound thread
-    context (``ticket.extra["slack_answer"]``, populated by the reactive
-    slack-answer cycle) best-effort so the agent knows what ``thread_ref`` to
-    fill; absent for the event-router dispatch shape, which carries the thread
-    on the routed ``IncomingEvent`` the answerer skill reads.
-    """
-    lines = ["", "PHASE: answering", "Read the thread context and draft a concise reply in the user's voice."]
-    ticket_extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
-    slack_answer = ticket_extra.get("slack_answer")
-    if isinstance(slack_answer, dict):
-        thread_ts = str(slack_answer.get("slack_ts") or "")
-        question = str(slack_answer.get("question") or "")
-        if thread_ts:
-            lines.append(f"Inbound Slack thread ts (use as `thread_ref`): {thread_ts}")
-        if question:
-            lines.append(f"The user's message: {question}")
-    lines.extend(_ANSWER_RETURN_LINES)
-    if read_only_venue:
-        lines.append(
-            "The inbound event is under INBOUND EVENT in the task message; you reach no thread or forge from here."
-        )
-    if owes_work_item(task.ticket):
-        lines.extend(_WORK_ITEM_RETURN_LINES)
-        if task.ticket.overlay:
-            try:
-                lines.extend(get_overlay_for_ticket(task.ticket).metadata.work_item_return_lines())
-            except Exception:
-                logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
-    return tuple(lines)
-
-
 def _shipping_phase_lines() -> tuple[str, ...]:
     """The ``PHASE: shipping`` auto-review-gate block."""
     reviewer_dispatch = build_reviewer_dispatch_prompt(
@@ -582,7 +505,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": _planning_phase_lines,
     "testing": _testing_phase_lines,
     "reviewing": _reviewing_phase_lines,
-    "answering": _answering_phase_lines,
+    "answering": answering_phase_lines,
     "scanning_news": lambda _task: _scanning_news_phase_lines(),
     "shipping": lambda _task: _shipping_phase_lines(),
 }
@@ -592,7 +515,7 @@ _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = 
     "backlog_sweep": lambda _task: BACKLOG_SWEEP_LINES,
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
-    "answering": lambda task: _answering_phase_lines(task, read_only_venue=True),
+    "answering": lambda task: answering_phase_lines(task, read_only_venue=True),
     "requesting_review": lambda _task: REQUESTING_REVIEW_LINES,
     "shipping": lambda _task: SHIPPING_LINES,
 }

@@ -68,8 +68,11 @@ class TestStatusFacetCohesionSplit:
             "has_shippable_diff",
             "artifacts",
             "is_admissible",
+            "is_conversation",
+            "owes_no_work",
             "recorded_request",
             "work_placed_elsewhere",
+            "slack_answer_context",
         }
 
     def test_both_facets_stay_abstract_so_no_field_moves(self) -> None:

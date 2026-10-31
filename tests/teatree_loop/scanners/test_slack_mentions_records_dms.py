@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from teatree.backends.slack import receiver
-from teatree.core.models import OperatorIdentity, PendingChatInjection
+from teatree.core.models import OperatorIdentity, PendingChatInjection, ReviewAssignment
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
@@ -206,3 +206,75 @@ class TestDrainedDmsAreRecorded(TestCase):
 
         assert [signal for signal in signals if signal.kind == "slack.dm"] == []
         assert [record["event"]["ts"] for record in receiver.drain_event_queue()] == [_HUMAN_DM_TS]
+
+
+_PR_URL = "https://github.com/souliane/teatree/pull/1"
+
+
+@dataclass
+class MentionBacklogMessaging(FakeMessaging):
+    mentions: list[RawAPIDict] = field(default_factory=list)
+
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return list(self.mentions)
+
+
+def _mention(user: str) -> RawAPIDict:
+    return {
+        "type": "app_mention",
+        "ts": "1700000000.000400",
+        "channel": "C1",
+        "user": user,
+        "text": f"please review {_PR_URL}",
+    }
+
+
+class TestMentionsAreOwnerOnly(TestCase):
+    def setUp(self) -> None:
+        self.queue = Path(self.enterContext(TemporaryDirectory())) / "slack-events.jsonl"
+        self.enterContext(patch.object(receiver, "default_queue_path", return_value=self.queue))
+
+    def _enqueue(self, event: RawAPIDict) -> None:
+        self.queue.write_text(json.dumps({"overlay": "demo", "event": event}) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _scan(backend: FakeMessaging) -> list[str]:
+        return [signal.kind for signal in SlackMentionsScanner(backend=backend, overlay="demo").scan()]
+
+    def test_a_queued_owner_mention_is_surfaced_and_recorded_as_a_review_intent(self) -> None:
+        self._enqueue(_mention("U_HUMAN"))
+
+        kinds = self._scan(FakeMessaging())
+
+        assert kinds == ["slack.mention"]
+        assert ReviewAssignment.objects.get().mr_url == _PR_URL
+
+    def test_a_mention_from_a_registered_operator_is_dropped_with_no_signal_and_no_row(self) -> None:
+        operator = get_user_model().objects.create_superuser("operator", email="", password=None)
+        OperatorIdentity.objects.create(user=operator, platform="slack", handle="U_OPERATOR")
+        self._enqueue(_mention("U_OPERATOR"))
+
+        queued = self._scan(FakeMessaging())
+        backlog = self._scan(MentionBacklogMessaging(mentions=[_mention("U_OPERATOR")]))
+
+        assert (queued, backlog, ReviewAssignment.objects.count()) == ([], [], 0)
+
+    def test_a_queued_mention_from_a_colleague_is_dropped_with_no_signal_and_no_row(self) -> None:
+        self._enqueue(_mention("U_COLLEAGUE"))
+
+        kinds = self._scan(FakeMessaging())
+
+        assert (kinds, ReviewAssignment.objects.count(), self.queue.exists()) == ([], 0, False)
+
+    def test_a_backlog_mention_from_a_colleague_is_dropped_with_no_signal_and_no_row(self) -> None:
+        kinds = self._scan(MentionBacklogMessaging(mentions=[_mention("U_COLLEAGUE"), _mention("U_HUMAN")]))
+
+        assert (kinds, ReviewAssignment.objects.count()) == (["slack.mention"], 1)
+
+    def test_a_blank_owner_id_drops_every_mention(self) -> None:
+        self._enqueue(_mention("U_HUMAN"))
+
+        kinds = self._scan(MentionBacklogMessaging(user_id="", mentions=[_mention("U_HUMAN")]))
+
+        assert (kinds, ReviewAssignment.objects.count()) == ([], 0)

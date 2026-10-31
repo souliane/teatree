@@ -16,9 +16,10 @@ def unfindable_tickets(tickets: QuerySet) -> list["Ticket"]:
     :meth:`~teatree.core.models.ticket.Ticket.is_admissible` can never be
     admitted, claimed, or found again — it is the only surviving record of a
     request someone was told is tracked. A row that already recorded where its
-    work went is EXCLUDED: a Slack lane's bookkeeping row is non-admissible by
-    design, so without that stamp the mechanism reports its own successes and
-    buries the genuinely dead rows under one entry per inbound DM.
+    work went, or that came from a message asking for none, is EXCLUDED: a Slack
+    lane's bookkeeping row is non-admissible by design, so without that the mechanism
+    reports its own successes and buries the genuinely dead rows under one entry per
+    inbound DM.
 
     The doctor WARN and ``ticket dead-rows`` share this one selector, so they
     can never disagree about WHICH rows are unfindable; the doctor additionally
@@ -38,5 +39,9 @@ def unfindable_tickets(tickets: QuerySet) -> list["Ticket"]:
         .annotate(oldest_task=Min("tasks__created_at"))
         .order_by("pk")
     )
-    unfindable = [ticket for ticket in rows if not (ticket.is_admissible() or ticket.work_placed_elsewhere())]
+    unfindable = [
+        ticket
+        for ticket in rows
+        if not (ticket.is_admissible() or ticket.work_placed_elsewhere() or ticket.owes_no_work())
+    ]
     return sorted(unfindable, key=lambda row: (row.oldest_task is not None, row.oldest_task))

@@ -17,6 +17,7 @@ from django.utils import timezone
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.config import get_data_dir
 from teatree.core import agent_runner as agent_runner_mod
 from teatree.core.backend_protocols import PrMergeState
 from teatree.core.cleanup.process_table import ProcessTable
@@ -1984,6 +1985,14 @@ class _CheckoutCreatingSession:
             close_thread_db_connections()
 
 
+def _make_removable(root: Path) -> None:
+    """The handoff store is created unlistable (0o300); pytest cannot clear its temp dir until it can be listed."""
+    root.chmod(0o700)
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            _make_removable(child)
+
+
 class ExecuteTaskMidRunCheckoutTests(TransactionTestCase):
     """A coding run that creates its own checkout hands the next phase a released, attested tree (#5272)."""
 
@@ -1993,6 +2002,7 @@ class ExecuteTaskMidRunCheckoutTests(TransactionTestCase):
         self.addCleanup(temporary.cleanup)
         self.checkout = Path(temporary.name) / "checkout"
         self.enterContext(file_backed_default_database())
+        self.addCleanup(lambda: _make_removable(get_data_dir("handoff")))
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
         self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED, overlay="t3-teatree")

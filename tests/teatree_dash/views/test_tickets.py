@@ -9,13 +9,15 @@ from django.db import transaction
 from django.http import HttpResponse
 from django.urls import reverse
 
+from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.dash.task_actions import enqueue_buttons
 from teatree.dash.ticket_detail import legal_transition_names
-from tests.factories import TaskFactory, TicketFactory
+from teatree.utils.url_slug import slack_conversation_anchor
+from tests.factories import TaskFactory, TicketFactory, record_test_plan
 from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
@@ -279,6 +281,39 @@ class TaskEnqueuePostTestCase(TestCase):
         assert response.status_code == 400
         assert "plan_missing" in response.content.decode()
         assert not Task.objects.filter(ticket=self.ticket).exists()
+
+    def test_a_planned_conversation_build_request_is_a_refusal(self) -> None:
+        self.ticket.issue_url = slack_conversation_anchor(channel="D1", slack_ts="1.0")
+        self.ticket.state = State.PLAN_RECORDED
+        self.ticket.save(update_fields=["issue_url", "state"])
+        record_test_plan(self.ticket)
+
+        response = self._post("coding")
+
+        assert response.status_code == 400
+        assert "conversation_ticket" in response.content.decode()
+        assert not Task.objects.filter(ticket=self.ticket).exists()
+
+    def test_a_conversation_refusal_explains_the_required_work_item(self) -> None:
+        self.ticket.issue_url = slack_conversation_anchor(channel="D1", slack_ts="1.0")
+        self.ticket.state = State.PLAN_RECORDED
+        self.ticket.save(update_fields=["issue_url", "state"])
+        record_test_plan(self.ticket)
+
+        with patch("teatree.dash.views.tickets.enqueue_phase_task_once", side_effect=AssertionError("must precheck")):
+            response = self._post("coding")
+
+        assert response.status_code == 400
+        assert "File the request as a work item first" in response.content.decode()
+
+    def test_a_mint_refusal_after_the_precheck_is_reported(self) -> None:
+        with patch(
+            "teatree.dash.views.tickets.enqueue_phase_task_once", side_effect=TaskMintRefusedError("changed state")
+        ):
+            response = self._post("reviewing")
+
+        assert response.status_code == 400
+        assert "changed state" in response.content.decode()
 
     def test_a_known_phase_outside_the_ticket_fsm_is_refused(self) -> None:
         self.ticket.state = State.WORK_STARTED

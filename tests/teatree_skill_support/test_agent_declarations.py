@@ -68,9 +68,6 @@ class TestShippedAgentFiles:
     def test_coder_declares_the_architecture_skill(self) -> None:
         assert "architecture-design" in declared_skills_for_agent("coder", agents_dir=default_agents_dir())
 
-    def test_orchestrator_declares_the_architecture_skill(self) -> None:
-        assert "architecture-design" in declared_skills_for_agent("orchestrator", agents_dir=default_agents_dir())
-
     @pytest.mark.parametrize("agent", ["coder", "reviewer", "tester", "planner", "shipper"])
     def test_every_dispatched_agent_declares_the_cross_cutting_rules(self, agent: str) -> None:
         assert "rules" in declared_skills_for_agent(agent, agents_dir=default_agents_dir())

@@ -12,7 +12,7 @@ import logging
 from django.db import transaction
 
 from teatree.core.models import Task, Ticket
-from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.plan_decision import refuse_conversation_mint, refuse_unplanned_mint
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ def create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str)
     """
     from teatree.core.models.session import Session  # noqa: PLC0415 — lazy: avoids the models import cycle
 
+    refuse_conversation_mint(ticket, phase=phase)
     refuse_unplanned_mint(ticket, phase=phase)
     with transaction.atomic():
         in_flight = Task.objects.in_flight_for_phase(ticket.overlay, phase).filter(ticket=ticket).order_by("pk").first()

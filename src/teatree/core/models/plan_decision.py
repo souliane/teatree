@@ -7,12 +7,15 @@ all read :func:`has_plan_decision`, so none of them can disagree about what "pla
 
 What is closed is the UNRECORDED skip, not the fast path: one ``ticket skip-planning``
 records the decision and every refusal below clears.
+
+The sibling refusal for a conversation's bookkeeping ticket (#5685) sits here too, so the modules that mint
+tasks read both mint refusals from one place.
 """
 
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.phases import IMPLEMENTING_PHASES, SUBAGENT_BY_IMPLEMENTING_PHASE, normalize_phase
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import NoPlanArtifactError, TaskMintRefusedError
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 
 if TYPE_CHECKING:
@@ -48,3 +51,26 @@ def refuse_unplanned_mint(ticket: "Ticket", *, phase: str) -> None:
     refusal = plan_missing_refusal(ticket, phase=phase)
     if refusal is not None:
         raise NoPlanArtifactError(refusal)
+
+
+CONVERSATION_REFUSED_PREFIX = "conversation_ticket: "
+
+_BUILD_PHASES = IMPLEMENTING_PHASES | {"shipping"}
+
+
+def conversation_refusal(ticket: "Ticket", *, phase: str) -> str | None:
+    """The refusal for a build *phase* on a conversation ticket, else ``None``."""
+    canonical = normalize_phase(phase)
+    if canonical not in _BUILD_PHASES or not ticket.is_conversation():
+        return None
+    return (
+        f"{CONVERSATION_REFUSED_PREFIX}refusing a {canonical} task on ticket {ticket.pk} — it is a "
+        f"conversation, not a tracked work item, so nothing built on it could be found or shipped. File the "
+        f"request as a work item first; the promotion moves the thread to that ticket, which takes the task."
+    )
+
+
+def refuse_conversation_mint(ticket: "Ticket", *, phase: str) -> None:
+    refusal = conversation_refusal(ticket, phase=phase)
+    if refusal is not None:
+        raise TaskMintRefusedError(refusal)

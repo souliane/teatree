@@ -12,12 +12,15 @@ from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
+from teatree.utils.url_slug import is_conversation_anchor, is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
+    from django.db.models import Manager
+
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
     from teatree.core.models.task import Task
     from teatree.core.models.task_attempt import TaskAttempt
+    from teatree.core.models.thread_binding import ThreadBinding
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
     from teatree.core.models.transition import TicketTransition
@@ -36,6 +39,7 @@ class TicketIntrospectionModel(TicketFacet):
         # cannot appear in a type expression.
         tasks: "TaskQuerySet"
         sessions: "SessionQuerySet"
+        slack_threads: "Manager[ThreadBinding]"
 
     class Meta:
         abstract = True
@@ -175,6 +179,14 @@ class TicketIntrospectionModel(TicketFacet):
             return False
         return bool(self.short_description) and not self.remote_missing
 
+    def is_conversation(self) -> bool:
+        """Whether this is a conversation's bookkeeping row rather than a tracked work item (#5685)."""
+        return is_conversation_anchor(self.issue_url)
+
+    def owes_no_work(self) -> bool:
+        """Whether this conversation row was opened by a message recorded as asking for nothing to be built."""
+        return self.is_conversation() and self.slack_answer_context().get("implies_work") is False
+
     def recorded_request(self) -> str:
         """All an unfindable row still holds — the request text, else its card label (#4527).
 
@@ -182,7 +194,7 @@ class TicketIntrospectionModel(TicketFacet):
         for, so every surface that reports one has to show that text or the report
         names a number nobody can act on.
         """
-        recorded = str(self._slack_answer().get("question") or "")
+        recorded = str(self.slack_answer_context().get("question") or "")
         return recorded or self.short_description or "(no recorded text)"
 
     def work_placed_elsewhere(self) -> bool:
@@ -191,9 +203,9 @@ class TicketIntrospectionModel(TicketFacet):
         A Slack lane's bookkeeping row is non-admissible by design, so admissibility alone
         cannot tell a dropped request from a handled one — this stamp is the difference.
         """
-        return bool(self._slack_answer().get("work_issue_url"))
+        return bool(self.slack_answer_context().get("work_issue_url"))
 
-    def _slack_answer(self) -> SlackAnswerContext:
+    def slack_answer_context(self) -> SlackAnswerContext:
         extra = self.extra if isinstance(self.extra, dict) else {}
         origin = extra.get("slack_answer")
         return cast("SlackAnswerContext", origin) if isinstance(origin, dict) else SlackAnswerContext()

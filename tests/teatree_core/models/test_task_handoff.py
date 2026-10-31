@@ -26,7 +26,7 @@ from django.utils import timezone
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import NoPlanArtifactError, TaskMintRefusedError
 from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from teatree.core.models.task_handoff import (
     RESUME_ANSWER_PREFIX,
@@ -38,6 +38,7 @@ from teatree.core.models.task_handoff import (
     schedule_card_discussion,
     schedule_resume,
 )
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests._owner_channel import OWNER_CARD, answer_on_slack, owner_stop
 from tests.factories import planned_ticket
 
@@ -304,6 +305,25 @@ class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):
 
 
 class TestResumeNeedsAPlan(TestCase):
+    def test_existing_child_cannot_resume_a_conversation_build_task(self) -> None:
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding", parent_task=parked
+        )
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket"):
+            schedule_resume(parked, answer="continue")
+
+    def test_a_card_discussion_cannot_mint_a_conversation_build_task(self) -> None:
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with pytest.raises(TaskMintRefusedError, match="conversation_ticket"):
+            schedule_card_discussion(parked, event_id="one", message="Show me the rule")
+
+        assert not parked.child_tasks.exists()
+
     def test_resuming_an_implementing_task_on_an_unplanned_ticket_is_refused(self) -> None:
         ticket = Ticket.objects.create()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
@@ -407,6 +427,16 @@ class TestAnOwnerActionCardResumesNothing(TestCase):
                 assert answered is not None
 
                 assert (resume_on_answer(answered, task) is not None) == resumes
+
+    def test_an_answer_kept_for_a_conversation_build_task_mints_no_resume(self) -> None:
+        ticket = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        row = DeferredQuestion.record("Which approach?", parked_task=task, card=OWNER_CARD)
+        answered = row.apply_answer("Use the smaller fix", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        assert answered is not None
+        assert resume_on_answer(answered, task) is None
+        assert not task.child_tasks.exists()
 
 
 class TestAnOverCapParentResumesFresh(TestCase):

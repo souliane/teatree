@@ -40,6 +40,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from claude_agent_sdk.types import SystemPromptPreset
 from django.test import TestCase
 
@@ -52,13 +53,21 @@ from teatree.agents._runner_options import (
     _build_options,
     resolve_agent_max_turns,
 )
+from teatree.agents.codex_app_server_options import (
+    CodexAppServerError,
+    CodexAppServerOptions,
+    codex_phase_policy_unavailable_reason,
+    codex_worker_denials,
+)
 from teatree.agents.compaction_guard import CompactionGuard
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.prompt import build_system_context
+from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.cli.agent import _launch_claude, agent
 from teatree.cli.doctor import IntrospectionHelpers
 from teatree.cli.loop.app import start_command
 from teatree.config.settings import OverlayEntry
+from teatree.core.modelkit.phase_tools import disallowed_tools_for_phase, mcp_write_tools_for_phase, tools_for_phase
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_metadata import OverlayMetadata
@@ -67,8 +76,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "d50e3c5d1b57a4a2c516bd1aa7c24ce628a4e94abae831a25d86d22690a56592"
-_SYSTEM_CONTEXT_SHA256 = "e10983e4142cb661221584158d3bc89a4760b5703860b85fb5777eaccfb5f8dc"
+_OPTIONS_SHA256 = "6228b2714494e50fc1b4b13d14b2cdf9ff2d019ce14e304c7d818020735e3ab8"
+_SYSTEM_CONTEXT_SHA256 = "ecd58a098a1e04f5846420e207e43ab801d8d350bb6667e65663b38fa28f319c"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
@@ -174,6 +183,61 @@ class TestClaudeSdkDispatchIsPinned(TestCase):
     def test_the_options_are_unchanged(self) -> None:
         _, options = self._dispatch()
         assert _sha256(options) == _OPTIONS_SHA256
+
+
+# The answering phase's allowance on main, written out rather than computed: read, search, recall and web,
+# and no shell, no write, no dispatch and no mcp_write. Widening what the coordinator may propose never widens this.
+_MAINS_ANSWERING_ALLOWED = frozenset({"read_file", "search_files", "recall_memory", "web_fetch", "web_search"})
+_MAINS_ANSWERING_DENIED = frozenset(
+    {"dispatch_subtask", "edit_file", "mcp_write", "record_attempt", "shell", "write_file"}
+)
+_MAINS_ANSWERING_SDK_DENIALS = frozenset(
+    {"Agent", "Bash", "BashOutput", "Edit", "KillBash", "KillShell", "NotebookEdit", "Task", "Write"}
+)
+_ANSWERING_SDK_ALLOWED = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch"})
+
+
+class TestTheAnsweringPhaseKeepsMainsToolTable(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _sdk_options(self):
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="answering")
+        return _build_options(task, _SYSTEM_CONTEXT, phase="answering", skills=[])
+
+    def test_the_phase_table_is_mains(self) -> None:
+        assert tools_for_phase("answering") == _MAINS_ANSWERING_ALLOWED
+        assert disallowed_tools_for_phase("answering") == _MAINS_ANSWERING_DENIED
+        assert mcp_write_tools_for_phase("answering") == frozenset()
+
+    def test_the_sdk_names_denied_are_mains(self) -> None:
+        assert frozenset(sdk_disallowed_tools_for_phase("answering")) == _MAINS_ANSWERING_SDK_DENIALS
+
+    def test_the_claude_builder_denies_mains_tools_and_every_contact_builtin_and_allows_the_rest(self) -> None:
+        denied = set(self._sdk_options().disallowed_tools)
+
+        assert denied == _MAINS_ANSWERING_SDK_DENIALS | set(_EXTERNAL_CONTACT_BUILTINS)
+        assert denied.isdisjoint(_ANSWERING_SDK_ALLOWED)
+
+    def test_the_claude_builder_launches_the_teatree_server_read_only(self) -> None:
+        server = self._sdk_options().mcp_servers["teatree"]
+
+        assert server["args"][-1] == "--read-only"
+        assert "--allow-write" not in server["args"]
+
+    def test_the_codex_builder_refuses_to_run_the_phase_without_a_read_only_executor_for_its_shell_denial(self) -> None:
+        with pytest.raises(CodexAppServerError, match="Bash, BashOutput, KillBash, KillShell"):
+            CodexAppServerOptions.from_sdk_options(self._sdk_options())
+
+    def test_the_codex_worker_keeps_every_one_of_mains_denials(self) -> None:
+        denials = codex_worker_denials(sdk_disallowed_tools_for_phase("answering"), "answering")
+
+        assert frozenset(denials) == _MAINS_ANSWERING_SDK_DENIALS
+        assert codex_phase_policy_unavailable_reason(denials) == (
+            "Codex cannot enforce tool denials for: Bash, BashOutput, KillBash, KillShell"
+        )
 
 
 _COMPACTION_SWITCHES = ("DISABLE_COMPACT", "DISABLE_AUTO_COMPACT", "autoCompactEnabled")

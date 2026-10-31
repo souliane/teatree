@@ -7,11 +7,19 @@ helper; these pin the helper's own contract.
 """
 
 import threading
+from collections.abc import Callable
 from time import monotonic
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from teatree.loop.scanners.board_reconcile_reads import APPLY_MARGIN_SECONDS, READ_WORKERS, read_concurrently
+from teatree.core.models import Ticket
+from teatree.loop.scanners.board_reconcile_reads import (
+    APPLY_MARGIN_SECONDS,
+    READ_WORKERS,
+    read_concurrently,
+    read_per_overlay,
+)
 from teatree.loop.scanners.scan_deadline import scanner_deadline
 from tests.teatree_loop._board_reconcile_clock import FakeClock, read_clock
 
@@ -94,3 +102,40 @@ class TestReadConcurrently(SimpleTestCase):
 
         assert not slow_read_returned.is_set()
         assert results == [(1, 1)]
+
+
+class TestReadPerOverlay(SimpleTestCase):
+    @staticmethod
+    def _read(urls: list[str], url_of: Callable[[Ticket], str] | None = None) -> tuple[list[str], list[str]]:
+        asked: list[str] = []
+
+        def read(_overlay: object, url: str) -> str:
+            asked.append(url)
+            return url
+
+        tickets = [Ticket(overlay="t3-teatree", issue_url=url) for url in urls]
+        with patch("teatree.loop.scanners.board_reconcile_reads.overlay_loader.get_all_overlays") as overlays:
+            overlays.return_value = {"t3-teatree": object()}
+            pairs = (
+                read_per_overlay(tickets, read) if url_of is None else read_per_overlay(tickets, read, url_of=url_of)
+            )
+        return asked, [ticket.issue_url for ticket, _ in pairs]
+
+    def test_each_distinct_issue_url_is_read_once_through_its_own_overlay(self) -> None:
+        asked, judged = self._read(["https://forge/x/issues/1", "https://forge/x/issues/1", "https://forge/x/issues/2"])
+
+        assert sorted(asked) == ["https://forge/x/issues/1", "https://forge/x/issues/2"]
+        assert len(judged) == 2
+
+    def test_rows_that_a_url_hook_maps_to_one_url_share_one_read_of_that_url(self) -> None:
+        urls = ["https://forge/x/issues/1#a", "https://forge/x/issues/1#b"]
+
+        asked, judged = self._read(urls, url_of=lambda ticket: ticket.issue_url.partition("#")[0])
+
+        assert asked == ["https://forge/x/issues/1"]
+        assert judged == ["https://forge/x/issues/1#a"]
+
+    def test_without_the_hook_two_fragments_are_two_reads_of_their_own_urls(self) -> None:
+        asked, _ = self._read(["https://forge/x/issues/1#a", "https://forge/x/issues/1#b"])
+
+        assert sorted(asked) == ["https://forge/x/issues/1#a", "https://forge/x/issues/1#b"]

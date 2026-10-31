@@ -8,7 +8,7 @@ from teatree.core import notify
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
@@ -113,7 +113,7 @@ def coordinate_answer(row: DeferredQuestion, basis: DeferredQuestion, answer: st
         if parked_task is not None and finished_subject_reason(resolved) is None:
             try:
                 schedule_resume(parked_task, answer=answer, question=resolved.question)
-            except NoPlanArtifactError:
+            except TaskMintRefusedError:
                 logger.warning("Coordinated answer to question %s kept; task was not resumed", resolved.pk)
     if resolved.slack_ts and (backend := notify.resolve_owner_dm_backend()[0]) is not None:
         replace_root(resolved, closed_message(resolved, answered_line(resolved)), backend)

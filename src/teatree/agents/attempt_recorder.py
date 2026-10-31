@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
+from teatree.agents.conversation_result_poster import post_conversation_plan
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
@@ -278,6 +279,7 @@ def record_result_envelope(
         task.refresh_from_db()
         return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
     announce_completed_architectural_review(task, result, phase=phase)
+    post_conversation_plan(task, result, phase=phase)
     return attempt
 
 

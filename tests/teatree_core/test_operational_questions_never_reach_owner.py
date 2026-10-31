@@ -8,6 +8,7 @@ reviewed edit here, never a silent DM.
 
 import ast
 import contextlib
+import dataclasses
 import datetime as dt
 import functools
 import inspect
@@ -28,9 +29,12 @@ from teatree.agents import review_envelope_recorder
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import cold_reader
 from teatree.core import notify as notify_module
+from teatree.core.answering.escalation import record_request
+from teatree.core.answering.record_settling import LIMIT_CHOICES, settle_before_recording
 from teatree.core.gates.review_request_batch_gate import WORK_GROUP_MAX_MEMBERS, work_group_ready
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, OuterLoopExperiment, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.loop import Loop
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
@@ -129,6 +133,22 @@ def _withhold_an_answer_draft() -> None:
         task_session=task.session,
         dedupe_marker=f"answer-draft:{task.pk}",
     )
+
+
+def _escalate_from_a_running_task() -> None:
+    record_request(_task("planning"), kind="internal", message="Which migration order should I follow?")
+
+
+def _settle_a_limit_question() -> None:
+    choice = LIMIT_CHOICES[OwnerDecision.IRREVERSIBLE]
+    card = QuestionCard(
+        decision=OwnerDecision.IRREVERSIBLE,
+        checked=("The work exists on no remote.",),
+        blocker="Only the owner may delete it.",
+        why="The step cannot be undone once it runs.",
+        options=(dataclasses.replace(choice.crosses_none, recommended=True), choice.crosses),
+    )
+    settle_before_recording("May I delete the only copy of this work?", card, "", None)
 
 
 def _deny_a_loop_driven_ask() -> None:
@@ -304,6 +324,8 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
         _wedge_a_finished_phase
     ),
     ("src/teatree/core/provision/failure_question.py", "record_provision_failure_question"): _fail_a_provision,
+    ("src/teatree/core/answering/escalation.py", "record_request"): _escalate_from_a_running_task,
+    ("src/teatree/core/answering/record_settling.py", "_record_decision"): _settle_a_limit_question,
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,

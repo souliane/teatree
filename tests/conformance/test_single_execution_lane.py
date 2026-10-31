@@ -168,16 +168,27 @@ class TestFactoryAgentDefinitionsSurvive:
         defined = self._defined_agent_names()
         assert [n for n in sorted(dispatched) if n.removeprefix("t3:") not in defined] == []
 
-    def test_every_agent_named_by_a_dispatch_table_has_its_definition_file(self) -> None:
-        from teatree.loop.dispatch_tables import AGENT_BY_KIND  # noqa: PLC0415 — deferred: Django-dependent
+    # ``t3:orchestrator`` in a dispatch table is the main agent's routing ZONE label, not an agent definition.
+    _ZONE_LABELS = frozenset({"t3:orchestrator"})
 
-        named = {target for target in AGENT_BY_KIND.values() if target.startswith("t3:")}
-        assert named, "the dispatch table names no agent — the factory has no hands"
+    def _unresolved(self, table: dict[str, str]) -> list[str]:
+        named = {target for target in table.values() if target.startswith("t3:") and target not in self._ZONE_LABELS}
         defined = self._defined_agent_names()
         # ``t3:debug`` is the skill spelling of the ``debugger`` definition.
         aliases = {"t3:debug": "debugger"}
-        missing = [n for n in sorted(named) if aliases.get(n, n.removeprefix("t3:")) not in defined]
-        assert missing == []
+        return [n for n in sorted(named) if aliases.get(n, n.removeprefix("t3:")) not in defined]
+
+    def test_every_agent_named_by_a_dispatch_table_has_its_definition_file(self) -> None:
+        from teatree.loop.dispatch_tables import AGENT_BY_KIND  # noqa: PLC0415 — deferred: Django-dependent
+
+        named = {t for t in AGENT_BY_KIND.values() if t.startswith("t3:")} - self._ZONE_LABELS
+        assert named, "the dispatch table names no agent — the factory has no hands"
+        assert self._unresolved(AGENT_BY_KIND) == []
+
+    def test_a_name_that_is_not_the_zone_label_and_has_no_definition_is_still_reported(self) -> None:
+        table = {"red_card.signal": "t3:orchestrator", "x.y": "t3:ghost"}
+
+        assert self._unresolved(table) == ["t3:ghost"]
 
 
 class TestQuestionDeferralIsUntouched:

@@ -2,7 +2,7 @@
 name: bughunter
 description: >
   Hunts for latent bugs across the codebase, then verifies each candidate
-  before reporting. Spawned by the orchestrator for bughunt tasks.
+  before reporting. Dispatched by the control plane for bughunt tasks.
 tools:
   - Read
   - Bash

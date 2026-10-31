@@ -15,6 +15,7 @@ from django.test import TestCase
 from teatree.agents import live_mailbox
 from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.core.models import DeferredQuestion, PendingChatInjection, Session, Task, Ticket
+from teatree.utils.url_slug import slack_conversation_anchor
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
 from tests.factories import planned_ticket
 from tests.teatree_loop.slack_answer.test_thread_card_replies import Backend, _action_card, _card, _cycle, _event
@@ -284,14 +285,20 @@ class TestCardDiscussion(TestCase):
         assert len(backend.replies) == 1
 
     def test_responsible_task_that_cannot_resume_still_gets_a_plain_line(self) -> None:
-        card = _card("347.1")
-        ticket = Ticket.objects.create()
+        self._assert_unresumable_task_gets_a_plain_line(Ticket.objects.create(), root="347.1", reply="347.2")
+
+    def test_responsible_conversation_build_task_that_cannot_resume_still_gets_a_plain_line(self) -> None:
+        conversation = Ticket.objects.create(issue_url=slack_conversation_anchor(channel="D1", slack_ts="1.0"))
+        self._assert_unresumable_task_gets_a_plain_line(conversation, root="348.1", reply="348.2")
+
+    def _assert_unresumable_task_gets_a_plain_line(self, ticket: Ticket, *, root: str, reply: str) -> None:
+        card = _card(root)
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         card.parked_task = task
         card.save(update_fields=["parked_task"])
         backend = Backend(user_id=OWNER_SLACK_ID)
-        backend.message_meta["347.2"] = {"ts": "347.2", "thread_ts": "347.1"}
-        assert _event(backend, ts="347.2", root="347.1", text="Show me the rule") is not None
+        backend.message_meta[reply] = {"ts": reply, "thread_ts": root}
+        assert _event(backend, ts=reply, root=root, text="Show me the rule") is not None
 
         with (
             tempfile.TemporaryDirectory(prefix="t3-card-", dir="/tmp") as directory,

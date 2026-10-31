@@ -23,6 +23,8 @@ worktree holds uncommitted tracked changes raises ONE durable question naming th
 import logging
 from typing import TYPE_CHECKING
 
+from django.db.models import Q
+from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.backends.issue_close import IssueCloseVerdict
@@ -48,13 +50,18 @@ def closed_issue_transitions(
     never saturate the box. Reviewer tickets are excluded: their ``issue_url`` IS a PR,
     which rules B/C own.
 
+    A Slack conversation row anchors on the loop umbrella, whose forge state says nothing about the
+    talk, so one with a live task or a recent thread is skipped before it can spend a probe.
+
     *already_moved* holds the rows an earlier rule moved in THIS run. Rule F runs last
     and reads live state, so without it a ticket rule E had just revived to WORK_STARTED —
     a pre-ship state — would be re-probed and could be retired in the same tick that
     resurrected it. One rule per row per run.
     """
-    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models import Task, ThreadBinding, Ticket  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT  # noqa: PLC0415 — off the cold tick
 
+    since = timezone.now() - CONVERSATION_QUIET_LIMIT
     candidates = without_voided(
         scoped(
             Ticket.objects.filter(state__in=Ticket.pre_ship_states())
@@ -66,6 +73,20 @@ def closed_issue_transitions(
         .exclude(pk__in=already_moved)
         .order_by("-pk")
     )
+    conversation_ids = {ticket.pk for ticket in candidates if ticket.is_conversation()}
+    occupied_conversation_ids: set[int] = set()
+    if conversation_ids:
+        occupied_conversation_ids.update(
+            Task.objects.filter(ticket_id__in=conversation_ids)
+            .filter(Q(status__in=Task.Status.active()) | Q(created_at__gte=since))
+            .values_list("ticket_id", flat=True)
+        )
+        occupied_conversation_ids.update(
+            ThreadBinding.objects.filter(ticket_id__in=conversation_ids, created_at__gte=since).values_list(
+                "ticket_id", flat=True
+            )
+        )
+    candidates = [ticket for ticket in candidates if ticket.pk not in occupied_conversation_ids]
     probed = candidates[: max(probe_budget, 0)]
     if len(probed) < len(candidates):
         logger.warning(
@@ -76,10 +97,15 @@ def closed_issue_transitions(
         )
     closed, reads = _closed_issue_verdicts(probed)
     transitions = collect(
-        [t for t in probed if t.issue_url in closed],
-        lambda ticket: _retire(ticket, closed[ticket.issue_url], dry_run=dry_run),
+        [t for t in probed if _read_url(t) in closed],
+        lambda ticket: _retire(ticket, closed[_read_url(ticket)], dry_run=dry_run),
     )
     return transitions, reads
+
+
+def _read_url(ticket: "Ticket") -> str:
+    """The URL the forge is asked about; a fragment names a row, not another issue, so such rows share one read."""
+    return ticket.issue_url.partition("#")[0]
 
 
 def _closed_issue_verdicts(tickets: "list[Ticket]") -> tuple[dict[str, IssueCloseVerdict], int]:
@@ -92,8 +118,8 @@ def _closed_issue_verdicts(tickets: "list[Ticket]") -> tuple[dict[str, IssueClos
     The second element counts the reads that completed, not the candidates considered, so
     the run's reported probe spend never charges for a URL nothing judged.
     """
-    verdicts = read_per_overlay(tickets, issue_close_verdict)
-    closed = {ticket.issue_url: verdict for ticket, verdict in verdicts if verdict.state is IssueOpenState.CLOSED}
+    verdicts = read_per_overlay(tickets, issue_close_verdict, url_of=_read_url)
+    closed = {_read_url(ticket): verdict for ticket, verdict in verdicts if verdict.state is IssueOpenState.CLOSED}
     return closed, len(verdicts)
 
 

@@ -13,7 +13,7 @@ from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, pha
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, exhausted_the_conversation
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
-from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_conversation_mint, refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task_attempt_settlement import AttemptInput
 from teatree.core.models.task_attempt_settlement import complete_with_attempt as _complete_with_attempt
@@ -428,8 +428,6 @@ class Task(models.Model):
         # phase is a short verb ("review"/"code"/...) must advance the
         # FSM too, not just record the session visit (#750). Raw
         # comparison silently desynced ticket.state from visited_phases.
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
-
         phase = normalize_phase(self.phase)
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
         # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
@@ -450,6 +448,8 @@ class Task(models.Model):
         # let both completions read the same stale state and both fire.
         with transaction.atomic():
             ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)
+            if phase == "planning" and ticket.is_conversation():
+                return False
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER
@@ -486,8 +486,6 @@ class Task(models.Model):
         separate ``lifecycle visit-phase`` CLI call. The phase is normalized
         so the loop path and the CLI path write the same canonical token.
         """
-        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
-
         if not self.phase:
             return
         # #755: resolve a guaranteed-non-empty attribution identity,
@@ -605,6 +603,7 @@ class Task(models.Model):
         The parent can wait for all children by querying ``child_tasks``. An implementing
         phase on a ticket with no plan decision raises ``NoPlanArtifactError`` and spawns nothing.
         """
+        refuse_conversation_mint(self.ticket, phase=phase or self.phase)
         refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
         children = []
         for repo in repos:

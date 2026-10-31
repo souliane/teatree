@@ -5,6 +5,7 @@ from teatree.core.modelkit.phase_tools import (
     MCP_WRITE,
     VERDICT_REVIEW_PHASES,
     disallowed_tools_for_phase,
+    mcp_write_tool_granted,
     mcp_write_tools_for_phase,
     tools_for_phase,
 )
@@ -12,19 +13,36 @@ from teatree.core.modelkit.phases import KNOWN_PHASES
 
 MCP_WRITE_PHASES = frozenset({"coding", "testing", "e2e", "debugging", "shipping", "architectural_review"})
 PEER_MAILBOX_TOOLS = frozenset({"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"})
+MAILBOX_PHASES = frozenset({"planning", "reviewing", "critic_reviewing"})
 
 
 class TestPeerMailboxGrant:
     def test_exactly_planning_reviewing_and_critic_reviewing_hold_the_mailbox_grant(self) -> None:
-        phases = {"planning", "reviewing", "critic_reviewing"}
+        phases = MAILBOX_PHASES
         assert {phase for phase in KNOWN_PHASES if "agent_mailbox_send" in mcp_write_tools_for_phase(phase)} == phases
         for phase in phases:
-            assert mcp_write_tools_for_phase(phase) == PEER_MAILBOX_TOOLS
+            assert mcp_write_tools_for_phase(phase) >= PEER_MAILBOX_TOOLS
             assert MCP_WRITE not in tools_for_phase(phase)
-        assert mcp_write_tools_for_phase("plan") == PEER_MAILBOX_TOOLS
-        assert mcp_write_tools_for_phase("review") == PEER_MAILBOX_TOOLS
+        assert mcp_write_tools_for_phase("plan") >= PEER_MAILBOX_TOOLS
+        assert mcp_write_tools_for_phase("review") >= PEER_MAILBOX_TOOLS
         assert mcp_write_tools_for_phase("requesting_review") == frozenset({"review_request_post"})
         assert all(not mcp_write_tools_for_phase(phase) for phase in KNOWN_PHASES - phases - {"requesting_review"})
+
+
+class TestEscalateGrant:
+    def test_the_mailbox_phases_hold_escalate_by_name_and_nothing_else_beyond_the_mailbox(self) -> None:
+        for phase in MAILBOX_PHASES:
+            assert mcp_write_tools_for_phase(phase) == PEER_MAILBOX_TOOLS | {"escalate"}
+        assert {phase for phase in KNOWN_PHASES if "escalate" in mcp_write_tools_for_phase(phase)} == MAILBOX_PHASES
+
+    def test_a_phase_reaches_escalate_exactly_when_named_or_holding_the_mcp_write_grant(self) -> None:
+        reaching = {phase for phase in KNOWN_PHASES if mcp_write_tool_granted(phase, "escalate")}
+        assert reaching == MAILBOX_PHASES | MCP_WRITE_PHASES
+
+    def test_the_answering_phase_never_reaches_escalate(self) -> None:
+        assert "escalate" not in mcp_write_tools_for_phase("answering")
+        assert MCP_WRITE not in tools_for_phase("answering")
+        assert not mcp_write_tool_granted("answering", "escalate")
 
 
 class TestMcpWriteGrant:
@@ -141,3 +159,25 @@ class TestDispatchablePhaseTotality:
         # agents past the admission governor, which does not meter the sub-agent path.
         assert "dispatch_subtask" not in tools_for_phase("architectural_review")
         assert "dispatch_subtask" in disallowed_tools_for_phase("architectural_review")
+
+
+class TestTheCoordinatorsPhaseStaysReadOnly:
+    """The coordinator reads untrusted thread text, so proposing actions never widened its tools."""
+
+    def test_answering_reads_searches_recalls_and_browses_and_nothing_else(self) -> None:
+        assert tools_for_phase("answering") == {
+            "read_file",
+            "recall_memory",
+            "search_files",
+            "web_fetch",
+            "web_search",
+        }
+        assert disallowed_tools_for_phase("answering") == {
+            "dispatch_subtask",
+            "edit_file",
+            MCP_WRITE,
+            "record_attempt",
+            "shell",
+            "write_file",
+        }
+        assert mcp_write_tools_for_phase("answering") == frozenset()

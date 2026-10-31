@@ -13,7 +13,11 @@ class LeaseLostError(InvalidTransitionError):
     """
 
 
-class NoPlanArtifactError(InvalidTransitionError):
+class TaskMintRefusedError(InvalidTransitionError):
+    """A task was refused before anything was written; the message names why and what clears it."""
+
+
+class NoPlanArtifactError(TaskMintRefusedError):
     """plan() was attempted without a PlanArtifact record for the ticket."""
 
 

@@ -93,6 +93,8 @@ class TestBuildOptionsHarnessPin(TestCase):
             "agent_mailbox_send",
             "--allow-write",
             "agent_mailbox_wait",
+            "--allow-write",
+            "escalate",
         ]
         assert "mcp__teatree__github_pr_diff" not in options.disallowed_tools
 
@@ -187,6 +189,8 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
             "agent_mailbox_send",
             "--allow-write",
             "agent_mailbox_wait",
+            "--allow-write",
+            "escalate",
         ]
         for phase in self.MAILBOX_PHASES:
             with self.subTest(phase=phase):

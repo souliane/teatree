@@ -26,7 +26,7 @@ def _handle_simple(
     """Claim, post, read back and stamp one simple answer; retry when delivery is unconfirmed."""
     answer = (
         ticket_status_answer(binding.ticket)
-        if binding is not None and is_status_question(unit.text)
+        if binding is not None and not binding.ticket.is_conversation() and is_status_question(unit.text)
         else build_simple_answer(unit.lead)
     )
     if answer is None or answer == NEEDS_WORK_SENTINEL:

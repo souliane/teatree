@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING, Final
 
+from teatree.agents.data_fence import fenced
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import IncomingEvent, PullRequest, QualityGateError, Worktree
@@ -57,9 +58,10 @@ def _inbound_event(ticket: "Ticket") -> str:
             f"Actor: {event.actor or '(unknown)'}",
             f"Channel: {event.channel_ref or '(none)'}",
             f"Thread: {event.thread_ref or '(a root message: no thread yet)'}",
-            f"Replied-to message: {event.parent_text or '(none)'}",
+            "Replied-to message:",
+            fenced("REPLIED-TO MESSAGE", event.parent_text or "(none)"),
             "Message:",
-            event.body,
+            fenced("THREAD MESSAGE", event.body),
             "Earlier messages of the thread are not available in this venue: say what you could not see.",
         )
     )

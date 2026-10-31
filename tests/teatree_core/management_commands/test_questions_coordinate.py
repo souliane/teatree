@@ -1,4 +1,4 @@
-"""An attended coordinator can cite an exact owner answer without minting a new grant."""
+"""An attended session can cite an exact owner answer without minting a new grant."""
 
 import dataclasses
 from io import StringIO

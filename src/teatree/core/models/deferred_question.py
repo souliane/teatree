@@ -201,6 +201,7 @@ class DeferredQuestion(models.Model):
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
+        evidence: Mapping[str, object] | None = None,
         private_context: Mapping[str, object] | None = None,
     ) -> "DeferredQuestion":
         """Record a guarded question; matching action cards alone may use reserved action markers."""
@@ -245,7 +246,7 @@ class DeferredQuestion(models.Model):
                 task_session=task_session,
                 audience=cls.Audience.INTERNAL if card is None else cls.Audience.OWNER_QUESTION,
                 evidence={
-                    **({} if card is None else card.to_evidence()),
+                    **(dict(evidence or {}) if card is None else card.to_evidence()),
                     **({"private_context": private_context} if private_context else {}),
                 },
             )

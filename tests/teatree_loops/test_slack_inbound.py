@@ -17,7 +17,7 @@ from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.backends.slack.receiver import DeliveredEvents
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import PendingChatInjection, ReviewAssignment, Ticket
 from teatree.loops import slack_inbound, timer_reconciler
 from teatree.loops.slack_catchup_job import CatchUpState, SlackCatchUpJob
 from teatree.loops.slack_inbound import catch_up_on_connect, record_slack_dm, reset_dm_recorders, slack_catch_up_job
@@ -27,6 +27,20 @@ from teatree.types import RawAPIDict
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 _DM = {"type": "message", "channel_type": "im", "ts": "1.0", "user": "U1", "channel": "D1", "text": "ping"}
+
+_FROM_A_COLLEAGUE = {
+    "dm": {**_DM, "user": "U_COLLEAGUE"},
+    "thread reply": {**_DM, "channel_type": "channel", "channel": "C1", "thread_ts": "0.5", "user": "U_COLLEAGUE"},
+    "app mention": {
+        "type": "app_mention",
+        "ts": "1.0",
+        "channel": "C1",
+        "user": "U_COLLEAGUE",
+        "text": "review https://github.com/o/r/pull/1",
+    },
+    "reaction": {"type": "reaction_added", "ts": "1.0", "user": "U_COLLEAGUE", "reaction": "eyes"},
+    "event without a sender": {"type": "app_mention", "ts": "1.0", "text": "hi"},
+}
 
 
 @dataclass
@@ -98,17 +112,51 @@ class TestRecordThenWake(django.test.TestCase):
 
         assert self.backend.outbound == []
 
-    def test_a_non_dm_event_wakes_without_recording(self) -> None:
+    def test_an_owner_mention_wakes_without_recording(self) -> None:
         # A mention has no PendingChatInjection row to write; the wake still fires
         # so the cycle drains whatever the mention scanner queued.
         with patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
-            slack_inbound.record_and_wake_slack_answer("demo", {"type": "app_mention", "ts": "1.0", "text": "hi"})
+            slack_inbound.record_and_wake_slack_answer(
+                "demo", {"type": "app_mention", "ts": "1.0", "user": "U1", "text": "hi"}
+            )
 
         assert PendingChatInjection.objects.count() == 0
         assert self._queued_wakes() == 1
 
+    def test_an_event_from_a_non_owner_leaves_no_row_and_wakes_nothing(self) -> None:
+        for label, event in _FROM_A_COLLEAGUE.items():
+            with self.subTest(label), patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
+                slack_inbound.record_and_wake_slack_answer("demo", dict(event))
+
+        assert (
+            PendingChatInjection.objects.count(),
+            ReviewAssignment.objects.count(),
+            Ticket.objects.count(),
+            self._queued_wakes(),
+        ) == (0, 0, 0, 0)
+
+    def test_a_non_owner_drop_is_logged_without_message_text(self) -> None:
+        event = {**_DM, "user": "U_COLLEAGUE", "text": "private message"}
+
+        with (
+            patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend),
+            self.assertLogs("teatree.loops.slack_inbound", level="INFO") as logs,
+        ):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+
+        assert any("non-owner" in line for line in logs.output)
+        assert all("private message" not in line for line in logs.output)
+
+    def test_a_blank_owner_id_drops_every_event_type(self) -> None:
+        self.backend.user_id = ""
+        for label, event in {**_FROM_A_COLLEAGUE, "owner-shaped dm": dict(_DM)}.items():
+            with self.subTest(label), patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
+                slack_inbound.record_and_wake_slack_answer("demo", dict(event))
+
+        assert (PendingChatInjection.objects.count(), self._queued_wakes()) == (0, 0)
+
     def test_an_app_posted_non_dm_event_still_wakes(self) -> None:
-        event = {"type": "app_mention", "ts": "1.0", "text": "hi", "api_app_id": "A_OTHER"}
+        event = {"type": "app_mention", "ts": "1.0", "user": "U1", "text": "hi", "api_app_id": "A_OTHER"}
         with patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
             slack_inbound.record_and_wake_slack_answer("demo", event)
 

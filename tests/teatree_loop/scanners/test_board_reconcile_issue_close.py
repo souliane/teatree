@@ -14,19 +14,23 @@ so they pin the forge read and the rule together.
 import contextlib
 import threading
 from collections.abc import Callable, Generator
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.intake.fix_first import AUTHOR_STATE_PHASE
-from teatree.core.models import Ticket
+from teatree.core.models import Session, Task, ThreadBinding, Ticket
+from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners import board_reconcile, board_reconcile_issue_close
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_reads import APPLY_MARGIN_SECONDS, READ_WORKERS
 from teatree.loop.scanners.board_reconcile_report import BoardAction
 from teatree.loop.scanners.scan_deadline import scanner_deadline
+from teatree.utils.url_slug import conversation_anchor, slack_conversation_anchor
 from tests._owner_channel import assert_a_plain_card
 from tests.teatree_loop._board_reconcile_clock import FakeClock, read_clock
 
@@ -94,6 +98,18 @@ def _forge(payload: object) -> contextlib.AbstractContextManager[None]:
 class TestClosedIssueRetiresPreShipTicket(TestCase):
     def _ticket(self, *, state: str = Ticket.State.PLAN_RECORDED, url: str = "", **kwargs: object) -> Ticket:
         return Ticket.objects.create(overlay="t3-teatree", state=state, issue_url=url or _ISSUE, **kwargs)
+
+    def test_recent_conversation_rows_do_not_add_queries_per_row(self) -> None:
+        for number in range(5):
+            ticket = self._ticket(url=slack_conversation_anchor(channel="D1", slack_ts=f"{number}.0"))
+            ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts=f"{number}.0")
+
+        with self.assertNumQueries(4):
+            transitions, reads = board_reconcile_issue_close.closed_issue_transitions(
+                overlay="t3-teatree", dry_run=True, probe_budget=0
+            )
+
+        assert (transitions, reads) == ([], 0)
 
     def test_the_pk632_shape_is_retired_carrying_the_close_reason(self) -> None:
         """#4711's regression row: planned, author, issue CLOSED not_planned."""
@@ -407,3 +423,158 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IGNORED
         assert not DeferredQuestion.objects.filter(dedupe_marker__startswith="issue-closed-unshipped-work:").exists()
+
+
+class TestConversationTicketsOutliveTheirAnchorOnlyWhileInUse(TestCase):
+    """The Slack lane's anchor is the loop umbrella, whose forge state says nothing about the conversation."""
+
+    def _conversation(self) -> Ticket:
+        return Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=slack_conversation_anchor(channel="D1", slack_ts="1700000000.000100"),
+            short_description="Is the rounding still wrong?",
+        )
+
+    def test_a_forge_issue_is_retired_even_with_a_live_task_and_recent_binding(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=_ISSUE)
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
+
+        with _forge(_COMPLETED):
+            transitions, reads = board_reconcile_issue_close.closed_issue_transitions(
+                overlay="t3-teatree", dry_run=False, probe_budget=1
+            )
+
+        ticket.refresh_from_db()
+        assert ([transition.ticket_id for transition in transitions], reads, ticket.state) == (
+            [ticket.pk],
+            1,
+            Ticket.State.IGNORED,
+        )
+
+    def test_a_conversation_with_a_live_task_is_kept(self) -> None:
+        ticket = self._conversation()
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_a_mailbox_conversation_with_a_live_task_is_kept(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=conversation_anchor(kind="mailbox", key="ticket/42/agent/a"),
+        )
+        Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_an_old_active_task_keeps_the_conversation(self) -> None:
+        ticket = self._conversation()
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="t3-teatree"), phase="answering"
+        )
+        Task.objects.filter(pk=task.pk).update(
+            created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1)
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_a_recent_finished_task_keeps_the_conversation(self) -> None:
+        ticket = self._conversation()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_an_old_finished_task_does_not_keep_the_conversation(self) -> None:
+        ticket = self._conversation()
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
+            phase="answering",
+            status=Task.Status.COMPLETED,
+        )
+        Task.objects.filter(pk=task.pk).update(
+            created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1)
+        )
+
+        with _forge(_COMPLETED):
+            assert [transition.ticket_id for transition in reconcile_board().applied] == [ticket.pk]
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+
+    def test_a_conversation_with_a_young_thread_binding_is_kept(self) -> None:
+        ticket = self._conversation()
+        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
+
+        with _forge(_COMPLETED):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+    def test_a_conversation_with_neither_is_still_retired(self) -> None:
+        ticket = self._conversation()
+        ThreadBinding.bind(ticket=ticket, channel="D1", thread_ts="1700000000.000100")
+        ThreadBinding.objects.update(created_at=timezone.now() - CONVERSATION_QUIET_LIMIT - timedelta(minutes=1))
+
+        with _forge(_COMPLETED):
+            assert [t.action for t in reconcile_board().applied] == [BoardAction.IGNORED_ISSUE_CLOSED]
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+
+    def test_a_kept_conversation_spends_no_probe(self) -> None:
+        self._conversation()
+        ThreadBinding.bind(ticket=Ticket.objects.get(), channel="D1", thread_ts="1700000000.000100")
+
+        with _forge(_COMPLETED), patch.object(board_reconcile_issue_close, "issue_close_verdict") as probe:
+            reconcile_board()
+
+        probe.assert_not_called()
+
+    def test_conversations_sharing_one_umbrella_spend_a_single_probe(self) -> None:
+        for ts in ("1700000000.000100", "1700000000.000200"):
+            Ticket.objects.create(
+                overlay="t3-teatree",
+                issue_url=slack_conversation_anchor(channel="D1", slack_ts=ts),
+                short_description="Is the rounding still wrong?",
+            )
+
+        with (
+            _forge(_COMPLETED),
+            patch.object(
+                board_reconcile_issue_close,
+                "issue_close_verdict",
+                wraps=board_reconcile_issue_close.issue_close_verdict,
+            ) as probe,
+        ):
+            report = reconcile_board()
+
+        assert (probe.call_count, len(report.applied)) == (1, 2)

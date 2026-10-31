@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-answering-injection-noop", "model": "claude-sonnet-5-5"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Considering how to answer before I write the result."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

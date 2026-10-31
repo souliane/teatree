@@ -30,9 +30,11 @@ needs — it is what stops him waiting, or asking again.
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.agents.data_fence import data_rule, fenced
 from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.models import Session, SessionCommand, Task, ThreadBinding, Ticket
 from teatree.core.models.question_text import question_fingerprint
@@ -40,6 +42,9 @@ from teatree.core.models.thread_binding import slack_command_id
 from teatree.loop.inbound_reading import InboundReading
 from teatree.url_classify import find_forge_refs
 from teatree.utils.url_slug import slack_conversation_anchor
+
+if TYPE_CHECKING:
+    from teatree.loop.slack_answer.coalescing import _Unit
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +156,60 @@ class WorkOrigin:
     thread_root: str = ""
     sender_id: str = ""
 
+    @classmethod
+    def of_unit(cls, unit: "_Unit") -> "WorkOrigin":
+        return cls(
+            overlay=unit.overlay,
+            channel=unit.channel,
+            slack_ts=unit.slack_ts,
+            coalesced_ts=tuple(row.slack_ts for row in unit.rows),
+            text=unit.text,
+            thread_root=unit.lead.thread_ts,
+            sender_id=unit.lead.user_id,
+        )
+
+
+def open_conversation(*, reading: InboundReading, fingerprint: str, origin: WorkOrigin, implies_work: bool) -> Ticket:
+    """The bookkeeping row of *origin*'s Slack thread, bound to it; idempotent per message and per thread."""
+    root = origin.thread_root or origin.slack_ts
+    subject = (reading.work_summary or origin.text).strip()
+    ticket, _created = Ticket.objects.get_or_create(
+        issue_url=slack_conversation_anchor(channel=origin.channel, slack_ts=origin.slack_ts),
+        defaults={
+            "overlay": origin.overlay,
+            "role": Ticket.Role.AUTHOR,
+            "short_description": subject[:_DESCRIPTION_LIMIT],
+            "extra": {
+                _SLACK_ANSWER_KEY: {
+                    "channel": origin.channel,
+                    "slack_ts": root,
+                    "coalesced_ts": list(origin.coalesced_ts),
+                    "question": origin.text,
+                    "fingerprint": fingerprint,
+                    "intent": str(reading.intent),
+                    "implies_work": implies_work,
+                    "work_summary": reading.work_summary,
+                }
+            },
+        },
+    )
+    if ticket.overlay != origin.overlay:
+        Ticket.objects.filter(pk=ticket.pk).update(overlay=origin.overlay)
+        ticket.overlay = origin.overlay
+    ThreadBinding.bind(ticket=ticket, channel=origin.channel, thread_ts=root)
+    return ticket
+
+
+def bind_first_contact(unit: "_Unit", reading: InboundReading, binding: ThreadBinding | None) -> None:
+    """Give an answered-in-place message's thread a conversation row, so the next reply routes by its binding."""
+    if binding is None:
+        open_conversation(
+            reading=reading,
+            fingerprint=work_fingerprint(reading, unit.text),
+            origin=WorkOrigin.of_unit(unit),
+            implies_work=False,
+        )
+
 
 def dispatch_work(
     *,
@@ -182,7 +241,6 @@ def dispatch_work(
         origin.coalesced_ts,
         origin.text,
     )
-    subject = (reading.work_summary or text).strip()
     root = origin.thread_root or slack_ts
     with transaction.atomic():
         binding = (
@@ -204,30 +262,7 @@ def dispatch_work(
                 raise ValueError(msg)
             return existing.task
         if binding is None:
-            ticket, _created = Ticket.objects.get_or_create(
-                issue_url=slack_conversation_anchor(channel=channel, slack_ts=slack_ts),
-                defaults={
-                    "overlay": overlay,
-                    "role": Ticket.Role.AUTHOR,
-                    "short_description": subject[:_DESCRIPTION_LIMIT],
-                    "extra": {
-                        _SLACK_ANSWER_KEY: {
-                            "channel": channel,
-                            "slack_ts": root,
-                            "coalesced_ts": list(coalesced_ts),
-                            "question": text,
-                            "fingerprint": fingerprint,
-                            "intent": str(reading.intent),
-                            "implies_work": True,
-                            "work_summary": reading.work_summary,
-                        }
-                    },
-                },
-            )
-            if ticket.overlay != overlay:
-                Ticket.objects.filter(pk=ticket.pk).update(overlay=overlay)
-                ticket.overlay = overlay
-            ThreadBinding.bind(ticket=ticket, channel=channel, thread_ts=root)
+            ticket = open_conversation(reading=reading, fingerprint=fingerprint, origin=origin, implies_work=True)
         else:
             ticket = binding.ticket
             extra = dict(ticket.extra or {})
@@ -268,7 +303,10 @@ def dispatch_work(
 
 def _execution_reason(reading: InboundReading, *, slack_ts: str, text: str) -> str:
     summary = f"\nInterpreted as: {reading.work_summary}" if reading.work_summary else ""
-    return f"[{reading.intent}] Owner Slack message at ts={slack_ts}: {text}{summary}"
+    return (
+        f"[{reading.intent}] Owner Slack message at ts={slack_ts}:\n"
+        f"{fenced('OWNER MESSAGE', text)}\n{data_rule('OWNER MESSAGE')}{summary}"
+    )
 
 
 def _active_tasks(overlay: str) -> list[Task]:
@@ -333,7 +371,10 @@ __all__ = [
     "DISPATCH_PHASE",
     "Coverage",
     "CoverageKind",
+    "WorkOrigin",
+    "bind_first_contact",
     "dispatch_work",
     "find_coverage",
+    "open_conversation",
     "work_fingerprint",
 ]

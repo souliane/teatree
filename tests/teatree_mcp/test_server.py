@@ -69,6 +69,7 @@ _WRITE_TOOLS = {
     "review_post_comment",
     "review_post_comments",
     "review_request_post",
+    "escalate",
 }
 
 _EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS
@@ -558,8 +559,8 @@ class TestPhaseWriteAllowance(TestCase):
                 assert {name for name, tool in tools.items() if not _is_read_only(tool)} == allowed
                 assert {name for name in seams if f"- {name}(" in instructions} <= allowed
 
-    def test_the_peer_mailbox_phases_reach_exactly_the_messaging_writes(self) -> None:
-        expected = {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+    def test_the_peer_mailbox_phases_reach_exactly_the_messaging_writes_and_escalate(self) -> None:
+        expected = {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait", "escalate"}
         forbidden = {
             "pr_merge",
             "pr_create",

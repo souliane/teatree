@@ -165,6 +165,8 @@ class TestMcpHonoursEmptyPhaseAllowance:
                     "agent_mailbox_send",
                     "--allow-write",
                     "agent_mailbox_wait",
+                    "--allow-write",
+                    "escalate",
                 ],
             ),
             ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),

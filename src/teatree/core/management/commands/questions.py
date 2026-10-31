@@ -36,15 +36,18 @@ from django_typer.management import command, initialize
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.question_coordinator import coordinate_answer
+from teatree.core.answering.record_settling import settle_before_recording
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.management.commands._questions_record_support import hand_to_coordinator, parsed_options
 from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import (
     OWNER_ANSWER_ROUTE,
     OWNER_QUESTION_ROUTE,
     OWNER_RAISABLE_DECISIONS,
+    OwnerDecision,
     owner_decision,
 )
-from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.question_actions import dismiss_kept_for_owner
 from teatree.core.models.question_text import question_fingerprint
@@ -244,25 +247,25 @@ class Command(MachineOutputCommand):
         and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and sets them there.
         """
         kind = owner_decision(decision) if decision else None
+        if kind is OwnerDecision.PRODUCT_SCOPE:
+            return hand_to_coordinator(question, self.stderr)
         if decision and kind not in OWNER_RAISABLE_DECISIONS:
             self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OWNER_RAISABLE_DECISIONS)}")
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
             dedupe_marker = f"{kind}:{question_fingerprint(question)}"
-        card = None
-        if kind is not None:
-            options = CardOption.parse_all(options_json)
-            if options_json and not options:
-                self.stderr.write("--options must be a JSON list of {label, description, recommended}")
-                raise SystemExit(2)
-            card = QuestionCard(
+        card = (
+            None
+            if kind is None
+            else QuestionCard(
                 decision=kind,
                 checked=tuple(checked or ()),
                 blocker=blocker,
                 why=why,
-                options=options,
+                options=parsed_options(options_json, self.stderr),
                 quoted=proposed_text,
             )
+        )
         ticket = resolve_invoking_ticket()
         if card is not None and (problem := earlier_answer_problem(ticket.pk if ticket else None, card, question)):
             self.stderr.write(f"{problem}. {OWNER_QUESTION_ROUTE}")
@@ -273,6 +276,8 @@ class Command(MachineOutputCommand):
                 if ticket is not None
                 else None
             )
+            if card is not None and (settled := settle_before_recording(question, card, dedupe_marker, session)):
+                return settled
             row = DeferredQuestion.record(
                 question, options_json=options_json, dedupe_marker=dedupe_marker, card=card, task_session=session
             )

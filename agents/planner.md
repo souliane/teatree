@@ -2,8 +2,8 @@
 name: planner
 description: >
   Reads the ticket, the codebase, and any constraints, then produces a
-  concrete implementation plan stored as a PlanArtifact. Spawned by the
-  orchestrator for planning tasks before coding begins.
+  concrete implementation plan stored as a PlanArtifact. Dispatched by the
+  control plane for planning tasks before coding begins.
 tools:
   - Read
   - Bash

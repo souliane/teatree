@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_conversation_mint, refuse_unplanned_mint
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.task import Task
 from teatree.core.models.task_phase_disposition import transition_source_states
@@ -61,6 +61,7 @@ def enqueue_phase_task(
     if not reason.strip():
         msg = "a non-blank reason is required — it is the prompt body the worker receives."
         raise TaskEnqueueError(msg)
+    refuse_conversation_mint(ticket, phase=phase)
     refuse_unplanned_mint(ticket, phase=phase)
     session = ticket.resolve_phase_session(agent_id=agent_id)
     return Task.objects.create(

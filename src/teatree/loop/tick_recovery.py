@@ -147,6 +147,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     """
     if not _recovery_prelude_due():
         return
+    from teatree.core.answering import escalation  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
         question_drain,
@@ -166,6 +167,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
         ("recovery:shipping_hold_settle", shipping_hold_settle.settle_held_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
+        ("recovery:escalation_deadline", escalation.settle_expired_escalations),
     )
     sweep_errors: dict[str, str] = {}
     blocked = _redispatch_block_reason(sweep_errors)

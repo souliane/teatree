@@ -571,7 +571,7 @@ class TestAnsweringWorkItemBlock(TestCase):
             metadata = ExtendedMetadata() if ticket.overlay == "extended" else OverlayMetadata()
             return SimpleNamespace(metadata=metadata)
 
-        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", side_effect=resolve):
+        with patch("teatree.agents.answering_phase_block.get_overlay_for_ticket", side_effect=resolve):
             extended = phase_specific_lines(first, [])
             ordinary = phase_specific_lines(second, [])
         assert "Offer the optional routing key." in extended
@@ -580,7 +580,7 @@ class TestAnsweringWorkItemBlock(TestCase):
     def test_empty_ticket_overlay_keeps_base_work_item_lines_without_loading_overlay(self) -> None:
         task = self._answering_task(implies_work=True)
         assert task.ticket.overlay == ""
-        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket") as resolve:
+        with patch("teatree.agents.answering_phase_block.get_overlay_for_ticket") as resolve:
             lines = phase_specific_lines(task, [])
         resolve.assert_not_called()
         assert any("work_item" in line for line in lines)
@@ -594,7 +594,7 @@ class TestAnsweringWorkItemBlock(TestCase):
         task.ticket.overlay = "raising"
         task.ticket.save(update_fields=["overlay"])
         overlay = SimpleNamespace(metadata=RaisingMetadata())
-        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", return_value=overlay):
+        with patch("teatree.agents.answering_phase_block.get_overlay_for_ticket", return_value=overlay):
             lines = phase_specific_lines(task, [])
         assert any("work_item" in line for line in lines)
 

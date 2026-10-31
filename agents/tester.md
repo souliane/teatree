@@ -2,7 +2,7 @@
 name: tester
 description: >
   Runs tests, analyzes failures, writes missing tests, and validates
-  CI pipelines. Spawned by the orchestrator for testing tasks.
+  CI pipelines. Dispatched by the control plane for testing tasks.
 tools:
   - Read
   - Write

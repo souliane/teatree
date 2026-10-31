@@ -10,6 +10,14 @@ from teatree.agents.result_payloads import (
     suggestion_url,
     verdict_carries_payload,
 )
+from teatree.agents.result_schema_answering import (
+    ACTIONS_SCHEMA_PROPERTY,
+    ANSWER_SCHEMA_PROPERTY,
+    WORK_ITEM_SCHEMA_PROPERTY,
+    AnswerEnvelope,
+    CoordinatorActionRequest,
+    WorkItemEnvelope,
+)
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_draft import (
     REVIEW_REQUEST_SCHEMA_PROPERTY,
@@ -86,27 +94,6 @@ class TriageRecommendation(TypedDict, total=False):
     rationale: str
 
 
-class AnswerEnvelope(TypedDict, total=False):
-    """A shell-denied answering agent's drafted reply, handed back for approval (#9)."""
-
-    text: str
-    thread_ref: str
-
-
-class WorkItemEnvelope(TypedDict, total=False):
-    """What a shell-denied answering agent decided the owner's request BECOMES (#4527).
-
-    Exactly one of the three shapes: attach to ``existing_issue_url`` (reuse before
-    file), file ``title``/``body``, or declare ``no_work_reason``. An absent channel on
-    a work-implying request is the silent drop the phase gate refuses.
-    """
-
-    title: str
-    body: str
-    existing_issue_url: str
-    no_work_reason: str
-
-
 class ReviewContextEnvelope(TypedDict, total=False):
     work_item: str
     documents: list[str]
@@ -174,6 +161,7 @@ class AgentResult(OwnerStop, total=False):
     triage_recommendations: list[TriageRecommendation]
     answer: AnswerEnvelope
     work_item: WorkItemEnvelope
+    actions: list[CoordinatorActionRequest]
     fix_record: FixRecord
     ticket_sweep: TicketSweepEvidence
     review_request: ReviewRequestDraft
@@ -378,28 +366,9 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "required": ["issue_url", "verdict"],
             },
         },
-        "answer": {
-            "type": "object",
-            "description": "A shell-denied answering agent's drafted reply, handed back for approval-gated posting.",
-            "properties": {
-                "text": {"type": "string"},
-                "thread_ref": {"type": "string"},
-            },
-            "required": ["text"],
-        },
-        "work_item": {
-            "type": "object",
-            "description": (
-                "What the owner's request becomes: an existing issue to attach to, a new issue to file, "
-                "or a stated reason no work is needed."
-            ),
-            "properties": {
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "existing_issue_url": {"type": "string"},
-                "no_work_reason": {"type": "string"},
-            },
-        },
+        "answer": ANSWER_SCHEMA_PROPERTY,
+        "work_item": WORK_ITEM_SCHEMA_PROPERTY,
+        "actions": ACTIONS_SCHEMA_PROPERTY,
         "fix_record": {
             "type": "object",
             "description": (

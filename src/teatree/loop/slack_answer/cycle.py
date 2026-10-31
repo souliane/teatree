@@ -72,7 +72,14 @@ from teatree.loop.slack_answer.card_discussion import UNROUTED_AUDIT_ACTION, rou
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.delivery import _handle_simple
 from teatree.loop.slack_answer.foreign_operator import ForeignHandlers, handle_foreign_question
-from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
+from teatree.loop.slack_answer.orchestration import (
+    Coverage,
+    WorkOrigin,
+    bind_first_contact,
+    dispatch_work,
+    find_coverage,
+    work_fingerprint,
+)
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
 from teatree.loop.slack_answer.session_routing import (
     _card_result_reply,
@@ -221,13 +228,13 @@ def _dispatch_or_report(
     binding: ThreadBinding | None,
 ) -> None:
     """The claimed body of :func:`_orchestrate` — dispatch ONE lane, or name the covering one."""
-    coalesced = tuple(row.slack_ts for row in unit.rows)
+    origin = WorkOrigin.of_unit(unit)
     coverage = find_coverage(
         fingerprint=work_fingerprint(reading, unit.text),
-        slack_ts=unit.slack_ts,
-        coalesced_ts=coalesced,
-        overlay=unit.overlay,
-        text=unit.text,
+        slack_ts=origin.slack_ts,
+        coalesced_ts=origin.coalesced_ts,
+        overlay=origin.overlay,
+        text=origin.text,
     )
     if coverage is not None and not coverage.is_this_messages_own_lane:
         if _report_coverage(backend, unit, coverage):
@@ -236,19 +243,7 @@ def _dispatch_or_report(
             _unmark_unit_loop_replied(unit)
         return
     if coverage is None:
-        dispatch_work(
-            reading=reading,
-            fingerprint=work_fingerprint(reading, unit.text),
-            origin=WorkOrigin(
-                overlay=unit.overlay,
-                channel=unit.channel,
-                slack_ts=unit.slack_ts,
-                coalesced_ts=coalesced,
-                text=unit.text,
-                thread_root=unit.lead.thread_ts,
-                sender_id=unit.lead.user_id,
-            ),
-        )
+        dispatch_work(reading=reading, fingerprint=work_fingerprint(reading, unit.text), origin=origin)
     reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
     if reaction.get("ok") is not True and reaction.get("error") != "already_reacted":
         msg = "in-flight reaction was not confirmed by Slack"
@@ -398,14 +393,16 @@ def _process_unit(
 
     status_request = binding is not None and is_status_question(unit.text)
     read = memoized_reader(reader)
-    result = bind_reply(
-        unit.lead, reader=status_binding_reader(read, status_request=status_request), backend=backend, text=unit.text
-    )
+    routing_reader = status_binding_reader(read, status_request=status_request)
+    result = bind_reply(unit.lead, reader=routing_reader, backend=backend, text=unit.text)
     log_coalesced_replies(unit.rows, result)
     bound = result if isinstance(result, BoundAnswer) else None
     if status_request and bound is None:
-        if _handle_simple(backend, unit, binding, on_done=_react_done) == "simple":
+        outcome = _handle_simple(backend, unit, binding, on_done=_react_done)
+        if outcome == "simple":
             report.answered_simple += 1
+        elif outcome == "needs_work":
+            _orchestrate(backend, unit, routing_reader(unit.text), report, binding)
         return
     if _handle_priority(
         backend, unit, report, binding, eligible=bound is None and not isinstance(result, AmbiguousCards)
@@ -436,11 +433,13 @@ def _route_unbound(
     if reading.needs_nothing:
         if _handle_noted(backend, unit):
             report.acked += 1
+            bind_first_contact(unit, reading, binding)
         return
     if reading.intent is InboundIntent.QUESTION and reading.answerable:
         outcome = _handle_simple(backend, unit, binding, on_done=_react_done)
         if outcome == "simple":
             report.answered_simple += 1
+            bind_first_contact(unit, reading, binding)
             return
         if outcome == "retry":
             return  # leave unanswered, retry next cycle
