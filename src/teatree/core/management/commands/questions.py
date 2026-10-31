@@ -29,18 +29,24 @@ from collections.abc import Mapping
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
+from asgiref.sync import async_to_sync
 from django.db import transaction
 from django.utils import timezone
 from django_typer.management import command, initialize
 
+from teatree.agents.coordinator_escalation import escalate
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
+from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
+from teatree.core.answering.escalation import EscalationRefusedError
 from teatree.core.answering.question_coordinator import coordinate_answer
+from teatree.core.answering.record_settling import settle_before_recording
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import (
     OWNER_ANSWER_ROUTE,
     OWNER_QUESTION_ROUTE,
     OWNER_RAISABLE_DECISIONS,
+    OwnerDecision,
     owner_decision,
 )
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
@@ -182,6 +188,31 @@ class Command(MachineOutputCommand):
         )
         return payload
 
+    def _parsed_options(self, options_json: str) -> tuple[CardOption, ...]:
+        options = CardOption.parse_all(options_json)
+        if options_json and not options:
+            self.stderr.write("--options must be a JSON list of {label, description, recommended}")
+            raise SystemExit(2)
+        return options
+
+    def _hand_to_coordinator(self, need: str) -> str:
+        client = MailboxClient.from_env()
+        if client is None:
+            self.stderr.write(
+                "a need for the coordinator goes over the mailbox of a running task, and this process has none"
+            )
+            raise SystemExit(2)
+        try:
+            receipt = async_to_sync(escalate)(client, kind=OwnerDecision.PRODUCT_SCOPE.value, message=need)
+        except (EscalationRefusedError, MailboxError) as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(2) from exc
+        return (
+            f"sent to the coordinator as request #{receipt['request_id']} ({receipt['delivery']}); "
+            f"no owner card was raised. The answer comes to your mailbox; "
+            f"unanswered after {receipt['deadline_minutes']} minutes, this task fails."
+        )
+
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — django-typer command: every parameter is one flag of the `questions record` surface
@@ -243,6 +274,8 @@ class Command(MachineOutputCommand):
         and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and sets them there.
         """
         kind = owner_decision(decision) if decision else None
+        if kind is OwnerDecision.PRODUCT_SCOPE:
+            return self._hand_to_coordinator(question)
         if decision and kind not in OWNER_RAISABLE_DECISIONS:
             self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OWNER_RAISABLE_DECISIONS)}")
             raise SystemExit(2)
@@ -250,16 +283,12 @@ class Command(MachineOutputCommand):
             dedupe_marker = f"{kind}:{question_fingerprint(question)}"
         card = None
         if kind is not None:
-            options = CardOption.parse_all(options_json)
-            if options_json and not options:
-                self.stderr.write("--options must be a JSON list of {label, description, recommended}")
-                raise SystemExit(2)
             card = QuestionCard(
                 decision=kind,
                 checked=tuple(checked or ()),
                 blocker=blocker,
                 why=why,
-                options=options,
+                options=self._parsed_options(options_json),
                 quoted=proposed_text,
             )
         try:
@@ -269,6 +298,10 @@ class Command(MachineOutputCommand):
                 if ticket is not None
                 else None
             )
+            if card is not None and (
+                settled := settle_before_recording(question, card, dedupe_marker=dedupe_marker, session=session)
+            ):
+                return settled
             row = DeferredQuestion.record(
                 question, options_json=options_json, dedupe_marker=dedupe_marker, card=card, task_session=session
             )
