@@ -27,7 +27,7 @@ A personal code factory for multi-repo projects. It turns a ticket URL into a me
 
 **Operating mode.** Attended `t3 agent` sessions run in Claude Code or Codex, selected by project configuration and sharing the same lifecycle-skill contract and MCP server. The `t3 worker` runs every automated loop as worker task chains, with or without a session open: it sweeps PRs, auto-reviews PRs assigned to the user, intakes assigned issues, watches messaging mentions/DMs, drains the task queue headlessly, and renders a multi-line statusline that is the **always-on UI surface**. An on-demand HTML admin dashboard (`teatree.dash`) is served by `t3 admin` on a local gunicorn.
 
-**Three role words.** Interactive session, orchestrator and coordinator name three different things. They share duties and are not synonyms: a sentence that uses one for another is wrong, whatever duty it describes.
+**Three role words.** Interactive session, orchestrator and coordinator name three different things. They share duties and are not synonyms.
 
 **Interactive session.** The attended Claude Code or Codex seat a person works in, driving with the interactive skill. The duties it shares with the coordinator are written once in `skills/coordinating`; `skills/interactive` holds only what a seat with a person at the keyboard adds.
 
