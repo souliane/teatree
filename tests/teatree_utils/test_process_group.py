@@ -6,7 +6,9 @@ from contextlib import suppress
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
-from teatree.utils.process_group import stop_process_group
+import pytest
+
+from teatree.utils.process_group import spawn_group_leader, stop_process_group
 from tests._process_liveness import HOLDS_THE_PIPES_FROM_ANOTHER_SESSION, is_gone_within, written_pids
 
 _IGNORES_TERM = "trap '' TERM; echo $$ > leader; sleep 30 & echo $! > child; wait"
@@ -123,3 +125,23 @@ class TestStopProcessGroup:
         asyncio.run(run())
 
         assert len(reads) == 4
+
+
+class TestSpawnGroupLeader:
+    def test_a_cancel_while_the_spawn_fails_still_propagates_as_a_cancel(self) -> None:
+        async def run() -> None:
+            spawn_may_fail = asyncio.Event()
+
+            async def failing_spawn() -> asyncio.subprocess.Process:
+                await spawn_may_fail.wait()
+                raise FileNotFoundError
+
+            call = asyncio.create_task(spawn_group_leader(failing_spawn()))
+            await asyncio.sleep(0)
+            call.cancel()
+            await asyncio.sleep(0)
+            spawn_may_fail.set()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+
+        asyncio.run(run())

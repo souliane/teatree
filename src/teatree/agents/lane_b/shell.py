@@ -24,7 +24,7 @@ from pydantic_ai.toolsets.function import FunctionToolset
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_BASH
-from teatree.utils.process_group import stop_process_group
+from teatree.utils.process_group import spawn_group_leader, stop_process_group
 from teatree.utils.run import redact_secrets
 
 SHELL_OUTPUT_DIR: Final = Path(".t3-cache") / "tool-output"
@@ -124,13 +124,14 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
 
     The command runs with ``cwd`` pinned to the worktree root (or the process cwd
     when the task has none), under *config*'s pinned child env, as the leader of its
-    own session. A timeout, or the model run being cancelled (a live ``pause``),
-    kills that whole group before it propagates, without waiting for pipes a descendant
-    outside the group still holds. Two things survive that: a background child left by a
-    command that returns normally (a leaderless group that ``t3 tool reap-orphan-groups``
-    reclaims once it is old and burning) and a descendant that left the session
-    (``setsid``). A denylist hit raises :class:`ShellDeniedError`; a timeout raises
-    :class:`ShellTimeoutError` — both ``ToolInputError`` — so the gate wrapper
+    own session. A timeout, or the model run being cancelled (a live ``pause``, also
+    while the command is still being spawned), kills that whole group before it
+    propagates, without waiting for pipes a descendant outside the group still holds.
+    Two things survive that: a background child left by a command that returns normally
+    (a leaderless group that ``t3 tool reap-orphan-groups`` reclaims once it is old and
+    burning) and a descendant that left the session (``setsid``). A denylist hit raises
+    :class:`ShellDeniedError`; a timeout raises :class:`ShellTimeoutError` — both
+    ``ToolInputError`` — so the gate wrapper
     (:class:`~teatree.agents.lane_b.gating.HardDenyToolset`) turns either into a
     retryable ``ModelRetry`` instead of crashing the run. The command is passed
     through a resolved POSIX ``-c`` shell
@@ -158,16 +159,18 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             msg = f"command refused: matches Shell denylist entry {denied!r}"
             raise ShellDeniedError(msg)
         started = monotonic() if config.cache_lifetime_seconds is not None else None
-        process = await asyncio.create_subprocess_exec(
-            shell_bin,
-            "-c",
-            command,
-            cwd=cwd,
-            env=config.shell_env or None,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+        process = await spawn_group_leader(
+            asyncio.create_subprocess_exec(
+                shell_bin,
+                "-c",
+                command,
+                cwd=cwd,
+                env=config.shell_env or None,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
         )
         try:
             async with asyncio.timeout(config.shell_timeout_seconds):

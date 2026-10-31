@@ -28,6 +28,7 @@ from tests._process_liveness import (
     is_gone_within,
     is_running,
     release_gate,
+    spawn_held_at_its_pipes,
     written_pids,
 )
 
@@ -215,6 +216,24 @@ class TestAStoppedCommandDiesWithEverythingItStarted:
             return pids
 
         self._assert_group_stopped(tmp_path, asyncio.run(run()))
+
+    def test_a_command_cancelled_while_it_is_still_being_spawned_is_killed_with_everything_it_started(
+        self, tmp_path: Path
+    ) -> None:
+        async def run() -> tuple[list[int], asyncio.Task[str]]:
+            with spawn_held_at_its_pipes() as released:
+                call = asyncio.create_task(_bash(LaneBToolConfig(fs_root=tmp_path))(self._FORKING))
+                pids = await written_pids(tmp_path, "leader", "child")
+                call.cancel()
+                await asyncio.sleep(0)
+                released.set()
+                await asyncio.wait({call}, timeout=10)
+            return pids, call
+
+        pids, call = asyncio.run(run())
+
+        self._assert_group_stopped(tmp_path, pids)
+        assert call.cancelled()
 
     def test_a_timed_out_command_is_killed_and_the_model_gets_the_retryable_error(self, tmp_path: Path) -> None:
         async def run() -> list[int]:

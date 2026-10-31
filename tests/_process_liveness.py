@@ -13,8 +13,10 @@ import os
 import shlex
 import sys
 import time
-from contextlib import suppress
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
 from pathlib import Path
+from unittest.mock import patch
 
 GATED_FORKING_COMMAND = "mkfifo gate; echo $$ > leader; (cat gate > /dev/null; touch finished) & echo $! > child; wait"
 _LEAVES_THE_SESSION = shlex.quote(
@@ -61,6 +63,21 @@ def _written_pids(files: list[Path], *, seconds: float) -> list[int]:
 async def written_pids(directory: Path, *names: str, seconds: float = 10) -> list[int]:
     """The pids a command wrote to *names* under *directory*, awaited in a thread so the event loop keeps running."""
     return await asyncio.to_thread(_written_pids, [directory / name for name in names], seconds=seconds)
+
+
+@contextmanager
+def spawn_held_at_its_pipes() -> Generator[asyncio.Event]:
+    """Hold a subprocess spawn on the running loop unfinished until the event is set, while its child already runs."""
+    loop = asyncio.get_running_loop()
+    connect = loop.connect_read_pipe
+    released = asyncio.Event()
+
+    async def connect_once_released(protocol_factory, pipe):
+        await released.wait()
+        return await connect(protocol_factory, pipe)
+
+    with patch.object(loop, "connect_read_pipe", connect_once_released):
+        yield released
 
 
 def _is_zombie(pid: int) -> bool:
