@@ -75,6 +75,7 @@ class BoundAnswer:
     answer: str
     answered_by: str = ""
     from_click: bool = False
+    via: str = DeferredQuestion.ResolvedVia.SLACK
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,13 +218,13 @@ def apply_bound_answer(
     if is_action_question(bound.question) and not bound.from_click:
         return False
     with transaction.atomic():
-        applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        applied = bound.question.apply_answer(bound.answer, resolved_via=bound.via)
         if applied is not None and bound.answered_by:
             DeferredQuestionAudit.objects.create(
                 question=applied,
                 action="answered",
                 answer_text=applied.answer_text,
-                resolver_id=f"slack:{bound.answered_by}",
+                resolver_id=f"{bound.via}:{bound.answered_by}",
                 note="button" if bound.from_click else "",
             )
         if applied is not None and resume_task:

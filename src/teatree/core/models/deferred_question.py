@@ -73,9 +73,10 @@ class DeferredQuestion(models.Model):
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
         AGENT = "agent", "Agent surface"
+        ATTENDED = "attended", "Attended session"
 
-    #: Provenance the server records and checks: a Slack reply by the owner, or the owner's graduated policy.
-    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY})
+    #: Provenance the server records and checks: the owner's Slack reply, graduated policy or attended-session answer.
+    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY, ResolvedVia.ATTENDED})
 
     class Audience(models.TextChoices):
         OWNER_QUESTION = "owner_question", "Owner question"

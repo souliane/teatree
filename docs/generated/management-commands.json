@@ -917,7 +917,7 @@
           "name": "reachability"
         },
         {
-          "help": "Resolve pending internal questions; an owner question is answered only in its Slack thread",
+          "help": "Resolve pending internal questions; an owner question is answered in its Slack thread",
           "name": "answer"
         },
         {
@@ -931,6 +931,10 @@
         {
           "help": "List open questions, oldest first",
           "name": "list"
+        },
+        {
+          "help": "Answer pending owner cards the owner is answering in this attended session, never from a dispatched agent",
+          "name": "answer-attended"
         }
       ]
     },

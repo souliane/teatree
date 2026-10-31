@@ -15161,8 +15161,8 @@ Usage: t3 teatree questions reachability [OPTIONS]
 ```
 Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 
- Resolve pending internal questions; an owner question is answered only in its
- Slack thread.
+ Resolve pending internal questions; an owner question is answered in its Slack
+ thread.
 
  ``--also`` exists because one decision routinely settles several questions:
  a loop that cannot act on an ambiguous instruction files a clarifying question
