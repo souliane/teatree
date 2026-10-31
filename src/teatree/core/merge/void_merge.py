@@ -50,6 +50,7 @@ _AGENT_WORDS = REVIEWER_ROLE_COMPONENTS | {
     "agent",
     "bot",
     "claude",
+    "coordinator",
     "debugger",
     "factory",
     "orchestrator",

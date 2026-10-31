@@ -2,7 +2,7 @@
 
 The anti-regression guard for the per-phase FSM dispatch that #559/#633
 shadowed: every author lifecycle phase must route to its OWN phase agent,
-never to a single chaining orchestrator. The table is the contract — adding
+never to a single agent that chains the phases. The table is the contract — adding
 ``planning → t3:planner`` later is a one-line edit here and in
 ``SUBAGENT_BY_PHASE``.
 """
@@ -18,9 +18,9 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import loop_dispatch as loop_dispatch_cmd
+from teatree.core.modelkit import phases
 from teatree.core.modelkit.phases import (
     _FANOUT_N_BOUNDS,
-    CHAINING_ORCHESTRATOR,
     FANOUT_BY_PHASE,
     SUBAGENT_BY_PHASE,
     fanout_for_phase,
@@ -68,6 +68,14 @@ def _is_slash_command_agent(subagent: str) -> bool:
     return subagent in _SLASH_COMMAND_AGENTS
 
 
+def _agents_without_definition(routes: dict[tuple[str, str], str]) -> dict[tuple[str, str], str]:
+    return {
+        (role, phase): subagent
+        for (role, phase), subagent in routes.items()
+        if not _is_slash_command_agent(subagent) and not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
+    }
+
+
 class TestSubagentForPhaseConformance(TestCase):
     """The canonical ``subagent_for_phase`` map — the single source of truth."""
 
@@ -77,14 +85,6 @@ class TestSubagentForPhaseConformance(TestCase):
                 f"author phase {phase!r} routed to {subagent_for_phase(Ticket.Role.AUTHOR, phase)!r}, "
                 f"expected {expected!r}"
             )
-
-    def test_no_author_phase_routes_to_chaining_orchestrator(self) -> None:
-        offenders = {
-            phase: agent
-            for (role, phase), agent in SUBAGENT_BY_PHASE.items()
-            if role == Ticket.Role.AUTHOR and agent == CHAINING_ORCHESTRATOR
-        }
-        assert offenders == {}, f"author phases must not chain through the orchestrator: {offenders}"
 
     def test_reviewer_role_reviewing_still_routes_to_reviewer(self) -> None:
         assert subagent_for_phase(Ticket.Role.REVIEWER, "reviewing") == "t3:reviewer"
@@ -122,7 +122,7 @@ class TestLoopDispatchCommandConformance(TestCase):
             task = SimpleNamespace(ticket=SimpleNamespace(role=role), phase=phase)
             assert loop_dispatch_cmd._subagent_for(task) == agent
 
-    def test_every_author_phase_has_a_non_orchestrator_subagent(self) -> None:
+    def test_every_author_phase_claims_its_own_subagent(self) -> None:
         for phase, expected in EXPECTED_AUTHOR_AGENT.items():
             ticket = Ticket.objects.create(
                 overlay="acme",
@@ -136,7 +136,6 @@ class TestLoopDispatchCommandConformance(TestCase):
             (entry,) = json.loads(stdout.getvalue())
             assert entry["phase"] == phase
             assert entry["subagent"] == expected
-            assert entry["subagent"] != CHAINING_ORCHESTRATOR
             task.delete()
 
 
@@ -145,7 +144,7 @@ class TestPendingTaskSignalConformance(TestCase):
 
     The ``PendingTasksScanner`` emits one ``pending_task`` per pending row;
     the dispatcher must route it to the phase's own agent, never a single
-    chaining orchestrator.
+    agent that chains the phases.
     """
 
     def _signal(self, phase: str, *, role: str = Ticket.Role.AUTHOR) -> ScanSignal:
@@ -162,14 +161,6 @@ class TestPendingTaskSignalConformance(TestCase):
             assert len(agent_actions) == 1, f"phase {phase!r}: expected one agent action, got {agent_actions}"
             assert agent_actions[0].zone == expected, (
                 f"phase {phase!r} dispatched to {agent_actions[0].zone!r}, expected {expected!r}"
-            )
-
-    def test_no_author_phase_dispatches_to_chaining_orchestrator(self) -> None:
-        for phase in EXPECTED_AUTHOR_AGENT:
-            actions = dispatch([self._signal(phase)])
-            zones = {a.zone for a in actions if a.kind == "agent"}
-            assert CHAINING_ORCHESTRATOR not in zones, (
-                f"author phase {phase!r} must not route to the chaining orchestrator (zones={zones})"
             )
 
 
@@ -189,15 +180,19 @@ class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
         assert AGENTS_DIR.is_dir(), f"agents directory not found at {AGENTS_DIR}"
 
     def test_every_mapped_subagent_has_an_agent_definition(self) -> None:
-        missing = {
-            (role, phase): subagent
-            for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
-            if not _is_slash_command_agent(subagent) and not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
-        }
+        missing = _agents_without_definition(SUBAGENT_BY_PHASE)
         assert missing == {}, (
             f"phases mapped to a sub-agent with no agents/<name>.md definition: {missing}. "
             f"Spawning these via the Agent tool errors \"Agent type '<value>' not found\"."
         )
+
+    def test_a_route_to_a_name_without_an_agent_file_is_reported(self) -> None:
+        planted = {("author", "planning"): "t3:planner", ("author", "coding"): "t3:orchestrator"}
+        assert _agents_without_definition(planted) == {("author", "coding"): "t3:orchestrator"}
+
+    def test_the_chaining_agent_and_its_special_case_are_gone(self) -> None:
+        assert not (AGENTS_DIR / "orchestrator.md").exists()
+        assert "CHAINING_ORCHESTRATOR" not in vars(phases)
 
     def test_every_mapped_subagent_uses_the_t3_namespace(self) -> None:
         offenders = {

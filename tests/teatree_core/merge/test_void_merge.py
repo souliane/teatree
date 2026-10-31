@@ -304,6 +304,12 @@ class TestOperatorRefusals(_VoidCase):
                 check_operator(reason="history rewrite", actor=actor)
             assert refusal.value.code is VoidRefusal.ACTOR_NOT_HUMAN
 
+    def test_an_actor_whose_only_agent_word_is_a_role_name_refuses(self) -> None:
+        for actor in ("orchestrator-7", "coordinator-3", "Coordinator"):
+            with self.subTest(actor=actor), pytest.raises(VoidRefusedError) as refusal:
+                check_operator(reason="history rewrite", actor=actor)
+            assert refusal.value.code is VoidRefusal.ACTOR_NOT_HUMAN
+
     def test_a_named_human_passes(self) -> None:
         check_operator(reason="history rewrite", actor="alice")
 
