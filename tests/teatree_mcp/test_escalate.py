@@ -104,6 +104,13 @@ class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
             self._call({"kind": "spend_money", "message": "Go ahead?"})
         assert not DeferredQuestion.objects.exists()
 
+    def test_a_mailbox_that_is_gone_comes_back_as_a_tool_error(self) -> None:
+        server = self._server("planning")
+        dead = {MAILBOX_SOCKET_ENV: "/nonexistent/mailbox.sock", MAILBOX_AUTH_ENV: "token"}
+        with patch.dict("os.environ", dead), pytest.raises(ToolError, match="unavailable"):
+            async_to_sync(server.call_tool)("escalate", {"kind": "internal", "message": "Help?"})
+        assert not DeferredQuestion.objects.exists()
+
     def test_a_server_with_no_mailbox_identity_refuses(self) -> None:
         server = self._server("planning")
         with (

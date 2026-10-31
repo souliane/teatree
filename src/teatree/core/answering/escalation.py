@@ -5,7 +5,6 @@ delete unremoted work, widen a credential's use or speak to a colleague. The onl
 is an ordinary question card, raised after the deadline and only for a kind the owner may be asked.
 """
 
-import logging
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Final
@@ -18,10 +17,7 @@ from teatree.core.modelkit.phases import ANSWERING_PHASES
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import Task
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.task_handoff import CARD_DISCUSSION_PREFIX, schedule_card_discussion
-
-logger = logging.getLogger(__name__)
 
 ESCALATION_DEADLINE: Final = timedelta(minutes=30)
 INTERNAL_KIND: Final = "internal"
@@ -93,13 +89,7 @@ def resume_coordinator(ticket_id: int, *, event_id: str, message: str) -> Task |
     if (queued := _answering(ticket_id).filter(execution_reason__contains=marker).first()) is not None:
         return queued
     parent = coordinator_task(ticket_id)
-    if parent is None:
-        return None
-    try:
-        return schedule_card_discussion(parent, event_id=event_id, message=message)
-    except TaskMintRefusedError:
-        logger.warning("The coordinator of ticket %s could not be resumed for %s", ticket_id, event_id)
-        return None
+    return None if parent is None else schedule_card_discussion(parent, event_id=event_id, message=message)
 
 
 def _unserved_card(decision: OwnerDecision, asked: str) -> tuple[str, QuestionCard]:
@@ -116,7 +106,8 @@ def _unserved_card(decision: OwnerDecision, asked: str) -> tuple[str, QuestionCa
     return question, card.with_quote(question, asked)
 
 
-def _settle(row: DeferredQuestion) -> bool:
+def settle_request(row: DeferredQuestion) -> bool:
+    """Close *row* now: an owner card or a failed asker; ``False`` when it was no longer pending."""
     with transaction.atomic():
         pending = DeferredQuestion.objects.select_for_update().filter(pk=row.pk).first()
         if pending is None or not pending.is_pending:
@@ -147,4 +138,4 @@ def settle_expired_escalations(*, now: datetime | None = None) -> int:
     """Close each request past its deadline; the number closed."""
     cutoff = (now or timezone.now()) - ESCALATION_DEADLINE
     expired = _requests().filter(created_at__lte=cutoff).select_related("parked_task")
-    return sum(_settle(row) for row in list(expired))
+    return sum(settle_request(row) for row in list(expired))

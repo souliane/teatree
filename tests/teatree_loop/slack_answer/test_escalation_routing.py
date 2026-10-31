@@ -14,6 +14,7 @@ from teatree.core.answering.escalation import ESCALATION_DEADLINE, record_reques
 from teatree.core.models import DmContext, PendingChatInjection, Session, SessionCommand, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.slack_answer import card_discussion
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from tests._escalation_peers import AcceptingSession, live_task_of
@@ -117,6 +118,38 @@ class TestAnOpenEscalationRoutesToTheCoordinator(_Thread):
         self.client.steer.assert_called_once()
         row.refresh_from_db()
         assert row.answer_kind == PendingChatInjection.AnswerKind.SESSION
+
+    def test_a_broker_that_cannot_start_leaves_the_message_to_the_resumed_coordinator_task(self) -> None:
+        self._escalate()
+        self._owner_message()
+
+        with patch.object(live_mailbox, "shared_broker", side_effect=OSError("no socket")):
+            report = self._cycle()
+
+        assert report.dispatched == 1
+        self.client.steer.assert_not_called()
+        assert Task.objects.get(parent_task=self.coordinator).phase == "answering"
+
+    def test_a_message_another_cycle_already_answered_is_not_routed_twice(self) -> None:
+        self._escalate()
+        self._owner_message()
+
+        with patch.object(card_discussion, "_mark_unit_loop_replied", return_value=False):
+            self._cycle()
+
+        self.client.steer.assert_not_called()
+        assert not Task.objects.filter(parent_task=self.coordinator).exists()
+
+    def test_a_routing_failure_releases_the_message_for_the_next_cycle(self) -> None:
+        self._escalate()
+        row = self._owner_message()
+
+        with patch.object(card_discussion, "_route_to_coordinator", side_effect=RuntimeError("boom")):
+            report = self._cycle()
+
+        assert report.errors == 1
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
 
     def test_pause_still_reaches_the_task_while_a_request_is_open(self) -> None:
         self._escalate()

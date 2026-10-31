@@ -221,7 +221,7 @@ def _route_to_coordinator(request: DeferredQuestion, ticket_id: int, unit: _Unit
 
 def _route_open_escalation(unit: _Unit, report: "SlackAnswerReport") -> bool:
     """Send the owner's message to the coordinator while the thread's ticket has an open escalation request."""
-    if not unit.lead.thread_ts or control_verb(unit.text) is not None:
+    if control_verb(unit.text) is not None:
         return False
     ticket_id = (
         ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts)
@@ -229,8 +229,10 @@ def _route_open_escalation(unit: _Unit, report: "SlackAnswerReport") -> bool:
         .first()
     )
     request = open_request(ticket_id) if ticket_id is not None else None
-    if request is None or not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
-        return request is not None
+    if request is None:
+        return False
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
+        return True
     try:
         routed = _route_to_coordinator(request, ticket_id, unit)
     except Exception:

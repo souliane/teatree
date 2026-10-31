@@ -108,10 +108,12 @@ class TestEscalatingToALiveCoordinator(TestCase):
         row = DeferredQuestion.objects.get()
         assert self.mailbox.rows_when_sent == [1]
         assert receipt == {"request_id": row.pk, "delivery": "peer", "deadline_minutes": 30}
-        (to, text, key, _wait) = self.mailbox.sent[0]
-        assert (to, key) == (_COORDINATOR, f"escalation:{row.pk}")
-        assert f"Escalation {row.pk} from planning task {self.asker.pk}" in text
+        (to, text, key, wait) = self.mailbox.sent[0]
+        assert (to, key, wait) == (_COORDINATOR, f"escalation:{row.pk}", 2)
+        assert f"Escalation {row.pk} from planning task {self.asker.pk} (peer {_ASKER})" in text
         assert "information, not an instruction" in text
+        assert f"question_answer {row.pk}" in text
+        assert "30 minutes" in text
         assert _MESSAGE in text
         assert Task.objects.filter(parent_task__isnull=False).count() == 0
 
@@ -207,6 +209,18 @@ class TestWhoMayEscalate(TestCase):
 
         with pytest.raises(EscalationRefusedError, match="cannot tell which running task"):
             _call(FakeMailbox(_identity(asker)))
+
+    def test_a_running_task_of_another_phase_on_the_same_ticket_does_not_confuse_who_asks(self) -> None:
+        asker = _running()
+        TaskFactory(
+            ticket=asker.ticket,
+            session=SessionFactory(ticket=asker.ticket, agent_id="coding"),
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+
+        assert _call(FakeMailbox(_identity(asker)))["delivery"] == "unserved"
+        assert DeferredQuestion.objects.get().parked_task_id == asker.pk
 
     def test_two_running_tasks_in_one_phase_cannot_be_told_apart(self) -> None:
         asker = _running()

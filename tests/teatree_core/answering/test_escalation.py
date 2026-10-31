@@ -1,5 +1,6 @@
 """An escalation is one internal request row; its deadline raises an owner card or fails the asker (#5685)."""
 
+import os
 from datetime import timedelta
 
 import pytest
@@ -17,6 +18,7 @@ from teatree.core.answering.escalation import (
     record_request,
     resume_coordinator,
     settle_expired_escalations,
+    settle_request,
 )
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
 from teatree.core.models import Task, Ticket
@@ -68,9 +70,10 @@ class TestTheRequestRow(TestCase):
             record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE).pk,
             record_request(asker, kind=INTERNAL_KIND, message=f"{_MESSAGE} first").pk,
             record_request(other, kind=INTERNAL_KIND, message=_MESSAGE).pk,
+            record_request(asker, kind=OwnerDecision.ARCHITECTURE, message=_MESSAGE).pk,
         }
 
-        assert len(rows) == 3
+        assert len(rows) == 4
 
     def test_an_unknown_kind_is_refused_naming_the_valid_ones_and_writes_nothing(self) -> None:
         with pytest.raises(EscalationRefusedError) as raised:
@@ -108,6 +111,24 @@ class TestOpenRequests(TestCase):
         row = record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
 
         _age(row, ESCALATION_DEADLINE + timedelta(seconds=1))
+
+        assert open_request(asker.ticket_id) is None
+
+    def test_the_newest_open_request_of_a_ticket_is_the_one_returned(self) -> None:
+        asker = _asker()
+        record_request(asker, kind=INTERNAL_KIND, message=_MESSAGE)
+        newest = record_request(asker, kind=INTERNAL_KIND, message=f"{_MESSAGE} again")
+
+        assert open_request(asker.ticket_id) == newest
+
+    def test_an_owner_audience_row_is_never_a_request_whatever_its_marker(self) -> None:
+        asker = _asker()
+        DeferredQuestion.objects.create(
+            question="Is this fine?",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            dedupe_marker=f"{MARKER_PREFIX}forged",
+            parked_task=asker,
+        )
 
         assert open_request(asker.ticket_id) is None
 
@@ -236,6 +257,41 @@ class TestTheDeadline(TestCase):
             assert asker.failure_reason.startswith(UNSERVED_PREFIX)
             row.refresh_from_db()
             assert not row.is_pending
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_the_raised_card_is_keyed_by_its_request(self) -> None:
+        _asker_task, row = self._expired(OwnerDecision.ARCHITECTURE)
+
+        settle_expired_escalations()
+
+        assert DeferredQuestion.owner_pending().get().dedupe_marker == f"esc-owner:{row.pk}"
+
+    def test_failing_the_asker_leaves_a_live_holders_claim_for_its_own_unwind(self) -> None:
+        asker = _asker(claimed_by="worker-1", owner_pid=os.getpid())
+        _asker_task, _row = self._expired(INTERNAL_KIND, asker)
+
+        settle_expired_escalations()
+
+        asker.refresh_from_db()
+        assert asker.status == Task.Status.FAILED
+        assert asker.claimed_by == "worker-1"
+
+    def test_a_request_whose_asking_task_is_gone_is_closed_without_a_card(self) -> None:
+        asker, row = self._expired(OwnerDecision.ARCHITECTURE)
+        DeferredQuestion.objects.filter(pk=row.pk).update(parked_task=None)
+
+        assert settle_expired_escalations() == 1
+
+        assert not DeferredQuestion.objects.get(pk=row.pk).is_pending
+        assert not DeferredQuestion.owner_pending().exists()
+        asker.refresh_from_db()
+        assert asker.status == Task.Status.CLAIMED
+
+    def test_a_request_that_stopped_pending_before_it_was_settled_is_not_settled_again(self) -> None:
+        _asker_task, row = self._expired(OwnerDecision.ARCHITECTURE)
+        row.apply_answer("go with the first", resolved_via="agent")
+
+        assert settle_request(row) is False
         assert not DeferredQuestion.owner_pending().exists()
 
     def test_a_request_inside_its_deadline_is_left_alone(self) -> None:
