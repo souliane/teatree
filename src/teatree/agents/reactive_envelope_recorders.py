@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.agents.coordinator_peer_messenger import send_to_ticket_peer
 from teatree.agents.result_payloads import answer_text, recommendation_issue_url, suggestion_url
 from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, ArticleSuggestion, TriageRecommendation
 from teatree.core.answering.coordinator_actions import run_coordinator_actions
@@ -257,7 +258,7 @@ def _run_coordinator_actions(task: Task, result: AgentResultBlob, *, phase: str)
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
         return []
     try:
-        return run_coordinator_actions(task, result.get("actions"))
+        return run_coordinator_actions(task, result.get("actions"), messenger=send_to_ticket_peer)
     except Exception:
         logger.exception("Coordinator actions failed for task %s; the reply is still delivered", task.pk)
         return []
