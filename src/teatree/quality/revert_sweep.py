@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import NamedTuple
 
 from teatree.utils import git
 from teatree.utils.django_db.runner import runner_prefix
@@ -18,18 +19,27 @@ SCOPE_MARKERS = (
     "/core/merge/",
     "/core/gates/",
     "/core/cleanup/",
-    "/retention/reaper",
+    "/core/retention/",
+    "reap",
     "merge_clear",
     "review_verdict",
 )
 MAX_HUNKS = 40
 TEST_RUN_TIMEOUT_SECONDS = 900
+_OUTPUT_TAIL_LINES = 15
+_OUTER_SESSION_ENV_PREFIXES = ("COV_CORE_", "COVERAGE_", "PYTEST_XDIST_")
+_OUTER_SESSION_ENV = frozenset({"PYTEST_ADDOPTS", "PYTHONPATH"})
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", re.MULTILINE)
 _KILLED_EXIT_CODES = frozenset({1, 2})
 
 
 class RevertSweepError(RuntimeError):
     pass
+
+
+class InnerRunOutcome(NamedTuple):
+    code: int
+    output_tail: str
 
 
 class HunkStatus(StrEnum):
@@ -164,6 +174,8 @@ def default_test_command(repo: Path, scratch: Path) -> tuple[str, ...]:
         "--create-db",
         "-p",
         "no:cacheprovider",
+        "-p",
+        "no:tach",
     )
 
 
@@ -175,7 +187,7 @@ class HunkSweeper:
         self.scratch = scratch
         self.test_command = tuple(test_command)
         self.changed_tests = changed_tests
-        self._baseline: dict[tuple[str, ...], bool] = {}
+        self._baseline: dict[tuple[str, ...], InnerRunOutcome] = {}
 
     def verdict(self, hunk: Hunk) -> HunkVerdict:
         tests = self._tests_for(hunk.path)
@@ -187,8 +199,11 @@ class HunkSweeper:
         return tuple(sorted(str(self.scratch / path) for path in candidates if (self.scratch / path).is_file()))
 
     def _status(self, hunk: Hunk, tests: tuple[str, ...]) -> HunkStatus:
-        if not self._passes_unreverted(tests):
-            message = f"the tests for {hunk.path} do not pass at the measured head; the sweep cannot attribute kills"
+        if (baseline := self._unreverted_run(tests)).code != 0:
+            message = (
+                f"the tests for {hunk.path} do not pass at the measured head; the sweep cannot attribute kills\n"
+                f"{baseline.output_tail}"
+            )
             raise RevertSweepError(message)
         applied = run_allowed_to_fail(
             ["git", "apply", "-R", "--unidiff-zero", "--whitespace=nowarn", "-"],
@@ -199,35 +214,39 @@ class HunkSweeper:
         if applied.returncode != 0:
             return HunkStatus.UNMEASURED
         try:
-            code = self._run(tests)
+            code = self._run(tests).code
         finally:
             self._restore()
         if code == 0:
             return HunkStatus.SURVIVOR
         return HunkStatus.KILLED if code in _KILLED_EXIT_CODES else HunkStatus.UNMEASURED
 
-    def _passes_unreverted(self, tests: tuple[str, ...]) -> bool:
+    def _unreverted_run(self, tests: tuple[str, ...]) -> InnerRunOutcome:
         if tests not in self._baseline:
-            self._baseline[tests] = self._run(tests) == 0
+            self._baseline[tests] = self._run(tests)
         return self._baseline[tests]
 
-    def _run(self, tests: tuple[str, ...]) -> int:
-        source_root = str(self.scratch / "src")
-        env = {
-            **os.environ,
-            "PYTHONPATH": os.pathsep.join(filter(None, [source_root, os.environ.get("PYTHONPATH", "")])),
+    def _environment(self) -> dict[str, str]:
+        inherited = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(_OUTER_SESSION_ENV_PREFIXES) and key not in _OUTER_SESSION_ENV
         }
+        return {**inherited, "PYTHONPATH": str(self.scratch / "src"), "PYTHONDONTWRITEBYTECODE": "1"}
+
+    def _run(self, tests: tuple[str, ...]) -> InnerRunOutcome:
         try:
             result = run_allowed_to_fail(
                 [*self.test_command, *tests],
                 cwd=self.scratch,
-                env=env,
+                env=self._environment(),
                 expected_codes=None,
                 timeout=TEST_RUN_TIMEOUT_SECONDS,
             )
         except TimeoutExpired:
-            return -1
-        return result.returncode
+            return InnerRunOutcome(-1, f"timed out after {TEST_RUN_TIMEOUT_SECONDS}s")
+        lines = f"{result.stdout}\n{result.stderr}".strip().splitlines()
+        return InnerRunOutcome(result.returncode, "\n".join(lines[-_OUTPUT_TAIL_LINES:]))
 
     def _restore(self) -> None:
         git.run_strict(repo=str(self.scratch), args=["reset", "--hard", "-q", "HEAD"])

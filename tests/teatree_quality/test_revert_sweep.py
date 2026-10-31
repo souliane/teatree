@@ -28,9 +28,19 @@ PYTEST_IN_TINY_REPO = (
     "-x",
     "-p",
     "no:cacheprovider",
+    "--disable-plugin-autoload",
     "-o",
     "addopts=",
 )
+
+_PROBE_SCRIPT = (
+    "import os, sys; "
+    "outer = ('COV_CORE_', 'COVERAGE_', 'PYTEST_XDIST_'); "
+    "isolated = os.environ.get('PYTHONDONTWRITEBYTECODE') == '1' and os.environ['PYTHONPATH'].endswith('src') "
+    "and not any(key.startswith(outer) for key in os.environ); "
+    "sys.exit(0 if isolated else 3)"
+)
+INNER_ENV_PROBE = (sys.executable, "-c", _PROBE_SCRIPT)
 
 BASE_SOURCE = """def allowed(count: int) -> bool:
     return count < 3
@@ -185,6 +195,36 @@ def test_more_than_forty_hunks_fails_loudly(tiny_repo: Path) -> None:
         _measure(tiny_repo)
 
 
+def test_the_inner_run_is_isolated_from_the_outer_test_session(
+    tiny_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PYTHONPATH", "/outer/session/path")
+    monkeypatch.setenv("COV_CORE_SOURCE", "src/teatree")
+    monkeypatch.setenv("COVERAGE_FILE", "/outer/.coverage")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+
+    sweep = measure_revert_sweep(
+        tiny_repo,
+        base_ref="origin/main",
+        expect_sha=_git(tiny_repo, "rev-parse", "HEAD"),
+        test_command=INNER_ENV_PROBE,
+    )
+
+    assert {verdict.status for verdict in sweep.verdicts} == {HunkStatus.SURVIVOR}
+
+
+def test_tests_that_fail_before_any_revert_refuse_with_their_output(tiny_repo: Path) -> None:
+    failing = (sys.executable, "-c", "import sys; print('collected nothing useful'); sys.exit(3)")
+
+    with pytest.raises(RevertSweepError, match="collected nothing useful"):
+        measure_revert_sweep(
+            tiny_repo,
+            base_ref="origin/main",
+            expect_sha=_git(tiny_repo, "rev-parse", "HEAD"),
+            test_command=failing,
+        )
+
+
 def test_comment_only_hunk_is_inert_and_not_swept(tiny_repo: Path) -> None:
     _write(tiny_repo, "src/teatree/core/gates/limit.py", HEAD_SOURCE + "\n# a trailing note\n")
     _git(tiny_repo, "add", "-A")
@@ -201,7 +241,8 @@ def test_comment_only_hunk_is_inert_and_not_swept(tiny_repo: Path) -> None:
         ("src/teatree/core/merge/head_overlap.py", True),
         ("src/teatree/core/gates/merge_guard.py", True),
         ("src/teatree/core/cleanup/cleanup.py", True),
-        ("src/teatree/retention/reaper.py", True),
+        ("src/teatree/core/retention/prune.py", True),
+        ("src/teatree/docker/reap.py", True),
         ("src/teatree/core/models/merge_clear.py", True),
         ("src/teatree/core/models/review_verdict.py", True),
         ("src/teatree/core/models/ticket.py", False),
