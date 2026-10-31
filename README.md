@@ -589,9 +589,9 @@ t3 worker restart
 # `t3 worker ensure`, or register one in a session with the `/loop` that `t3 loop <slot> start` prints):
 t3 loop start
 
-# Enable/disable an individual loop (the reconciler adds/prunes its timer at once):
-t3 loop resume <name>
-t3 loop disable <name>
+# Enable/disable an individual loop (the reconciler adds/prunes its timer at once; both verbs are emergency-only):
+t3 loop resume <name> --emergency
+t3 loop disable <name> --emergency
 
 # Out of band, run one by-hand full-scan tick or read the last-rendered statusline:
 t3 loop tick

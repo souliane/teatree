@@ -33,12 +33,11 @@ module; this handler is the thin transcript-reading wrapper, fail-safe-to-silent
 on any error (a Stop hook must NEVER crash turn-end).
 """
 
-import contextlib
 import json
 import sys
-from pathlib import Path
 
 from hooks.scripts.gate_escape import escape_allows
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -69,19 +68,11 @@ def handle_completion_claim_gate(data: dict) -> bool | None:
     end normally. Fail-safe-to-silent: any malformed input or unexpected error
     returns ``None`` so the Stop chain is never crashed.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_completion_claim_gate(data)
+        with teatree_src_on_path():
+            return _run_completion_claim_gate(data)
     except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _gate_is_out_of_scope(data: dict) -> bool:

@@ -16,7 +16,7 @@ binding discipline:
     ``add_approval_reaction``) once a review actually lands — this module is
     that outcome path.
 2. **Respect "review loop stopped".** When the review mini-loop is
-    disabled (``t3 loop disable review`` — a durable DB ``LoopState`` hold),
+    disabled (``t3 loop disable review --emergency`` — a durable DB ``LoopState`` hold),
     no review-intent signal is queued — the discovery stratum reads that state
     from :func:`teatree.loop.loop_state_db.loop_held_in_db`.
 3. **Dedup against existing reactors.** A reaction already present from a

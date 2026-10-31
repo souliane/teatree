@@ -37,7 +37,6 @@ NEVER-LOCKOUT: a recorded per-action ``[gate-escape:main_clone: <reason>]`` toke
 circuit breaker) all keep this gate from wedging a session.
 """
 
-import contextlib
 import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors managed_repo).
 import sys
 from pathlib import Path
@@ -82,19 +81,11 @@ def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotati
     Returns the core module, or ``None`` on any import failure — the caller then
     fails OPEN (allow), so a cold hook env without ``teatree`` never tracebacks.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.core.gates import main_clone_guard as core  # noqa: PLC0415 — deferred: cold-hook import
+        with teatree_src_on_path():
+            from teatree.core.gates import main_clone_guard as core  # noqa: PLC0415 — deferred: cold-hook import
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN, never tracebacks.
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
     return core
 
 

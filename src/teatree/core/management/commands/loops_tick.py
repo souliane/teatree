@@ -422,7 +422,8 @@ class Command(TyperCommand):
                 "self-rescheduling loop_timer chain per enabled DB Loop row that the singleton "
                 "`t3 worker` drains, each firing `t3 loops tick --loop <name>` on its own cadence. "
                 "There is NO master tick. Run `t3 loops list` to see the loops, then "
-                "`t3 loop resume <name>` (the reconciler adds its timer); `t3 worker status` shows the worker."
+                "`t3 loop resume <name> --emergency` (the reconciler adds its timer); "
+                "`t3 worker status` shows the worker."
             )
             raise SystemExit(2)
 

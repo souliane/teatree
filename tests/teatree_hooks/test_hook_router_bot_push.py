@@ -52,3 +52,25 @@ def test_interactive_hook_refuses_direct_bot_url(tmp_path: Path, capsys: pytest.
         assert handle_block_foreign_branch_push(data)
 
     assert "t3 push" in json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("command", ["git push --all origin", "git push --mirror origin", "git push origin --all"])
+def test_interactive_hook_refuses_branchless_push_to_bot_repo(tmp_path: Path, command: str) -> None:
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    subprocess.run(
+        [_GIT, "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/build-bot/engine.git"],
+        check=True,
+    )
+    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(tmp_path)}
+    bot = BotRepo("github.com/build-bot/engine", "github.com", "github", "build-bot/engine", "build-bot")
+
+    with patch("teatree.hooks.bot_push_gate.bot_repo_for", return_value=bot):
+        assert "t3 push" in (bot_push_refusal(data) or "")
+
+
+def test_interactive_hook_skips_push_whose_repo_cannot_be_resolved(tmp_path: Path) -> None:
+    data = {"tool_name": "Bash", "tool_input": {"command": 'git -C "$REPO" push origin HEAD'}, "cwd": str(tmp_path)}
+    bot = BotRepo("github.com/build-bot/engine", "github.com", "github", "build-bot/engine", "build-bot")
+
+    with patch("teatree.hooks.bot_push_gate.bot_repo_for", return_value=bot):
+        assert bot_push_refusal(data) is None

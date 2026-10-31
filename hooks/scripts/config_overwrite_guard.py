@@ -30,6 +30,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from hooks.scripts.managed_repo import teatree_src_on_path
+
 if TYPE_CHECKING:
     from teatree.core.gates.config_overwrite_guard import ConfigOverwriteFinding
 
@@ -108,25 +110,14 @@ def _path_exists(file_path: str) -> bool:
 def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
     """Import the decision core, bootstrapping the sibling ``src/`` onto the path.
 
-    The hook runs in the user's session shell with no guarantee ``teatree`` is
-    importable, so ``src/`` is added to ``sys.path`` first (mirroring the
-    shared ``managed_repo.teatree_src_on_path``). Returns the core module, or ``None``
-    on any import failure — the caller then fails OPEN (allow). This keeps the
-    gate crash-proof: a cold hook env without ``teatree`` must never traceback.
+    Returns the core module, or ``None`` on any import failure — the caller then
+    fails OPEN (allow), so a cold hook env without ``teatree`` never tracebacks.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415 — deferred: cold-hook import
+        with teatree_src_on_path():
+            from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415 — deferred: cold-hook import
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN, never tracebacks.
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
     return core
 
 

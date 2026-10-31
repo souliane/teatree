@@ -52,10 +52,10 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
    t3 <overlay> run tests --reuse-db
    ```
 
-3. In CI, the single canonical entry point is:
+3. In CI, the single canonical entry point is the same command:
 
    ```bash
-   t3 <overlay> ci
+   t3 <overlay> run tests
    ```
 
 **Prerequisites:** Docker services (Postgres, Redis) must be running. Start them with `t3 <overlay> worktree start` (see `/t3:workspace`) — never raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.

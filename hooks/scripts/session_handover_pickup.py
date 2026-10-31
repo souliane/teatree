@@ -36,11 +36,11 @@ are released, and a claimed mirror goes back unless a newer one replaced it.
 import contextlib
 import logging
 import os
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.session_start_delivery import StartClaims
 
 #: With no logging configured in a hook subprocess, ``logging``'s lastResort
@@ -176,33 +176,28 @@ def claim_session_handover_from_file(claims: StartClaims) -> tuple[str, str]:
     the claimed file is renamed to ``latest.claimed.md`` so a re-fired
     SessionStart does not re-inject it.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
-        # (the canonical sqlite); an absent row / unreachable DB fails open through
-        # the parser to the default bootstrap path.
-        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701 — cold-hook import
+        with teatree_src_on_path():
+            # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
+            # (the canonical sqlite); an absent row / unreachable DB fails open through
+            # the parser to the default bootstrap path.
+            from teatree.config import (  # noqa: PLC0415 — cold-hook import
+                _parse_handover_mirror_path,  # noqa: PLC2701 — cold-hook import
+                cold_reader,
+            )
 
-        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path"))
-        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-        if not text:
-            return "", ""
-        with contextlib.suppress(OSError):
-            path.replace(path.with_name("latest.claimed.md"))
-            claims.add(lambda: _put_back_mirror(path))
+            path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path"))
+            text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+            if not text:
+                return "", ""
+            with contextlib.suppress(OSError):
+                path.replace(path.with_name("latest.claimed.md"))
+                claims.add(lambda: _put_back_mirror(path))
     except Exception:
         logger.warning("session hand-off file-mirror read failed — no hand-off delivered", exc_info=True)
         return "", ""
     else:
         return text, ""
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 __all__ = ["claim_session_handover", "claim_session_handover_from_file"]
