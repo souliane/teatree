@@ -1,3 +1,7 @@
+import os
+import sys
+from unittest.mock import patch
+
 import pytest
 
 from teatree.utils.run import (
@@ -81,6 +85,38 @@ class TestRunStreamed:
         assert retained[-1] == f"line-{emitted}"
         assert retained[0] == f"line-{emitted - STREAMED_STDERR_RETAINED_LINES + 1}"
         assert capfd.readouterr().err.count("line-") == emitted
+
+
+class _InterruptOnFirstLine:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def write(self, text: str) -> int:
+        self.lines.append(text)
+        raise KeyboardInterrupt
+
+
+class TestRunStreamedInterrupt:
+    @staticmethod
+    def _interrupted_child(monkeypatch: pytest.MonkeyPatch, script: str) -> int:
+        stderr = _InterruptOnFirstLine()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        with pytest.raises(KeyboardInterrupt):
+            run_streamed(["sh", "-c", script], check=False)
+        return int(stderr.lines[0])
+
+    def test_interrupt_stops_the_child_before_propagating(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        child = self._interrupted_child(monkeypatch, "echo $$ >&2; exec sleep 60")
+
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)
+
+    def test_interrupt_kills_a_child_that_ignores_termination(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with patch("teatree.utils.run._CHILD_STOP_GRACE_SECONDS", 0.2):
+            child = self._interrupted_child(monkeypatch, "trap '' TERM; echo $$ >&2; while :; do sleep 0.05; done")
+
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)
 
 
 class TestRunAllowedToFail:

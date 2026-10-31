@@ -1088,7 +1088,9 @@ Usage: t3 review merge-tree [OPTIONS]
  Never a git worktree — resolve_data_dir auto-isolates one onto a per-worktree
  DB, which is its own wrong-answer generator. The extract is a primary checkout
  whose origin is the source clone's real remote URL, so code reading repository
- identity resolves it; --no-git opts out.
+ identity resolves it; --no-git opts out. A default temp extract survives a
+ successful run for review and becomes eligible for worker reclaim after three
+ idle hours.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --base          TEXT  Target-branch ref the PR would merge into.             │
@@ -4345,6 +4347,8 @@ Usage: t3 tool verify-gates [OPTIONS]
  green-proof — an exit code alone does not say which tree earned it. Exits 2
  without grading anything when the tree is not a git checkout, is not the
  ``--expect-sha`` target, or is a clean main clone on its default branch.
+ Its private control-DB snapshot is removed when the run ends; SIGTERM or
+ SIGHUP stops the running stage first.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
@@ -12910,6 +12914,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              for this ticket.                                │
 │ rework-hold                  Re-queue the findings of a self-review HOLD a   │
 │                              ticket was parked past.                         │
+│ critic-record                Record a merge critic envelope for the ticket's │
+│                              dispatched head.                                │
+│ return-gaps                  Return guarded legacy gap members to the dream  │
+│                              umbrella.                                       │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
@@ -13272,6 +13280,40 @@ Usage: t3 teatree ticket rework-hold [OPTIONS] TICKET_ID
 │ --dry-run          Report the rework without writing it.                     │
 │ --json             Emit the outcome as JSON.                                 │
 │ --help             Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket critic-record`
+
+```
+Usage: t3 teatree ticket critic-record [OPTIONS] TICKET_ID HEAD_SHA
+                                        ENVELOPE_FILE
+
+ Record a merge critic envelope for the ticket's dispatched head.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id          INTEGER  [required]                                  │
+│ *    head_sha           TEXT     [required]                                  │
+│ *    envelope_file      PATH     [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the receipt as JSON.                                    │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket return-gaps`
+
+```
+Usage: t3 teatree ticket return-gaps [OPTIONS]
+
+ Return guarded legacy gap members to the dream umbrella.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ids             TEXT  Comma-separated legacy member ticket ids.            │
+│ --confirm         TEXT  Per-id confirmation above the bulk threshold.        │
+│ --advanced        TEXT  Per-id permission for progressed tickets.            │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

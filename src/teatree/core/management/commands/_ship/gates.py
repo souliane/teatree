@@ -1,7 +1,7 @@
 """Pre-ship gate helpers, extracted from ``pr.py`` by concern.
 
 The ``pr create`` command runs a sequence of deterministic gates before it
-advances the FSM to PR_OPENED: branch-currency auto-merge (#940), the
+advances the FSM to PR_OPENED: branch-currency conflict prediction (#940), the
 phase/shipping gate (#694), the overlay-scoped close-keyword gates (#1012 /
 #83), the visual-QA browser sanity gate, and the PR-metadata validator. Those
 leaf gates plus their failure payloads live here so ``pr.py`` stays within the
@@ -51,10 +51,8 @@ class BranchCurrencyFailure(TypedDict):
     """Pre-ship branch-currency gate refusal (#940).
 
     Returned when ``origin/<target>`` has advanced past the branch
-    point and ``git merge`` produced conflicts. The branch must be
-    manually merged + resolved before the cold reviewer attests the
-    post-merge SHA — otherwise the release pipeline certifies a stale
-    base.
+    point and merge-tree predicts conflicts. The branch must be
+    manually merged and resolved before cold review.
     """
 
     allowed: bool
@@ -145,15 +143,10 @@ def run_branch_currency_gate(
     ticket: Ticket,
     worktree: Worktree,
 ) -> BranchCurrencyFailure | None:
-    """Auto-merge ``target`` into the feature branch before the rest of the gates (#940).
+    """Predict target conflicts before the rest of the ship gates (#940).
 
-    Placed FIRST in :func:`_run_ship_gates` so the visual-QA gate, the
-    phase gate, and the eventual cold-review attestation all run
-    against the post-merge tree — not a stale base whose target-branch
-    fixes are missing. On zero-conflict the new HEAD is recorded as
-    ``ship_invoking_branch``'s post-merge sha so the cold reviewer
-    attests the SHA the loop will actually push. A wrong checkout refuses
-    before the fetch; a conflicting merge aborts and refuses.
+    A clean behind branch keeps its reviewed head. A wrong checkout refuses
+    before the fetch; a predicted conflict refuses without mutating the tree.
     Fetch failures (offline, auth) are inconclusive — same posture as
     :mod:`teatree.core.gates.clone_guard`.
     """
@@ -172,12 +165,6 @@ def run_branch_currency_gate(
             branch=branch,
             target=target,
         )
-    post_sha = result["post_merge_sha"]
-    if result["auto_merged"] and post_sha:
-        # #800 N3: canonical locked RMW — record the post-merge HEAD so
-        # the cold reviewer's attestation binds to the tree the loop
-        # will actually push, not the pre-merge stale base.
-        ticket.merge_extra(set_keys={"branch_currency_post_merge_sha": post_sha})
     return None
 
 

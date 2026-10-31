@@ -125,7 +125,7 @@ class CriticDispatch(models.Model):
                 head_sha=normalized_head,
                 defaults={"state": cls.State.DISPATCHED, "deadline": now + DEFAULT_DISPATCH_TTL, "attempts": 1},
             )
-            if not created and (cls._critic_is_active(row) or not cls._reclaim(row, now=now)):
+            if not created and (cls.critic_is_active(row) or not cls._reclaim(row, now=now)):
                 return None
             row.refresh_from_db()
             row.task = cls._create_critic_task(ticket=ticket, contract=contract)
@@ -177,7 +177,7 @@ class CriticDispatch(models.Model):
         )
 
     @staticmethod
-    def _critic_is_active(row: "CriticDispatch") -> bool:
+    def critic_is_active(row: "CriticDispatch") -> bool:
         return Task.objects.filter(pk=row.task_id, status__in=Task.Status.active()).exists()
 
     @classmethod

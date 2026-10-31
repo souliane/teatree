@@ -55,7 +55,11 @@ def inventory_entry(
             else "Inspect why the PR sweep could not evaluate this PR"
         ),
         decision=attempt.decision if attempt else "evaluation_failed",
-        ci=ci_label(reason, failing_required=bool(attempt and attempt.failing_required)),
+        ci=ci_label(
+            reason,
+            failing_required=bool(attempt and attempt.failing_required),
+            decision=attempt.decision if attempt else "",
+        ),
         approvals=pr.approvals,
         approvals_display=approvals_text(pr.approvals, pr.approval_count, None),
         threads=threads_label(pr.unresolved_threads) if pr.unresolved_threads is not None else UNKNOWN,

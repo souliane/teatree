@@ -21,7 +21,7 @@ Integration-style with real Django ORM rows. Times are backdated with
 :mod:`tests.teatree_loop.test_scanning_news_scanner`).
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -35,6 +35,8 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loop.global_scanner_factories import _backlog_sweep_scanner
 from teatree.loop.scanners.backlog_sweep import BACKLOG_SWEEP_PHASE, BacklogSweepScanner
+from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 #: Test overlay anchor — a non-legacy name distinct from any literal the
 #: scanner could plausibly hardcode, so a regression that re-bakes a
@@ -80,54 +82,6 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class BacklogSweepScannerTests(TestCase):
-    def test_held_health_resolves_when_a_sweep_is_in_flight(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            _scanner().scan()
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.in_flight_exists", return_value=True):
-            assert _scanner().scan() == []
-        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
-
-    def test_held_health_resolves_when_the_sweep_is_no_longer_due(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            _scanner().scan()
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None):
-            assert _scanner().scan() == []
-        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
-
-    def test_held_health_resolves_when_no_dream_gaps_remain(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            _scanner().scan()
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None):
-            assert _scanner().scan_dream_gaps() == []
-        assert not KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
-
-    def test_held_health_stays_open_while_the_daily_trigger_is_due(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            _scanner().scan()
-        assert _scanner().scan_dream_gaps() == []
-        assert KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
-
-    def test_held_health_stays_open_while_dream_gaps_are_pending(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            _scanner().scan()
-        with (
-            patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.evaluate_trigger", return_value=None),
-            patch.object(BacklogSweepScanner, "_pending_dream_gaps", return_value=[{"gap_key": "gap"}]),
-        ):
-            assert _scanner().scan() == []
-        assert KnownIssue.objects.open().filter(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}").exists()
-
-    def test_failed_due_queue_emits_hold_and_health_until_a_task_lands(self) -> None:
-        with patch("teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task", return_value=None):
-            signals = _scanner().scan()
-        assert [signal.kind for signal in signals] == ["backlog_sweep.held"]
-        issue = KnownIssue.objects.get(fingerprint=f"backlog-sweep-held:{TEST_OVERLAY_NAME}")
-        assert issue.resolved_at is None
-
-        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.queued"]
-        issue.refresh_from_db()
-        assert issue.resolved_at is not None
-
     def test_twenty_live_pull_requests_allow_a_new_sweep(self) -> None:
         for index in range(20):
             PullRequest.objects.record_opened(
@@ -183,7 +137,7 @@ class BacklogSweepScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["backlog_sweep.not_due"]
         latest = _last_sweep_task()
         assert latest is not None
         assert latest.pk == prior.pk
@@ -199,7 +153,7 @@ class BacklogSweepScannerTests(TestCase):
 
         second = _scanner().scan()
 
-        assert second == []
+        assert [signal.kind for signal in second] == ["backlog_sweep.not_due"]
 
     def test_queued_task_carries_skill_name(self) -> None:
         """The skill name lands in the Task's execution_reason for the dispatcher."""
@@ -559,3 +513,109 @@ class DreamGapLedgerTriggerTests(TestCase):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
         assert scanner.dream_umbrella_url == UMBRELLA
+
+
+HOLD_FINGERPRINT = f"cadence-held:{BACKLOG_SWEEP_PHASE}:{TEST_OVERLAY_NAME}"
+QUEUE_TASK = "teatree.loop.scanners.backlog_sweep.PhaseCadence.queue_task"
+
+
+def _gap_scanner() -> BacklogSweepScanner:
+    return BacklogSweepScanner(overlay_name=TEST_OVERLAY_NAME, dream_umbrella_url=UMBRELLA)
+
+
+def _hold_is_open() -> bool:
+    return KnownIssue.objects.open().filter(fingerprint=HOLD_FINGERPRINT).exists()
+
+
+def _scan_with_the_task_write_failing(scanner: BacklogSweepScanner) -> list[ScanSignal]:
+    with patch(QUEUE_TASK, return_value=None):
+        return scanner.scan()
+
+
+def _mint_sweep_run(status: Task.Status, *, started_at: datetime) -> Task:
+    task = PhaseCadence(TEST_OVERLAY_NAME, BACKLOG_SWEEP_PHASE).queue_task(
+        placeholder_issue_url=f"backlog-sweep://{TEST_OVERLAY_NAME}",
+        agent_id=f"backlog-sweep-{TEST_OVERLAY_NAME}",
+        execution_reason="hand-minted run",
+        log_label="test",
+    )
+    assert task is not None
+    Task.objects.filter(pk=task.pk).update(status=status)
+    Session.objects.filter(pk=task.session_id).update(started_at=started_at)
+    return task
+
+
+def _mint_run_stamped_ahead_of_the_clock() -> Task:
+    # The Loop row owns the sweep's cadence, so only a run stamped ahead of the clock reads as not yet due.
+    return _mint_sweep_run(Task.Status.COMPLETED, started_at=timezone.now() + timedelta(hours=1))
+
+
+class BacklogSweepHoldTests(TestCase):
+    """The shared ``PhaseCadence`` hold row opens when a due sweep cannot be queued and never outlives its cause."""
+
+    def test_a_failed_due_queue_holds_for_retry_until_a_task_lands(self) -> None:
+        signals = _scan_with_the_task_write_failing(_scanner())
+
+        assert [signal.kind for signal in signals] == ["backlog_sweep.held"]
+        assert signals[0].payload["retry"] is True
+        issue = KnownIssue.objects.get(fingerprint=HOLD_FINGERPRINT)
+        assert issue.resolved_at is None
+
+        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.queued"]
+        issue.refresh_from_db()
+        assert issue.resolved_at is not None
+
+    def test_a_failed_dream_gap_queue_holds_for_retry_until_a_task_lands(self) -> None:
+        _umbrella_with_pending("3a9f11")
+        with patch(QUEUE_TASK, return_value=None):
+            signals = _gap_scanner().scan_dream_gaps()
+
+        assert [signal.kind for signal in signals] == ["backlog_sweep.held"]
+        assert _hold_is_open()
+
+        assert [signal.kind for signal in _gap_scanner().scan_dream_gaps()] == ["backlog_sweep.queued"]
+        assert not _hold_is_open()
+
+    def test_the_hold_resolves_when_a_sweep_is_in_flight(self) -> None:
+        _scan_with_the_task_write_failing(_scanner())
+        _mint_sweep_run(Task.Status.PENDING, started_at=timezone.now())
+
+        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.not_due"]
+        assert not _hold_is_open()
+
+    def test_the_hold_resolves_when_the_sweep_is_no_longer_due(self) -> None:
+        _scan_with_the_task_write_failing(_scanner())
+        _mint_run_stamped_ahead_of_the_clock()
+
+        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.not_due"]
+        assert not _hold_is_open()
+
+    def test_the_hold_resolves_when_not_due_even_with_dream_gaps_pending(self) -> None:
+        _umbrella_with_pending("3a9f11")
+        _scan_with_the_task_write_failing(_gap_scanner())
+        _mint_run_stamped_ahead_of_the_clock()
+
+        assert [signal.kind for signal in _gap_scanner().scan()] == ["backlog_sweep.not_due"]
+        assert not _hold_is_open()
+
+    def test_the_dream_gap_pass_resolves_the_hold_when_no_gaps_remain_and_the_sweep_is_not_due(self) -> None:
+        _scan_with_the_task_write_failing(_scanner())
+        _mint_run_stamped_ahead_of_the_clock()
+
+        assert _gap_scanner().scan_dream_gaps() == []
+        assert not _hold_is_open()
+
+    def test_the_dream_gap_pass_keeps_the_hold_while_the_daily_sweep_is_due(self) -> None:
+        _scan_with_the_task_write_failing(_scanner())
+
+        assert _gap_scanner().scan_dream_gaps() == []
+        assert _hold_is_open()
+
+    def test_the_dream_gap_pass_keeps_the_hold_of_an_in_flight_sweep_waiting_for_admission(self) -> None:
+        _umbrella_with_pending("3a9f11")
+        task = _mint_sweep_run(Task.Status.PENDING, started_at=timezone.now())
+        Task.objects.filter(pk=task.pk).update(admitted_at=None)
+        assert [signal.kind for signal in _gap_scanner().scan()] == ["backlog_sweep.held"]
+
+        assert _gap_scanner().scan_dream_gaps() == []
+        assert _hold_is_open()

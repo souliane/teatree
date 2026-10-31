@@ -90,7 +90,10 @@ def sweep_next_task(reason: str, decision: str, *, behind_main: bool) -> str:
         "solo_overlay_no_review": "Run independent review",
         "clear_present_unusable": "Refresh merge authorization for current head",
         "mergeable_awaiting_review": "Request independent review",
+        "review_rounds_exhausted": "Inspect three recorded review rounds",
     }
+    if decision == "waiting_on_critic":
+        return "Wait for the merge-quality critic"
     return actions.get(reason, f"Inspect PR blocker: {(reason or decision).replace('_', ' ')}")
 
 
@@ -104,12 +107,16 @@ def my_pr_next_task(kind: str, ci: str) -> str:
     return tasks.get(kind, "Review or merge PR" if ci in _GREEN_CI else "Inspect CI and advance PR")
 
 
-def ci_label(reason: str, *, failing_required: bool) -> str:
+def ci_label(reason: str, *, failing_required: bool, decision: str = "") -> str:
     if failing_required or reason == "ci_red":
         return "red"
     if reason == "ci_pending":
         return "pending"
-    return "green" if reason in _PAST_CI_GATE_REASONS else UNKNOWN
+    return (
+        "green"
+        if reason in _PAST_CI_GATE_REASONS or reason == "review_rounds_exhausted" or decision == "waiting_on_critic"
+        else UNKNOWN
+    )
 
 
 def entry_blocker(entry: "PrInventoryEntry") -> str:
@@ -201,6 +208,10 @@ def _authorization(facts: PrActionFacts) -> PrNextAction | None:
 
 
 def _awaiting_review(facts: PrActionFacts) -> PrNextAction | None:
+    if facts.entry is not None and (
+        facts.entry.decision == "waiting_on_critic" or facts.entry.reason == "review_rounds_exhausted"
+    ):
+        return None
     if approvals_met(facts.approvals) is False:
         return PrNextAction("Waiting on colleagues", "Reviewer", f"Await approvals ({facts.approvals})")
     if facts.review_requested:
@@ -231,6 +242,10 @@ def _unreadable_threads(facts: PrActionFacts) -> PrNextAction | None:
 def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
     if facts.entry is None or not facts.entry.next_task:
         return None
+    if facts.entry.decision == "waiting_on_critic":
+        return PrNextAction("Factory working", "Factory", facts.entry.next_task)
+    if facts.entry.reason == "review_rounds_exhausted":
+        return PrNextAction("Needs you", "You", facts.entry.next_task)
     group = "Factory working" if facts.ci.lower() in _PENDING_CI else "Blocked"
     return PrNextAction(group, "Factory", facts.entry.next_task)
 

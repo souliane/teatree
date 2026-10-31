@@ -22,6 +22,7 @@ MINI_LOOP = MiniLoop(
     name="dogfood",
     default_cadence_seconds=3600,  # a floor only; the seeded row asks for 86400 and that IS the cadence
     build_jobs=_build_jobs,
+    periodic_phase="dogfood_smoke",
     declared_reach=frozenset({LoopReach.COLLEAGUE}),
     determinism=LoopDeterminism.AI,
 )

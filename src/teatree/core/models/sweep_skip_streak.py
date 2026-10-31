@@ -121,6 +121,9 @@ class SkipObservation:
 class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
     """Observe / resolve / surface the consecutive-skip streaks."""
 
+    def touch(self, *, slug: str, pr_id: int, now: dt.datetime) -> None:
+        self.filter(slug=slug, pr_id=pr_id).update(last_seen_at=now)
+
     def observe(self, observation: SkipObservation, *, now: dt.datetime | None = None) -> "SweepSkipStreak":
         """Record one skip pass; return the row with its updated streak."""
         moment = now or timezone.now()

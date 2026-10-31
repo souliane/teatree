@@ -16,12 +16,24 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ReviewHoldDisposition, Session, Task, Ticket
+from teatree.core.models import HeadCarryOver, PullRequest, ReviewHoldDisposition, RoundMetric, Session, Task, Ticket
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
-from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
-from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON, HOLD_AT_HEAD_REASON, PrSummary
+from teatree.loop.scanners.pr_sweep_review_gate import (
+    REVIEW_ROUNDS_EXHAUSTED,
+    ReviewArmContext,
+    arm_cold_review,
+    held_head_attempt,
+    no_review_attempt,
+    report_exhausted_review_rounds,
+)
+from teatree.loop.scanners.pr_sweep_types import (
+    CLEAR_PRESENT_UNUSABLE_REASON,
+    CONTESTED_HOLD_REASON,
+    HOLD_AT_HEAD_REASON,
+    PrSummary,
+)
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -205,6 +217,168 @@ class TestArmColdReview:
             return_value=False,
         ):
             assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
+
+
+class TestReportExhaustedReviewRounds:
+    """The cap decision and its one owner notice come from a single ticket resolution (#5689)."""
+
+    def _ticket_with_recorded_heads(self, digits: str) -> Ticket:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4808")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        for digit in digits:
+            _record(verdict="hold", reviewer=f"reviewer-agent-{digit}", sha=digit * 40)
+        return ticket
+
+    def test_spent_cap_tells_the_owner_which_heads_were_counted(self) -> None:
+        ticket = self._ticket_with_recorded_heads("abc")
+
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD) is True
+
+        text = notify.call_args.args[0]
+        assert f"{ticket.issue_url} and {PR_URL} at {HEAD[:8]}" in text
+        assert "3 recorded passes" in text
+        assert all(digit * 40 in text for digit in "abc")
+        assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
+
+    def test_notice_key_is_stable_across_heads_so_the_owner_is_told_once(self) -> None:
+        ticket = self._ticket_with_recorded_heads("abc")
+
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD)
+            report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=STALE)
+
+        keys = {call.kwargs["idempotency_key"] for call in notify.call_args_list}
+        assert keys == {f"review_rounds_exhausted:{ticket.pk}:{PR_ID}"}
+
+    @pytest.mark.parametrize("digits", ["ab", ""])
+    def test_an_unspent_cap_says_nothing(self, digits: str) -> None:
+        self._ticket_with_recorded_heads(digits)
+
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD) is False
+
+        notify.assert_not_called()
+
+    def test_a_head_the_cap_already_counted_is_not_refused(self) -> None:
+        self._ticket_with_recorded_heads("abc")
+
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha="c" * 40) is False
+
+        notify.assert_not_called()
+
+    def test_a_pr_without_an_author_ticket_is_never_capped(self) -> None:
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user") as notify:
+            assert report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD) is False
+
+        notify.assert_not_called()
+
+    def _ticket_with_pr(self) -> Ticket:
+        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        PullRequest.objects.create(ticket=ticket, overlay="teatree", url=PR_URL, repo=SLUG, iid=str(PR_ID))
+        return ticket
+
+    def _cap_is_spent(self) -> bool:
+        with patch("teatree.loop.scanners.pr_sweep_review_gate.notify_user"):
+            return report_exhausted_review_rounds(slug=SLUG, pr_id=PR_ID, pr_url=PR_URL, head_sha=HEAD)
+
+    def test_three_reviewers_on_one_head_are_one_round(self) -> None:
+        ticket = self._ticket_with_pr()
+        for reviewer in ("reviewer-agent-7", "reviewer-agent-8", "reviewer-agent-9"):
+            ReviewVerdict.record(
+                pr_id=PR_ID, slug=SLUG, reviewed_sha="a" * 40, verdict="hold", reviewer_identity=reviewer, ticket=ticket
+            )
+
+        assert self._cap_is_spent() is False
+
+    def test_carry_forward_without_head_carry_over_does_not_spend_a_round(self) -> None:
+        ticket = self._ticket_with_pr()
+        for digit in "ab":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="hold",
+                reviewer_identity=f"reviewer-agent-{digit}",
+                ticket=ticket if digit == "a" else None,
+            )
+            RoundMetric.objects.open(kind="review", ticket=ticket, subject=digit * 40, size=1, detail={})
+            RoundMetric.objects.settle(kind="review", ticket=ticket, subject=digit * 40, outcome="hold")
+        ReviewVerdict.objects.get(reviewed_sha="b" * 40).carry_forward(reviewed_sha="c" * 40)
+
+        assert self._cap_is_spent() is False
+
+    def test_a_head_carried_over_does_not_spend_a_round(self) -> None:
+        self._ticket_with_recorded_heads("abc")
+        HeadCarryOver.objects.create(
+            slug=SLUG,
+            pr_id=PR_ID,
+            from_head="b" * 40,
+            to_head="c" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
+        )
+
+        assert self._cap_is_spent() is False
+
+    @pytest.mark.parametrize("outcome", ["venue_limit", "unverified"])
+    def test_a_metric_round_that_judged_nothing_does_not_spend_a_round(self, outcome: str) -> None:
+        ticket = self._ticket_with_recorded_heads("ab")
+        RoundMetric.objects.open(kind="review", ticket=ticket, subject="c" * 40, size=1, detail={})
+        RoundMetric.objects.settle(kind="review", ticket=ticket, subject="c" * 40, outcome=outcome)
+
+        assert self._cap_is_spent() is False
+
+    def test_unverified_verdicts_do_not_spend_a_round(self) -> None:
+        ticket = self._ticket_with_pr()
+        for digit in "abc":
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=digit * 40,
+                verdict="unverified",
+                reviewer_identity=f"reviewer-agent-{digit}",
+                ticket=ticket,
+                evidence_gaps=["ci_unreadable"],
+            )
+            RoundMetric.objects.open(kind="review", ticket=ticket, subject=digit * 40, size=1, detail={})
+            RoundMetric.objects.settle(kind="review", ticket=ticket, subject=digit * 40, outcome="unverified")
+
+        assert self._cap_is_spent() is False
+
+
+class TestNoReviewAttempt:
+    """The ``flag_no_review`` attempt names why no review stands and whether one was armed."""
+
+    @pytest.mark.parametrize(
+        ("reason", "unusable_clear"),
+        [("solo_overlay_no_review", False), (CLEAR_PRESENT_UNUSABLE_REASON, True)],
+        ids=["no-clear", "unusable-clear"],
+    )
+    def test_arms_a_review_and_names_the_reason(self, reason: str, *, unusable_clear: bool) -> None:
+        dispatcher = _FakeDispatcher()
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_review_gate.pr_ticket_under_external_delivery",
+            return_value=False,
+        ):
+            attempt = no_review_attempt(_pr(), unusable_clear=unusable_clear, exhausted=False, ctx=_ctx(dispatcher))
+
+        assert (attempt.decision, attempt.reason, attempt.review_dispatched) == ("flag_no_review", reason, True)
+        assert len(dispatcher.calls) == 1
+
+    def test_spent_cap_arms_nothing_and_says_so(self) -> None:
+        dispatcher = _FakeDispatcher()
+
+        attempt = no_review_attempt(_pr(), unusable_clear=True, exhausted=True, ctx=_ctx(dispatcher))
+
+        assert (attempt.decision, attempt.reason, attempt.review_dispatched) == (
+            "flag_no_review",
+            REVIEW_ROUNDS_EXHAUSTED,
+            False,
+        )
+        assert dispatcher.calls == []
 
 
 class TestHeadReviewState:

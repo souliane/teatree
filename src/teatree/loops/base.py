@@ -92,6 +92,11 @@ class MiniLoop:
     ``**kwargs`` so build callables can accept whichever subset of the per-tick
     context (backends, host, messaging, notion_client, ready_labels) they need.
 
+    ``periodic_phase`` names the task phase of a task-producing periodic loop, ``""``
+    for every other loop. The tick then requires its scanner to queue and hand over a
+    task or emit a named reason, records ``loop-silent:<loop>`` health when it does
+    neither, and releases the cadence claim only for a retryable hold or a silent scanner.
+
     ``cadence_is_floor`` marks a loop that gates its own work internally (its
     scanner carries a private cadence or a marker) and whose outer cadence is
     therefore a FLOOR — the fastest sane outer tick, set so the inner cadence
@@ -133,6 +138,7 @@ class MiniLoop:
     name: str
     default_cadence_seconds: int
     build_jobs: Callable[..., list["_ScannerJob"]]
+    periodic_phase: str = ""
     off_live_tick: bool = False
     cadence_is_floor: bool = False
     off_tick_command: tuple[str, ...] = ()

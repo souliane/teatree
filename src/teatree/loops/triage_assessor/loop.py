@@ -45,6 +45,7 @@ MINI_LOOP = MiniLoop(
     name="triage_assessor",
     default_cadence_seconds=3600,  # 1h tick rate — the scanner self-bounds via its 24h cadence
     build_jobs=_build_jobs,
+    periodic_phase="triage_assessing",
     declared_reach=frozenset({LoopReach.INGRESS}),
     determinism=LoopDeterminism.AI,
 )

@@ -36,19 +36,16 @@ Other invariants mirror the family:
     ``Session.started_at`` is the "last run" timestamp.
 """
 
-import logging
 from dataclasses import dataclass
 
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.core.factory.health_signal import HealthSignal
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE, SWEEP_ASK_GATE_MARKER
 from teatree.core.models.consolidated_memory import ConsolidatedMemory
 from teatree.core.models.dream_gap_ledger import pending_entries, umbrella_ticket
 from teatree.core.models.dream_gap_offer import mark_offered
 from teatree.core.models.dream_gap_types import DreamGapEntry
-from teatree.core.models.known_issue import KnownIssue
 from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
@@ -77,7 +74,6 @@ DREAM_GAP_DIRECTIVE = (
     "when a folded gap does not fit its host; at most three open gaps fit one host. Pending:"
 )
 SWEEP_GAP_LIMIT = 12
-logger = logging.getLogger(__name__)
 
 
 def _gap_detail_lines(row: ConsolidatedMemory | None) -> list[str]:
@@ -134,15 +130,11 @@ class BacklogSweepScanner:
 
     def scan(self) -> list[ScanSignal]:
         cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
-        if cadence.in_flight_exists():
-            self._resolve_hold_health()
-            return []
-
-        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
+        trigger, signals = cadence.gate(
+            now=timezone.now(), held_kind="backlog_sweep.held", not_due_kind="backlog_sweep.not_due"
+        )
         if trigger is None:
-            if not self._pending_dream_gaps():
-                self._resolve_hold_health()
-            return []
+            return signals
         return self._queue(cadence, trigger, self._pending_dream_gaps())
 
     def scan_dream_gaps(self) -> list[ScanSignal]:
@@ -150,11 +142,10 @@ class BacklogSweepScanner:
         cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
         pending = self._pending_dream_gaps()
         if cadence.in_flight_exists():
-            self._resolve_hold_health()
             return []
         if not pending:
             if cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at()) is None:
-                self._resolve_hold_health()
+                cadence.resolve_hold()
             return []
         return self._queue(cadence, "dream-gaps", pending)
 
@@ -178,31 +169,8 @@ class BacklogSweepScanner:
                 umbrella = umbrella_ticket(self.dream_umbrella_url)
                 if umbrella is not None:
                     mark_offered(umbrella, selected_keys, at=timezone.now())
-        if task is None:
-            if cadence.in_flight_exists():
-                self._resolve_hold_health()
-                return []
-            reason = "due backlog sweep task could not be created"
-            logger.warning("backlog sweep held for %s: %s", self.overlay_name, reason)
-            health = KnownIssue.objects.record_signal(
-                HealthSignal(
-                    fingerprint=f"backlog-sweep-held:{self.overlay_name}",
-                    severity=KnownIssue.Severity.WARNING,
-                    kind="backlog_sweep_held",
-                    overlay=self.overlay_name,
-                    summary=f"backlog sweep held for {self.overlay_name}: {reason}",
-                )
-            )
-            KnownIssue.objects.filter(pk=health.pk).update(auto_resolve=False)
-            return [
-                ScanSignal(
-                    kind="backlog_sweep.held",
-                    summary=f"backlog sweep held for {self.overlay_name}: {reason}",
-                    payload={"overlay": self.overlay_name, "reason": reason},
-                )
-            ]
-        self._resolve_hold_health()
-        return [
+        return cadence.handover(
+            task,
             ScanSignal(
                 kind="backlog_sweep.queued",
                 summary=f"backlog-sweep queued for {self.overlay_name} (trigger: {trigger})",
@@ -210,17 +178,13 @@ class BacklogSweepScanner:
                     "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": BACKLOG_SWEEP_PHASE,
-                    "task_id": task.pk,
+                    "task_id": task.pk if task is not None else None,
                     "trigger": trigger,
                     "require_approval": self.require_approval,
                 },
             ),
-        ]
-
-    def _resolve_hold_health(self) -> None:
-        KnownIssue.objects.filter(
-            fingerprint=f"backlog-sweep-held:{self.overlay_name}", resolved_at__isnull=True
-        ).update(resolved_at=timezone.now())
+            held_kind="backlog_sweep.held",
+        )
 
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive: the group-first posture, plus the ask-gate.

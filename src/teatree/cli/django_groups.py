@@ -347,6 +347,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("set-target-branch", "Set one repo's stacked-delivery parent branch for this ticket."),
             ("rework-hold", "Re-queue the findings of a self-review HOLD a ticket was parked past."),
+            ("critic-record", "Record a merge critic envelope for the ticket's dispatched head."),
+            ("return-gaps", "Return guarded legacy gap members to the dream umbrella."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
             ("list-clears", "List every unconsumed merge authorisation, tagged live / superseded / incomplete."),

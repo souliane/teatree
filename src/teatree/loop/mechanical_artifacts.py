@@ -35,12 +35,14 @@ from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import notify_user_outcome
 from teatree.core.notify_types import NotifyKind, NotifyReason
+from teatree.core.retention.run_scratch_sweep import sweep_run_scratch
 from teatree.core.retention.scratch import sweep_scratch
 from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_plan import GIB, FreePlan, append_stopped_deletions, persist_plan, sampled
 from teatree.loop.reclaim_yield import pressure_idle_days
 from teatree.loop.scanners.resource_pressure import measure_resources
+from teatree.utils.disposable_checkout import disposable_roots
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,7 @@ def _release_idle_database_copies(plan: FreePlan, *, deadline: float) -> None:
 def _sweep_worker_scratch(plan: FreePlan, *, marker: "ResourcePressureMarker", deadline: float) -> None:
     if os.environ.get("TEATREE_ROLE") != "worker":
         return
+    _sweep_abandoned_run_dirs(plan, deadline=deadline)
     for root, cursor_field in (
         (str(Path("/", "tmp")), "scratch_tmp_cursor"),
         (str(Path("/", "var", "tmp")), "scratch_var_tmp_cursor"),
@@ -195,6 +198,23 @@ def _sweep_worker_scratch(plan: FreePlan, *, marker: "ResourcePressureMarker", d
             marker.save(update_fields=[cursor_field])
         if result.refused:
             plan.steps.append(f"NEEDS OWNER: worker scratch {root} could not be checked — {result.probe_gap}")
+
+
+def _sweep_abandoned_run_dirs(plan: FreePlan, *, deadline: float) -> None:
+    for root in disposable_roots():
+        if time.monotonic() >= deadline:
+            plan.steps.append("DEFER run scratch — pass budget exhausted")
+            break
+        try:
+            result = sweep_run_scratch(root, deadline=deadline)
+        except Exception:
+            logger.exception("sweep_artifacts: run scratch sweep failed at %s", root)
+            plan.steps.append(f"FAILED run scratch {root} — see logs")
+            continue
+        plan.reclaimed_gb += result.freed_bytes / GIB
+        plan.steps.append(f"run scratch: freed {result.freed_bytes} bytes across {result.removed} dirs at {root}")
+        if result.refusal:
+            plan.steps.append(f"SKIP run scratch {root} — {result.refusal}")
 
 
 def _drain_teardown_backlog(plan: FreePlan) -> None:

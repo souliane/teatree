@@ -30,6 +30,7 @@ MINI_LOOP = MiniLoop(
     name="arch_review",
     default_cadence_seconds=3600,  # inert: the live cadence is the shipped daily row, not this
     build_jobs=_build_jobs,
+    periodic_phase="architectural_review",
     declared_reach=frozenset(),
     determinism=LoopDeterminism.AI,
 )
