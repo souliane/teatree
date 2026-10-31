@@ -18,13 +18,15 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core import on_behalf_gate_recorded
 from teatree.core.intake.nit_priority import nit_ticket_extra
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
-from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
-from teatree.loop.dispatch import ActionPayload, DispatchAction
-from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
+from teatree.core.merge.head_overlap import overlap_refusal
+from teatree.core.models import ImplementedIssueMarker, PullRequest, Task, Ticket
+from teatree.loop.dispatch import DispatchAction
+from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
+from teatree.loop.fix_dispatch import fix_reason, settle_superseded_fix
+from teatree.loop.persistence_overlay import owning_overlay, reconcile_existing_overlay
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 from teatree.loop.scanners.head_lineage import review_head_is_carried
 from teatree.utils.forge import forge_from_remote
@@ -94,41 +96,6 @@ def _record_persist_error(errors: dict[str, str] | None, zone: str, detail: str)
         errors[f"persist:{zone}"] = detail
 
 
-def _owning_overlay(url: str, scan_tag: str) -> str:
-    """Resolve the overlay that *owns* ``url``, preferring URL inference.
-
-    The dispatch payload carries ``overlay`` = the *scanning* overlay's tag
-    (``loop/tick.py`` injects ``job.overlay``), not necessarily the overlay
-    whose workspace repos own the URL.  When a multi-overlay tick's
-    reviewer/orchestrator scanner surfaces an issue/PR owned by a *different*
-    overlay, persisting the scan tag leaks the ticket into the scanning
-    overlay's statusline zone — and because ``overlay`` is then non-empty,
-    ``Ticket.save()`` never runs ``_infer_overlay()`` to correct it (#806,
-    incomplete #743).
-
-    Inference (``infer_overlay_for_url``) is the single source of truth; the
-    scan tag is only a fallback for the inconclusive case (URL owned by no
-    registered overlay, e.g. a host neither overlay declares).
-    """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: loaded at tick time
-
-    return infer_overlay_for_url(url) or scan_tag
-
-
-def _reconcile_existing_overlay(ticket: Ticket, *, created: bool) -> None:
-    """Correct an already-persisted ticket whose overlay no longer matches.
-
-    ``get_or_create`` may resolve a pre-existing row whose ``overlay`` was
-    written from a stale/wrong scan tag.  Re-infer from ``issue_url`` and
-    persist the correction.  ``apply_inferred_overlay`` keeps the #743
-    invariant: an inconclusive (empty) inference never blanks a value that
-    is already set, so a host no overlay declares is left as-is.
-    """
-    if created:
-        return
-    ticket.reconcile_overlay()
-
-
 def _handle_reviewer(action: DispatchAction) -> Task | None:
     """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing)."""
     from teatree.loop.persistence_reviewer import handle_reviewer  # noqa: PLC0415 — the leaf imports this hub
@@ -159,7 +126,7 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
     scan_tag = str(payload.get("overlay") or "")
     ticket, created = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
+        defaults={"overlay": owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
     author = payload.get("author")
     forge = forge_from_remote(issue_url)
@@ -170,7 +137,7 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         updated_extra = nit_ticket_extra(ticket.extra, raw_issue)
         if updated_extra != ticket.extra:
             ticket.merge_extra(set_keys={"nit_follow_up": True})
-    _reconcile_existing_overlay(ticket, created=created)
+    reconcile_existing_overlay(ticket, created=created)
     _link_claimed_marker(ticket, issue_url)
     # #748: a loop/coordinator-built ticket must have a durable phase-
     # attestation session even when scheduling below is skipped (role
@@ -211,8 +178,8 @@ def _get_or_create_ticket(
     The shared ticket-row primitive for the correction-zone handlers below
     (debug / codex / red-card / e2e / skill-drift / answerer). ``overlay`` is the
     already-resolved owning overlay (a real forge URL resolves via
-    :func:`_owning_overlay`; a synthetic ``<scheme>://…`` key uses the scan tag).
-    ``_reconcile_existing_overlay`` re-infers a pre-existing row from its
+    :func:`~teatree.loop.persistence_overlay.owning_overlay`; a synthetic ``<scheme>://…`` key uses the scan tag).
+    ``reconcile_existing_overlay`` re-infers a pre-existing row from its
     ``issue_url`` and never blanks a set value (#743), so a synthetic key whose
     inference is empty is left untouched.
 
@@ -232,7 +199,7 @@ def _get_or_create_ticket(
         issue_url=url,
         defaults={"overlay": overlay, "role": role, "extra": extra or {}, "kind": kind},
     )
-    _reconcile_existing_overlay(ticket, created=created)
+    reconcile_existing_overlay(ticket, created=created)
     return ticket, created
 
 
@@ -294,48 +261,6 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
     )
 
 
-_REVIEW_FINDINGS_BASE = (
-    "Auto-scheduled review-findings fix — read unresolved discussions on {pr_url} and "
-    "recorded findings via t3 <overlay> review findings <pr-url>, plus prior merge-critic "
-    "findings in the coding brief. IMPLEMENT them on that "
-    "PR's own branch, run the tests and push once. "
-)
-_VOICED_REVIEW_FINDINGS_REASON = _REVIEW_FINDINGS_BASE + (
-    "On GitLab, answer questions and push-backs in their own thread; "
-    "reply only after the push has landed with 'Fixed in <short sha>.' to each fixed thread and resolve it. "
-    "Skip any thread whose latest reply is already ours. "
-    "Answer, reply and resolve only via t3 review reply-to-discussion and t3 review resolve-discussion; "
-    "if either refuses, post nothing by another route. "
-    "On a GitHub PR there is no sanctioned reply/resolve path: fix and push only. "
-    "Never add a top-level comment or change reviewers; escalate only if the fix cannot proceed"
-)
-
-
-#: The review-findings entry is the quiet default; the conflict entry forbids rebasing.
-_FIX_REASON_BY_KIND: dict[str, str] = {
-    RedMrFixAttempt.Kind.CI_RED: "Auto-scheduled red-MR fix — debug {pr_url}",
-    RedMrFixAttempt.Kind.MERGE_CONFLICT: (
-        "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
-        "into the head branch, never by rebasing"
-    ),
-    # A quiet fix must leave review threads unresolved as well as unanswered.
-    RedMrFixAttempt.Kind.REVIEW_FINDINGS: _REVIEW_FINDINGS_BASE
-    + (
-        "Never reply to or resolve a thread. "
-        "Never answer a finding on our own MR with another comment. "
-        "Escalate only if the fix cannot proceed"
-    ),
-}
-
-
-def _fix_reason(payload: ActionPayload, pr_url: str) -> str:
-    fix_kind = fix_kind_of(payload)
-    reason = _FIX_REASON_BY_KIND[fix_kind]
-    if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and on_behalf_gate_recorded.owner_voice_permitted():
-        reason = _VOICED_REVIEW_FINDINGS_REASON
-    return reason.format(pr_url=pr_url)
-
-
 def _handle_debug(action: DispatchAction) -> Task | None:
     """Un-mergeable own PR (``my_pr.failed`` / ``my_pr.conflicted``) → author ticket + ``debugging`` task.
 
@@ -356,7 +281,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
         ticket, _created = _get_or_create_ticket(
             pr_url,
             role=Ticket.Role.AUTHOR,
-            overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
+            overlay=owning_overlay(pr_url, str(payload.get("overlay") or "")),
             kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
         )
         if (
@@ -365,11 +290,15 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             or _has_open_work(ticket, phase="debugging")
         ):
             return None
+        if settle_superseded_fix(payload, pr_url):
+            return None
+        if (ref := pr_ref_from_url(pr_url)) and overlap_refusal(ref=ref, ticket=ticket):
+            return None
         if not claim_red_mr_fix(payload):
             return None
         return ticket.schedule_implementing(
             "debugging",
-            reason=_fix_reason(payload, pr_url),
+            reason=fix_reason(payload, pr_url),
         )
 
 
@@ -401,7 +330,7 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
         ticket, _created = _get_or_create_ticket(
             pr_url,
             role=Ticket.Role.REVIEWER,
-            overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
+            overlay=owning_overlay(pr_url, str(payload.get("overlay") or "")),
             extra={"reviewed_sha": head_sha, "codex_variant": variant},
         )
         if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase=phase):

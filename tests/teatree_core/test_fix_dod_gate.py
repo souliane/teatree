@@ -18,7 +18,8 @@ from teatree.core.gates.fix_dod_gate import (
     override_reason,
 )
 from teatree.core.models import ConfigSetting, Ticket
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, validated_ticket_extra
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS, FixRecord
+from teatree.core.models.types import validated_ticket_extra
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
@@ -140,8 +141,9 @@ class TestOneFieldDefinition(TestCase):
     def test_the_gate_requires_exactly_the_declared_fields(self) -> None:
         assert set(missing_fix_record_fields(_fix_ticket())) == set(FIX_RECORD_FIELDS)
 
-    def test_the_tuple_derives_from_the_typed_dict(self) -> None:
-        assert tuple(FixRecord.__annotations__) == FIX_RECORD_FIELDS
+    def test_the_tuple_derives_from_the_typed_dict_less_the_optional_already_fixed_claim(self) -> None:
+        assert tuple(field for field in FixRecord.__annotations__ if field != "already_fixed") == FIX_RECORD_FIELDS
+        assert "already_fixed" in FixRecord.__annotations__
 
     def test_both_keys_survive_the_validated_extra_filter(self) -> None:
         """An undeclared key is stripped by every ``_extra()`` write-back — these must not be."""

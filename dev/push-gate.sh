@@ -79,6 +79,7 @@ conformance_core=(
     tests/conformance/test_every_model_has_an_admin.py
     tests/conformance/test_gate_evidence_declared.py
     tests/conformance/test_gate_registry_walk.py
+    tests/conformance/test_harness_boundary.py
     tests/conformance/test_overlay_default_noops.py
     tests/conformance/test_preset_is_the_only_loop_switch.py
     tests/conformance/test_registry_parity.py

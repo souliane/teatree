@@ -34,8 +34,8 @@ from teatree.core.models import (
     Task,
     Ticket,
 )
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
-from teatree.core.models.types import FIX_RECORD_FIELDS
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 

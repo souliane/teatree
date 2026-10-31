@@ -5,9 +5,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import FIX_RECORD_FIELDS, AntiVacuityAttestation, validated_ticket_extra
+from teatree.core.models.types import AntiVacuityAttestation, validated_ticket_extra
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket

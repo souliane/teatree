@@ -12,6 +12,8 @@ Two decisions make this safe to add to a schema other overlays consume:
 * an ABSENT ``fix_record`` is a NO-OP. An overlay whose agents never emit one keeps
     exactly today's behaviour — no new refusal — and its fix-tickets still reach
     DELIVERED through the audited override.
+* a record that is ONLY an ``already_fixed`` claim is the no-commit ending: it needs no DoD fields,
+    is not stored, and is verified against the worktree HEAD by ``landing_verification``.
 * a PRESENT-but-malformed one is REFUSED by name, in the same shape as the other
     envelope refusals, so a dropped record can never read as an absent one. The
     reason is prefixed with the shared :data:`MALFORMED_FIX_RECORD_PREFIX`, which
@@ -32,7 +34,15 @@ from teatree.core.gates.repro_gate import failing_run_required
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
-from teatree.core.models.types import FixRecord, fix_record_missing_fields, fix_record_required_fields
+from teatree.core.models.fix_record_types import (
+    FixRecord,
+    already_fixed_claim,
+    fix_record_missing_fields,
+    fix_record_required_fields,
+    is_claim_only,
+)
+
+_BLANK_CLAIM_REFUSAL = f"{MALFORMED_FIX_RECORD_PREFIX}already_fixed needs both a verified_head and non-blank evidence."
 
 
 def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:
@@ -47,6 +57,8 @@ def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:
     raw = result.get("fix_record")
     if raw is None or normalize_phase(task.phase) in ENVELOPE_VERDICT_PHASES:
         return ""
+    if is_claim_only(raw):
+        return "" if all(already_fixed_claim(raw)) else _BLANK_CLAIM_REFUSAL
     if refusal := fix_record_refusal(raw, ticket=task.ticket):
         return refusal
     task.ticket.record_fix_record(cast("FixRecord", raw))

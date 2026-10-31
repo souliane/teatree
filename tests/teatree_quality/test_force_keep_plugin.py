@@ -53,9 +53,9 @@ class TestProtectedItems:
 class TestForceKeepForOverRealGit:
     def test_a_changed_test_file_is_force_kept(self, tmp_path: Path) -> None:
         make_git_repo(tmp_path)
-        # teatree writes a hermetic-config cache into the repo root at runtime; keep it
+        # The test environment writes its isolated data directory into the repo root at runtime; keep it
         # untracked-invisible so it does not read as a diff and escalate the verdict.
-        (tmp_path / ".gitignore").write_text("t3-hermetic-config/\n")
+        (tmp_path / ".gitignore").write_text("isolated-data/\n")
         run_git(tmp_path, "add", ".gitignore")
         run_git(tmp_path, "commit", "-qm", "ignore runtime droppings")
         run_git(tmp_path, "checkout", "-q", "-b", "work")

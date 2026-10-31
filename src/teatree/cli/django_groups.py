@@ -6,6 +6,7 @@ a focused module; the group type itself is :class:`~teatree.cli.django_group.Dja
 """
 
 from teatree.cli.django_group import DjangoGroup
+from teatree.cli.django_groups_workspace import WORKSPACE_GROUPS
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "github-webhook": DjangoGroup(
@@ -31,72 +32,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
-    "worktree": DjangoGroup(
-        "Per-worktree FSM operations.",
-        [
-            ("provision", "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree."),
-            ("start", "Boot ``docker compose up`` for one worktree."),
-            ("verify", "Run overlay health checks for one worktree."),
-            ("ready", "Run runtime readiness probes for one worktree."),
-            ("teardown", "Stop docker, drop DB, remove git worktree, delete row."),
-            ("status", "Report FSM state, branch, and allocated host ports for one worktree."),
-            ("diagnose", "Print a structured health checklist for one worktree."),
-            ("smoke-test", "Quick health check: overlay loads, CLI responds, imports OK."),
-            ("diagram", "Print a state diagram as Mermaid. Models: worktree, ticket, task."),
-            ("occupancy", "Show every checkout a live agent currently holds."),
-            ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
-            ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
-            ("attest", "Record the checkout state after the owner has inspected it."),
-            ("adopt", "Register an existing on-disk checkout as a Worktree row."),
-        ],
-    ),
-    "workspace": DjangoGroup(
-        "Ticket-level workspace operations (every worktree in the ticket).",
-        [
-            ("ticket", "Create or update a ticket and trigger worktree provisioning."),
-            ("provision", "Provision every worktree in the current ticket workspace."),
-            ("start", "Start docker for every worktree in the current ticket workspace."),
-            ("ready", "Run readiness probes for every worktree in the ticket workspace."),
-            ("teardown", "Tear down every worktree in the current ticket workspace."),
-            ("finalize", "Squash worktree commits and rebase on the default branch."),
-            ("doctor", "Detect state drift across every store; optionally fix it."),
-            ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
-            ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
-            ("repair-split", "Move a ticket's divergent worktrees into its canonical workspace dir (keeps all work)."),
-            (
-                "relocate",
-                "Move this overlay's existing worktrees under the per-overlay workspace dir (git worktree move).",
-            ),
-            ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
-            ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
-            ("branch-verdict", "Is this branch's work already on the default branch? The canonical answer."),
-            ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
-            (
-                "reclaim-disk",
-                "Reclaim disk via zero-data-loss docker prunes (builder + dangling images + unreferenced volumes).",
-            ),
-            ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
-            (
-                "stamp-owners",
-                "Record which checkout owns each auto-isolated env dir this venue can see (deletes nothing).",
-            ),
-            (
-                "release-dead-rows",
-                "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
-            ),
-            (
-                "repair-branch-upstreams",
-                "Point every branch tracking someone else's ref back at its own, or untrack it.",
-            ),
-            ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
-            ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
-            ("restore", "Apply a captured salvage bundle back into a checkout (--into, --dry-run)."),
-            (
-                "prek-patches",
-                "Which prek patches hold work absent from the tree, and restore one (--repo, --restore, --dry-run).",
-            ),
-        ],
-    ),
+    **WORKSPACE_GROUPS,
     "run": DjangoGroup(
         "Run services.",
         [
@@ -338,6 +274,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("skip-planning", "Skip planning on a trivial ticket, advancing to PLAN_RECORDED (--reason, no artifact)."),
             ("plan-reconcile-inflight", "Retroactively advance WORK_STARTED tickets to PLAN_RECORDED."),
             ("plan-reaffirm", "Re-bind a plan to a new base — the plan-currency gate's never-lockout escape."),
+            ("plan-amend", "Append one typed acceptance criterion to the recorded plan at the live origin/main head."),
             ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
             (
                 "integration-review-override",
@@ -385,6 +322,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Persist + look up cold-review verdicts per MR.",
         [
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("hand-merge", "Record a verdict a reviewer returned as prose, refusing before any write."),
             ("record-evidence", "Record a review-evidence artifact for a ticket."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
             ("findings", "Print a recorded verdict's findings, so a HOLD can be read and acted on."),
@@ -506,6 +444,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "escalate",
                 "Record a situational escalation so the next verification spawn routes to the most-honest model.",
             ),
+        ],
+        core_dispatch=True,
+    ),
+    "publish": DjangoGroup(
+        "Write a PR body, issue body or comment: scan, write, read back, rescan.",
+        [
+            ("pr-body", "Replace a PR body with the scanned, read-back text of --body-file."),
+            ("issue-body", "Replace an issue body with the scanned, read-back text of --body-file."),
+            ("comment", "Post --body-file as a PR or issue comment, scanned before and after the write."),
         ],
         core_dispatch=True,
     ),

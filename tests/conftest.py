@@ -65,6 +65,7 @@ from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.secrets import PassStore, use_store
 from teatree.utils.work_tree import reset_cwd_cache
 from tests import _session_resource_guard
+from tests._data_dir_binders import isolate_data_dir_binders
 from tests._db_template import MIGRATED_TEMPLATE_KEY, build_or_reuse_template, restore_from_template
 from tests._hook_clock import HookClock
 from tests._machine_probe import pinned_load_and_cores, pinned_ram_headroom
@@ -761,8 +762,21 @@ def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterato
         yield
         return
     with patch(
-        "teatree.core.gates.merge_message_gate.scan_outbound_text",
+        "teatree.core.publishing.live_text.scan_outbound_text",
         side_effect=lambda *, target_repo, **_: PrivacyGateResult(target_repo=target_repo, is_public=False),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_open_peer_heads_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Let a merge or fix dispatch see no overlapping peer PR; ``@pytest.mark.real_open_heads`` opts out."""
+    if "real_open_heads" in request.keywords:
+        yield
+        return
+    with (
+        patch("teatree.core.merge.execution.overlap_refusal", return_value=None),
+        patch("teatree.loop.persistence.overlap_refusal", return_value=None),
     ):
         yield
 
@@ -951,9 +965,6 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workspace = home / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    config_dir = tmp_path / "t3-hermetic-config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
@@ -965,8 +976,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
     isolated_data_dir = tmp_path / "isolated-data"
     monkeypatch.setattr("teatree.paths.DATA_DIR", isolated_data_dir)
-    # The singleton binds DATA_DIR at import, so without this the worker-lock probe reads the host's real lock.
-    monkeypatch.setattr("teatree.utils.singleton.DATA_DIR", isolated_data_dir)
+    isolate_data_dir_binders(monkeypatch, isolated_data_dir)
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)
@@ -974,20 +984,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("T3_CONFIG_WRITE_PHASE", raising=False)
     # Resolve test registry paths under the isolated HOME.
     monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
-    # Redirect the update-check cache at a hermetic per-test dir holding a fresh
-    # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
-    # cache before its network/subprocess ``gh`` call. Update checks always run here
-    # (DB-home, no config DB), so without this a leaked subprocess mock in
-    # the same xdist worker turns the ``gh`` result into a bogus ``[update] …`` banner
-    # that prepends non-JSON to a CLI's captured output. The cache file is ``*.json`` (not
-    # ``db.sqlite3``), so it never trips ``test_paths``' stale-DB scan. Update-check tests
-    # set their own ``DATA_DIR`` per test, overriding this.
-    update_cache_dir = config_dir / "update-check-cache"
-    update_cache_dir.mkdir(parents=True, exist_ok=True)
-    (update_cache_dir / "update-check.json").write_text(
+    # A fresh "up to date" verdict makes ``run_update_check`` short-circuit before its `gh` call, so a leaked
+    # subprocess mock cannot prepend an ``[update] …`` banner to a CLI's captured output.
+    isolated_data_dir.mkdir(parents=True, exist_ok=True)
+    (isolated_data_dir / "update-check.json").write_text(
         json.dumps({"ts": time.time(), "message": ""}), encoding="utf-8"
     )
-    monkeypatch.setattr("teatree.update_check.DATA_DIR", update_cache_dir)
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
     monkeypatch.delenv("T3_BRANCH_PREFIX", raising=False)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)

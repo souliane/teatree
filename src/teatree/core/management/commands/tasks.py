@@ -8,7 +8,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
-from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
+from teatree.core.admission_priority import admission_priority_annotations
 from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task
@@ -20,10 +20,12 @@ from teatree.core.management.commands.tasks_session_view import (
     render_reconcile_checklist,
     render_session_view,
     render_tasks_table,
+    task_row,
 )
 from teatree.core.managers_admission import seated_pending_rows
+from teatree.core.managers_phase_cadence import in_flight_for_branch
 from teatree.core.managers_task_claim import claim_when_admitted
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.errors import TaskMintRefusedError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation, drive_claim
@@ -367,6 +369,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the task rows as JSON on stdout instead of the human table."),
         ] = False,
+        branch: Annotated[str, typer.Option(help="Show only this branch's claimed and pending tasks.")] = "",
     ) -> list[TaskRow]:
         """List the teatree tasks queue (not your harness TODO list).
 
@@ -379,9 +382,11 @@ class Command(TyperCommand):
         if session:
             return self._list_session_todos(status=status, json_output=json_output)
         qs = Task.objects.select_related("ticket").annotate(**admission_priority_annotations()).order_by("pk")
+        if branch:
+            qs = in_flight_for_branch(qs, branch)
         if status:
             qs = qs.filter(status=status)
-        rows = [_task_row(task) for task in qs]
+        rows = [task_row(task) for task in qs]
         self.print_result = False
         emit(
             rows,
@@ -416,7 +421,7 @@ class Command(TyperCommand):
         )
         if status:
             qs = qs.filter(status=status)
-        rows = [_task_row(task) for task in qs]
+        rows = [task_row(task) for task in qs]
         self.print_result = False
         emit(
             rows,
@@ -457,7 +462,7 @@ class Command(TyperCommand):
             .select_related("ticket")
             .annotate(**admission_priority_annotations())
         )
-        rows = [_task_row(task) for task in qs]
+        rows = [task_row(task) for task in qs]
         render_reconcile_checklist(
             rows,
             session_id=session_id,
@@ -542,23 +547,6 @@ class Command(TyperCommand):
             task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error}, usage_unknown=True)
             return {"exit_code": "1", "sdk_error": error}
         return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
-
-
-def _task_row(task: Task) -> TaskRow:
-    return TaskRow(
-        task_id=task.pk,
-        ticket_id=task.ticket_id,
-        ticket_title=task.ticket.short_description,
-        status=task.status,
-        phase=task.phase,
-        execution_reason=task.execution_reason,
-        claimed_by=task.claimed_by,
-        admission_score=getattr(task, ADMISSION_SCORE_ALIAS),
-        parent_task_id=task.parent_task_id,
-        failure_kind=task.failure_kind,
-        failure_reason=task.failure_reason,
-        failure_environmental=is_environmental(task.failure_kind),
-    )
 
 
 def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:

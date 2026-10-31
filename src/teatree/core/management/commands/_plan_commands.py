@@ -12,16 +12,19 @@ CLI surface is unchanged. The pure validate/record/advance logic lives in
 """
 
 import json
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.management.commands._plan_gate_commands import (
+    AmendError,
     PlanAdvanceError,
     PlanReconcileResult,
     PlanResult,
     ReaffirmError,
+    amend_plan,
     reaffirm_plan,
     reconcile_inflight,
     record_artifact_and_advance,
@@ -284,6 +287,46 @@ class PlanCommands(TyperCommand):
             f"  plan reaffirmed for ticket {ticket.pk} (artifact {artifact.pk}) at base {artifact.base_sha[:12]}"
         )
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="plan-amend")
+    def plan_amend(
+        self,
+        ticket_id: int,
+        *,
+        add_criterion: Annotated[
+            str, typer.Option("--add-criterion", help="The acceptance criterion to append to the recorded plan.")
+        ],
+        kind: Annotated[str, typer.Option("--kind", help="behaviour or process.")],
+        by: Annotated[str, typer.Option(help="Who is amending (audit trail).")] = "operator",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the result as JSON on stdout.")] = False,
+    ) -> PlanResult:
+        """Append one typed acceptance criterion to the ticket's recorded plan.
+
+        Earlier criteria keep their text and grade.
+
+        The plan is re-recorded at the live origin/main head; a repeat run adds nothing.
+        """
+        ticket = self._resolve_plan_ticket(ticket_id)
+        try:
+            artifact = amend_plan(ticket=ticket, criterion=add_criterion, kind=kind, by=by.strip() or "operator")
+        except AmendError as exc:
+            self.stderr.write(f"  plan-amend refused: {exc.message}")
+            raise SystemExit(1) from exc
+        if artifact is None:
+            result = PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
+            human = f"  criterion already declared for ticket {ticket.pk}; nothing added\n"
+        else:
+            result = PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+            human = f"  criterion added for ticket {ticket.pk} (artifact {artifact.pk})\n"
+        self.print_result = False
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
+        return result
 
     @staticmethod
     def _parse_adequacy_json(adequacy_json: str) -> dict | None:

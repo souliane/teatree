@@ -36,6 +36,15 @@ def in_flight_for_phase(qs: models.QuerySet, overlay: str, spellings: "Sequence[
     return qs.filter(ticket__overlay=overlay, phase__in=spellings, status__in=task_model.Status.active())
 
 
+def in_flight_for_branch(qs: models.QuerySet, branch: str) -> models.QuerySet:
+    """Pending/claimed tasks whose ticket owns a worktree on *branch*; an empty branch matches nothing."""
+    if not branch:
+        return qs.none()
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+    owners = apps.get_model("core", "Worktree").objects.filter(branch=branch).values("ticket_id")
+    return qs.filter(ticket_id__in=owners, status__in=task_model.Status.active())
+
+
 def last_run_at_for_phase(
     qs: models.QuerySet, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
 ) -> datetime | None:

@@ -91,3 +91,11 @@ A PR **no ticket owns** and a **rubric-less ticket** owe no grades at all — by
 
 - Sharing a grader with the eval LLM-judge (`eval/judge.py`'s `ClaudeJudge.grade`, an in-process `claude-agent-sdk` call). The two are kept SEPARATE on purpose: extracting a shared grader would couple the metered-LLM path to this durable-record path.
 - Re-pending rubric grades on `reopen()` — out of scope for this first MR; the SHA-bind already invalidates stale grades when a new workstream moves the head.
+
+## Typed criteria at creation
+
+A criterion's `text` column holds `[behaviour] <text>` or `[process] <text>` (no schema change). `core/intake/acceptance_criteria.py` owns the Acceptance-heading regex (shared with `core/intake/umbrella.py`), `acceptance_rows` (the bullets under that heading), and `classify_row` (`process` for rows naming a CI/lint/docs tool or a reviewed/committed/merged state, otherwise `behaviour`); `CriterionKind` and `render_criterion` live in `core/models/plan_adequacy`. A plan's `acceptance_criteria` content accepts a legacy plain string or `{text, kind}`; `PlanArtifact.record` refuses any other kind.
+
+`ensure-pr` calls `seed_rubric_notice` (`core/intake/rubric_from_issue.py`) once per PR creation: a ticket with no `PlanArtifact` gets one typed criterion per Acceptance bullet through `Rubric.add_criteria`. A missing section, an empty section, an unfalsifiable set or an unreadable issue is logged and appended to the PR body as `Rubric not seeded: <reason>.`
+
+`t3 <overlay> ticket plan-amend <id> --add-criterion TEXT --kind behaviour|process` re-records the plan with the prior manifest carried forward (earlier criterion texts and grades unchanged) plus the one new criterion, bound to the live origin/main head only when no commit touching a declared seam came in since the plan (or the range cannot be read): otherwise it refuses and names `plan-reaffirm`, whose per-commit dispositions are the only way past a moved seam. A criterion already declared adds nothing.

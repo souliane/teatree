@@ -209,6 +209,8 @@ Review the full conversation and categorize every issue:
 
 ### 2. Root Cause Analysis
 
+Every waste is recorded with its cost before it becomes a fix.
+
 For each issue, determine **why** it happened:
 
 - Missing guardrail in a skill/playbook?

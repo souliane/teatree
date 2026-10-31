@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import CodeHostBackend, MergeConflictState
 from teatree.loop.scanners.base import ScanSignal, SignalPayload, resolve_identities
 from teatree.loop.scanners.my_prs import _str_field
-from teatree.loop.scanners.pr_payload import head_sha
+from teatree.loop.scanners.pr_payload import base_sha, head_sha
 from teatree.loop.scanners.repository_scope import RepositoryScope
 from teatree.types import RawAPIDict
 from teatree.utils.pr_ref import PrRef
@@ -93,6 +93,7 @@ class MrConflictScanner:
             "pr_url": url,
             "title": title,
             "head_sha": head_sha(pr),
+            "base_sha": base_sha(pr),
             "fix_kind": FIX_KIND,
         }
         if conflict is MergeConflictState.CONFLICTED:

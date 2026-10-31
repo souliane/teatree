@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,7 @@ from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, 
 from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
 from teatree.core.issue_hygiene import IssueDraft, create_or_extend_by_marker, open_candidates
 from teatree.core.modelkit.task_failure_taxonomy import COMMENT_CHECK_PREFIX, NIT_HEAD_MOVED
+from teatree.core.models.finding_standard import Finding, FindingKind
 from teatree.core.on_behalf_gate_recorded import OnBehalfPartialPublishError, require_on_behalf_approval
 from teatree.core.review.comment_checks import added_lines, comment_refusal, review_refusal
 from teatree.core.review.review_candidate import is_self_authored
@@ -50,6 +52,16 @@ class NitLaneError(RuntimeError):
     pass
 
 
+def review_nits(findings: Iterable[Finding]) -> tuple[NitPoint, ...]:
+    return tuple(
+        dict.fromkeys(
+            NitPoint(finding.file, finding.line, finding.summary)
+            for finding in findings
+            if finding.kind == FindingKind.NIT
+        )
+    )
+
+
 def validate_nit_comments(points: tuple[NitPoint, ...], *, pr_url: str = "") -> None:
     ref = pr_ref_from_url(pr_url) if pr_url else None
     for point in points:
@@ -69,6 +81,20 @@ def validate_nit_comments(points: tuple[NitPoint, ...], *, pr_url: str = "") -> 
             if scan.refused:
                 message = f"comment check — {format_refusal(scan)}; revise the NIT and retry this head"
                 raise NitLaneError(message)
+
+
+def nit_comment_error(raw_findings: object, *, pr_url_of: Callable[[], str]) -> str:
+    findings = (
+        [Finding.from_dict(row) for row in raw_findings if isinstance(row, dict)]
+        if isinstance(raw_findings, list)
+        else []
+    )
+    points = review_nits(findings)
+    try:
+        validate_nit_comments(points, pr_url=pr_url_of() if points else "")
+    except NitLaneError as exc:
+        return f"review verdict recording refused: {exc}"
+    return ""
 
 
 def nit_pr_marker(pr_url: str) -> str:

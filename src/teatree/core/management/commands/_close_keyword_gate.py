@@ -13,7 +13,7 @@ unaffected. It scans both the proposed MR description and every commit body
 on the branch, and raises ``SystemExit`` with the offending line + suggested
 rewrite when an auto-close keyword is found.
 
-Detection uses ``teatree.core.runners.ship.CLOSE_KEYWORD_RE`` — the single
+Detection uses ``teatree.utils.close_keywords.CLOSING_REFERENCE_RE`` — the single
 source of truth shared with ``sanitize_close_keywords`` so the gate and the
 auto-rewrite stay in lockstep, including the colon form GitLab auto-closes
 (#1090).
@@ -21,19 +21,19 @@ auto-rewrite stay in lockstep, including the colon form GitLab auto-closes
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.utils import git
+from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from teatree.utils.run import CommandFailedError
 
 
 def _offending_lines(text: str) -> list[str]:
     """Return each line of *text* that carries a forbidden auto-close keyword."""
-    return [line.strip() for line in text.splitlines() if CLOSE_KEYWORD_RE.search(line)]
+    return [line.strip() for line in text.splitlines() if CLOSING_REFERENCE_RE.search(line)]
 
 
 def _suggest_rewrite(line: str) -> str:
     """Rewrite the keyword to the allowlisted ``Relates to`` form."""
-    return CLOSE_KEYWORD_RE.sub(lambda m: f"Relates to {m.group('ref')}", line)
+    return CLOSING_REFERENCE_RE.sub(lambda m: f"Relates to {m.group('ref')}", line)
 
 
 def _scan_sources(worktree: Worktree) -> list[str]:

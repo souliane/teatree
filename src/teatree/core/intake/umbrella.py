@@ -39,6 +39,7 @@ once the row has stated the answer itself.
 
 import re
 
+from teatree.core.intake.acceptance_criteria import ACCEPTANCE_HEADING
 from teatree.url_classify import find_forge_urls
 
 #: One child link is a cross-reference; two is a list. Below this the structural branch
@@ -53,17 +54,6 @@ _CHILD_REF_ITEM = re.compile(r"^[ \t]*[-*][ \t]*\[[ xX]\][ \t]*<?(?P<ref>\S+?)>?
 
 #: A bare same-repo issue reference, the shape teatree's own epics list children in.
 _BARE_NUMBER_REF = re.compile(r"^#\d+$")
-
-#: Any heading that promises a testable outcome. Its presence means the row states what
-#: "done" looks like, which is exactly what an umbrella row does not.
-#: Both spellings of "behaviour" are written out in full rather than shortened to one
-#: optional-letter alternation: that shape leaves a word fragment the codespell hook
-#: "corrects", silently rewriting the pattern so it stops matching one of them.
-_ACCEPTANCE_HEADING = re.compile(
-    r"^[ \t]{0,3}#{1,6}[ \t]*\**[ \t]*"
-    r"(?:acceptance|definition of done|success criteria|expected behaviour|expected behavior)\b",
-    re.MULTILINE | re.IGNORECASE,
-)
 
 
 #: A heading, or a line opened with bold/strong marks, with leading decoration (an emoji, a
@@ -156,6 +146,6 @@ def umbrella_reason(*, body: str, labels: "frozenset[str]", umbrella_labels: "fr
     if declaration:
         return f"declares itself never closed: {declaration[:_REASON_QUOTE_LIMIT]}"
     children = _child_ref_count(body)
-    if children >= _MIN_CHILD_REFS and not _ACCEPTANCE_HEADING.search(body):
+    if children >= _MIN_CHILD_REFS and not ACCEPTANCE_HEADING.search(body):
         return f"lists {children} child issues as a checklist and states no acceptance criteria"
     return ""

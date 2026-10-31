@@ -29,12 +29,17 @@ read OUT of the interactive ``/t3:checking`` path, where the agent must read the
 live list.
 """
 
-from typing import IO, NotRequired, TypedDict
+from typing import IO, TYPE_CHECKING, NotRequired, TypedDict
 
 from rich.console import Console
 from rich.table import Table
 
+from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS
+from teatree.core.modelkit.task_failure_taxonomy import is_environmental
 from teatree.core.ref_render import render_ref, short_title
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
 
 
 class TaskRow(TypedDict):
@@ -54,6 +59,23 @@ class TaskRow(TypedDict):
     failure_kind: str
     failure_reason: str
     failure_environmental: bool
+
+
+def task_row(task: "Task") -> TaskRow:
+    return TaskRow(
+        task_id=task.pk,
+        ticket_id=task.ticket_id,
+        ticket_title=task.ticket.short_description,
+        status=task.status,
+        phase=task.phase,
+        execution_reason=task.execution_reason,
+        claimed_by=task.claimed_by,
+        admission_score=getattr(task, ADMISSION_SCORE_ALIAS),
+        parent_task_id=task.parent_task_id,
+        failure_kind=task.failure_kind,
+        failure_reason=task.failure_reason,
+        failure_environmental=is_environmental(task.failure_kind),
+    )
 
 
 STATUS_STYLES: dict[str, str] = {

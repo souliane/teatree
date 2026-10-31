@@ -24,11 +24,9 @@ descended into, so a script hiding the write there is still caught.
 
 Wider than the hook on the verbs it can be: ``comment``/``note`` route to
 ``t3 <overlay> ticket comment --purpose``, and ``create`` to the facade, so a
-tracked source invoking either has somewhere to go. ``edit`` and ``close`` are spared for the same
-reason the hook spares them — the sweep's own sanctioned fold path IS
-``gh issue edit --body-file``, a label-only ``--add-label`` is not a body write at
-all, and the facade has no close path yet. Flagging them would report the
-sanctioned workflow as the violation.
+tracked source invoking either has somewhere to go. ``close`` is spared because the facade
+has no close path yet, and ``edit`` because a label-only ``--add-label`` is not a body write
+(the hook denies the body-flag spelling and names ``publish``).
 """
 
 import re

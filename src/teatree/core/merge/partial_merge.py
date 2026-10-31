@@ -21,7 +21,7 @@ from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.models import MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE
+from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import repo_namespaced_key
 
@@ -136,7 +136,7 @@ class MergedPrReading:
 
     @classmethod
     def parse(cls, body: str, ticket: Ticket) -> "MergedPrReading":
-        if _links_ticket(CLOSE_KEYWORD_RE, body, ticket):
+        if _links_ticket(CLOSING_REFERENCE_RE, body, ticket):
             return cls(PrLink.CLOSING)
         if not _links_ticket(_PARTIAL, body, ticket):
             return cls()

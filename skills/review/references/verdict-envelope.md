@@ -32,3 +32,5 @@ t3 <overlay> lifecycle record-review-context <ticket-id> --work-item <url> --doc
 # the reviewed-state gate — pass it every time
 t3 <overlay> review record --ticket-id <ticket-id> ...
 ```
+
+A verdict the reviewer returned as raw prose is recorded through the one hand path, `t3 <overlay> review hand-merge <pr-id> <slug> --envelope-file <reply> --order-text <order>`. It checks the envelope's keys, shape and enums, every NIT comment, the live head and the order text before it writes; a rejected NIT, an invalid enum, a moved head or a stale order (`STALE_ORDER`) leaves no `ReviewVerdict` row.

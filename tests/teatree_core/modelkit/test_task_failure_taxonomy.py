@@ -16,6 +16,7 @@ from teatree.agents.envelope_refusal import (
     REVIEW_CONTEXT_REFUSAL_PREFIX,
     is_recorder_refusal,
 )
+from teatree.agents.sweep_report_gate import SWEEP_UNPINNED_PREFIX
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
     CLI_TOO_OLD_PREFIX,
@@ -323,6 +324,16 @@ class TestResumeRefusalPrefix:
     def test_quoted_refusal_does_not_reclassify_a_different_failure(self, prefix: str, expected: str) -> None:
         reason = f"{prefix} detail quoted the resumed conversation ended without taking a turn"
         assert classify_failure(reason) == expected
+
+
+class TestTheRevertSweepRefusalIsRecoverable:
+    """The sweep refusal was ``unclassified`` (a HALT), so a coder that skipped the sweep paged a human."""
+
+    def test_the_gates_own_prefix_is_retried_not_halted(self) -> None:
+        reason = f"{SWEEP_UNPINNED_PREFIX} no revert-sweep receipt for src/teatree/core/merge/x.py"
+
+        assert classify_failure(reason) == FailureKind.LANDING_UNVERIFIED
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
 
 
 class TestThePlanGateRefusalIsNamed:

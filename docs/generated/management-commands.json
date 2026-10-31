@@ -879,6 +879,24 @@
       "subcommands": []
     },
     {
+      "help": "``t3 <overlay> publish`` group root.",
+      "name": "publish",
+      "subcommands": [
+        {
+          "help": "Post BODY_FILE as a comment on a PR or issue, scanned before and after the write",
+          "name": "comment"
+        },
+        {
+          "help": "Replace a PR body with the scanned, read-back text of BODY_FILE",
+          "name": "pr-body"
+        },
+        {
+          "help": "Replace an issue body with the scanned, read-back text of BODY_FILE",
+          "name": "issue-body"
+        }
+      ]
+    },
+    {
       "help": "``t3 teatree questions`` group root.",
       "name": "questions",
       "subcommands": [
@@ -1031,6 +1049,10 @@
         {
           "help": "Put the overlay's configured reviewers on this repo's open bot-authored MRs",
           "name": "apply-reviewer-policy"
+        },
+        {
+          "help": "Record the verdict a reviewer returned as prose, refusing before any write",
+          "name": "hand-merge"
         },
         {
           "help": "Record a PR-08 review-evidence artifact for a ticket",
@@ -1423,6 +1445,10 @@
         {
           "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
           "name": "plan-reaffirm"
+        },
+        {
+          "help": "Append one typed acceptance criterion to the ticket's recorded plan",
+          "name": "plan-amend"
         },
         {
           "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
