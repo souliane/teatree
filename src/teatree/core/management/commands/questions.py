@@ -42,6 +42,7 @@ from teatree.core.modelkit.owner_decision import (
     OWNER_ANSWER_ROUTE,
     OWNER_QUESTION_ROUTE,
     OWNER_RAISABLE_DECISIONS,
+    agent_card_marker,
     owner_decision,
 )
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
@@ -193,7 +194,7 @@ class Command(MachineOutputCommand):
             self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OWNER_RAISABLE_DECISIONS)}")
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
-            dedupe_marker = f"{kind}:{question_fingerprint(question)}"
+            dedupe_marker = agent_card_marker(kind, question_fingerprint(question))
         card = None
         if kind is not None:
             options = CardOption.parse_all(options_json)

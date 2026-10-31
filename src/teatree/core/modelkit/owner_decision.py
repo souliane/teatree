@@ -71,3 +71,12 @@ __all__ = [
     "owner_decision",
     "owner_kept_decision",
 ]
+
+
+def agent_card_marker(kind: OwnerDecision, fingerprint: str) -> str:
+    """The dedupe marker of a card an agent records through ``questions record``."""
+    return f"{kind}:{fingerprint}"
+
+
+def is_agent_card_marker(marker: str) -> bool:
+    return owner_decision(marker.partition(":")[0]) is not None
