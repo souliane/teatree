@@ -17,6 +17,7 @@ passes.
 import string
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.models.criterion_kind import render_criterion
 from teatree.core.models.mechanism_sketch import MechanismSketch, is_core_seam_chokepoint
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 
@@ -116,9 +117,28 @@ def declared_seam_paths(adequacy: object) -> tuple[str, ...]:
     return _declared_content(adequacy, "integration_seams")
 
 
+def _declared_criterion(item: object) -> str:
+    """A declared criterion as rubric text: a legacy string stays verbatim, ``{text, kind}`` renders typed."""
+    if isinstance(item, dict):
+        text = str(item.get("text") or "").strip()
+        return render_criterion(text, str(item.get("kind") or "")) if text else ""
+    return str(item).strip()
+
+
 def declared_acceptance_criteria(adequacy: object) -> tuple[str, ...]:
-    """The acceptance criteria the plan declares — the texts its ``core.Rubric`` is built from."""
-    return _declared_content(adequacy, ACCEPTANCE_CRITERIA_SECTION)
+    """The acceptance criteria the plan declares — the texts its ``core.Rubric`` is built from.
+
+    Each entry is a plain string (legacy) or ``{text, kind}`` with kind ``behaviour`` or ``process``;
+    an unknown kind raises ``ValueError``.
+    """
+    if not isinstance(adequacy, dict):
+        return ()
+    section = cast("Mapping[str, object]", adequacy).get(ACCEPTANCE_CRITERIA_SECTION)
+    if not isinstance(section, dict):
+        return ()
+    content = cast("Mapping[str, object]", section).get("content")
+    items = content if isinstance(content, list) else [content]
+    return tuple(text for item in items if item and (text := _declared_criterion(item)))
 
 
 def negated_section(reason: str) -> AdequacySection:

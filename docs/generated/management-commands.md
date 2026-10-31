@@ -681,6 +681,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
+| `plan-amend` | Append one typed acceptance criterion to the ticket's recorded plan |
 | `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
 | `merge-item-waive` | Request an owner button answer for one LLM merge item |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |

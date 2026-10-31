@@ -19,9 +19,15 @@ from typing import TYPE_CHECKING, TypedDict
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.intake.acceptance_criteria import render_criterion
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.plan_adequacy import declared_seam_paths, is_plan_bypass_shaped, is_valid_base_sha
+from teatree.core.models.plan_adequacy import (
+    declared_acceptance_criteria,
+    declared_seam_paths,
+    is_plan_bypass_shaped,
+    is_valid_base_sha,
+)
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import RubricError
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
@@ -174,6 +180,22 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
     return PlanReconcileResult(inspected=len(started), bypassed=bypassed, skipped=skipped), log
 
 
+def _latest_plan(ticket: Ticket) -> "PlanArtifact | None":
+    return PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+
+
+def _carry_forward(*, latest: "PlanArtifact", manifest: dict, base_sha: str, by: str, trail: str) -> "PlanArtifact":
+    """Append a NEW PlanArtifact carrying *latest*'s plan text under *manifest*, bound to *base_sha*."""
+    supersedes = (latest.base_sha or "<none>")[:12]
+    return PlanArtifact.record(
+        ticket=latest.ticket,
+        plan_text=f"[{trail}; supersedes base {supersedes}]\n\n{latest.plan_text}",
+        recorded_by=by,
+        base_sha=base_sha,
+        adequacy=manifest,
+    )
+
+
 class ReaffirmError(Exception):
     """A plan-reaffirm was refused; ``message`` is the surfaced reason."""
 
@@ -210,7 +232,7 @@ def reaffirm_plan(
         msg = f"--base-sha must be a full 40-char hex SHA (got {cleaned_new[:12]!r})"
         raise ReaffirmError(msg)
 
-    latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+    latest = _latest_plan(ticket)
     if latest is None:
         msg = f"ticket {ticket.pk} has no plan to reaffirm — record one with `ticket plan` first"
         raise ReaffirmError(msg)
@@ -233,18 +255,11 @@ def reaffirm_plan(
         raise ReaffirmError(msg)
 
     manifest = dict(fresh_adequacy) if fresh_adequacy else dict(latest.adequacy)
-    trail = f"[plan-reaffirm at {cleaned_new[:12]} by {by}; supersedes base {(latest.base_sha or '<none>')[:12]}"
+    trail = f"plan-reaffirm at {cleaned_new[:12]} by {by}"
     if dispositions:
         trail += "; dispositions: " + " | ".join(dispositions)
-    trail += f"]\n\n{latest.plan_text}"
     try:
-        return PlanArtifact.record(
-            ticket=ticket,
-            plan_text=trail,
-            recorded_by=by,
-            base_sha=cleaned_new,
-            adequacy=manifest,
-        )
+        return _carry_forward(latest=latest, manifest=manifest, base_sha=cleaned_new, by=by, trail=trail)
     except RubricError as exc:
         # The manifest IS adequate — every section speaks. What is refused is the rubric
         # its criteria would build, so pointing at the manifest sends the operator to the
@@ -271,3 +286,47 @@ def reaffirm_plan(
         )
         msg = f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc}{remedy}"
         raise ReaffirmError(msg) from exc
+
+
+class AmendError(Exception):
+    """A plan-amend was refused; ``message`` is the surfaced reason."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def amend_plan(*, ticket: Ticket, criterion: str, kind: str, by: str) -> "PlanArtifact | None":
+    """Append one typed acceptance criterion to the ticket's plan, or ``None`` when it is already declared.
+
+    The prior manifest is carried forward untouched, so every earlier criterion keeps its text and
+    its grade; the new plan is bound to the live origin/main head.
+    """
+    latest = _latest_plan(ticket)
+    if latest is None:
+        msg = f"ticket {ticket.pk} has no plan to amend — record one with `ticket plan` first"
+        raise AmendError(msg)
+    try:
+        rendered = render_criterion(criterion, kind)
+    except ValueError as exc:
+        raise AmendError(str(exc)) from exc
+    if rendered in declared_acceptance_criteria(latest.adequacy):
+        return None
+    repo = dispatch_worktree_path(ticket)
+    live_head = fetch_target_head(repo, _resolve_base_branch(repo)) if repo else ""
+    if not is_valid_base_sha(live_head):
+        msg = f"cannot amend ticket {ticket.pk}: its checkout does not resolve a live origin/main head"
+        raise AmendError(msg)
+    section = latest.adequacy.get("acceptance_criteria") or {}
+    declared = section.get("content") or []
+    carried = declared if isinstance(declared, list) else [declared]
+    manifest = {
+        **latest.adequacy,
+        "acceptance_criteria": {"content": [*carried, {"text": criterion.strip(), "kind": kind}]},
+    }
+    trail = f"plan-amend at {live_head[:12]} by {by}; added criterion: {rendered}"
+    try:
+        return _carry_forward(latest=latest, manifest=manifest, base_sha=live_head, by=by, trail=trail)
+    except ValueError as exc:
+        msg = f"cannot amend ticket {ticket.pk}: {exc}"
+        raise AmendError(msg) from exc

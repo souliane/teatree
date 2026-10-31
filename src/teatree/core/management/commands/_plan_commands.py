@@ -18,10 +18,12 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.management.commands._plan_gate_commands import (
+    AmendError,
     PlanAdvanceError,
     PlanReconcileResult,
     PlanResult,
     ReaffirmError,
+    amend_plan,
     reaffirm_plan,
     reconcile_inflight,
     record_artifact_and_advance,
@@ -283,6 +285,35 @@ class PlanCommands(TyperCommand):
         self.stdout.write(
             f"  plan reaffirmed for ticket {ticket.pk} (artifact {artifact.pk}) at base {artifact.base_sha[:12]}"
         )
+        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="plan-amend")
+    def plan_amend(
+        self,
+        ticket_id: int,
+        *,
+        add_criterion: Annotated[
+            str, typer.Option("--add-criterion", help="The acceptance criterion to append to the recorded plan.")
+        ],
+        kind: Annotated[str, typer.Option("--kind", help="behaviour or process.")],
+        by: Annotated[str, typer.Option(help="Who is amending (audit trail).")] = "operator",
+    ) -> PlanResult:
+        """Append one typed acceptance criterion to the ticket's recorded plan.
+
+        Earlier criteria keep their text and grade.
+
+        The plan is re-recorded at the live origin/main head; a repeat run adds nothing.
+        """
+        ticket = self._resolve_plan_ticket(ticket_id)
+        try:
+            artifact = amend_plan(ticket=ticket, criterion=add_criterion, kind=kind, by=by.strip() or "operator")
+        except AmendError as exc:
+            self.stderr.write(f"  plan-amend refused: {exc.message}")
+            raise SystemExit(1) from exc
+        if artifact is None:
+            self.stdout.write(f"  criterion already declared for ticket {ticket.pk}; nothing added")
+            return PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
+        self.stdout.write(f"  criterion added for ticket {ticket.pk} (artifact {artifact.pk})")
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
 
     @staticmethod

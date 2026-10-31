@@ -12925,6 +12925,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              PLAN_RECORDED.                                  │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
+│ plan-amend                   Append one typed acceptance criterion to the    │
+│                              recorded plan at the live origin/main head.     │
 │ e2e-bypass                   Record a single-use user bypass of the          │
 │                              mandatory-E2E gate (#1967).                     │
 │ integration-review-override  Record the audited escape hatch for the         │
@@ -13166,6 +13168,32 @@ Usage: t3 teatree ticket plan-reaffirm [OPTIONS] TICKET_ID
 │                                 omit to carry the prior (adequate) plan's    │
 │                                 manifest forward for a STALE-base rebind.    │
 │    --by                   TEXT  Who is reaffirming (audit trail).            │
+│                                 [default: operator]                          │
+│    --help                       Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket plan-amend`
+
+```
+Usage: t3 teatree ticket plan-amend [OPTIONS] TICKET_ID
+
+ Append one typed acceptance criterion to the ticket's recorded plan.
+
+ Earlier criteria keep their text and grade.
+
+ The plan is re-recorded at the live origin/main head; a repeat run adds
+ nothing.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --add-criterion        TEXT  The acceptance criterion to append to the    │
+│                                 recorded plan.                               │
+│                                 [required]                                   │
+│ *  --kind                 TEXT  behaviour or process. [required]             │
+│    --by                   TEXT  Who is amending (audit trail).               │
 │                                 [default: operator]                          │
 │    --help                       Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯

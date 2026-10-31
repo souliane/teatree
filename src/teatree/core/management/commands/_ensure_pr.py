@@ -39,6 +39,7 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.gates.pr_creation_refusal import pr_creation_refusal, seed_rules_rubric_row
 from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
+from teatree.core.intake.rubric_from_issue import seed_rubric_notice
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
@@ -395,6 +396,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         return EnsurePrResult(error=refusal)
 
     title, description, owning_ticket, overlay = _generated_pr_text(repo_path, branch_name)
+    description = seed_rubric_notice(host, owning_ticket, description)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git_remote.slug_from_remote(remote)
