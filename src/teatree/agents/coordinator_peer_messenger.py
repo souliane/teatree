@@ -5,6 +5,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from teatree.agents import live_mailbox
+from teatree.agents.coordinator_escalation import is_answering_peer
 from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.answering.coordinator_actions import PeerReceipt
@@ -17,7 +18,11 @@ _NO_TICKET_ROOM = "0"
 
 
 def _candidates(peers: list[PeerIdentity], ticket_pk: int) -> list[PeerIdentity]:
-    return [peer for peer in peers if peer.get("ticket") == str(ticket_pk) and peer.get("can_receive", True)]
+    return [
+        peer
+        for peer in peers
+        if peer.get("ticket") == str(ticket_pk) and peer.get("can_receive", True) and not is_answering_peer(peer)
+    ]
 
 
 async def _deliver(client: MailboxClient, ticket_pk: int, text: str, key: str) -> PeerReceipt:

@@ -67,12 +67,16 @@ def _framed(row: DeferredQuestion, task: Task) -> str:
     )
 
 
+def is_answering_peer(peer: PeerIdentity) -> bool:
+    return normalize_phase(peer.get("phase", "")) in ANSWERING_PHASES
+
+
 def _live_coordinator(peers: list[PeerIdentity], ticket_id: int, exclude: str) -> PeerIdentity | None:
     for peer in peers:
         if (
             peer["address"] != exclude
             and peer.get("ticket") == str(ticket_id)
-            and normalize_phase(peer.get("phase", "")) in ANSWERING_PHASES
+            and is_answering_peer(peer)
             and peer.get("can_receive", True)
         ):
             return peer

@@ -12,6 +12,7 @@ from django.test import TestCase
 
 from teatree.agents import live_mailbox
 from teatree.agents.coordinator_peer_messenger import send_to_ticket_peer
+from teatree.agents.live_control import LiveTask
 from teatree.agents.live_delivery import MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.models import Ticket
@@ -25,6 +26,10 @@ def _broker() -> Generator[live_mailbox.LiveMailboxBroker]:
         patch.object(live_mailbox, "shared_broker", return_value=broker),
     ):
         yield broker
+
+
+def _task(ticket: Ticket, phase: str) -> LiveTask:
+    return LiveTask(pk=7, ticket=ticket.pk, phase=phase, harness="claude_sdk", model="m")
 
 
 def _read(peer: MailboxIdentity) -> list[str]:
@@ -96,6 +101,35 @@ class TestTheMessageGoesToExactlyOneLiveAgentOnTheTicket(TestCase):
 
         assert (receipt.accepted, receipt.detail) == (False, "more than one live agent is working on that ticket")
         assert inboxes == [[], []]
+
+    def test_an_answering_task_is_never_the_recipient_so_the_asking_task_is_the_one_addressed(self) -> None:
+        with _broker() as broker:
+            coordinator = broker.register(
+                room=str(self.ticket.pk),
+                harness="claude_sdk",
+                label="answering task 9",
+                task=_task(self.ticket, "answering"),
+            )
+            asker = broker.register(room=str(self.ticket.pk), harness="claude_sdk", label="planning task 7")
+
+            accepted, detail, received = self._send_while_reading(asker, "Follow order B.")
+            coordinator_inbox = asyncio.run(MailboxClient(coordinator.socket_path, coordinator.token).inbox())
+
+        assert (accepted, detail, received) == (True, "", ["Follow order B."])
+        assert coordinator_inbox["messages"] == []
+
+    def test_an_answering_task_alone_leaves_no_agent_to_message(self) -> None:
+        with _broker() as broker:
+            broker.register(
+                room=str(self.ticket.pk),
+                harness="claude_sdk",
+                label="answering task 9",
+                task=_task(self.ticket, "answering"),
+            )
+
+            receipt = send_to_ticket_peer(self.ticket, "Follow order B.", "k1")
+
+        assert (receipt.accepted, receipt.detail) == (False, "no live agent is working on that ticket")
 
     def test_the_sender_identity_is_gone_once_the_message_is_handed_over(self) -> None:
         with _broker() as broker:
