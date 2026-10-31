@@ -1,4 +1,25 @@
+from importlib import import_module
+from typing import TYPE_CHECKING
+
 from django.apps import AppConfig
+
+if TYPE_CHECKING:
+    from teatree.core.views._webhook_persistence import IngestDispatch, IngestionRecord
+
+
+def _registry_dispatch() -> "IngestDispatch":
+    return import_module("teatree.loops.incoming_event_wake").RegistryIngestDispatch()
+
+
+class DeferredIngestDispatch:
+    # ready() runs in every django.setup(); the registry pulls in the loop package, so resolve it on first ingest.
+    @staticmethod
+    def handles(record: "IngestionRecord") -> bool:
+        return _registry_dispatch().handles(record)
+
+    @staticmethod
+    def wake(event_pk: int) -> None:
+        _registry_dispatch().wake(event_pk)
 
 
 class LoopsConfig(AppConfig):
@@ -9,6 +30,5 @@ class LoopsConfig(AppConfig):
     @staticmethod
     def ready() -> None:
         from teatree.core.views._webhook_persistence import set_ingest_dispatch  # noqa: PLC0415 — lazy import
-        from teatree.loops.incoming_event_wake import RegistryIngestDispatch  # noqa: PLC0415 — lazy import
 
-        set_ingest_dispatch(RegistryIngestDispatch())
+        set_ingest_dispatch(DeferredIngestDispatch())

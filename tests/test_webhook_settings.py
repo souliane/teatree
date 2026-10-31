@@ -65,4 +65,4 @@ def test_listener_process_wires_the_ingest_dispatch_so_a_handled_event_wakes() -
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "RegistryIngestDispatch"
+    assert result.stdout.strip() == "DeferredIngestDispatch"
