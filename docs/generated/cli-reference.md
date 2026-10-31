@@ -3569,6 +3569,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ review-evidence                                                              │
 │ rule-clauses         Refuse a RULES.md diff that drops, rewords or moves a   │
 │                      clause no ``Rule-clause-removed:`` trailer names.       │
+│ revert-sweep         Revert each hunk of in-scope code and record the hunks  │
+│                      no test pins.                                           │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -4201,6 +4203,23 @@ Usage: t3 tool rule-clauses [OPTIONS]
 │                     [default: origin/main]                                   │
 │ --head        TEXT  Ref carrying the edited rules. [default: HEAD]           │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool revert-sweep`
+
+```
+Usage: t3 tool revert-sweep [OPTIONS]
+
+ Revert each hunk of in-scope code and record the hunks no test pins.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha          TEXT  Full committed head SHA to sweep. [required]  │
+│    --base                TEXT  Target branch ref for the changed set.        │
+│                                [default: origin/main]                        │
+│    --test-command        TEXT  Pytest command to run per hunk (default: repo │
+│                                runner).                                      │
+│    --help                      Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
