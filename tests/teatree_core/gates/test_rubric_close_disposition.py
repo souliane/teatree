@@ -7,9 +7,10 @@ is stubbed; the rubric, the waiver and the ticket row are real.
 
 from django.test import TestCase
 
+from teatree.core.gates.rubric_gate import more_prs_coming_for, record_more_prs_coming
 from teatree.core.models import Rubric, Ticket
 from teatree.core.models.rubric_waiver import waive_criterion
-from teatree.core.runners.close_disposition import more_prs_coming_for, record_more_prs_coming, should_close_ticket
+from teatree.core.runners.ship import should_close_ticket
 from tests._issue_read import issue_read
 from tests.factories import waive_rubric
 

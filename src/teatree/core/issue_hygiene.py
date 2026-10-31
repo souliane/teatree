@@ -52,8 +52,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from teatree.core.backend_protocols import CodeHostBackend, IssueCloseReason, IssueResolutionSpec
-from teatree.core.issue_writes.closing import CloseOutcome, IssueClose, completion_refusal
+from teatree.core.backend_protocols import CodeHostBackend, IssueClose, IssueCloseReason, IssueResolutionSpec
 from teatree.core.issue_writes.issue_candidate_selection import OpenCandidates, closest_open_candidates, open_candidates
 from teatree.core.issue_writes.issue_candidate_selection import description_of as _description_of
 from teatree.core.issue_writes.issue_candidate_selection import issue_url_of as _issue_url_of
@@ -274,6 +273,15 @@ def remove_description_section(*, host: CodeHostBackend, issue_url: str, removal
     )
 
 
+@dataclass(frozen=True)
+class CloseOutcome:
+    """What a close attempt did."""
+
+    kind: Literal["closed", "external_refused"]
+    issue_url: str
+    digest: str = ""
+
+
 def close_with_rationale(
     *,
     host: CodeHostBackend,
@@ -300,6 +308,8 @@ def close_with_rationale(
     written unless a delivered ticket or a merged closing pull request covers the issue, and
     a forge that records another reason than the one asked for is reported, not trusted.
     """
+    from teatree.core.merge.partial_merge import completion_refusal  # noqa: PLC0415 — deferred: off the tick import
+
     reason = close.reason
     if reason is IssueCloseReason.COMPLETED and (refusal := completion_refusal(host, issue_url)):
         raise IssueWriteConflictError(refusal)

@@ -108,6 +108,15 @@ class IssueCloseReason(StrEnum):
     NOT_PLANNED = "not_planned"
 
 
+@dataclass(frozen=True)
+class IssueClose:
+    """What a close says and why: the rationale for the description, the forge reason, and the audit label."""
+
+    rationale: str
+    reason: IssueCloseReason
+    action: str = "issue_close_rationale"
+
+
 class IssueOpenState(StrEnum):
     """Whether the forge reports an ISSUE as open or closed, per its own payload.
 

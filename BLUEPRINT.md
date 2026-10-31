@@ -1008,7 +1008,7 @@ post-write result.
   `not_planned`, required on `CodeHostBackend.close_issue` and the `*_issue_close` MCP tools). A
   `completed` close claims the work was done, so it is refused before anything is written unless a
   DELIVERED author ticket or a merged pull request with a closing keyword covers the issue
-  (`core/issue_writes/closing.py`), and a forge that records another reason than the one asked for
+  (`core/merge/partial_merge.py`), and a forge that records another reason than the one asked for
   is reported. The dead-issue closer (`loop.mechanical.close_dead_issue`) files
   through it and left `chokepoints.yaml`'s allowlist; two consequences are intended and
   pinned — a ticket someone ELSE filed is refused rather than closed (Rule 5), and the

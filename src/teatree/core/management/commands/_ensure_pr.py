@@ -39,6 +39,7 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.gates.pr_creation_refusal import pr_creation_refusal, seed_rules_rubric_row
 from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
+from teatree.core.gates.rubric_gate import record_more_prs_coming
 from teatree.core.intake.rubric_from_issue import seed_rubric_notice
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -46,8 +47,12 @@ from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.models.pending_pull_request import settles_obligation
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
-from teatree.core.runners.close_disposition import record_more_prs_coming, should_close_ticket
-from teatree.core.runners.ship import overlay_pr_labels, pr_reviewers_for_remote, sanitize_close_keywords
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    pr_reviewers_for_remote,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
 from teatree.core.worktree.target_branch import resolve_pr_target_branch

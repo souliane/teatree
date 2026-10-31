@@ -38,6 +38,14 @@ evidence, PR rows and owner aliases, without one. The merge block raises
 ``MergePreconditionError``; the delivery block raises :class:`RubricNotVerifiedError`,
 an ``InvalidTransitionError`` so the loop's outer atomic rolls the advance back and the
 ticket stays RETRO_RECORDED — merged on the forge, not yet *done*.
+
+The same reading of the issue decides whether a pull request keeps its closing keyword: one that covers
+every acceptance item keeps ``Closes #N``; one that leaves an item without a rubric criterion or owner
+waiver says ``Relates to #N``, and so does one on an umbrella issue, one whose issue cannot be read and
+one the ticket declares partial by hand. :func:`record_more_prs_coming` writes the answer to
+``Ticket.extra['more_prs_coming']``, where the ship, the preview and the orphan-branch path read it;
+``more_prs_coming_derived`` marks a flag the derivation raised, so it drops once the rubric covers the
+issue while a hand-set one stays.
 """
 
 import logging
@@ -51,6 +59,7 @@ from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.plan_adequacy import is_plan_bypass_shaped
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import Rubric
+from teatree.core.models.types import TicketExtra
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -215,6 +224,41 @@ def check_rubric_verified(ticket: "Ticket") -> None:
             return
     msg = f"Refusing to mark ticket {ticket.pk} done — {reason}. " + _REMEDY.format(pk=ticket.pk)
     raise RubricNotVerifiedError(msg)
+
+
+def _declared_by_hand(ticket: "Ticket") -> bool:
+    extra = ticket.extra or {}
+    return bool(extra.get("more_prs_coming")) and not extra.get("more_prs_coming_derived")
+
+
+def _derived_from_issue(ticket: "Ticket") -> bool:
+    if not holds_on_issue(ticket):
+        return False
+    try:
+        issue = read_ticket_issue(ticket)
+    except Exception:
+        logger.warning(
+            "close disposition: could not read %s; assuming more pull requests are coming",
+            ticket.issue_url,
+            exc_info=True,
+        )
+        return True
+    if issue.umbrella(ticket):
+        return True
+    return not plan_is_bypassed(ticket) and bool(uncovered(issue.items_for(ticket), stated_texts(ticket)))
+
+
+def more_prs_coming_for(ticket: "Ticket") -> bool:
+    return _declared_by_hand(ticket) or _derived_from_issue(ticket)
+
+
+def record_more_prs_coming(ticket: "Ticket") -> TicketExtra:
+    """Persist the effective flag and return the ticket's extra as the ship reads it."""
+    declared = _declared_by_hand(ticket)
+    flag = declared or _derived_from_issue(ticket)
+    raised = {"more_prs_coming": flag, "more_prs_coming_derived": flag and not declared}
+    ticket.merge_extra(set_keys=TicketExtra(**raised))
+    return TicketExtra(**{**(ticket.extra or {}), **raised})
 
 
 register_gate("rubric_verified", check_rubric_verified)

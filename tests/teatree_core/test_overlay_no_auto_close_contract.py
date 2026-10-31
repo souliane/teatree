@@ -44,8 +44,7 @@ from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
 from teatree.core.overlay import OverlayConfig
-from teatree.core.runners.close_disposition import should_close_ticket
-from teatree.core.runners.ship import PrSpecContext, ShipExecutor, sanitize_close_keywords
+from teatree.core.runners.ship import PrSpecContext, ShipExecutor, sanitize_close_keywords, should_close_ticket
 from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from tests._issue_read import issue_read
 from tests.teatree_core.management_commands._overlays import FullOverlay

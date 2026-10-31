@@ -10,10 +10,11 @@
 [intra_core]
 "src/teatree/core/notify_targets.py" = 4
 "src/teatree/core/_checking_gather.py" = 2
-# 1: the dedupe-audit facade defers `from teatree.core.models import
+# 2: the dedupe-audit facade defers `from teatree.core.models import
 # TicketSweepRun` (#162) — an ORM import that must resolve after the app
-# registry is ready, so it stays call-time.
-"src/teatree/core/issue_hygiene.py" = 1
+# registry is ready, so it stays call-time; the close facade defers
+# `teatree.core.merge.partial_merge`, which the cold tick imports through here.
+"src/teatree/core/issue_hygiene.py" = 2
 # 3: `comment` (#162) lazily imports `issue_hygiene`, `overlay_loader`, and
 # `self_forge_identities` to keep the management-command import light — the
 # established lazy-command-import convention this file's siblings use.

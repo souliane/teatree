@@ -37,7 +37,7 @@ When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry 
 
 ### 0. Ticket Reference
 
-Use the active overlay's `validate_pr(title, description)` policy for title and ticket-reference requirements (surfaced as `t3 tool validate-mr`). When `mr_close_ticket = True`, the ship path keeps `Closes/Fixes #<number>` only while the rubric covers every acceptance item, else `Relates to #N` (`core/runners/close_disposition.py`). Resolve a missing reference with the policy in § 0a below.
+Use the active overlay's `validate_pr(title, description)` policy for title and ticket-reference requirements (surfaced as `t3 tool validate-mr`). When `mr_close_ticket = True`, the ship path keeps `Closes/Fixes #<number>` only while the rubric covers every acceptance item, else `Relates to #N` (`core/gates/rubric_gate.py`). Resolve a missing reference with the policy in § 0a below.
 
 ### 0a. Missing Issue Reference Policy (Non-Negotiable)
 

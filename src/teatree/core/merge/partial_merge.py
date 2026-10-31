@@ -4,7 +4,8 @@ The keystone post hook, the board's rules A and B and the clear backfill all ask
 :func:`blocks_settlement` whether the merge may move the ticket to ``merged``. It holds the
 ticket out of ``merged`` and queues the planning for what the merge left open when the body
 declares a remainder or does not echo an acceptance item of the issue as delivered, and it
-refuses to settle while the body or the issue cannot be read.
+refuses to settle while the body or the issue cannot be read. :func:`completion_refusal` asks the same
+body whether a ``completed`` issue close has a merged closing pull request behind it.
 """
 
 import logging
@@ -32,10 +33,12 @@ from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
 from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from teatree.utils.pr_ref import PrRef
-from teatree.utils.url_slug import repo_namespaced_key
+from teatree.utils.url_slug import pr_ref_from_url, repo_namespaced_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from teatree.core.backend_protocols import CodeHostBackend
 
 
 logger = logging.getLogger(__name__)
@@ -310,3 +313,31 @@ def blocks_settlement(ticket: Ticket, reading: MergedPrReading, *, merged_pr: st
     if dry_run:
         return preview_remainder_hold(ticket, reading, settled=False) is not None
     return hold_for_remainder(ticket, reading, merged_pr=merged_pr) is not None
+
+
+def _merged_pull_request_closes(host: "CodeHostBackend", ticket: Ticket) -> bool:
+    for row in PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED):
+        ref = pr_ref_from_url(row.url)
+        if ref is None:
+            continue
+        try:
+            message = host.fetch_pr_message(slug=ref.slug, pr_id=ref.pr_id)
+        except Exception:
+            logger.warning("partial merge: could not read the body of %s", row.url, exc_info=True)
+            continue
+        if message is not None and MergedPrReading.parse(message.body, ticket).link is PrLink.CLOSING:
+            return True
+    return False
+
+
+def completion_refusal(host: "CodeHostBackend", issue_url: str) -> str:
+    """Why *issue_url* may not be closed as completed, or ``""`` when a delivery covers it."""
+    tickets = Ticket.objects.filter(issue_url=issue_url, role=Ticket.Role.AUTHOR)
+    if tickets.filter(state=Ticket.State.DELIVERED).exists() or any(
+        _merged_pull_request_closes(host, ticket) for ticket in tickets.filter(state__in=Ticket.merged_states())
+    ):
+        return ""
+    return (
+        f"{issue_url} has no delivered ticket and no merged pull request that closes it, so it cannot be closed as "
+        "completed; close it as not_planned, or deliver the work first"
+    )
