@@ -18,6 +18,7 @@ from teatree.core.merge.head_overlap import (
     read_open_heads,
 )
 from teatree.core.models import Finding, PullRequest, ReviewVerdict, Ticket
+from teatree.core.worktree.branch_currency import predict_merge_conflicts
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.merge.overlap_helpers import (
     NUMBERS,
@@ -215,6 +216,14 @@ class TestOverlapRefusal(TestCase):
     def test_a_pr_overlapping_nothing_merges(self) -> None:
         repo, shas = self.repo, self.shas
         assert overlap_refusal(ref=self._ref(13), ticket=None, host=forge_for(shas), repo_dir=str(repo)) is None
+
+    def test_the_refusal_compares_only_the_pairs_naming_the_pr_in_git(self) -> None:
+        repo, shas = self.repo, self.shas
+
+        with patch("teatree.core.merge.head_overlap.predict_merge_conflicts", wraps=predict_merge_conflicts) as predict:
+            overlap_refusal(ref=self._ref(12), ticket=None, host=forge_for(shas), repo_dir=str(repo))
+
+        assert [call.args[1:] for call in predict.call_args_list] == [(shas["b"], shas["a"]), (shas["c"], shas["b"])]
 
     def test_an_unreadable_head_list_refuses(self) -> None:
         repo = self.repo
