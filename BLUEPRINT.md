@@ -27,6 +27,14 @@ A personal code factory for multi-repo projects. It turns a ticket URL into a me
 
 **Operating mode.** Attended `t3 agent` sessions run in Claude Code or Codex, selected by project configuration and sharing the same lifecycle-skill contract and MCP server. The `t3 worker` runs every automated loop as worker task chains, with or without a session open: it sweeps PRs, auto-reviews PRs assigned to the user, intakes assigned issues, watches messaging mentions/DMs, drains the task queue headlessly, and renders a multi-line statusline that is the **always-on UI surface**. An on-demand HTML admin dashboard (`teatree.dash`) is served by `t3 admin` on a local gunicorn.
 
+**Three role words.** Interactive session, orchestrator and coordinator name three different things. They share duties and are not synonyms: a sentence that uses one for another is wrong, whatever duty it describes.
+
+**Interactive session.** The attended Claude Code or Codex seat a person works in, driving with the interactive skill. The duties it shares with the coordinator are written once in `skills/coordinating`; `skills/interactive` holds only what a seat with a person at the keyboard adds.
+
+**Orchestrator.** The deterministic control plane: the FSM transitions, task queue, loop scanners, gates and processors that route work and run what an agent proposes. It is code, never an agent. An agent proposes to it; it checks the proposal against the owner's four limits and runs it.
+
+**Coordinator.** TeaTree's own deciding agent role. The owner writes to it through Slack; it acts on its own on events and talks to other agents over the mailbox. It reads untrusted text, holds no write tool, and proposes actions that the orchestrator checks and runs. Slack is one entry point to it, not part of its identity.
+
 **Code-host neutrality.** Pull requests are the canonical concept. Both **GitHub** and **GitLab** are first-class in core; GitLab MRs map onto the PR abstraction at the Protocol layer.
 
 **Messaging-backend pluggability.** Mentions, DMs, and outgoing posts go through a `MessagingBackend` Protocol declared per overlay. Slack (Socket Mode bot) is the first implementation. A `Noop` default lets overlays opt out.
