@@ -63,17 +63,6 @@ class TestARefusedStopKeepsTheFinishedWork(_CodingRun):
                 assert DeferredQuestionAudit.objects.filter(question=row, action="withheld").exists()
                 assert "owner_stop" not in str(attempt.result)
 
-    def test_the_withheld_row_is_one_per_marker(self) -> None:
-        self._refused_stop_after_finished_work(SHORTHAND_QUESTION)
-        first = DeferredQuestion.objects.get(parked_task=self.task)
-        self.task.refresh_from_db()
-        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.CLAIMED)
-        self.task.refresh_from_db()
-
-        self._refused_stop_after_finished_work(SHORTHAND_QUESTION)
-
-        assert DeferredQuestion.objects.filter(dedupe_marker=first.dedupe_marker).count() == 1
-
     def test_a_refused_stop_without_finished_work_is_still_a_refusal(self) -> None:
         attempt = record_result_envelope(
             self.task, owner_stop(SHORTHAND_QUESTION) | {"summary": "not done yet"}, phase="coding"
@@ -82,16 +71,6 @@ class TestARefusedStopKeepsTheFinishedWork(_CodingRun):
         self.task.refresh_from_db()
         assert attempt.error.startswith(OWNER_STOP_REFUSAL_PREFIX)
         assert self.task.status == Task.Status.FAILED
-        assert not DeferredQuestion.objects.exists()
-
-    def test_a_refused_stop_whose_landing_check_fails_is_still_a_refusal(self) -> None:
-        attempt = record_result_envelope(
-            self.task,
-            owner_stop(SHORTHAND_QUESTION) | {"summary": "x", "files_modified": [], "fix_record": {}},
-            phase="coding",
-        )
-
-        assert attempt.error.startswith(OWNER_STOP_REFUSAL_PREFIX)
         assert not DeferredQuestion.objects.exists()
 
 

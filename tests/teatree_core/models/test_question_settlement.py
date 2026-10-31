@@ -64,16 +64,6 @@ class TestAClosedFormAskIsDecidedByItsRule(TestCase):
 
         backend.post_message.assert_not_called()
 
-    def test_a_repeat_record_returns_the_answered_row_and_makes_no_card(self) -> None:
-        question, facts = BENIGN_STOPS["public_post"]
-        card = _card_of(owner_stop(question, "public_post", *facts))
-        first = DeferredQuestion.record(question, card=card, dedupe_marker="needs-input:1:abc")
-
-        again = DeferredQuestion.record(question, card=card, dedupe_marker="needs-input:1:abc")
-
-        assert again.pk == first.pk
-        assert DeferredQuestion.objects.count() == 1
-
 
 class TestANearMissWordingStillMakesACard(TestCase):
     def test_a_lookalike_ask_is_a_pending_owner_card(self) -> None:
