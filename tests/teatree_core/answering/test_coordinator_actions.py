@@ -708,27 +708,44 @@ class TestAReplyNeverClosesARequestAboutAnOwnerLimit(TestCase):
         request = {"kind": "message_peer", "ticket": _WORK_URL, "text": f"Go ahead with {kind}."}
         return run_coordinator_actions(self.coordinator, [request], messenger=self.messenger)
 
-    def test_a_reply_to_a_request_about_each_kept_limit_is_refused_and_the_deadline_still_raises_the_card(self) -> None:
-        for kind in sorted(OWNER_KEPT_DECISIONS):
-            with self.subTest(kind=kind):
-                row = record_request(self.asker, kind=kind, message=f"May I go ahead with {kind}")
-                cards_before = DeferredQuestion.owner_pending().count()
+    def _assert_refused_and_left_for_the_owner(self, kind: OwnerDecision) -> None:
+        row = record_request(self.asker, kind=kind, message=f"May I go ahead with {kind}")
+        cards_before = DeferredQuestion.owner_pending().count()
 
-                receipts = self._reply(kind)
+        receipts = self._reply(kind)
 
-                refusal = "a request about a decision only the owner can make stays open for the owner"
-                assert receipts == [f"Could not run message_peer: {refusal}."]
-                assert self.messenger.calls == []
-                assert getattr(open_request(self.work.pk), "pk", None) == row.pk
-                DeferredQuestion.objects.filter(pk=row.pk).update(
-                    created_at=timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)
-                )
+        refusal = "a request about a decision only the owner can make stays open for the owner"
+        assert receipts == [f"Could not run message_peer: {refusal}."]
+        assert self.messenger.calls == []
+        assert getattr(open_request(self.work.pk), "pk", None) == row.pk
+        late = timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)
+        DeferredQuestion.objects.filter(pk=row.pk).update(created_at=late)
 
-                assert settle_expired_escalations() == 1
+        assert settle_expired_escalations() == 1
 
-                assert DeferredQuestion.owner_pending().count() == cards_before + 1
-                self.asker.refresh_from_db()
-                assert self.asker.status == Task.Status.CLAIMED
+        assert DeferredQuestion.owner_pending().count() == cards_before + 1
+        self.asker.refresh_from_db()
+        assert self.asker.status == Task.Status.CLAIMED
+
+    def test_a_reply_about_credentials_is_refused_and_the_deadline_raises_the_card(self) -> None:
+        self._assert_refused_and_left_for_the_owner(OwnerDecision.CREDENTIALS)
+
+    def test_a_reply_about_money_or_plan_is_refused_and_the_deadline_raises_the_card(self) -> None:
+        self._assert_refused_and_left_for_the_owner(OwnerDecision.MONEY_OR_PLAN)
+
+    def test_a_reply_about_a_public_post_is_refused_and_the_deadline_raises_the_card(self) -> None:
+        self._assert_refused_and_left_for_the_owner(OwnerDecision.PUBLIC_POST)
+
+    def test_a_reply_about_an_irreversible_step_is_refused_and_the_deadline_raises_the_card(self) -> None:
+        self._assert_refused_and_left_for_the_owner(OwnerDecision.IRREVERSIBLE)
+
+    def test_the_four_tests_above_name_exactly_the_kept_limits(self) -> None:
+        assert {
+            OwnerDecision.CREDENTIALS,
+            OwnerDecision.MONEY_OR_PLAN,
+            OwnerDecision.PUBLIC_POST,
+            OwnerDecision.IRREVERSIBLE,
+        } == OWNER_KEPT_DECISIONS
 
     def test_a_request_about_any_other_kind_is_still_answered_and_closed(self) -> None:
         for kind in (INTERNAL_KIND, OwnerDecision.ARCHITECTURE.value):
