@@ -84,7 +84,7 @@ def _record_decision(question: str, card: QuestionCard, chosen: CardOption, sess
 
 
 def settle_before_recording(
-    question: str, card: QuestionCard, *, dedupe_marker: str, session: Session | None
+    question: str, card: QuestionCard, dedupe_marker: str, session: Session | None
 ) -> str | None:
     """What the asking agent is told when the code settled *card* without raising it; ``None`` to record it."""
     if card.problems(question):

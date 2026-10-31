@@ -20,6 +20,7 @@ from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.answering.escalation import ESCALATION_DEADLINE, MARKER_PREFIX
 from teatree.core.answering.record_settling import LIMIT_CHOICES
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
+from teatree.core.modelkit.question_card import OptionDict
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_text import question_fingerprint
@@ -150,7 +151,7 @@ class TestAnOwnerAnswerFromTheLastDayIsReused(TestCase):
 
 
 class TestOptionsThatDifferOnlyByALimit(TestCase):
-    def _table_options(self, kind: OwnerDecision, *, cross_first: bool = False) -> list[dict[str, object]]:
+    def _table_options(self, kind: OwnerDecision, *, cross_first: bool = False) -> list[OptionDict]:
         choice = LIMIT_CHOICES[kind]
         first, second = (choice.crosses, choice.crosses_none) if cross_first else (choice.crosses_none, choice.crosses)
         return [dataclasses.replace(first, recommended=True).as_dict(), second.as_dict()]
@@ -343,7 +344,7 @@ _NEED = "Which of the two designs does the product want?"
 
 class TestAnOutOfScopeNeedGoesToTheCoordinator(TestCase):
     def _record_with(self, mailbox: MailboxClient | None) -> tuple[int, str, str]:
-        with patch("teatree.core.management.commands.questions.MailboxClient.from_env", return_value=mailbox):
+        with patch("teatree.agents.live_mailbox_client.MailboxClient.from_env", return_value=mailbox):
             return _record(_NEED, "--decision", OwnerDecision.PRODUCT_SCOPE.value)
 
     def test_a_live_coordinator_is_messaged_over_the_mailbox_and_no_card_is_raised(self) -> None:
