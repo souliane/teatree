@@ -136,6 +136,21 @@ class OperatorGrantTestCase(TestCase):
         with pytest.raises(PermissionError, match="no consent"):
             grant.token_for("approve", "org/repo!7", "gitlab:alice", key=self.key)
 
+    def test_github_grant_with_a_blank_scope_authorizes_approve_only_with_a_matching_consent(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="github", handle="alice", external_id="1")
+        grant = OperatorGrant.objects.store(
+            user=self.alice,
+            forge="github",
+            tokens=OperatorGrantTokens("access-alice", "refresh-alice", self.expires_at, scope=""),
+            key=self.key,
+        )
+
+        with pytest.raises(PermissionError, match="no consent"):
+            grant.token_for("approve", "org/repo!7", "github:alice", key=self.key)
+
+        OnBehalfApproval.record("org/repo!7", "approve", "github:alice")
+        assert grant.token_for("approve", "org/repo!7", "github:alice", key=self.key) == "access-alice"
+
     def test_token_for_serves_only_approve_and_unapprove(self) -> None:
         grant = self._gitlab_grant_with_consent("post_comment")
 

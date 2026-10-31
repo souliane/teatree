@@ -133,14 +133,17 @@ class OperatorOAuthTestCase(TestCase):
         get.return_value = httpx.Response(
             200, request=httpx.Request("GET", "https://api.github.com/user"), json={"id": 123, "login": "Alice"}
         )
+        users_before = get_user_model().objects.count()
+        identities_before = OperatorIdentity.objects.count()
         state = parse_qs(urlsplit(self.client.get("/login/oauth/github/start/").headers["Location"]).query)["state"][0]
 
         response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
 
         assert response.status_code == 403
         assert b"administrator" in response.content
-        assert not get_user_model().objects.filter(username="github:123").exists()
-        assert not OperatorIdentity.objects.filter(platform="github", external_id="123").exists()
+        assert get_user_model().objects.count() == users_before
+        assert not get_user_model().objects.filter(is_superuser=True).exists()
+        assert OperatorIdentity.objects.count() == identities_before
         assert not OperatorGrant.objects.exists()
         secret.assert_called_once_with("github/oauth-app")
         source.assert_not_called()
@@ -238,7 +241,7 @@ class OperatorOAuthTestCase(TestCase):
         with self._forge_account({"id": 123, "login": "alice"}) as post:
             start = self.client.get("/login/oauth/github/approvals/")
             query = parse_qs(urlsplit(start.headers["Location"]).query)
-            assert query["scope"] == ["repo read:user offline_access"]
+            assert query["scope"] == ["read:user"]
             response = self.client.get(
                 "/login/oauth/github/callback/", {"code": "approval-code", "state": query["state"][0]}
             )
@@ -297,6 +300,7 @@ class OperatorOAuthTestCase(TestCase):
 
         assert response.status_code == 403
         assert b"refresh grant" in response.content
+        assert b"GitHub App with expiring user tokens" in response.content
         assert not OperatorGrant.objects.exists()
 
     def test_refresh_grant_without_access_expiry_stores_nothing(self) -> None:
