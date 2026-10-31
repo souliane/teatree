@@ -220,6 +220,10 @@ class Directive(models.Model):
         return self.state in self.TERMINAL_STATES
 
     @property
+    def card_subject(self) -> str:
+        return f"directive:{self.pk}"
+
+    @property
     def sketch(self) -> "MechanismSketch | None":
         """The typed :class:`MechanismSketch`, or ``None`` before interpretation."""
         if not isinstance(self.mechanism_sketch, dict):

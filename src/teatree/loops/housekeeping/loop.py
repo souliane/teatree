@@ -35,6 +35,9 @@ def _build_jobs(
     from teatree.loop.scanners.dead_worktree_rows import DeadWorktreeRowScanner  # noqa: PLC0415 — tick-time import
     from teatree.loop.scanners.inert_gate_questions import InertGateQuestionScanner  # noqa: PLC0415 — tick-time import
     from teatree.loop.scanners.override_lift import OverrideLiftScanner  # noqa: PLC0415 — tick-time import
+    from teatree.loop.scanners.parked_ticket_question import (  # noqa: PLC0415 — tick-time import
+        ParkedTicketQuestionScanner,
+    )
     from teatree.loop.scanners.stale_control_db_questions import (  # noqa: PLC0415 — tick-time import
         StaleControlDbQuestionScanner,
     )
@@ -43,6 +46,7 @@ def _build_jobs(
         _ScannerJob(scanner=OverrideLiftScanner(), overlay=""),
         _ScannerJob(scanner=InertGateQuestionScanner(), overlay=""),
         _ScannerJob(scanner=StaleControlDbQuestionScanner(), overlay=""),
+        _ScannerJob(scanner=ParkedTicketQuestionScanner(), overlay=""),
         _ScannerJob(scanner=CiOauthPoolReconcileScanner(), overlay=""),
         _ScannerJob(scanner=DeadWorktreeRowScanner(), overlay=""),
     ]

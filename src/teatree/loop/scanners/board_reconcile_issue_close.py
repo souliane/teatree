@@ -28,8 +28,7 @@ from django_fsm import can_proceed
 from teatree.backends.issue_close import IssueCloseVerdict
 from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
-from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.worktree.unshipped_work import escalate_unshipped_work_once, unshipped_work_paths
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
@@ -37,11 +36,6 @@ if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
 logger = logging.getLogger(__name__)
-
-#: Dedupe key for the unshipped-work escalation — one question per ticket, ever. The
-#: factory's own guard drops a duplicate only while the earlier question is unanswered,
-#: and answering it does not move the row off IGNORED, so the janitor would re-ask forever.
-_UNSHIPPED_WORK_MARKER = "issue-closed-unshipped-work:{pk}"
 
 
 def closed_issue_transitions(
@@ -121,13 +115,13 @@ def _retire(ticket: "Ticket", verdict: IssueCloseVerdict, *, dry_run: bool) -> B
         return planned(ticket, Ticket.State.IGNORED, BoardAction.IGNORED_ISSUE_CLOSED, reason)
     from_state = ticket.state
     # Read before the transition: entering a terminal state enqueues the worktree teardown.
-    unshipped = _unshipped_work_paths(ticket)
+    unshipped = unshipped_work_paths(ticket)
     extra = ticket.extra or {}
     extra["issue_close_reason"] = verdict.reason
     ticket.extra = extra
     ticket.ignore()
     ticket.save()
-    _escalate_unshipped_work_once(ticket, paths=unshipped)
+    escalate_unshipped_work_once(ticket, paths=unshipped)
     logger.info("Board reconcile retired ticket %s %s → ignored (%s)", ticket.pk, from_state, reason)
     return BoardTransition(
         ticket_id=int(ticket.pk),
@@ -137,40 +131,4 @@ def _retire(ticket: "Ticket", verdict: IssueCloseVerdict, *, dry_run: bool) -> B
         action=BoardAction.IGNORED_ISSUE_CLOSED,
         reason=reason,
         applied=True,
-    )
-
-
-def _unshipped_work_paths(ticket: "Ticket") -> list[str]:
-    """The ticket's worktrees holding uncommitted tracked changes; empty when unreadable."""
-    from teatree.core.models.ticket_worktree_checks import (  # noqa: PLC0415 — ORM import needs the app registry
-        collect_dirty_worktree_paths,
-    )
-
-    try:
-        return collect_dirty_worktree_paths(ticket)
-    except Exception:  # noqa: BLE001 — an unreadable checkout must never abort the retirement
-        logger.warning("Could not read worktree state for ticket %s — retiring without the probe", ticket.pk)
-        return []
-
-
-def _escalate_unshipped_work_once(ticket: "Ticket", *, paths: list[str]) -> None:
-    """Hand the operator a retired ticket's uncommitted work, once per ticket ever."""
-    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM import needs the registry
-
-    if not paths:
-        return
-    DeferredQuestion.record(
-        "Should I save the unfinished work from a closed issue to a pull request?",
-        session_id="",
-        dedupe_marker=_UNSHIPPED_WORK_MARKER.format(pk=ticket.pk),
-        card=QuestionCard(
-            decision=OwnerDecision.IRREVERSIBLE,
-            checked=("The forge closed the issue.", "The working copy holds uncommitted tracked changes."),
-            blocker="Only the owner can say whether the work may be thrown away.",
-            why=f"The issue was closed, but {len(paths)} working copy(ies) still hold changes nobody saved.",
-            options=(
-                CardOption("Save it", "I open a pull request so the work is not lost.", recommended=True),
-                CardOption("Discard it", "I delete the changes for good."),
-            ),
-        ),
     )

@@ -19,23 +19,22 @@ never retried in silence.
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING
 
 from django.db import OperationalError, ProgrammingError
 from django.utils import timezone
 
-from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS, PendingPullRequest
+from teatree.core.worktree.stuck_pr_notice import (
+    ask_owner_about_stuck_prs,
+    discharge_stopped,
+    settle_discharged_stuck_pr_notices,
+)
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.models import PendingPullRequest
 
 logger = logging.getLogger(__name__)
 
 
-def _due(row: "PendingPullRequest") -> bool:
+def _due(row: PendingPullRequest) -> bool:
     if row.drain_attempts < MAX_DRAIN_ATTEMPTS or row.last_attempt_at is None:
         return True
     minutes = min(5 * 2 ** min(row.drain_attempts - MAX_DRAIN_ATTEMPTS, 9), 24 * 60)
@@ -50,10 +49,9 @@ class PendingPrDrainScanner:
     name: str = "pending_pr_drain"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
-
         try:
             retired = PendingPullRequest.objects.retire_absent()
+            discharge_stopped(self._overdue())
             owed: list[PendingPullRequest] = []
             for row in PendingPullRequest.objects.order_by("deferred_at").iterator(chunk_size=100):
                 if len(owed) >= self.limit:
@@ -64,18 +62,9 @@ class PendingPrDrainScanner:
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
         signals = self._retirement_signals(retired)
-        discharged = 0
-        for row in owed:
-            if self._drain_one(row):
-                discharged += 1
-            elif row.drain_attempts == MAX_DRAIN_ATTEMPTS:
-                notify_user(
-                    f"Pull request obligation for {row.branch} remains overdue after {row.drain_attempts} attempts: "
-                    f"{row.last_error}",
-                    kind=NotifyKind.INFO,
-                    idempotency_key=f"pending_pr_overdue:{row.pk}",
-                    audience=NotifyAudience.OWNER_ESCALATION,
-                )
+        discharged = sum(1 for row in owed if self._drain_one(row))
+        settle_discharged_stuck_pr_notices()
+        ask_owner_about_stuck_prs(self._overdue())
         if discharged:
             signals.append(
                 ScanSignal(
@@ -85,6 +74,9 @@ class PendingPrDrainScanner:
                 ),
             )
         return signals
+
+    def _overdue(self) -> list[PendingPullRequest]:
+        return list(PendingPullRequest.objects.overdue().order_by("deferred_at")[: self.limit])
 
     @staticmethod
     def _retirement_signals(retired: list[tuple[int, str, str]]) -> list[ScanSignal]:
@@ -104,7 +96,7 @@ class PendingPrDrainScanner:
         ]
 
     @staticmethod
-    def _drain_one(row: "PendingPullRequest") -> bool:
+    def _drain_one(row: PendingPullRequest) -> bool:
         """Re-run ``ensure-pr`` for one owed branch; ``True`` when the obligation is discharged.
 
         ``ensure-pr`` is the whole creation path — classification included — so a
