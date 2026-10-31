@@ -18,6 +18,7 @@ question) as the same primitive.
 """
 
 import logging
+from collections.abc import Mapping
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
@@ -200,6 +201,7 @@ class DeferredQuestion(models.Model):
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
+        evidence: Mapping[str, object] | None = None,
     ) -> "DeferredQuestion":
         """Record a guarded question; matching action cards alone may use reserved action markers."""
         clean_question = question.strip()
@@ -242,7 +244,7 @@ class DeferredQuestion(models.Model):
                 parked_task=parked_task,
                 task_session=task_session,
                 audience=cls.Audience.INTERNAL if card is None else cls.Audience.OWNER_QUESTION,
-                evidence={} if card is None else card.to_evidence(),
+                evidence=dict(evidence or {}) if card is None else card.to_evidence(),
             )
             transaction.on_commit(
                 partial(
