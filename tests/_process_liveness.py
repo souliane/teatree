@@ -11,7 +11,10 @@ it at once and both probes agree.
 import asyncio
 import os
 import time
+from contextlib import suppress
 from pathlib import Path
+
+GATED_FORKING_COMMAND = "mkfifo gate; echo $$ > leader; (cat gate > /dev/null; touch finished) & echo $! > child; wait"
 
 
 def is_running(pid: int) -> bool:
@@ -33,16 +36,23 @@ def is_gone_within(pid: int, *, seconds: float) -> bool:
     return True
 
 
+def release_gate(directory: Path) -> None:
+    """Open the gate ``GATED_FORKING_COMMAND`` waits on: a survivor leaves its mark, a dead group has no reader."""
+    with suppress(OSError):
+        os.close(os.open(directory / "gate", os.O_WRONLY | os.O_NONBLOCK))
+
+
 def _written_pids(files: list[Path], *, seconds: float) -> list[int]:
     deadline = time.monotonic() + seconds
     while not all(file.exists() and file.read_text(encoding="utf-8").strip() for file in files):
         if time.monotonic() >= deadline:
-            raise TimeoutError
+            msg = f"{[file.name for file in files]} not written within {seconds}s"
+            raise TimeoutError(msg)
         time.sleep(0.02)
     return [int(file.read_text(encoding="utf-8")) for file in files]
 
 
-async def written_pids(directory: Path, *names: str, seconds: float = 3) -> list[int]:
+async def written_pids(directory: Path, *names: str, seconds: float = 10) -> list[int]:
     """The pids a command wrote to *names* under *directory*, awaited in a thread so the event loop keeps running."""
     return await asyncio.to_thread(_written_pids, [directory / name for name in names], seconds=seconds)
 

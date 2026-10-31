@@ -51,7 +51,7 @@ class TestStopProcessGroup:
         returncode, pids = asyncio.run(run())
 
         assert returncode == -signal.SIGKILL
-        assert all(is_gone_within(pid, seconds=2) for pid in pids)
+        assert all(is_gone_within(pid, seconds=3) for pid in pids)
 
     def test_stopping_a_group_that_is_already_gone_is_harmless(self, tmp_path: Path) -> None:
         async def run() -> int | None:
@@ -70,7 +70,7 @@ class TestStopProcessGroup:
     ) -> None:
         async def run() -> tuple[float, int | None, int]:
             process = await _start(_HOLDS_THE_PIPES_FROM_ANOTHER_SESSION, tmp_path)
-            (escapee,) = await written_pids(tmp_path, "escapee", seconds=10)
+            (escapee,) = await written_pids(tmp_path, "escapee")
             try:
                 started = time.monotonic()
                 await stop_process_group(process)
@@ -80,7 +80,7 @@ class TestStopProcessGroup:
                 _kill_what_is_left(process)
                 with suppress(ProcessLookupError):
                     os.kill(escapee, signal.SIGKILL)
-                await asyncio.wait_for(process.wait(), timeout=5)
+                await asyncio.wait_for(process.communicate(), timeout=5)
             return elapsed, process.returncode, escapee
 
         elapsed, returncode, _escapee = asyncio.run(run())

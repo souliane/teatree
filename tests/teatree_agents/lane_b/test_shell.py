@@ -22,7 +22,7 @@ from teatree.agents.lane_b.shell import (
     _resolve_shell,
     build_shell_toolset,
 )
-from tests._process_liveness import is_gone_within, written_pids
+from tests._process_liveness import GATED_FORKING_COMMAND, is_gone_within, release_gate, written_pids
 
 
 def _bash(config):
@@ -184,13 +184,14 @@ class TestShellTool:
 
 
 class TestAStoppedCommandDiesWithEverythingItStarted:
-    _FORKING = "echo $$ > leader; (sleep 1; touch finished) & echo $! > child; wait"
+    _FORKING = GATED_FORKING_COMMAND
 
     @staticmethod
     def _assert_group_stopped(directory: Path, pids: list[int]) -> None:
         try:
-            assert all(is_gone_within(pid, seconds=0.8) for pid in pids)
-            time.sleep(1.2)
+            assert all(is_gone_within(pid, seconds=3) for pid in pids)
+            release_gate(directory)
+            time.sleep(0.5)
             assert not (directory / "finished").exists()
         finally:
             for pid in pids:

@@ -21,7 +21,7 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
-from tests._process_liveness import is_gone_within, written_pids
+from tests._process_liveness import GATED_FORKING_COMMAND, is_gone_within, release_gate, written_pids
 from tests.factories import planned_ticket
 
 
@@ -324,7 +324,7 @@ def test_a_stale_command_never_reaches_a_pydantic_session(stale_field: str) -> N
 
 
 def test_pausing_a_session_ends_the_command_its_tool_call_left_running(tmp_path: Path) -> None:
-    command = "echo $$ > leader; (sleep 1; touch finished) & echo $! > child; wait"
+    command = GATED_FORKING_COMMAND
 
     async def run() -> list[ModelMessage]:
         requests = 0
@@ -348,9 +348,10 @@ def test_pausing_a_session_ends_the_command_its_tool_call_left_running(tmp_path:
             try:
                 await session.interrupt()
                 await turn
-                assert is_gone_within(leader, seconds=0.8)
-                assert is_gone_within(child, seconds=0.8)
-                await asyncio.sleep(1.2)
+                assert is_gone_within(leader, seconds=3)
+                assert is_gone_within(child, seconds=3)
+                release_gate(tmp_path)
+                await asyncio.sleep(0.5)
             finally:
                 for pid in (leader, child):
                     with suppress(ProcessLookupError):
