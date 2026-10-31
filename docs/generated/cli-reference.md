@@ -3567,6 +3567,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
 │ review-evidence                                                              │
+│ rule-clauses         Refuse a RULES.md diff that drops, rewords or moves a   │
+│                      clause no ``Rule-clause-removed:`` trailer names.       │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -4182,6 +4184,23 @@ Usage: t3 tool review-evidence [OPTIONS]
 │    --base              TEXT  Target branch ref for the changed set.          │
 │                              [default: origin/main]                          │
 │    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool rule-clauses`
+
+```
+Usage: t3 tool rule-clauses [OPTIONS]
+
+ Refuse a RULES.md diff that drops, rewords or moves a clause no
+ ``Rule-clause-removed:`` trailer names.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repository to read. [default: .]                         │
+│ --base        TEXT  Ref the branch is compared against.                      │
+│                     [default: origin/main]                                   │
+│ --head        TEXT  Ref carrying the edited rules. [default: HEAD]           │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

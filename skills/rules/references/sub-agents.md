@@ -6,6 +6,8 @@ The full text of `/t3:rules` § "Sub-Agent Limitations" and § "Background Long 
 
 Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell functions**. By default, never dispatch sub-agents for skill-dependent work. Do all skill-dependent work sequentially in the main conversation.
 
+A killed headless run resumes once an account is usable.
+
 **A sub-agent that needs a skill gets the skill, never an exemption:** generate the brief's preamble with `t3 <overlay> skill-preamble` (the Non-Negotiable below) so the dispatched agent carries the requested skill bodies or required stack-skill load directives. MCP access and shell functions do not travel that way — work needing either stays in the main conversation.
 
 **Exception (monitor/work-trigger loop only):** `/t3:wip` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/t3:wip` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.

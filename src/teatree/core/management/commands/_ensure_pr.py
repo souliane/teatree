@@ -37,6 +37,7 @@ from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.gates.pr_creation_refusal import pr_creation_refusal, seed_rules_rubric_row
 from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -424,12 +425,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
 def _open_pr(
     host: CodeHostBackend, spec: PullRequestSpec, *, remote: str, owning_ticket: "Ticket | None"
 ) -> EnsurePrResult:
-    if refusal := refusal_for_pr_generic_findings(
-        title=spec.title,
-        description=spec.description,
-        target_repo=remote,
-        forge=forge_from_url(remote),
-    ):
+    if refusal := pr_creation_refusal(spec, remote=remote):
         return EnsurePrResult(error=refusal)
     try:
         raw = host.create_pr(spec)
@@ -439,6 +435,7 @@ def _open_pr(
         raise
     result = _verified_pr_result(host, raw, spec.branch)
     _record_verified_url(owning_ticket, result, spec.branch)
+    seed_rules_rubric_row(owning_ticket, spec)
     return result
 
 
