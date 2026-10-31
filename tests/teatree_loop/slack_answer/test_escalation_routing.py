@@ -45,6 +45,12 @@ class _Thread(TestCase):
             phase="planning",
             status=Task.Status.CLAIMED,
         )
+        self.registry = LiveSessionRegistry()
+        runtime = self.enterContext(tempfile.TemporaryDirectory(prefix="t3-esc-", dir="/tmp"))
+        self.broker = self.enterContext(
+            live_mailbox.LiveMailboxBroker(runtime_dir=Path(runtime), registry=lambda: self.registry)
+        )
+        self.enterContext(patch.object(live_mailbox, "shared_broker", return_value=self.broker))
         self.backend = RecordingBackend()
         self.client = Mock(unreachable={})
         self.client.sessions.return_value = [
@@ -89,21 +95,15 @@ class TestAnOpenEscalationRoutesToTheCoordinator(_Thread):
     def test_a_live_coordinator_session_receives_it_instead(self) -> None:
         self._escalate()
         self._owner_message()
-        registry = LiveSessionRegistry()
         live_coordinator = Task.objects.create(
             ticket=self.ticket, session=Session.objects.create(ticket=self.ticket), phase="answering"
         )
         live = live_task_of(live_coordinator)
         session = AcceptingSession()
-        with (
-            tempfile.TemporaryDirectory(prefix="t3-esc-", dir="/tmp") as directory,
-            live_mailbox.LiveMailboxBroker(runtime_dir=Path(directory), registry=lambda: registry) as broker,
-            patch.object(live_mailbox, "shared_broker", return_value=broker),
-            OwnerLoop(registry, live, session),
-        ):
-            broker.register(
-                room=str(self.ticket.pk), harness="claude_sdk", label=f"answering task {live.pk}", task=live
-            )
+        self.broker.register(
+            room=str(self.ticket.pk), harness="claude_sdk", label=f"answering task {live.pk}", task=live
+        )
+        with OwnerLoop(self.registry, live, session):
             self._cycle()
 
         self.client.steer.assert_not_called()
