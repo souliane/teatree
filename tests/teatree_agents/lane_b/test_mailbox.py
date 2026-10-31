@@ -203,12 +203,12 @@ def test_the_identity_never_reaches_the_tool_schemas_or_the_mcp_launch() -> None
 
 class TestAPydanticTaskEscalates(TransactionTestCase):
     def test_it_escalates_through_its_native_tool_and_a_refusal_is_tool_data(self) -> None:
-        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-        asking = TaskFactory(
-            ticket=ticket, session=SessionFactory(ticket=ticket), phase="planning", status=Task.Status.CLAIMED
+        ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+        asking = TaskFactory.create(
+            ticket=ticket, session=SessionFactory.create(ticket=ticket), phase="planning", status=Task.Status.CLAIMED
         )
-        parent = TaskFactory(
-            ticket=ticket, session=SessionFactory(ticket=ticket), phase="answering", status=Task.Status.COMPLETED
+        parent = TaskFactory.create(
+            ticket=ticket, session=SessionFactory.create(ticket=ticket), phase="answering", status=Task.Status.COMPLETED
         )
         live = LiveTask(pk=asking.pk, ticket=ticket.pk, phase="planning", harness="pydantic_ai", model="m")
         calls = [

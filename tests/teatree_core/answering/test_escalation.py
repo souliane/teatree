@@ -30,9 +30,9 @@ _MESSAGE = "Which of the two migration orders should I follow"
 
 
 def _asker(**task: object) -> Task:
-    ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-    session = SessionFactory(ticket=ticket, agent_id="planning")
-    return TaskFactory(ticket=ticket, session=session, phase="planning", status=Task.Status.CLAIMED, **task)
+    ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+    session = SessionFactory.create(ticket=ticket, agent_id="planning")
+    return TaskFactory.create(ticket=ticket, session=session, phase="planning", status=Task.Status.CLAIMED, **task)
 
 
 def _age(row: DeferredQuestion, by: timedelta) -> None:
@@ -142,11 +142,11 @@ class TestOpenRequests(TestCase):
 
 class TestTheThreadsCoordinatorTask(TestCase):
     def test_it_is_the_newest_answering_task_on_the_ticket(self) -> None:
-        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-        session = SessionFactory(ticket=ticket, agent_id="answering")
-        TaskFactory(ticket=ticket, session=session, phase="answering", status=Task.Status.COMPLETED)
-        newest = TaskFactory(ticket=ticket, session=session, phase="answering", status=Task.Status.COMPLETED)
-        TaskFactory(ticket=ticket, session=session, phase="planning")
+        ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+        session = SessionFactory.create(ticket=ticket, agent_id="answering")
+        TaskFactory.create(ticket=ticket, session=session, phase="answering", status=Task.Status.COMPLETED)
+        newest = TaskFactory.create(ticket=ticket, session=session, phase="answering", status=Task.Status.COMPLETED)
+        TaskFactory.create(ticket=ticket, session=session, phase="planning")
 
         assert coordinator_task(ticket.pk) == newest
 
@@ -154,10 +154,10 @@ class TestTheThreadsCoordinatorTask(TestCase):
         assert coordinator_task(_asker().ticket_id) is None
 
     def test_another_tickets_answering_task_is_never_the_coordinator(self) -> None:
-        other = TicketFactory(state=Ticket.State.WORK_STARTED)
-        TaskFactory(
+        other = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+        TaskFactory.create(
             ticket=other,
-            session=SessionFactory(ticket=other, agent_id="answering"),
+            session=SessionFactory.create(ticket=other, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )
@@ -167,9 +167,9 @@ class TestTheThreadsCoordinatorTask(TestCase):
 
     def test_a_later_request_resumes_the_continuation_that_already_ran(self) -> None:
         asker = _asker()
-        TaskFactory(
+        TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )
@@ -184,9 +184,9 @@ class TestTheThreadsCoordinatorTask(TestCase):
 
     def test_resuming_it_queues_one_child_carrying_the_request(self) -> None:
         asker = _asker()
-        parent = TaskFactory(
+        parent = TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )
@@ -202,9 +202,9 @@ class TestTheThreadsCoordinatorTask(TestCase):
 
     def test_a_second_request_joins_the_continuation_still_queued(self) -> None:
         asker = _asker()
-        TaskFactory(
+        TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )
@@ -220,9 +220,9 @@ class TestTheThreadsCoordinatorTask(TestCase):
 
     def test_a_repeat_after_the_continuation_ran_queues_nothing_new(self) -> None:
         asker = _asker()
-        TaskFactory(
+        TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )

@@ -228,7 +228,9 @@ def _route_open_escalation(unit: _Unit, report: "SlackAnswerReport") -> bool:
         .values_list("ticket_id", flat=True)
         .first()
     )
-    request = open_request(ticket_id) if ticket_id is not None else None
+    if ticket_id is None:
+        return False
+    request = open_request(ticket_id)
     if request is None:
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):

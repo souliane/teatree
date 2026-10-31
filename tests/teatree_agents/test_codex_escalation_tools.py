@@ -4,6 +4,7 @@ import json
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
@@ -45,16 +46,16 @@ class TestWhichCodexPhasesAreOfferedEscalate(TransactionTestCase):
 
 class TestACodexTaskEscalates(TransactionTestCase):
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-        self.asker = TaskFactory(
+        self.ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+        self.asker = TaskFactory.create(
             ticket=self.ticket,
-            session=SessionFactory(ticket=self.ticket),
+            session=SessionFactory.create(ticket=self.ticket),
             phase="planning",
             status=Task.Status.CLAIMED,
         )
-        self.parent = TaskFactory(
+        self.parent = TaskFactory.create(
             ticket=self.ticket,
-            session=SessionFactory(ticket=self.ticket),
+            session=SessionFactory.create(ticket=self.ticket),
             phase="answering",
             status=Task.Status.COMPLETED,
         )
@@ -75,7 +76,7 @@ class TestACodexTaskEscalates(TransactionTestCase):
             )
         return replace(options, core=replace(options.core, mailbox=self.mailbox), mailbox_phase=phase)
 
-    def _call(self, phase: str, arguments: dict[str, object]) -> dict[str, object] | None:
+    def _call(self, phase: str, arguments: dict[str, object]) -> dict[str, Any] | None:
         request = {"threadId": "thread-1", "tool": "escalate", "arguments": arguments}
         return async_to_sync(mailbox_tool_result)(request, {"thread-1": self._options(phase)})
 

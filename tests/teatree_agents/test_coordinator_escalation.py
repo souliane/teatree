@@ -49,10 +49,10 @@ class FakeMailbox(MailboxClient):
 
 
 def _running(phase: str = "planning") -> Task:
-    ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-    return TaskFactory(
+    ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+    return TaskFactory.create(
         ticket=ticket,
-        session=SessionFactory(ticket=ticket, agent_id=phase),
+        session=SessionFactory.create(ticket=ticket, agent_id=phase),
         phase=phase,
         status=Task.Status.CLAIMED,
     )
@@ -70,18 +70,18 @@ def _identity(task: Task, *, phase: str | None = None) -> PeerIdentity:
     }
 
 
-def _coordinator(ticket_id: int, **overrides: object) -> PeerIdentity:
-    peer: PeerIdentity = {
-        "address": _COORDINATOR,
+def _coordinator(
+    ticket_id: int, *, address: str = _COORDINATOR, phase: str = "answering", can_receive: bool = True
+) -> PeerIdentity:
+    return {
+        "address": address,
         "harness": "claude_sdk",
         "label": "answering task 99",
         "ticket": str(ticket_id),
         "room": str(ticket_id),
-        "phase": "answering",
-        "can_receive": True,
+        "phase": phase,
+        "can_receive": can_receive,
     }
-    peer.update(overrides)  # type: ignore[typeddict-item]  # ty: ignore[invalid-argument-type]
-    return peer
 
 
 def _call(mailbox: FakeMailbox, kind: str = "internal", message: str = _MESSAGE) -> EscalationReceipt:
@@ -89,9 +89,9 @@ def _call(mailbox: FakeMailbox, kind: str = "internal", message: str = _MESSAGE)
 
 
 def _answering_task(ticket: Ticket) -> Task:
-    return TaskFactory(
+    return TaskFactory.create(
         ticket=ticket,
-        session=SessionFactory(ticket=ticket, agent_id="answering"),
+        session=SessionFactory.create(ticket=ticket, agent_id="answering"),
         phase="answering",
         status=Task.Status.COMPLETED,
     )
@@ -212,9 +212,9 @@ class TestWhoMayEscalate(TestCase):
 
     def test_a_running_task_of_another_phase_on_the_same_ticket_does_not_confuse_who_asks(self) -> None:
         asker = _running()
-        TaskFactory(
+        TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="coding"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="coding"),
             phase="coding",
             status=Task.Status.CLAIMED,
         )
@@ -224,9 +224,9 @@ class TestWhoMayEscalate(TestCase):
 
     def test_two_running_tasks_in_one_phase_cannot_be_told_apart(self) -> None:
         asker = _running()
-        TaskFactory(
+        TaskFactory.create(
             ticket=asker.ticket,
-            session=SessionFactory(ticket=asker.ticket, agent_id="planning"),
+            session=SessionFactory.create(ticket=asker.ticket, agent_id="planning"),
             phase="planning",
             status=Task.Status.CLAIMED,
         )

@@ -26,9 +26,12 @@ from tests.teatree_mcp._call_tool_result import payloads
 
 
 def _running(phase: str = "planning") -> Task:
-    ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
-    return TaskFactory(
-        ticket=ticket, session=SessionFactory(ticket=ticket, agent_id=phase), phase=phase, status=Task.Status.CLAIMED
+    ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+    return TaskFactory.create(
+        ticket=ticket,
+        session=SessionFactory.create(ticket=ticket, agent_id=phase),
+        phase=phase,
+        status=Task.Status.CLAIMED,
     )
 
 
@@ -56,9 +59,9 @@ class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
             return build_server(read_only=True, allowed_writes=mcp_write_tools_for_phase(phase))
 
     def test_a_live_coordinator_is_told_over_the_mailbox_once_the_request_row_exists(self) -> None:
-        coordinator = TaskFactory(
+        coordinator = TaskFactory.create(
             ticket=self.asker.ticket,
-            session=SessionFactory(ticket=self.asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=self.asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.CLAIMED,
         )
@@ -76,9 +79,9 @@ class TestTheEscalateToolOverTheMcpServer(TransactionTestCase):
         assert "Run the backfill before the migration?" in session.delivered[0]
 
     def test_without_a_live_coordinator_the_threads_answering_task_is_resumed(self) -> None:
-        parent = TaskFactory(
+        parent = TaskFactory.create(
             ticket=self.asker.ticket,
-            session=SessionFactory(ticket=self.asker.ticket, agent_id="answering"),
+            session=SessionFactory.create(ticket=self.asker.ticket, agent_id="answering"),
             phase="answering",
             status=Task.Status.COMPLETED,
         )

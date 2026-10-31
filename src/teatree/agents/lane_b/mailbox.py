@@ -1,6 +1,6 @@
 """Native mailbox tools for a task-owned Lane B identity."""
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from pydantic import Field
@@ -61,7 +61,7 @@ def build_mailbox_toolset(client: MailboxClient, phase: str) -> FunctionToolset[
         """
         return await _result(escalate(client, kind=kind, message=message))
 
-    functions = {
+    functions: dict[str, Callable[..., Awaitable[object]]] = {
         "agent_mailbox_peers": peers,
         "agent_mailbox_send": send,
         "agent_mailbox_inbox": inbox,
