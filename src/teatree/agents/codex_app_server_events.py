@@ -7,9 +7,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
-from teatree.agents.codex_escalation_tools import ESCALATE_SPEC, call_escalate
+from teatree.agents.codex_escalation_tools import ESCALATE_SPEC
 from teatree.agents.codex_post_tool import report_completed_item
-from teatree.agents.coordinator_escalation import ESCALATE
+from teatree.agents.coordinator_escalation import ESCALATE, escalate
 from teatree.agents.live_mailbox_client import MailboxError
 from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 
@@ -106,7 +106,7 @@ async def mailbox_tool_result(
         return None
     try:
         value = (
-            await call_escalate(mailbox, **arguments)
+            await escalate(mailbox, **arguments)
             if tool == ESCALATE
             else await getattr(mailbox, specification[0])(**arguments)
         )
