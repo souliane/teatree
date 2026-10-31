@@ -150,10 +150,10 @@ paths = [
 # ---- ledger: written by --freeze, never by hand ----
 [shrink_N1]
 "src/teatree/agents/answering_phase_block.py" = 3
-"src/teatree/agents/attempt_recorder.py" = 1
 "src/teatree/agents/dispatch_preflight.py" = 1
 "src/teatree/agents/live_orchestrator.py" = 21
 "src/teatree/agents/phase_blocks.py" = 5
+"src/teatree/agents/returned_envelope_recorder.py" = 1
 "src/teatree/agents/review_envelope_recorder.py" = 2
 "src/teatree/agents/skill_bundle.py" = 1
 "src/teatree/backends/gitlab/sync.py" = 1
@@ -183,7 +183,8 @@ paths = [
 "src/teatree/eval/matrix.py" = 1
 "src/teatree/loop/dispatch_tables.py" = 8
 "src/teatree/loop/dogfood_smoke.py" = 2
-"src/teatree/loop/persistence.py" = 12
+"src/teatree/loop/persistence.py" = 11
+"src/teatree/loop/persistence_overlay.py" = 1
 "src/teatree/loop/persistence_phase_task.py" = 1
 "src/teatree/loop/rendering.py" = 2
 "src/teatree/loop/rendering_classification.py" = 1
