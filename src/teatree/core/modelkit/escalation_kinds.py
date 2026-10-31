@@ -1,4 +1,4 @@
-"""The escalate tool's name and the kinds a request may name; Django-free so the Codex session helper can load it."""
+"""The escalate tool's name and its request kinds; Django-free so a session helper can load them early."""
 
 from typing import Final
 

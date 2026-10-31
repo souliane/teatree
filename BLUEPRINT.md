@@ -690,6 +690,7 @@ Conversation anchors are kind-qualified. `conversation_anchor(kind, key)` keeps 
 | interactive | Reach a running factory agent | `message_peer`, O3 |
 | interactive | Claude-only hook automation | attended-only |
 | interactive | Interactive vs Headless Output | attended-only |
+| interactive | Platform | attended-only |
 | interactive | Related Skills | attended-only |
 
 **Open points.** What the built kinds do not carry.
