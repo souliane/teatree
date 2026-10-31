@@ -584,20 +584,21 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
   ```
 
   The flag remains the operator's named substrate control, and no autonomy tier collapses it (`config/resolution.py` `_AUTONOMY_COLLAPSED_GATE_VALUES`). Set it per-overlay with `t3 <overlay> config_setting set require_human_approval_to_merge <true|false> --overlay <name>`.
-- **The bot authors so the OWNER'S ACCOUNT stays eligible — and the AGENT records that approval (Non-Negotiable).** On a repo whose MRs are authored under a distinct non-owner credential (the overlay's `get_gitlab_token_for_remote` override), all four identities are fixed, and none of them is a person doing manual work:
+- **The bot authors so the consenting operator's account stays eligible — and the AGENT records that approval through the operator's grant (Non-Negotiable).** On a repo whose MRs are authored under a distinct non-owner credential (the overlay's `get_gitlab_token_for_remote` override), all four identities are fixed, and none of them is a person doing manual work:
 
   | step | identity | who performs it |
   |---|---|---|
   | author | the repo's scoped authoring credential (the bot) | the agent |
   | review | the agent, cold (maker != checker) | the agent |
-  | **approve** | **the owner's own account** | **the agent, on the owner's behalf** |
+  | **approve** | **the consenting operator's own account, through their `t3 login <forge> --approvals` grant** | **the agent, on that operator's recorded consent** |
   | merge | — | the agent, via the §17.4 keystone |
 
-  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the owner's account eligible. "Approved by the owner's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent.
+  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the operator's account eligible. "Approved by the operator's account" is therefore the DESIGNED outcome of the agent's own run once the consent and the grant exist, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent. The command reads no personal token: with no consent or no grant it refuses naming the remedy and posts nothing, and that refusal is the only legitimate stop.
 
   ```bash
-  # do X — the agent reviews cold, then records the approval under the owner's account:
-  t3 review approve <repo> <mr>        # resolves the OWNER credential, never the bot's
+  # do X — the agent reviews cold, records the operator's consent, then approves through their grant:
+  t3 review approve-on-behalf <repo>!<mr> approve --approver <platform:handle>
+  t3 review approve <repo> <mr>        # acts only through that operator's OAuth grant: no stored token, never the bot's
   t3 <overlay> ticket clear <mr> <repo-slug> --reviewed-sha <sha> \
       --reviewer-identity <independent-reviewer> --blast-class <class> --forge gitlab
   t3 <overlay> ticket merge <clear_id>
