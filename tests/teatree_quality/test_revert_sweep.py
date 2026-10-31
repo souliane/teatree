@@ -195,6 +195,23 @@ def test_more_than_forty_hunks_fails_loudly(tiny_repo: Path) -> None:
         _measure(tiny_repo)
 
 
+def test_a_worktree_head_other_than_the_expected_sha_refuses(tiny_repo: Path) -> None:
+    with pytest.raises(RevertSweepError, match="expected"):
+        measure_revert_sweep(
+            tiny_repo,
+            base_ref="origin/main",
+            expect_sha=_git(tiny_repo, "rev-parse", "HEAD~1"),
+            test_command=PYTEST_IN_TINY_REPO,
+        )
+
+
+def test_an_uncommitted_change_to_a_tracked_file_refuses(tiny_repo: Path) -> None:
+    _write(tiny_repo, "src/teatree/core/gates/limit.py", HEAD_SOURCE + "\nEDITED = True\n")
+
+    with pytest.raises(RevertSweepError, match="committed tracked files"):
+        _measure(tiny_repo)
+
+
 def test_the_inner_run_is_isolated_from_the_outer_test_session(
     tiny_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

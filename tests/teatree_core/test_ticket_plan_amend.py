@@ -12,6 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import RubricCriterion, Ticket, Worktree
+from teatree.core.models.plan_adequacy import declared_acceptance_criteria
 from teatree.core.models.plan_artifact import PlanArtifact
 from tests.teatree_core.test_ticket_plan_reaffirm import _advance_remote, _clone, _git, _make_remote
 
@@ -68,6 +69,15 @@ class TestPlanAmend(TestCase):
         criteria = self._criteria(ticket)
         assert [row.text for row in criteria] == [*_RENDERED_EARLIER, f"[behaviour] {_NEW}"]
         assert (criteria[0].status, criteria[0].rationale) == ("pass", "proved")
+
+    def test_the_amended_manifest_declares_every_earlier_criterion_again(self) -> None:
+        ticket = self._ticket_with_graded_plan()
+
+        self._amend(ticket)
+
+        latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+        assert latest is not None
+        assert declared_acceptance_criteria(latest.adequacy) == (*_RENDERED_EARLIER, f"[behaviour] {_NEW}")
 
     def test_the_new_plan_is_bound_to_the_live_origin_main_head(self) -> None:
         ticket = self._ticket_with_graded_plan()

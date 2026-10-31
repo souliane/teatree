@@ -74,6 +74,36 @@ class TestFrozenByCarrier(TestCase):
 
         assert carrier.schedule_coding().phase == "coding"
 
+    def test_a_carrier_that_is_itself_carried_is_never_frozen(self) -> None:
+        outer = planned_ticket(overlay="t3-teatree", issue_url="https://github.com/acme/widget/issues/1")
+        inner = planned_ticket(overlay="t3-teatree", issue_url="https://github.com/acme/widget/issues/2")
+        deepest = planned_ticket(overlay="t3-teatree", issue_url="https://github.com/acme/widget/issues/3")
+        for ticket, url in ((outer, _CARRIER_URL), (inner, _MEMBER_URLS[0]), (deepest, _MEMBER_URLS[1])):
+            self._pull_request(ticket, url)
+
+        record_carry_freeze(carrier_ticket=outer, carrier_url=_CARRIER_URL, member_urls=[_MEMBER_URLS[0]])
+        record_carry_freeze(carrier_ticket=inner, carrier_url=_MEMBER_URLS[0], member_urls=[_MEMBER_URLS[1]])
+        inner.refresh_from_db()
+
+        assert inner.extra["carried_by"] == _CARRIER_URL
+        assert frozen_by_carrier(inner) is None
+        assert inner.schedule_coding().phase == "coding"
+
+    def test_a_carrier_naming_its_own_pull_request_is_not_marked_as_carried(self) -> None:
+        carrier = planned_ticket(overlay="t3-teatree", issue_url="https://github.com/acme/widget/issues/1")
+        member = planned_ticket(overlay="t3-teatree", issue_url="https://github.com/acme/widget/issues/2")
+        self._pull_request(carrier, _CARRIER_URL)
+        self._pull_request(member, _MEMBER_URLS[0])
+
+        record_carry_freeze(
+            carrier_ticket=carrier, carrier_url=_CARRIER_URL, member_urls=[_CARRIER_URL, _MEMBER_URLS[0]]
+        )
+        carrier.refresh_from_db()
+        member.refresh_from_db()
+
+        assert "carried_by" not in carrier.extra
+        assert member.extra["carried_by"] == _CARRIER_URL
+
     def _assert_released_by(self, released_state: str) -> None:
         _, member, carrier_pr = self._round()
         PullRequest.objects.filter(pk=carrier_pr.pk).update(state=released_state)
