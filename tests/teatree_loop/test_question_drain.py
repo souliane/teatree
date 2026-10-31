@@ -32,7 +32,6 @@ from teatree.loop.question_drain import (
     _settled_pr_subjects,
     drain_pending_questions,
     question_reachability,
-    sweep_owner_questions,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
@@ -448,7 +447,7 @@ class TestPrSubjectDrain(TestCase):
         pr.mark_closed()
         pr.save(update_fields=["state"])
 
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
 
     def test_equivalent_review_url_retires_with_recorded_pr(self) -> None:
         subject = "http://www.github.com/acme/repo/pull/12/files"
@@ -463,7 +462,7 @@ class TestPrSubjectDrain(TestCase):
         pr.mark_closed()
         pr.save(update_fields=["state"])
 
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
 
@@ -480,17 +479,17 @@ class TestPrSubjectDrain(TestCase):
         url = "https://github.com/acme/repo/pull/12"
         question = _pr_question(url)
         assert question is not None
-        assert sweep_owner_questions().drained == 0
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 0
 
         ticket = _ticket(Ticket.State.SELF_REVIEWED)
         pr = PullRequest.objects.create(ticket=ticket, url=url, repo="acme/repo", iid="12")
-        assert sweep_owner_questions().drained == 0
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 0
         question.refresh_from_db()
         assert question.is_pending
 
         pr.mark_merged()
         pr.save(update_fields=["state"])
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
         assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
@@ -506,7 +505,7 @@ class TestPrSubjectDrain(TestCase):
         pr.mark_closed()
         pr.save(update_fields=["state"])
 
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
 
@@ -520,7 +519,7 @@ class TestPrSubjectDrain(TestCase):
         pr.mark_closed()
         pr.save(update_fields=["state"])
 
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
 
@@ -537,7 +536,7 @@ class TestPrSubjectDrain(TestCase):
             ticket=_ticket(Ticket.State.SELF_REVIEWED), url=f"{url}/", repo="acme/repo", iid="15"
         )
 
-        assert sweep_owner_questions().drained == 0
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 0
         question.refresh_from_db()
         assert question.is_pending
 
@@ -812,7 +811,7 @@ class TestOwnerRowsDrainOnlyOnAFinishedSubject(TestCase):
         owner, ticket = _owner_question_on(Ticket.State.CODED)
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
 
-        assert sweep_owner_questions().drained == 1
+        assert drain_pending_questions(DeferredQuestion.owner_pending()).drained == 1
         internal.refresh_from_db()
         owner.refresh_from_db()
         assert (internal.is_pending, owner.is_pending) == (True, False)

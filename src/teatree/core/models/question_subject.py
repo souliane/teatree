@@ -22,6 +22,11 @@ def finished_subject_reason(question: "DeferredQuestion") -> str | None:
     return None
 
 
+def blocks_a_merge(question: "DeferredQuestion") -> bool:
+    ticket = _subject_ticket(question)
+    return ticket is not None and ticket.pull_requests.live().exists()  # ty: ignore[unresolved-attribute]
+
+
 def _subject_ticket(question: "DeferredQuestion") -> "Ticket | None":
     if question.parked_task is not None:
         return question.parked_task.ticket

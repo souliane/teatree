@@ -30,7 +30,7 @@ from teatree import answer_handback
 from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
-from teatree.core.models.question_subject import finished_subject_reason
+from teatree.core.models.question_settlement import settle_at_record
 from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
 from teatree.core.models.ticket_dm_thread import TicketDmPost
@@ -73,9 +73,10 @@ class DeferredQuestion(models.Model):
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
         AGENT = "agent", "Agent surface"
+        OPERATOR = "operator", "Operator session"
 
-    #: Provenance the server records and checks: a Slack reply by the owner, or the owner's graduated policy.
-    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY})
+    #: Provenance the server records and checks: the owner's Slack reply, graduated policy or own-session answer.
+    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY, ResolvedVia.OPERATOR})
 
     class Audience(models.TextChoices):
         OWNER_QUESTION = "owner_question", "Owner question"
@@ -257,8 +258,8 @@ class DeferredQuestion(models.Model):
                     ticket_id=parked_task.ticket.pk if parked_task is not None else 0,
                 )
             )
-            if card is not None and (reason := finished_subject_reason(row)):
-                row.mark_stale(reason, resolver_id="record_subject_settled")
+            if card is not None:
+                settle_at_record(row, card)
             return row
 
     @classmethod

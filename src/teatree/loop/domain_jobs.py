@@ -29,7 +29,6 @@ from teatree.loop.domain_ship_jobs import _colleague_egress_selected, _ship_jobs
 from teatree.loop.incoming_event_handling import handle_incoming_event
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError, overlay_followup_jobs
-from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
@@ -105,10 +104,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=StuckCheckoutRecheckScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
-        _ScannerJob(
-            scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id, settle=sweep_owner_questions),
-            overlay="",
-        ),
+        _ScannerJob(scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=QuestionBacklogNagScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
         # SELFCATCH-1: global (walks every ticket across overlays via

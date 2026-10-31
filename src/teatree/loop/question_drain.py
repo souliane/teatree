@@ -13,7 +13,8 @@ The sweep runs in two stages, and the split is the whole design:
     subject is derivable. The conservatism guard #3692 established is unchanged — a live
     or undeterminable subject is never dropped. "Terminal" differs by audience: an internal
     row uses ``Ticket._SETTLED_STATES``, the same population ``transient_requeue`` stops
-    retrying, so PR_OPENED ends it; an owner row drains only on
+    retrying, so PR_OPENED ends it; an owner row drains only through the
+    ``subject_terminal`` :data:`~teatree.core.question_heal.HEAL_CHECKS` entry over
     :func:`~teatree.core.models.question_subject.finished_subject_reason`, because a
     PR_OPENED review is still the owner's to decide. Three later resolvers read facts the FSM
     state cannot carry — a subject whose pull requests have all settled, an owner card
@@ -52,7 +53,6 @@ from django.utils import timezone
 
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
@@ -161,19 +161,11 @@ def _heal_resolver(name: str) -> Resolver:
 
 def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Decision | None:
     states = context.index.states_for(question)
-    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
-        return _owner_subject_finished(question, has_subject=bool(states))
-    if not states:
+    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION or not states:
         return None
     if all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
         return Decision(Verdict.DRAIN, f"every subject ticket is terminal ({', '.join(sorted(set(states)))})")
     return Decision(Verdict.KEEP, "a subject ticket is still live")
-
-
-def _owner_subject_finished(question: DeferredQuestion, *, has_subject: bool) -> Decision | None:
-    if reason := finished_subject_reason(question):
-        return Decision(Verdict.DRAIN, reason)
-    return Decision(Verdict.KEEP, "a subject ticket is still live") if has_subject else None
 
 
 def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -402,11 +394,6 @@ SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
 )
 #: Resolvers that guarantee a state transition on a row the subject stage left pending.
 BACKSTOP_RESOLVERS: tuple[tuple[str, Resolver], ...] = (("age_ceiling", _age_ceiling),)
-
-
-def sweep_owner_questions() -> DrainReport:
-    """The send-time sweep: settle the owner backlog in the same scan that would post it."""
-    return drain_pending_questions(DeferredQuestion.owner_pending())
 
 
 def drain_pending_questions(rows: Iterable[DeferredQuestion] | None = None) -> DrainReport:

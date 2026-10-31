@@ -15,7 +15,6 @@ when it actually mirrors something.
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -39,8 +38,6 @@ class DeferredQuestionPosterScanner:
     # back to ``notify_user``'s overlay resolution, unchanged.
     backend: "MessagingBackend | None" = None
     user_id: str = ""
-    #: Runs before the mirror, so an owner question whose subject has since finished is dismissed, not posted.
-    settle: Callable[[], object] = lambda: None
     name: str = "deferred_question_poster"
 
     def scan(self) -> list[ScanSignal]:
@@ -49,7 +46,6 @@ class DeferredQuestionPosterScanner:
         )
 
         try:
-            self.settle()
             mirrored, total = drain_unmirrored_deferred_questions(
                 overlay=self.overlay, backend=self.backend, user_id=self.user_id, deadline=current_scan_deadline()
             )

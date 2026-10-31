@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.question_subject import finished_subject_reason
+from teatree.core.models.question_subject import blocks_a_merge, finished_subject_reason
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from tests._owner_channel import OWNER_DECISION
 
@@ -84,3 +84,22 @@ class TestFinishedSubjectReason(TestCase):
 
     def test_a_question_with_no_subject_has_no_reason(self) -> None:
         assert finished_subject_reason(DeferredQuestion.record("q", session_id="harness-uuid")) is None
+
+
+class TestBlocksAMerge(TestCase):
+    def test_a_live_pull_request_on_the_subject_blocks_a_merge(self) -> None:
+        task = _task_on(Ticket.State.PR_OPENED)
+        _pull_request(task.ticket, state=PullRequest.State.MERGED, iid="1")
+        _pull_request(task.ticket, state=PullRequest.State.REVIEW_REQUESTED, iid="2")
+
+        assert blocks_a_merge(DeferredQuestion.record("q", parked_task=task)) is True
+
+    def test_a_settled_or_missing_pull_request_blocks_nothing(self) -> None:
+        settled = _task_on(Ticket.State.PR_OPENED)
+        _pull_request(settled.ticket, state=PullRequest.State.CLOSED, iid="1")
+
+        assert blocks_a_merge(DeferredQuestion.record("q", parked_task=settled)) is False
+        assert blocks_a_merge(DeferredQuestion.record("q", parked_task=_task_on(Ticket.State.CODED))) is False
+
+    def test_a_question_with_no_subject_ticket_blocks_nothing(self) -> None:
+        assert blocks_a_merge(DeferredQuestion.record("q", session_id="harness-uuid")) is False

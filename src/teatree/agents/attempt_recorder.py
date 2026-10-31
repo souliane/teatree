@@ -17,6 +17,7 @@ the two dispatch backends.
 import dataclasses
 import json
 from collections.abc import Mapping
+from functools import partial
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.utils import timezone
@@ -27,6 +28,7 @@ from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
+from teatree.agents.owner_stop_salvage import salvageable_refusal, withhold_refused_stop, without_owner_stop
 from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import (
     announce_completed_architectural_review,
@@ -233,7 +235,11 @@ def record_result_envelope(
     )
     if operator_inputs or "operator_inputs" in result:
         result = {**result, "operator_inputs": operator_inputs}
-    checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
+    check = partial(_check_before_recording, task, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
+    checked = check(result)
+    stripped = check(without_owner_stop(result)) if salvageable_refusal(checked.error, result) else None
+    refusal, stop = (checked.error, result) if stripped is not None and not stripped.error else ("", result)
+    checked = stripped if refusal and stripped is not None else checked
     result = checked.result
     if checked.error:
         return (
@@ -277,6 +283,8 @@ def record_result_envelope(
     except NoCurrentPlanError as exc:
         task.refresh_from_db()
         return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
+    if refusal:
+        withhold_refused_stop(task, stop, refusal)
     announce_completed_architectural_review(task, result, phase=phase)
     return attempt
 

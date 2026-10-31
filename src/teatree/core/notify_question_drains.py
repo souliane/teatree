@@ -45,6 +45,7 @@ from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, owner
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, bump_due, first_posted_at, owner_quiet_at, reask_key
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost, TicketDmThread
+from teatree.core.models.question_subject import blocks_a_merge
 from teatree.core.notify import NotifyKind, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.core.owner_dm.question_ticket import single_question_ticket_id
@@ -467,12 +468,14 @@ def drain_unmirrored_deferred_questions(
     resolved in this context) is left un-mirrored — the durable row IS the
     fallback — and retried next tick. Returns ``(mirrored, total)``.
 
-    First-time cards bypass quiet hours and count limits because an agent
-    waiting on an owner decision needs the card as soon as it is recorded.
+    Between 22:00 and 08:00 in the owner's zone only a card whose ticket has a live pull
+    request is posted; the rest stay pending and go out in the first pass at 08:00.
     The pass stops before its deadline; pending rows remain for the next pass.
     """
     end = _deadline_for_pass(deadline)
     rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)
+    if owner_quiet_now():
+        rows = [row for row in rows if blocks_a_merge(row)]
     if not rows:
         return 0, 0
 

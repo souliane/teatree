@@ -7,7 +7,7 @@ from teatree.core.modelkit.fibonacci import fibonacci_bump_index
 #: The unit of the per-question bump schedule: 1, 2, 4, 7, 12 … hours after the first post.
 REASK_UNIT = dt.timedelta(hours=1)
 
-#: Re-asks wait from 22:00 until 08:00 in the owner's zone; first cards post immediately.
+#: Re-asks and first cards wait from 22:00 until 08:00 in the owner's zone, except a card that blocks a merge.
 OWNER_QUIET_FROM = dt.time(22, 0)
 OWNER_QUIET_UNTIL = dt.time(8, 0)
 

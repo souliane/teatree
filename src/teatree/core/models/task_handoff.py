@@ -14,7 +14,8 @@ import logging
 from django.db import transaction
 
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.question_card import QuestionCard
+from teatree.core.modelkit.owner_decision import is_agent_card_marker
+from teatree.core.modelkit.question_card import QuestionCard, match_action_option
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
 RESUME_ANSWER_PREFIX = "The user answered your earlier question:"
 CARD_DISCUSSION_PREFIX = "Owner card discussion "
+OWNER_APPROVED_PREFIX = "Owner approved: "
 
 #: What :func:`dispatch_reason` DERIVES: true only while the dispatch actually resumes. Storing it
 #: froze it into the prompt, and a requeue that answered FRESH still told the agent to continue
@@ -59,25 +61,50 @@ def park_for_user_input(task: Task) -> None:
     question this ticket already asked resumes the task at once only through :func:`resume_on_answer`.
     """
     row = record_deferred_question(task)
-    if row.parked_task_id != task.pk:
+    if row.parked_task_id != task.pk or not row.is_pending:
         resume_on_answer(row, task)
 
 
 def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
-    """Resume *task* with *row*'s answer iff the owner answered an owner question about an open subject."""
+    """Resume *task*, or own the approved step when none waits, iff the owner answered about an open subject."""
     if (
-        task is None
-        or read_action(row.evidence) is not None
+        read_action(row.evidence) is not None
         or row.audience != DeferredQuestion.Audience.OWNER_QUESTION
         or not row.answered_on_owner_channel
         or finished_subject_reason(row) is not None
     ):
         return None
     try:
-        return schedule_resume(task, answer=row.answer_text, question=row.question)
+        return (
+            schedule_approved_step(row)
+            if task is None
+            else schedule_resume(task, answer=row.answer_text, question=row.question)
+        )
     except NoPlanArtifactError:
-        logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
+        logger.warning("Answer to question %s kept; no task was started for it", row.pk)
         return None
+
+
+def schedule_approved_step(row: DeferredQuestion) -> Task | None:
+    """Own the step the owner approved on a card no task waits on: one named task on its ticket, once per card.
+
+    Only a card an agent recorded through ``questions record`` and only its recommended option qualify: any other
+    producer reads its own answer, and a typed or declining answer approves nothing.
+    """
+    option = match_action_option(row.options_json, row.answer_text)
+    ticket = row.task_session.ticket if row.task_session is not None else None
+    last = ticket.tasks.order_by("-pk").first() if ticket is not None else None
+    if ticket is None or last is None or option is None or not option.recommended:
+        return None
+    if not is_agent_card_marker(row.dedupe_marker):
+        return None
+    marker = f"owner-approved:{row.pk}"
+    if existing := ticket.tasks.filter(execution_reason__endswith=marker).first():
+        return existing
+    refuse_unplanned_mint(ticket, phase=last.phase)
+    session = Session.objects.create(ticket=ticket, agent_id="owner-approved")
+    reason = f"{OWNER_APPROVED_PREFIX}{row.question} -> {option.label}: {option.description}\n{marker}"
+    return Task.objects.create(ticket=ticket, session=session, phase=last.phase, execution_reason=reason)
 
 
 def _parked_by(task: Task, prefix: str) -> bool:

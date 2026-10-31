@@ -23,7 +23,6 @@ on its next turn.
 """
 
 import datetime as dt
-import io
 from collections import Counter
 from collections.abc import Mapping
 from typing import IO, Annotated, TypedDict, cast
@@ -37,11 +36,13 @@ from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.question_coordinator import coordinate_answer
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.management.commands._owner_answer import answer_cards_as_owner
 from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import (
     OWNER_ANSWER_ROUTE,
     OWNER_QUESTION_ROUTE,
     OWNER_RAISABLE_DECISIONS,
+    agent_card_marker,
     owner_decision,
 )
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
@@ -50,7 +51,7 @@ from teatree.core.models.question_actions import dismiss_kept_for_owner
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
-from teatree.core.table_output import print_table
+from teatree.core.question_tables import QuestionReachRow, render_questions_table, render_reachability_table
 from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 
 
@@ -67,61 +68,6 @@ class DeferredQuestionRow(TypedDict):
     created_at: str | None
     escalated_at: str | None
     escalation_count: int
-
-
-class QuestionReachRow(TypedDict):
-    """One row of ``t3 <overlay> questions reachability --json``."""
-
-    id: int
-    has_subject: bool
-    resolvers: dict[str, str]
-
-
-def _render_reachability_table(rows: list["QuestionReachRow"]) -> str:
-    buffer = io.StringIO()
-    unreachable = sum(1 for row in rows if not row["resolvers"])
-    print_table(
-        ["ID", "Subject", "Resolvers"],
-        [
-            [
-                row["id"],
-                "yes" if row["has_subject"] else "no",
-                ", ".join(f"{name}={verdict}" for name, verdict in sorted(row["resolvers"].items())) or "—",
-            ]
-            for row in rows
-        ],
-        title=f"{len(rows)} pending, {unreachable} reachable by no resolver",
-        stream=buffer,
-        justify=["right", "left", "left"],
-    )
-    return buffer.getvalue()
-
-
-def _render_questions_table(rows: list[DeferredQuestion]) -> str:
-    buffer = io.StringIO()
-    escalated = sum(1 for row in rows if row.escalated_at is not None)
-    table_rows = [
-        [
-            row.pk,
-            row.status,
-            f"{row.escalation_count}x" if row.escalated_at is not None else "—",
-            row.created_at.isoformat() if row.created_at is not None else "?",
-            row.question,
-            row.answer_text,
-        ]
-        for row in rows
-    ]
-    title = f"{len(rows)} open question(s)"
-    if escalated:
-        title += f", {escalated} past the age ceiling"
-    print_table(
-        ["ID", "Status", "Escalated", "Created", "Question", "Answer"],
-        table_rows,
-        title=title,
-        stream=buffer,
-        justify=["right", "left", "right", "left", "left", "left"],
-    )
-    return buffer.getvalue()
 
 
 class Command(MachineOutputCommand):
@@ -248,7 +194,7 @@ class Command(MachineOutputCommand):
             self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OWNER_RAISABLE_DECISIONS)}")
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
-            dedupe_marker = f"{kind}:{question_fingerprint(question)}"
+            dedupe_marker = agent_card_marker(kind, question_fingerprint(question))
         card = None
         if kind is not None:
             options = CardOption.parse_all(options_json)
@@ -282,7 +228,7 @@ class Command(MachineOutputCommand):
         if kind is None:
             return f"recorded #{row.pk} internal, not sent to the owner; decide it yourself. {OWNER_QUESTION_ROUTE}"
         if row.answered_at is not None:
-            return f"#{row.pk} was already answered: {row.answer_text}"
+            return f"#{row.pk} is answered and not sent to the owner: {row.answer_text}"
         if row.dismissed_at is not None:
             return f"#{row.pk} was already dismissed: {row.dismissed_reason}"
         return f"recorded #{row.pk}."
@@ -323,7 +269,7 @@ class Command(MachineOutputCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_questions_table(rows) if rows else "no open questions.",
+            human=render_questions_table(rows) if rows else "no open questions.",
         )
         return payload
 
@@ -357,7 +303,7 @@ class Command(MachineOutputCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_reachability_table(payload) if payload else "no pending questions.",
+            human=render_reachability_table(payload) if payload else "no pending questions.",
         )
         return payload
 
@@ -377,7 +323,7 @@ class Command(MachineOutputCommand):
         ] = None,
         agent_surface: Annotated[bool, typer.Option("--agent-surface", hidden=True)] = False,
     ) -> str:
-        """Resolve pending internal questions; an owner question is answered only in its Slack thread.
+        """Resolve pending internal questions; an owner question is answered in its Slack thread.
 
         ``--also`` exists because one decision routinely settles several questions:
         a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -427,6 +373,36 @@ class Command(MachineOutputCommand):
         if not answered:
             raise SystemExit(1)
         return f"answered {len(answered)}: {', '.join(f'#{pk}' for pk in answered)}."
+
+    @command(name="answer-as-owner")
+    def answer_as_owner(
+        self,
+        question_id: int,
+        text: Annotated[str, typer.Argument(help="The answer the owner gave in their own session.")],
+        *,
+        also: Annotated[
+            list[int] | None,
+            typer.Option("--also", help="Another owner card this same answer resolves (repeatable)."),
+        ] = None,
+    ) -> str:
+        """Answer pending owner cards the owner is answering in their own session, never from a dispatched agent.
+
+        The card closes in Slack and the parked task resumes, as a tap does; ``answer`` still refuses owner cards.
+        """
+        if not text.strip():
+            self.stderr.write("answer text must not be empty")
+            raise SystemExit(2)
+        if is_dispatched_agent_process():
+            self.stderr.write("a dispatched agent cannot answer an owner card")
+            raise SystemExit(2)
+        outcome = answer_cards_as_owner([question_id, *(also or [])], text)
+        if outcome.already_answered:
+            self.stderr.write(f"already answered: {', '.join(f'#{pk}' for pk in outcome.already_answered)}")
+        if outcome.refused:
+            self.stderr.write(f"not an owner card a typed answer can close: {', '.join(map(str, outcome.refused))}")
+        if not outcome.answered:
+            raise SystemExit(1)
+        return f"answered {len(outcome.answered)}: {', '.join(f'#{pk}' for pk in outcome.answered)}."
 
     @command()
     def dismiss(

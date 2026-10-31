@@ -16,6 +16,7 @@ from teatree.agents.dispatch_preflight import (
     rubric_brief_lines,
 )
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
+from teatree.agents.owner_stop_salvage import withheld_stop_lines
 from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
 from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts, read_only_text
 from teatree.agents.result_schema import required_evidence_for_phase
@@ -168,6 +169,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     if queued:
         lines.extend(("", "Operator messages queued for this task's next run:", *queued))
 
+    lines.extend(withheld_stop_lines(task))
     lines.extend(
         ("", "Instructions:", *_OWNER_STOP_LINES, *_VERIFY_GATES_LINES, final_output_reminder_line(task.phase))
     )
