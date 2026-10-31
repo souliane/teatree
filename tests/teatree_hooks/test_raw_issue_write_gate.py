@@ -330,7 +330,7 @@ class TestTheBodyEditIsDenied:
     def test_a_body_edit_is_refused_and_names_publish(self, command: str) -> None:
         reason = raw_issue_write_deny_reason(command) or ""
         assert reason.startswith("BLOCKED:")
-        assert "publish" in reason
+        assert "publish pr-body" in reason
         assert is_raw_issue_write(command)
 
     @pytest.mark.parametrize("command", [pytest.param(row[1], id=row[0]) for row in NON_BODY_EDITS])
@@ -338,7 +338,7 @@ class TestTheBodyEditIsDenied:
         assert raw_issue_write_deny_reason(command) is None
 
     def test_both_lanes_refuse_it(self) -> None:
-        assert "publish" in (hard_deny_reason("gh pr edit 12 --body-file f.md") or "")
+        assert "publish pr-body" in (hard_deny_reason("gh pr edit 12 --body-file f.md") or "")
         assert (guard.issue_write_deny_reason("gh issue edit 12 --body x") or "").startswith("BLOCKED:")
 
 
