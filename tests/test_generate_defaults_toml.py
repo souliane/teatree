@@ -6,6 +6,7 @@ import pytest
 
 from scripts.hooks import generate_defaults_toml as gen
 from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declared_defaults import declared_defaults
 
 
 @pytest.fixture
@@ -45,3 +46,15 @@ def test_statusline_default_drift_is_reported(tmp_path: Path, monkeypatch: pytes
 
     assert gen.main([]) == 1
     assert target.read_text(encoding="utf-8") == drifted
+
+
+def test_statusline_block_renders_every_declared_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gen,
+        "declared_defaults",
+        lambda: {**declared_defaults(), "autoload": True, "loop_cadence_seconds": 900},
+    )
+
+    block = gen.render_statusline_defaults(gen.STATUSLINE_SH.read_text(encoding="utf-8"))
+
+    assert "_AUTOLOAD_DEFAULT=on\n_CADENCE_DEFAULT=900\n" in block

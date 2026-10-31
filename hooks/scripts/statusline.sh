@@ -228,9 +228,10 @@ _statusline_chain_db() {
 # Echoes exactly one of `on`, `off`, `unknown`. `unknown` is NOT `off`: it means a
 # store exists here that no tier could read, so the shipped default is a guess and
 # must not be rendered as the owner's stored choice.
-# BEGIN GENERATED: autoload default
+# BEGIN GENERATED: statusline defaults
 _AUTOLOAD_DEFAULT=off
-# END GENERATED: autoload default
+_CADENCE_DEFAULT=720
+# END GENERATED: statusline defaults
 autoload_state() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
@@ -717,7 +718,7 @@ fi
 _stale_banner=""
 _now=""
 if [[ "$_rendered_at" =~ ^[0-9]+$ ]]; then
-    [[ "$_sl_cadence" =~ ^[0-9]+$ ]] || _sl_cadence=720
+    [[ "$_sl_cadence" =~ ^[0-9]+$ ]] || _sl_cadence=$_CADENCE_DEFAULT
     _sl_cutoff=$(( 2 * _sl_cadence ))
     [ "$_sl_cutoff" -lt 300 ] && _sl_cutoff=300
     _now=$(date +%s)

@@ -394,9 +394,38 @@ def test_the_shell_uses_the_declared_autoload_default_when_the_store_is_empty(
     assert "declared default chip" in _strip_ansi(result.stdout)
 
 
-def test_committed_statusline_default_matches_the_generated_block() -> None:
+def test_the_shell_uses_the_declared_cadence_when_the_sidecar_carries_none(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = sandbox / "statusline.sh"
+    shutil.copy2(_SCRIPT, script)
+    defaults_file = sandbox / "defaults.toml"
+    shutil.copy2(DEFAULTS_TOML, defaults_file)
+    monkeypatch.setattr(defaults_generator, "STATUSLINE_SH", script, raising=False)
+    monkeypatch.setattr(defaults_generator, "DEFAULTS_TOML", defaults_file)
+    monkeypatch.setattr(
+        defaults_generator,
+        "declared_defaults",
+        lambda: {**declared_defaults(), "loop_cadence_seconds": 900},
+        raising=False,
+    )
+    monkeypatch.setattr(defaults_generator.generated_doc_staging, "stage", lambda _path: None)
+    monkeypatch.setattr(sys.modules[__name__], "_SCRIPT", script)
+    assert defaults_generator.main(["--write"]) == 0
+    target = sandbox / "statusline.txt"
+    render(StatuslineZones(anchors=["[acme] cadence chip"]), target=target, colorize=False)
+    rendered_age = 1500
+    (sandbox / "tick-meta.json").write_text(json.dumps({"rendered_at": int(time.time()) - rendered_age}) + "\n")
+
+    result = _run_shell(sandbox, statusline_file=target)
+
+    assert result.returncode == 0, result.stderr
+    assert "statusline STALE" not in _strip_ansi(result.stdout)
+
+
+def test_committed_statusline_defaults_match_the_generated_block() -> None:
     committed = _SCRIPT.read_text(encoding="utf-8")
-    assert defaults_generator.render_statusline_default(committed) == committed
+    assert defaults_generator.render_statusline_defaults(committed) == committed
 
 
 class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:

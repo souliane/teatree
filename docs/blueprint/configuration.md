@@ -393,7 +393,7 @@ The same worker pass also reclaims only abandoned `t3-verify-gates-*` and `t3-me
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
-| `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
+| `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. A non-positive value degrades to the default. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
 | `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker also runs one executor per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned), one for architectural review, and one per maintenance seat. Cheap classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
@@ -804,10 +804,21 @@ key requires an explicit `RETIRED` or `RENAMED` entry in that manifest.
 
 `effective_default` is the resolver's one no-override answer. The generated TOML is
 never read back as a resolution tier. `cold_defaults.py` retains only the cold-safe
-flattening primitive used by TOML interchange. The generated file is about 34 KB;
-its deployed live-system parse cost remains to be measured. A second runtime default source
-would add drift risk without a demonstrated cold-path saving, so Stage 2 runtime parsing
-is deferred until a measured reader needs it.
+flattening primitive used by TOML interchange. Readers take their fallback from the declared
+field default, and the statusline shell reads its two defaults from the generated
+`statusline defaults` block; `tests/teatree_config/test_declared_default_literals.py` fails when
+a module names a declared key and also holds an integer of 20 or more equal to its default.
+
+**A hand-authored `defaults.toml` as the default tier (Stage 2) is declined.** A new setting
+costs one declaration edit plus the generated rewrite: adding one `UserSettings` field and
+running `scripts/hooks/generate_defaults_toml.py --write` rewrote exactly `defaults.toml` and
+`declared_keys.txt`, one line each. Parsing is not the obstacle: `tomllib.loads` on the
+35,655-byte file has a median of 2.7-2.9 ms (`python3 -I`, 4 repeats of 50 runs, host load
+average 17) and 3.1-13.8 ms on the deployed box ([#4994](https://github.com/souliane/teatree/issues/4994)).
+Hand-authoring the file would turn the one edit into two and add a second runtime default
+source. Reopen only when a measured hook reader needs a packaged default; the design then
+covers the unset, computed, per-overlay, personal and secret keys, a hook-latency control, the
+missing-file posture, the four overlay-seed behaviours and a schema gate.
 The subprocess control in `tests/config/test_cold_defaults.py` still pins that this
 interchange helper imports neither pydantic nor Django.
 
@@ -1051,6 +1062,12 @@ Every entry in the `peer_instances` registry appears as an import-required row. 
 disabled because every dashboard API requires a signed-in staff session. No peer credential or
 credential route is configured for comparison. The operator signs in to each peer, downloads its
 snapshot, then imports the file here or through `t3 settings compare --snapshot`.
+
+Each row's `if imported: X` label names what applying the first OTHER instance's value to THIS
+box does, and Use here acts on that same classification: a peer at its shipped default is a
+`clear` of this box's row, any other differing peer value an `import`, and only this box's own
+`T3_*` pin makes a row `shadowed`. With several peers the label follows the first that holds a
+value; each peer's own button stays exact.
 
 * **Loaded from a saved snapshot file** (`core.settings.settings_files`). The page's one POST carries
     snapshot documents — picked files (`snapshot_files`, several at a time) or JSON pasted into

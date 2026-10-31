@@ -112,6 +112,44 @@ class TestSettingsCompareManagementCommand(TestCase):
             expected=[("alpha", "merge_wip")],
         )
 
+    def test_the_defaults_list_global_differences_only(self) -> None:
+        def box(label: str, merge_wip: int, alpha: int) -> PeerSnapshot:
+            return PeerSnapshot(
+                label=label,
+                url="" if label == "this instance" else "http://127.0.0.1/peer",
+                note="",
+                payload={
+                    "format": SNAPSHOT_FORMAT,
+                    "format_version": 2,
+                    "fingerprint": {},
+                    "registry": {
+                        "settings": {
+                            "merge_wip": {"family": "setting", "group": "Agents"},
+                            "autoload": {"family": "setting", "group": "Agents"},
+                        }
+                    },
+                    "values": {
+                        "settings": {
+                            "": {"merge_wip": merge_wip, "autoload": False},
+                            "alpha": {"merge_wip": alpha},
+                        },
+                        "defaults": {},
+                        "provenance": {},
+                        "seed": {},
+                        "seed_shipped": {},
+                    },
+                },
+            )
+
+        with (
+            patch.object(settings_compare_module, "local_snapshot", return_value=box("this instance", 2, 4)),
+            patch.object(settings_compare_module, "peer_snapshots", return_value=(box("peer", 3, 5),)),
+        ):
+            result = CliRunner().invoke(app, ["settings", "compare", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert [(row["scope"], row["key"]) for row in json.loads(result.stdout)["rows"]] == [("", "merge_wip")]
+
     def test_all_rows_heading_counts_differences_only(self) -> None:
         def box(label: str, merge_wip: int) -> PeerSnapshot:
             return PeerSnapshot(

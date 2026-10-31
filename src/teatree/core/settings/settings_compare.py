@@ -71,7 +71,7 @@ from teatree.core.settings.settings_compare_sync import SEED, SETTING
 from teatree.core.settings.settings_compat import CompatReport, build_compat_report
 from teatree.core.settings.settings_files import LEGACY_FORMAT_VERSION
 from teatree.core.settings.settings_peers import PeerSnapshot, local_snapshot, peer_snapshots
-from teatree.core.settings_snapshot import FORMAT_VERSION, canonical_json
+from teatree.core.settings_snapshot import FORMAT_VERSION
 from teatree.core.settings_snapshot.payload import setting_family
 from teatree.core.settings_snapshot.withholding import carries_stub
 
@@ -268,8 +268,6 @@ def _setting_rows(live: Sequence[PeerSnapshot], scope_filter: str) -> list[Compa
                     sync_note=str(meta.get("sync_note", "")),
                     redacted=any(_is_redacted(instance, scope, key) for instance in live),
                     category=str(meta.get("category", "")),
-                    equals_shipped_default=_equals_default(live, scope, key),
-                    env_shadowed=any(_source(instance, scope, key) == ENV_SOURCE for instance in live),
                     source=_local_source(live, scope, key),
                     control=controls.get(key),
                 )
@@ -384,7 +382,6 @@ def _seed_rows(live: Sequence[PeerSnapshot]) -> list[CompareRow]:
                         syncable=meta.get("syncable", True) is not False,
                         sync_note=str(meta.get("sync_note", "")),
                         redacted=any(_seed_is_redacted(instance, table, name, field) for instance in live),
-                        equals_shipped_default=_equals_seed_default(live, table, name, field),
                         seed_shipped=_seed_is_shipped(live, table, name),
                     )
                 )
@@ -473,25 +470,6 @@ def _source(instance: PeerSnapshot, scope: str, key: str) -> str:
         return str(here[key])
     globally = all_scopes.get("")
     return str(globally.get(key, "")) if isinstance(globally, Mapping) else ""
-
-
-def _equals_default(live: Sequence[PeerSnapshot], scope: str, key: str) -> bool:
-    stored = [_setting_bucket(instance, scope)[key] for instance in live if key in _setting_bucket(instance, scope)]
-    if not stored:
-        return False
-    target = next((instance for instance in live if instance.local), live[0])
-    defaults = _values(target, "defaults")
-    return _default_recorded(target, key) and canonical_json(stored[0]) == canonical_json(defaults[key])
-
-
-def _equals_seed_default(live: Sequence[PeerSnapshot], table: str, name: str, field: str) -> bool:
-    shipped = _values(live[0], "seed_shipped").get(table, {}).get(name)
-    if not isinstance(shipped, Mapping) or field not in shipped:
-        return False
-    entity = _values(live[0], "seed").get(table, {}).get(name)
-    if not isinstance(entity, Mapping) or field not in entity:
-        return False
-    return canonical_json(entity[field]) == canonical_json(shipped[field])
 
 
 __all__ = [
