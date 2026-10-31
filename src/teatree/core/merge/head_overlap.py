@@ -2,7 +2,8 @@
 
 The merge keystone and the red-PR fix dispatch both ask :func:`overlap_refusal` before they
 act, so two PRs that edit the same lines are serialised (older PR number first) instead of
-both being worked or merged and the second one conflicting.
+both being worked or merged and the second one conflicting. An older PR that is a draft or
+stands on a review hold cannot merge first, so it holds nothing back.
 """
 
 import itertools
@@ -14,7 +15,8 @@ from typing import Protocol
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.merge.carrier import carried_pr_ids, frozen_by_carrier
 from teatree.core.merge.ci_rollup import CodeHostQuery
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import PullRequest, ReviewVerdict, Ticket
+from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.core.worktree.branch_currency import predict_merge_conflicts
 from teatree.core.worktree.clone_paths import matching_clone
 from teatree.types import RawAPIDict
@@ -51,6 +53,8 @@ class OpenHead:
     sha: str
     ticket_id: int | None = None
     carries: frozenset[int] = field(default_factory=frozenset)
+    draft: bool = False
+    held: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +109,9 @@ def read_open_heads(repo: str, *, host: OpenPrLister) -> tuple[OpenHead, ...]:
                 sha=sha,
                 ticket_id=ticket_by_iid.get(str(pr_id)),
                 carries=carried_pr_ids(body, repo=repo),
+                draft=bool(raw.get("draft") or raw.get("isDraft")),
+                held=ReviewVerdict.objects.effective_state_at(slug=repo, pr_id=pr_id, head_sha=sha)
+                is HeadVerdictState.HOLD,
             )
         )
     return tuple(heads)
@@ -190,6 +197,11 @@ def overlap_refusal(
         return (
             f"the open PR heads of {ref.slug} could not be read ({exc}); an unreadable list cannot rule out an overlap"
         )
+    if ref.pr_id not in {head.pr_id for head in heads}:
+        return (
+            f"the open PR list of {ref.slug} does not name {ref.slug}#{ref.pr_id}; "
+            f"an incomplete list cannot rule out an overlap"
+        )
     clone = repo_dir or (str(path) if (path := matching_clone(ref.slug)) else "")
     if not clone:
         return _no_clone_refusal(ref.slug, heads)
@@ -209,6 +221,8 @@ def _no_clone_refusal(slug: str, heads: tuple[OpenHead, ...]) -> str | None:
 
 
 def _pair_refusal(ref: PrRef, pair: PairOverlap, clone: str) -> str | None:
+    if pair.older.draft or pair.older.held:
+        return None
     older = f"{ref.slug}#{pair.older.pr_id}"
     if pair.verdict is OverlapVerdict.UNREADABLE:
         return (

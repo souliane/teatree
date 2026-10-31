@@ -181,6 +181,15 @@ class TestHoldMintedTaskRereadsFirst(TestCase):
         assert "already_fixed" in task.execution_reason
         assert "verified_head" in task.execution_reason
 
+    def test_a_ticket_with_unrelated_extra_but_no_hold_gets_no_clause(self) -> None:
+        ticket = planned_ticket(
+            role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, extra={"review_context": "cold", "kind": "fix"}
+        )
+
+        task = ticket.schedule_implementing("debugging", reason="Auto-scheduled fix")
+
+        assert task.execution_reason == "Auto-scheduled fix"
+
     def test_a_task_minted_without_a_hold_is_unchanged(self) -> None:
         ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
 

@@ -17,7 +17,7 @@ from teatree.core.merge.head_overlap import (
     pair_overlaps,
     read_open_heads,
 )
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import Finding, PullRequest, ReviewVerdict, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.merge.overlap_helpers import (
     NUMBERS,
@@ -164,6 +164,35 @@ class TestOverlapRefusal(TestCase):
         assert refusal is not None
         assert f"{_SLUG}#11" in refusal
         assert "shared.txt" in refusal
+
+    def test_a_draft_older_pr_does_not_hold_the_newer_one_back(self) -> None:
+        repo, shas = self.repo, self.shas
+        host = forge_for(shas)
+        host.prs[0]["draft"] = True
+
+        assert overlap_refusal(ref=self._ref(12), ticket=None, host=host, repo_dir=str(repo)) is None
+
+    def test_an_older_pr_on_a_review_hold_does_not_hold_the_newer_one_back(self) -> None:
+        repo, shas = self.repo, self.shas
+        ReviewVerdict.record(
+            pr_id=11,
+            slug=_SLUG,
+            reviewed_sha=shas["a"],
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="failed",
+            findings=[Finding(severity="blocker", summary="wrong behaviour")],
+        )
+
+        assert overlap_refusal(ref=self._ref(12), ticket=None, host=forge_for(shas), repo_dir=str(repo)) is None
+
+    def test_a_pr_the_open_list_does_not_name_is_refused_not_passed(self) -> None:
+        host = RecordingForge([])
+
+        refusal = overlap_refusal(ref=self._ref(12), ticket=None, host=host, repo_dir=str(self.repo))
+
+        assert refusal is not None
+        assert f"does not name {_SLUG}#12" in refusal
 
     def test_the_older_pr_merges(self) -> None:
         repo, shas = self.repo, self.shas
