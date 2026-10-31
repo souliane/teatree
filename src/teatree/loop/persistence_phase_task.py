@@ -12,8 +12,7 @@ import logging
 from django.db import transaction
 
 from teatree.core.models import Task, Ticket
-from teatree.core.models.conversation_ticket import refuse_conversation_mint
-from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.plan_decision import refuse_conversation_mint, refuse_unplanned_mint
 
 logger = logging.getLogger(__name__)
 

@@ -12,9 +12,8 @@ from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.carrier_freeze import refuse_frozen_mint
-from teatree.core.models.conversation_ticket import refuse_conversation_mint
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
-from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_conversation_mint, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths, dispatch_worktree
 from teatree.utils import git

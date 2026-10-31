@@ -30,7 +30,6 @@ from django_fsm import can_proceed
 from teatree.backends.issue_close import IssueCloseVerdict
 from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
-from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT
 from teatree.core.worktree.unshipped_work import escalate_unshipped_work_once, unshipped_work_paths
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_reads import read_per_overlay
@@ -60,6 +59,7 @@ def closed_issue_transitions(
     resurrected it. One rule per row per run.
     """
     from teatree.core.models import Task, ThreadBinding, Ticket  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT  # noqa: PLC0415 — deferred
 
     since = timezone.now() - CONVERSATION_QUIET_LIMIT
     candidates = without_voided(

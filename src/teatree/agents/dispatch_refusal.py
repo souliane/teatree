@@ -5,8 +5,7 @@ from typing import TYPE_CHECKING
 from teatree.agents.runner_budget import TicketBudget
 from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
 from teatree.core.gates.review_recordability_gate import unrecordable_review_refusal
-from teatree.core.models.conversation_ticket import conversation_refusal
-from teatree.core.models.plan_decision import plan_missing_refusal
+from teatree.core.models.plan_decision import conversation_refusal, plan_missing_refusal
 
 if TYPE_CHECKING:
     from teatree.core.models import Task

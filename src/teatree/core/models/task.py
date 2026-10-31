@@ -11,10 +11,9 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, exhausted_the_conversation
-from teatree.core.models.conversation_ticket import refuse_conversation_mint
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
-from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_conversation_mint, refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task_attempt_settlement import AttemptInput
 from teatree.core.models.task_attempt_settlement import complete_with_attempt as _complete_with_attempt

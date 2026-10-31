@@ -21,9 +21,8 @@ from django_fsm import TransitionNotAllowed
 
 from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models.conversation_ticket import conversation_refusal
 from teatree.core.models.errors import TaskMintRefusedError
-from teatree.core.models.plan_decision import plan_missing_refusal
+from teatree.core.models.plan_decision import conversation_refusal, plan_missing_refusal
 from teatree.core.models.task_enqueue import phase_eligible
 from teatree.core.models.ticket import Ticket
 from teatree.dash import audit

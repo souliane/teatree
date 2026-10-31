@@ -15,10 +15,9 @@ from django.db import transaction
 
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.models.conversation_ticket import refuse_conversation_mint
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import TaskMintRefusedError
-from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.plan_decision import refuse_conversation_mint, refuse_unplanned_mint
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session

@@ -1,15 +1,5 @@
 """Bounded corrective instructions for failed phase attempts."""
 
-from teatree.agents.envelope_contract import corrective_instruction, refused_envelope_instruction
-from teatree.agents.envelope_refusal import (
-    is_comment_check_refusal,
-    is_no_envelope_refusal,
-    is_owner_stop_refusal,
-    is_recorder_refusal,
-    is_review_shape_refusal,
-    is_rubric_grades_refusal,
-    is_unparseable_envelope_refusal,
-)
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import Task
@@ -34,6 +24,17 @@ def corrective_note(task: Task, error: str) -> str | None:
     a withheld verdict is still a judgement to surface. The reopened row resumes its conversation.
     ``None`` for a genuine defect or a spent retry.
     """
+    from teatree.agents.envelope_contract import (  # noqa: PLC0415 — deferred: off the cold tick
+        corrective_instruction,
+        refused_envelope_instruction,
+    )
+    from teatree.agents.envelope_refusal import (  # noqa: PLC0415 — deferred: off the cold tick
+        is_comment_check_refusal,
+        is_no_envelope_refusal,
+        is_recorder_refusal,
+        is_review_shape_refusal,
+    )
+
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
     phase = normalize_phase(task.phase)
@@ -61,6 +62,13 @@ def corrective_note(task: Task, error: str) -> str | None:
 
 
 def _specific_refusal_note(phase: str, error: str) -> str | None:
+    from teatree.agents.envelope_contract import corrective_instruction  # noqa: PLC0415 — deferred: off the cold tick
+    from teatree.agents.envelope_refusal import (  # noqa: PLC0415 — deferred: off the cold tick
+        is_owner_stop_refusal,
+        is_rubric_grades_refusal,
+        is_unparseable_envelope_refusal,
+    )
+
     if is_unparseable_envelope_refusal(error):
         if phase in CORRECTIVE_PHASES:
             return corrective_instruction(phase)

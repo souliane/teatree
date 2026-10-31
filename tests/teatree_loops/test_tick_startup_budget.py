@@ -9,6 +9,13 @@ import pytest
 _FORBIDDEN = ("claude_agent_sdk", "mcp", "openai", "pydantic_ai", "litellm", "anthropic")
 # Within 3% of the 1992-module cold path measured in the review venue.
 _MAX_TICK_IMPORT_MODULES = 2052
+# The tick has no use for these: each is imported where it is called, so the budget above is not spent on them.
+_OFF_THE_TICK = (
+    "teatree.agents.result_schema",
+    "teatree.agents.result_schema_answering",
+    "teatree.core.modelkit.coordinator_action",
+    "teatree.core.models.conversation_ticket",
+)
 _PROBE = """
 import json, sys
 from teatree.utils.django_bootstrap import ensure_django
@@ -25,9 +32,9 @@ print(json.dumps({{
 """
 
 
-def _tick_import_graph() -> dict[str, object]:
+def _tick_import_graph(roots: tuple[str, ...] = _FORBIDDEN) -> dict[str, object]:
     completed = subprocess.run(
-        [sys.executable, "-c", _PROBE.format(roots=_FORBIDDEN)],
+        [sys.executable, "-c", _PROBE.format(roots=roots)],
         capture_output=True,
         text=True,
         timeout=300,
@@ -45,3 +52,7 @@ def test_cold_tick_import_keeps_agent_sdks_out() -> None:
     assert graph["limits_loaded"] is True
     assert graph["loaded"] == []
     assert int(graph["count"]) <= _MAX_TICK_IMPORT_MODULES
+
+
+def test_cold_tick_import_keeps_the_answering_schema_and_the_conversation_constant_out() -> None:
+    assert _tick_import_graph(_OFF_THE_TICK)["loaded"] == []

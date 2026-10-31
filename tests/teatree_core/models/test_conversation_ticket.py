@@ -8,8 +8,8 @@ from django.test import TestCase
 
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.core.models import NoPlanArtifactError, ThreadBinding, Ticket
-from teatree.core.models.conversation_ticket import CONVERSATION_REFUSED_PREFIX
 from teatree.core.models.errors import TaskMintRefusedError
+from teatree.core.models.plan_decision import CONVERSATION_REFUSED_PREFIX
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_enqueue import enqueue_phase_task
