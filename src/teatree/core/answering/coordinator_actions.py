@@ -10,14 +10,23 @@ refusal, never a model claim that an action happened.
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from django.db import transaction
 
+from teatree.core.answering.question_coordinator import coordinate_answer, matching_owner_basis
 from teatree.core.managers_issue_match import reference_issue_q
-from teatree.core.modelkit.coordinator_action import CoordinatorActionKind, action_refusal
-from teatree.core.models import Task, ThreadBinding, Ticket
+from teatree.core.modelkit.coordinator_action import (
+    MESSAGE_PEER_MAX_CHARS,
+    CoordinatorActionKind,
+    action_refusal,
+    card_refusal,
+)
+from teatree.core.modelkit.question_card import QuestionCard
+from teatree.core.models import DeferredQuestion, Task, ThreadBinding, Ticket
 from teatree.core.models.task_enqueue import enqueue_phase_task
 from teatree.url_classify import find_forge_refs
 from teatree.utils.url_slug import is_slack_conversation_anchor
@@ -25,6 +34,8 @@ from teatree.utils.url_slug import is_slack_conversation_anchor
 logger = logging.getLogger(__name__)
 
 AUDIT_KEY = "coordinator_actions"
+
+_CARD_MENTION = re.compile(r"(?i)(?:\b(?:card|question)s?\s*#?|#)([0-9]{1,18})")
 
 
 class ActionRefusedError(Exception):
@@ -35,6 +46,27 @@ class ActionRefusedError(Exception):
 class ActionOutcome:
     executed: bool
     detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class PeerReceipt:
+    """The mailbox's answer: ``accepted`` only when the peer took the message, else *detail* says why not."""
+
+    accepted: bool
+    detail: str
+
+
+class PeerMessenger(Protocol):
+    """Sends *text* to the one live agent on *ticket*; core holds no mailbox, so the caller supplies this."""
+
+    def __call__(self, ticket: Ticket, text: str, key: str) -> PeerReceipt: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ActionContext:
+    task: Task
+    key: str
+    messenger: PeerMessenger | None
 
 
 def _owner_message(conversation: Ticket) -> str:
@@ -49,8 +81,16 @@ def _tracked_ticket(conversation: Ticket, named: str) -> Ticket:
     return target
 
 
-def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
-    conversation = task.ticket
+def _named_ticket(conversation: Ticket, named: str) -> Ticket:
+    recorded = str(conversation.slack_answer_context().get("work_issue_url") or "")
+    if named != recorded and named not in find_forge_refs(_owner_message(conversation)):
+        message = "the conversation does not identify that work ticket"
+        raise ActionRefusedError(message)
+    return _tracked_ticket(conversation, named)
+
+
+def _bind_thread(context: ActionContext, arguments: Mapping[str, object]) -> str:
+    conversation = context.task.ticket
     if not is_slack_conversation_anchor(conversation.issue_url):
         message = "the task's ticket is not a Slack conversation"
         raise ActionRefusedError(message)
@@ -68,8 +108,8 @@ def _bind_thread(task: Task, arguments: Mapping[str, object]) -> str:
     return f"Bound this thread to <{target.issue_url}|#{target.ticket_number}>."
 
 
-def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
-    conversation = task.ticket
+def _queue_task(context: ActionContext, arguments: Mapping[str, object]) -> str:
+    conversation = context.task.ticket
     if not conversation.is_conversation():
         message = "the task's ticket is not a conversation"
         raise ActionRefusedError(message)
@@ -77,14 +117,7 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
     if not isinstance(named, str) or not named:
         message = "queue_task needs a ticket URL"
         raise ActionRefusedError(message)
-    if named == conversation.issue_url:
-        target = conversation
-    else:
-        recorded = str(conversation.slack_answer_context().get("work_issue_url") or "")
-        if named != recorded and named not in find_forge_refs(_owner_message(conversation)):
-            message = "the conversation does not identify that work ticket"
-            raise ActionRefusedError(message)
-        target = _tracked_ticket(conversation, named)
+    target = conversation if named == conversation.issue_url else _named_ticket(conversation, named)
     with transaction.atomic():
         target = Ticket.objects.select_for_update().get(pk=target.pk)
         if target.state not in Ticket.EARLY_STATES:
@@ -106,9 +139,62 @@ def _queue_task(task: Task, arguments: Mapping[str, object]) -> str:
     return f"Planning is queued as TODO-{queued.pk}."
 
 
-_PROCESSORS: Mapping[CoordinatorActionKind, Callable[[Task, Mapping[str, object]], str]] = {
+def _settle_card(context: ActionContext, arguments: Mapping[str, object]) -> str:
+    card = arguments.get("card")
+    if not isinstance(card, str) or not re.fullmatch(r"[0-9]{1,18}", card):
+        message = "settle_card needs a card number"
+        raise ActionRefusedError(message)
+    if int(card) not in {int(named) for named in _CARD_MENTION.findall(_owner_message(context.task.ticket))}:
+        message = "the owner's message does not name that card"
+        raise ActionRefusedError(message)
+    row = DeferredQuestion.owner_pending().filter(pk=int(card)).first()
+    if row is None:
+        message = "no pending owner card has that number"
+        raise ActionRefusedError(message)
+    question_card = QuestionCard.from_row(row.evidence, row.options_json) if isinstance(row.evidence, dict) else None
+    if refusal := card_refusal(question_card.decision if question_card is not None else None):
+        raise ActionRefusedError(refusal)
+    basis = matching_owner_basis(row)
+    if basis is None:
+        message = "no recorded owner answer matches that card"
+        raise ActionRefusedError(message)
+    settled = coordinate_answer(row, basis, basis.answer_text)
+    if settled is None:
+        message = "that card cannot be settled from the owner's earlier answer"
+        raise ActionRefusedError(message)
+    return f"Settled card {settled.pk} with your earlier answer: {settled.answer_text}"
+
+
+def _message_peer(context: ActionContext, arguments: Mapping[str, object]) -> str:
+    conversation = context.task.ticket
+    if not conversation.is_conversation():
+        message = "the task's ticket is not a conversation"
+        raise ActionRefusedError(message)
+    named, text = arguments.get("ticket"), arguments.get("text")
+    if not isinstance(named, str) or not named:
+        message = "message_peer needs a ticket URL"
+        raise ActionRefusedError(message)
+    if not isinstance(text, str) or not text.strip():
+        message = "message_peer needs a message"
+        raise ActionRefusedError(message)
+    if len(text) > MESSAGE_PEER_MAX_CHARS:
+        message = f"message_peer text is over {MESSAGE_PEER_MAX_CHARS} characters"
+        raise ActionRefusedError(message)
+    target = _named_ticket(conversation, named)
+    if context.messenger is None:
+        message = "no live mailbox is connected in this process"
+        raise ActionRefusedError(message)
+    receipt = context.messenger(target, text, context.key)
+    if not receipt.accepted:
+        raise ActionRefusedError(receipt.detail)
+    return f"Sent your message to the agent working on <{target.issue_url}|#{target.ticket_number}>."
+
+
+_PROCESSORS: Mapping[CoordinatorActionKind, Callable[[ActionContext, Mapping[str, object]], str]] = {
     CoordinatorActionKind.BIND_THREAD: _bind_thread,
     CoordinatorActionKind.QUEUE_TASK: _queue_task,
+    CoordinatorActionKind.SETTLE_CARD: _settle_card,
+    CoordinatorActionKind.MESSAGE_PEER: _message_peer,
 }
 
 
@@ -117,7 +203,7 @@ def _key(task: Task, kind: str, arguments: Mapping[str, object]) -> str:
     return hashlib.sha256(identity.encode()).hexdigest()[:24]
 
 
-def _run_one(task: Task, request: object) -> ActionOutcome | None:
+def _run_one(task: Task, request: object, messenger: PeerMessenger | None) -> ActionOutcome | None:
     if not isinstance(request, dict):
         return ActionOutcome(executed=False, detail="an action must be an object")
     kind = str(request.get("kind") or "")
@@ -129,7 +215,8 @@ def _run_one(task: Task, request: object) -> ActionOutcome | None:
         outcome = ActionOutcome(executed=False, detail=refusal)
     else:
         try:
-            outcome = ActionOutcome(executed=True, detail=_PROCESSORS[CoordinatorActionKind(kind)](task, arguments))
+            context = ActionContext(task=task, key=key, messenger=messenger)
+            outcome = ActionOutcome(executed=True, detail=_PROCESSORS[CoordinatorActionKind(kind)](context, arguments))
         except ActionRefusedError as exc:
             outcome = ActionOutcome(executed=False, detail=str(exc))
     task.ticket.merge_extra(
@@ -147,14 +234,14 @@ def _audit(ticket: Ticket) -> Mapping[str, object]:
     return audit if isinstance(audit, dict) else {}
 
 
-def run_coordinator_actions(task: Task, requests: object) -> list[str]:
+def run_coordinator_actions(task: Task, requests: object, *, messenger: PeerMessenger | None = None) -> list[str]:
     """Owner-visible outcomes for each proposal, including refusals and partial failure."""
     if not isinstance(requests, list):
         return []
     receipts: list[str] = []
     for request in requests:
         try:
-            outcome = _run_one(task, request)
+            outcome = _run_one(task, request, messenger)
         except Exception:
             logger.exception("Coordinator action failed for task %s", task.pk)
             kind = str(request.get("kind") or "action") if isinstance(request, dict) else "action"

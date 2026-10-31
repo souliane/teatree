@@ -1,5 +1,6 @@
 """The coordinator's action table is closed, and no row of it can cross one of the owner's four limits (#5685)."""
 
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -8,9 +9,9 @@ from teatree.core.modelkit.coordinator_action import (
     ACTION_SPECS,
     ALLOWED_DESTINATIONS,
     ActionDestination,
-    ActionSpec,
     CoordinatorActionKind,
     action_refusal,
+    card_refusal,
 )
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
 
@@ -34,11 +35,7 @@ class TestEveryKindIsBoundedByTheOwnersLimits:
 class TestTheRuntimeCheckRefuses:
     def test_a_declared_destination_outside_the_owner_boundary(self) -> None:
         kind = CoordinatorActionKind.QUEUE_TASK
-        outside = ActionSpec(
-            destination=ActionDestination.COLLEAGUE_MESSAGE,
-            crosses=frozenset(),
-            arguments=ACTION_SPECS[kind].arguments,
-        )
+        outside = replace(ACTION_SPECS[kind], destination=ActionDestination.COLLEAGUE_MESSAGE)
 
         with patch.dict(ACTION_SPECS, {kind: outside}):
             refusal = action_refusal(kind, {"ticket": "https://github.com/o/r/issues/1"})
@@ -58,13 +55,54 @@ class TestTheRuntimeCheckRefuses:
     @pytest.mark.parametrize("decision", sorted(OWNER_KEPT_DECISIONS))
     def test_a_row_that_would_cross_a_kept_decision(self, decision: OwnerDecision) -> None:
         kind = next(iter(CoordinatorActionKind))
-        crossing = ActionSpec(
-            destination=ACTION_SPECS[kind].destination,
-            crosses=frozenset({decision}),
-            arguments=ACTION_SPECS[kind].arguments,
-        )
+        crossing = replace(ACTION_SPECS[kind], crosses=frozenset({decision}))
 
         with patch.dict(ACTION_SPECS, {kind: crossing}):
             refusal = action_refusal(kind, dict.fromkeys(crossing.arguments, "x"))
 
         assert decision in refusal
+
+
+class TestTheTableHoldsExactlyTheFourKinds:
+    def test_the_kinds_are_the_four_the_owner_approved(self) -> None:
+        assert {kind.value for kind in CoordinatorActionKind} == {
+            "bind_thread",
+            "queue_task",
+            "settle_card",
+            "message_peer",
+        }
+
+    def test_settle_card_takes_a_card_and_lands_on_the_owners_own_channel(self) -> None:
+        spec = ACTION_SPECS[CoordinatorActionKind.SETTLE_CARD]
+
+        assert (spec.arguments, spec.destination) == (frozenset({"card"}), ActionDestination.OWNER_THREAD)
+
+    def test_message_peer_takes_a_ticket_and_text_and_lands_on_a_bound_ticket(self) -> None:
+        spec = ACTION_SPECS[CoordinatorActionKind.MESSAGE_PEER]
+
+        assert (spec.arguments, spec.destination) == (frozenset({"ticket", "text"}), ActionDestination.BOUND_TICKET)
+
+    def test_a_colleague_destination_is_never_allowed(self) -> None:
+        assert ActionDestination.COLLEAGUE_MESSAGE not in ALLOWED_DESTINATIONS
+
+    def test_message_peer_planted_on_a_colleague_destination_is_refused(self) -> None:
+        kind = CoordinatorActionKind.MESSAGE_PEER
+        to_colleague = replace(ACTION_SPECS[kind], destination=ActionDestination.COLLEAGUE_MESSAGE)
+
+        with patch.dict(ACTION_SPECS, {kind: to_colleague}):
+            refusal = action_refusal(kind, {"ticket": "https://github.com/o/r/issues/1", "text": "hello"})
+
+        assert "outside the owner's thread" in refusal
+
+
+class TestACardTheOwnerKeepsIsNeverSettled:
+    @pytest.mark.parametrize("decision", sorted(OWNER_KEPT_DECISIONS))
+    def test_a_card_deciding_one_of_the_four_limits_is_refused_naming_the_limit(self, decision: OwnerDecision) -> None:
+        assert card_refusal(decision) == f"settle_card would cross the owner's {decision} limit"
+
+    def test_a_card_with_no_recorded_decision_kind_is_refused(self) -> None:
+        assert card_refusal(None) == "settle_card needs a card with a recorded decision kind"
+
+    @pytest.mark.parametrize("decision", [OwnerDecision.ARCHITECTURE, OwnerDecision.PRODUCT_SCOPE])
+    def test_a_card_deciding_none_of_the_limits_is_not_refused_here(self, decision: OwnerDecision) -> None:
+        assert card_refusal(decision) == ""
