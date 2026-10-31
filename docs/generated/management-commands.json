@@ -933,8 +933,8 @@
           "name": "list"
         },
         {
-          "help": "Answer pending owner cards the owner is answering in this attended session, never from a dispatched agent",
-          "name": "answer-attended"
+          "help": "Answer pending owner cards the owner is answering in their own session, never from a dispatched agent",
+          "name": "answer-as-owner"
         }
       ]
     },

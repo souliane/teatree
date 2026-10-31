@@ -36,7 +36,7 @@ from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.question_coordinator import coordinate_answer
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.management.commands._attended_answer import answer_attended
+from teatree.core.management.commands._owner_answer import answer_cards_as_owner
 from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import (
     OWNER_ANSWER_ROUTE,
@@ -374,18 +374,18 @@ class Command(MachineOutputCommand):
             raise SystemExit(1)
         return f"answered {len(answered)}: {', '.join(f'#{pk}' for pk in answered)}."
 
-    @command(name="answer-attended")
-    def answer_attended_card(
+    @command(name="answer-as-owner")
+    def answer_as_owner(
         self,
         question_id: int,
-        text: Annotated[str, typer.Argument(help="The answer the owner gave in this attended session.")],
+        text: Annotated[str, typer.Argument(help="The answer the owner gave in their own session.")],
         *,
         also: Annotated[
             list[int] | None,
             typer.Option("--also", help="Another owner card this same answer resolves (repeatable)."),
         ] = None,
     ) -> str:
-        """Answer pending owner cards the owner is answering in this attended session, never from a dispatched agent.
+        """Answer pending owner cards the owner is answering in their own session, never from a dispatched agent.
 
         The card closes in Slack and the parked task resumes, as a tap does; ``answer`` still refuses owner cards.
         """
@@ -395,7 +395,7 @@ class Command(MachineOutputCommand):
         if is_dispatched_agent_process():
             self.stderr.write("a dispatched agent cannot answer an owner card")
             raise SystemExit(2)
-        outcome = answer_attended([question_id, *(also or [])], text)
+        outcome = answer_cards_as_owner([question_id, *(also or [])], text)
         if outcome.already_answered:
             self.stderr.write(f"already answered: {', '.join(f'#{pk}' for pk in outcome.already_answered)}")
         if outcome.refused:

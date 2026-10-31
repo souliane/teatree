@@ -1,4 +1,4 @@
-"""An owner answer typed in an attended session closes the card and resumes the parked task, as a tap does (#5096)."""
+"""An owner answer typed in the owner's own session closes the card and resumes the parked task (#5096)."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,13 +10,13 @@ from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 
 
 @dataclass(frozen=True, slots=True)
-class AttendedOutcome:
+class OwnerAnswerOutcome:
     answered: tuple[int, ...]
     already_answered: tuple[int, ...]
     refused: tuple[int, ...]
 
 
-def answer_attended(question_ids: Sequence[int], text: str) -> AttendedOutcome:
+def answer_cards_as_owner(question_ids: Sequence[int], text: str) -> OwnerAnswerOutcome:
     """Answer each pending owner card through the Slack answer seam; an action card only its own button answers."""
     backend = notify.resolve_owner_dm_backend()[0]
     answered: list[int] = []
@@ -30,7 +30,7 @@ def answer_attended(question_ids: Sequence[int], text: str) -> AttendedOutcome:
             already.append(pk)
         else:
             bound = BoundAnswer(
-                question=row, answer=text, answered_by=current_session_id(), via=DeferredQuestion.ResolvedVia.ATTENDED
+                question=row, answer=text, answered_by=current_session_id(), via=DeferredQuestion.ResolvedVia.OPERATOR
             )
             (answered if apply_bound_answer(bound, backend=backend) else refused).append(pk)
-    return AttendedOutcome(tuple(answered), tuple(already), tuple(refused))
+    return OwnerAnswerOutcome(tuple(answered), tuple(already), tuple(refused))
