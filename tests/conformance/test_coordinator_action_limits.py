@@ -13,6 +13,7 @@ from unittest import mock
 
 from django.test import TestCase
 
+from teatree.core.answering import record_settling
 from teatree.core.answering.coordinator_actions import _PROCESSORS, PeerReceipt, run_coordinator_actions
 from teatree.core.modelkit.coordinator_action import (
     ACTION_SPECS,
@@ -93,6 +94,13 @@ class TestTheTableHoldsExactlyTheFourApprovedKinds(TestCase):
 
         with mock.patch.dict(ACTION_SPECS, {kind: replace(ACTION_SPECS[kind], guide=" ")}):
             assert f"{kind}: no brief wording" in _gaps()
+
+    def test_the_answerer_skill_names_the_limit_table_and_the_coordinator_trigger_of_questions_record(self) -> None:
+        skill = _ANSWERER_SKILL.read_text(encoding="utf-8")
+
+        assert hasattr(record_settling, "LIMIT_CHOICES")
+        assert "`LIMIT_CHOICES`" in skill
+        assert f"`--decision {OwnerDecision.PRODUCT_SCOPE}`" in skill
 
 
 class TestNoKindCanCrossAnOwnerLimit(TestCase):
