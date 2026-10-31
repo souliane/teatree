@@ -29,6 +29,5 @@ class LoopsConfig(AppConfig):
 
     @staticmethod
     def ready() -> None:
-        from teatree.core.views._webhook_persistence import set_ingest_dispatch  # noqa: PLC0415 — lazy import
-
-        set_ingest_dispatch(DeferredIngestDispatch())
+        # The persistence module imports models, so it can only load once the app registry is ready.
+        import_module("teatree.core.views._webhook_persistence").set_ingest_dispatch(DeferredIngestDispatch())
