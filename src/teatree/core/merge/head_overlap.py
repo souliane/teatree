@@ -165,14 +165,19 @@ def _verdict(
     return _ordering_verdict(older, newer, carried=carried, conflict_paths=conflict_paths)
 
 
-def pair_overlaps(heads: tuple[OpenHead, ...], *, repo_dir: str) -> tuple[PairOverlap, ...]:
+def pair_overlaps(
+    heads: tuple[OpenHead, ...], *, repo_dir: str, involving: int | None = None
+) -> tuple[PairOverlap, ...]:
     """Every overlapping pair among *heads*, older PR number first; pairs that touch nothing in common are omitted.
 
     A pair git cannot compare (a head missing from *repo_dir*) is reported ``UNREADABLE``, never as no overlap.
+    With *involving*, only the pairs naming that PR are compared (N-1 git reads, not N(N-1)/2).
     """
     carried = frozenset().union(*(head.carries for head in heads))
     found = []
     for older, newer in itertools.combinations(sorted(heads, key=lambda head: head.pr_id), 2):
+        if involving is not None and involving not in {older.pr_id, newer.pr_id}:
+            continue
         conflict_paths = predict_merge_conflicts(repo_dir, newer.sha, older.sha)
         shared_paths = _shared_paths(repo_dir, older.sha, newer.sha)
         verdict = _verdict(older, newer, carried=carried, conflict_paths=conflict_paths, shared_paths=shared_paths)
@@ -205,7 +210,7 @@ def overlap_refusal(
     clone = repo_dir or (str(path) if (path := matching_clone(ref.slug)) else "")
     if not clone:
         return _no_clone_refusal(ref.slug, heads)
-    for pair in pair_overlaps(heads, repo_dir=clone):
+    for pair in pair_overlaps(heads, repo_dir=clone, involving=ref.pr_id):
         if pair.newer.pr_id == ref.pr_id and (refusal := _pair_refusal(ref, pair, clone)):
             return refusal
     return None

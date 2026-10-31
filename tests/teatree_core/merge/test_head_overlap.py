@@ -47,6 +47,20 @@ class TestPairOverlaps:
         assert found[0].conflict_paths == ("shared.txt",)
         assert found[0].shared_paths == ("shared.txt",)
 
+    def test_involving_one_pr_compares_only_the_pairs_that_name_it(self, three_heads) -> None:
+        repo, shas = three_heads
+        heads = tuple(OpenHead(pr_id=NUMBERS[key], sha=sha) for key, sha in shas.items())
+        missing = OpenHead(pr_id=14, sha="0123456789abcdef" * 2 + string.octdigits)
+
+        assert pair_overlaps(heads, repo_dir=str(repo), involving=13) == ()
+        assert [(p.older.pr_id, p.newer.pr_id) for p in pair_overlaps(heads, repo_dir=str(repo), involving=12)] == [
+            (11, 12)
+        ]
+        assert {p.verdict for p in pair_overlaps((*heads, missing), repo_dir=str(repo), involving=11)} == {
+            OverlapVerdict.ORDER,
+            OverlapVerdict.UNREADABLE,
+        }
+
     def test_a_single_head_has_no_pairs(self, three_heads) -> None:
         repo, shas = three_heads
         assert pair_overlaps((OpenHead(pr_id=11, sha=shas["a"]),), repo_dir=str(repo)) == ()
