@@ -6,6 +6,7 @@ per scope for every key a box's code lacks. So it is asserted as the property it
 different silences compare EQUAL, and only a stored value differs from silence.
 """
 
+import itertools
 import json
 import os
 import pathlib
@@ -30,6 +31,7 @@ from teatree.core.models import ConfigSetting
 from teatree.core.setting_control import SettingControl
 from teatree.core.settings.settings_compare import (
     CONFIRM_GATED_REASON,
+    ENV_SOURCE,
     WITHHELD_REASON,
     Cell,
     CompareFilters,
@@ -40,7 +42,7 @@ from teatree.core.settings.settings_compare import (
 from teatree.core.settings.settings_compare_rendering import FOLD_OVER, RowKind
 from teatree.core.settings.settings_compare_sync import SEED, SETTING, SYNC_RULES, Disposition, classify
 from teatree.core.settings.settings_compat import COMPAT_SIGNALS, Severity, build_compat_report
-from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, peer_snapshots
+from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, SnapshotOrigin, peer_snapshots
 from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, canonical_json
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
@@ -86,6 +88,13 @@ def _stale(label: str, value: Any) -> Cell:
 def _local(label: str, value: Any) -> Cell:
     """THIS box holding a value — the only cell the page offers a control for."""
     return Cell(label=label, present=True, known=True, value=value, local=True)
+
+
+def _local_at(label: str, value: Any, *, shipped: Any) -> Cell:
+    """THIS box holding *value* against a recorded shipped default of *shipped*."""
+    return Cell(
+        label=label, present=True, known=True, value=value, default_value=shipped, default_recorded=True, local=True
+    )
 
 
 def _no_row_local(label: str) -> Cell:
@@ -186,17 +195,17 @@ class TestWriteStates(SimpleTestCase):
         assert outcome.rule == "no-import-path"
 
     def test_a_value_equal_to_the_shipped_default_must_be_cleared_not_imported(self) -> None:
-        outcome = classify(_row(_held("a", 4), _held("b", 9), equals_shipped_default=True))
+        outcome = classify(_row(_local_at("a", 4, shipped=9), _held("b", 9)))
         assert outcome.disposition is Disposition.CLEAR
         assert outcome.rule == "equals-default-setting"
 
     def test_an_env_shadowed_key_is_named_shadowed_because_the_import_would_change_nothing(self) -> None:
-        outcome = classify(_row(_held("a", 4), _held("b", 9), env_shadowed=True))
+        outcome = classify(_row(_local("a", 4), _held("b", 9), source=ENV_SOURCE))
         assert outcome.disposition is Disposition.SHADOWED
         assert outcome.rule == "env-shadowed"
 
     def test_the_clear_rule_wins_over_the_shadow_rule_because_it_is_ordered_first(self) -> None:
-        row = _row(_held("a", 4), _held("b", 9), equals_shipped_default=True, env_shadowed=True)
+        row = _row(_local_at("a", 4, shipped=9), _held("b", 9), source=ENV_SOURCE)
         assert classify(row).rule == "equals-default-setting"
 
     def test_a_seed_row_absent_on_a_box_is_manual_because_there_is_no_row_to_update(self) -> None:
@@ -215,8 +224,7 @@ class TestWriteStates(SimpleTestCase):
             scope="loops",
             title="cadence_minutes",
             subtitle="loops.dream",
-            cells=(_held("a", 30), _held("b", 60)),
-            equals_shipped_default=True,
+            cells=(_local_at("a", 30, shipped=60), _held("b", 60)),
         )
         outcome = classify(row)
         assert outcome.disposition is Disposition.MANUAL
@@ -476,6 +484,125 @@ class TestSeedWriteEligibility(_RowBuilderCase):
 
         assert not row.readings[0].cell.writable
         assert "not carried by defaults.toml" in row.readings[0].cell.unwritable_reason
+
+    def _seed_row(self, local_value: str, peer_value: str) -> CompareRow:
+        shipped = {"review": {"description": "shipped"}}
+        local = self._seed_box(label=LOCAL_LABEL, stored={"review": {"description": local_value}}, shipped=shipped)
+        peer = self._seed_box(label="peer", stored={"review": {"description": peer_value}}, shipped=shipped)
+        view = self._view(local, peer, filters=CompareFilters(differs_only=False))
+        return next(row for row in view.rows if row.subtitle == "loops.review")
+
+    def test_a_seed_peer_at_the_shipped_value_is_a_manual_edit_where_this_box_holds_a_custom_one(self) -> None:
+        row = self._seed_row(local_value="custom", peer_value="shipped")
+
+        assert row.outcome.rule == "equals-default-seed"
+        assert row.readings[1].apply_url == ""
+
+    def test_a_custom_seed_peer_is_an_import_where_this_box_holds_the_shipped_value(self) -> None:
+        row = self._seed_row(local_value="shipped", peer_value="custom")
+
+        assert row.outcome.disposition is Disposition.IMPORT
+        assert row.readings[1].apply_url == reverse("dash:settings_seed_set", args=["loops", "review", "description"])
+
+
+_SHIPPED_MERGE_WIP = 1
+
+
+def _merge_wip_box(label: str, value: Any, *, source: str = "db") -> PeerSnapshot:
+    """A box storing *value* for ``merge_wip`` (``None`` = no row), shipped default :data:`_SHIPPED_MERGE_WIP`."""
+    payload = _payload({"": {} if value is None else {"merge_wip": value}})
+    payload["values"].update(defaults={"merge_wip": _SHIPPED_MERGE_WIP}, provenance={"": {"merge_wip": source}})
+    return PeerSnapshot(
+        label=label, url="" if label == LOCAL_LABEL else f"http://127.0.0.1/{label}", note="", payload=payload
+    )
+
+
+class TestTheRowLabelNamesWhatUseHereDoes(_RowBuilderCase):
+    def _row(self, local: PeerSnapshot, *peers: PeerSnapshot) -> CompareRow:
+        view = self._view(local, *peers, filters=CompareFilters(differs_only=False))
+        return next(row for row in view.rows if row.title == "merge_wip")
+
+    def test_a_peer_at_the_default_clears_the_custom_value_held_here(self) -> None:
+        row = self._row(_merge_wip_box(LOCAL_LABEL, 5), _merge_wip_box("peer", _SHIPPED_MERGE_WIP))
+
+        assert row.outcome.disposition is Disposition.CLEAR
+        assert row.readings[1].apply_url == reverse("dash:settings_restore", args=["merge_wip"])
+
+    def test_a_custom_peer_is_imported_over_the_default_held_here(self) -> None:
+        row = self._row(_merge_wip_box(LOCAL_LABEL, _SHIPPED_MERGE_WIP), _merge_wip_box("peer", 5))
+
+        assert row.outcome.disposition is Disposition.IMPORT
+        assert row.readings[1].apply_url == reverse("dash:settings_set", args=["merge_wip"])
+
+    def test_two_custom_values_are_an_import(self) -> None:
+        row = self._row(_merge_wip_box(LOCAL_LABEL, 5), _merge_wip_box("peer", 7))
+
+        assert row.outcome.disposition is Disposition.IMPORT
+        assert row.readings[1].apply_url == reverse("dash:settings_set", args=["merge_wip"])
+
+    def test_an_env_pin_on_the_peer_alone_does_not_shadow_an_import_into_this_box(self) -> None:
+        row = self._row(_merge_wip_box(LOCAL_LABEL, 5), _merge_wip_box("peer", 7, source="env"))
+
+        assert row.outcome.disposition is Disposition.IMPORT
+        assert row.readings[1].apply_url
+
+    def test_an_env_pin_on_this_box_shadows_the_import(self) -> None:
+        row = self._row(_merge_wip_box(LOCAL_LABEL, 5, source="env"), _merge_wip_box("peer", 7))
+
+        assert row.outcome.disposition is Disposition.SHADOWED
+        assert row.readings[1].apply_url == ""
+
+    def test_with_several_peers_the_label_names_the_first_other_box_holding_an_opinion(self) -> None:
+        row = self._row(
+            _merge_wip_box(LOCAL_LABEL, 5),
+            _merge_wip_box("silent", None),
+            _merge_wip_box("at default", _SHIPPED_MERGE_WIP),
+            _merge_wip_box("custom", 9),
+        )
+
+        assert row.outcome.disposition is Disposition.CLEAR
+        assert [reading.apply_url for reading in row.readings[1:]] == [
+            "",
+            reverse("dash:settings_restore", args=["merge_wip"]),
+            reverse("dash:settings_set", args=["merge_wip"]),
+        ]
+
+    def test_a_loaded_record_is_a_source_of_the_import_like_any_other_box(self) -> None:
+        record = PeerSnapshot(
+            label="record",
+            url="",
+            note="",
+            payload=_merge_wip_box("record", 5).payload,
+            origin=SnapshotOrigin.FILE,
+            source="record.json",
+        )
+        row = self._row(_merge_wip_box(LOCAL_LABEL, _SHIPPED_MERGE_WIP), record)
+
+        assert row.outcome.disposition is Disposition.IMPORT
+        assert row.readings[1].apply_url == reverse("dash:settings_set", args=["merge_wip"])
+
+    def test_every_reading_offers_exactly_the_action_its_row_label_names(self) -> None:
+        set_url = reverse("dash:settings_set", args=["merge_wip"])
+        restore_url = reverse("dash:settings_restore", args=["merge_wip"])
+        values = (None, _SHIPPED_MERGE_WIP, 5, 7)
+        mismatches = []
+        for local_value, peer_value, local_source, peer_source in itertools.product(
+            values, values, ("db", "env"), ("db", "env")
+        ):
+            row = self._row(
+                _merge_wip_box(LOCAL_LABEL, local_value, source=local_source),
+                _merge_wip_box("peer", peer_value, source=peer_source),
+            )
+            if not row.differs or peer_value is None:
+                continue
+            offered = {
+                Disposition.IMPORT: set_url,
+                Disposition.CLEAR: restore_url if local_value is not None else "",
+            }.get(row.outcome.disposition, "")
+            if row.readings[1].apply_url != offered:
+                mismatches.append((local_value, peer_value, local_source, peer_source, row.outcome.disposition))
+
+        assert mismatches == []
 
 
 class TestKindFilteringPrecedesTheRenderCap(_RowBuilderCase):
