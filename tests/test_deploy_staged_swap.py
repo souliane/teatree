@@ -242,7 +242,6 @@ def checkout(tmp_path: Path) -> Path:
     (deploy / "teatree.env").write_text("", encoding="utf-8")
     _write_exec(deploy / "fast-forward-checkout.sh", _FF_STUB)
     _write_exec(deploy / "sync-hook-env.sh", _SYNC_HOOK_ENV_STUB)
-    _write_exec(deploy / "install-host-pressure.zsh", "#!/usr/bin/env bash\nexit 0\n")
 
     probe = root / "src" / "teatree" / "utils"
     probe.mkdir(parents=True)

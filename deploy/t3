@@ -1146,18 +1146,6 @@ refuse_host_bound_agent_home_on_setup() {
 
 refuse_host_bound_agent_home_on_setup "$@"
 
-if [ "${1:-}" = setup ]; then
-    # The CLI runs in Docker, so install the macOS-owned pressure feed on the
-    # host only after the unsafe agent-home mount check has passed.
-    if [ "$(uname -s)" = Darwin ]; then
-        if command -v launchctl >/dev/null 2>&1; then
-            "$SCRIPT_DIR/install-host-pressure.zsh"
-        else
-            echo "t3 setup: WARN launchctl unavailable; macOS host pressure feed will go stale without a publisher" >&2
-        fi
-    fi
-fi
-
 # A running service is the cheapest, most consistent runtime — exec into it. `-T`
 # is added when either stream is not a TTY, so captured stdout stays a pipe
 # inside the container; an interactive shell keeps the TTY for prompts/pagers.

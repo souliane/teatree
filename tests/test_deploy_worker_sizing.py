@@ -79,9 +79,6 @@ class TestDeployShRunDerivesWorkerCaps:
         shutil.copy(FF_CHECKOUT_SH, repo / "deploy" / "fast-forward-checkout.sh")
         shutil.copy(DEPLOY / "git-pins.sh", repo / "deploy" / "git-pins.sh")
         shutil.copy(DEPLOY_SH.with_name("deploy-lock.sh"), repo / "deploy" / "deploy-lock.sh")
-        # Host pressure installation is outside this sizing test and must not
-        # register a real launchd agent on the macOS test host.
-        _write_exec(repo / "deploy" / "install-host-pressure.zsh", "#!/bin/zsh\nexit 0\n")
         _write_exec(repo / "deploy" / "sync-hook-env.sh", "#!/usr/bin/env bash\nexit 0\n")
         shutil.copy(RAM_PROBE, repo / "src" / "teatree" / "utils" / "ram_probe.py")
         (repo / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")

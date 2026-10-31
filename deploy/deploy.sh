@@ -756,12 +756,7 @@ recreate_ro_executor() {
 # Only after the old worker is drained or contained: every running container reads this
 # tree, and init needs it at the built commit.
 fast_forward_live_tree() {
-    bash "$SCRIPT_DIR/fast-forward-checkout.sh" "$REPO_ROOT" "$DEPLOY_COMMIT" || return 1
-    # Docker Desktop's worker cannot observe macOS load/RAM/swap; the agent it registers
-    # runs the publisher from this checkout, so it installs from the moved tree.
-    if [ "$(uname -s)" = Darwin ]; then
-        "$SCRIPT_DIR/install-host-pressure.zsh" || return 1
-    fi
+    bash "$SCRIPT_DIR/fast-forward-checkout.sh" "$REPO_ROOT" "$DEPLOY_COMMIT"
 }
 
 # A failed drain takes the old worker route out of service deliberately. Once init
