@@ -297,7 +297,7 @@ class TestSqliteWriteSerialization:
         """A live boundary-engine connection to a host path maps no ``-shm``.
 
         WAL coordinates its writers through a ``-shm`` file every writer
-        mmaps shared-writable. Over Docker Desktop's macOS bind-mount layer
+        mmaps shared-writable. Over a bind-mount layer
         that mapping loses its backing under the process and the kernel
         delivers SIGBUS — the containerized worker crash-looped at ~2
         restarts/minute on exactly that. A rollback journal mode has no

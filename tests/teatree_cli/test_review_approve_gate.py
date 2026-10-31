@@ -1,17 +1,8 @@
-"""The on-behalf pre-gate is enforced on ``approve`` and ``unapprove`` too (#1013).
+"""``publish_operator_approval`` is the recorded-consent gate for ``approve`` and ``unapprove`` (#1013).
 
-``ReviewService.approve``/``unapprove`` are outward, state-changing posts
-made under the user's identity, so they must route through the same
-satisfiable recorded-approval gate every other on-behalf publishing
-method uses (``post_comment``, ``post_draft_note``, ``publish_draft_notes``,
-``reply_to_discussion``, ``resolve_discussion``, ``update_note``).
-
-Pre-fix, the CLI consulted only the global ``ask_before_post_on_behalf``
-flag — a recorded :class:`OnBehalfApproval` row never satisfied
-``approve``/``unapprove``, so the recorded-approval channel was unusable
-for them. This module pins the corrected contract: gate ON + no approval
-→ refuse without an API call; gate ON + recorded row → publish and
-consume the row; gate OFF → publish.
+Both are outward, state-changing posts made under a person's identity, so they publish only
+against a recorded :class:`OnBehalfApproval`: no consent → refuse without an API call; recorded
+consent → publish and consume it exactly once.
 """
 
 from pathlib import Path
@@ -85,17 +76,6 @@ class TestReviewServiceApproveGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_approve_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
-        service, stub = _service_with_stub()
-
-        msg, code = service.approve(OWNED_REPO, 7)
-
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        # No GitLab call may have happened — the gate short-circuits.
-        assert not any(c[0] == "post_status" for c in stub.calls)
-
     def test_approve_proceeds_with_recorded_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, on=True)
         OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="gitlab:souliane")
@@ -132,16 +112,6 @@ class TestReviewServiceUnapproveGated:
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
-
-    def test_unapprove_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
-        service, stub = _service_with_stub()
-
-        msg, code = service.unapprove(OWNED_REPO, 7)
-
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        assert not any(c[0] == "post_status" for c in stub.calls)
 
     def test_unapprove_proceeds_with_recorded_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, on=True)

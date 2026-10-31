@@ -3,7 +3,7 @@
 The schema — an ordered ``channels`` slug→channel map plus a ``default_channel``
 fallback — is a cohesive concern with a single dependency (:mod:`teatree.types`),
 so it lives in its own module under the ``teatree.config`` package (PR-29's "no
-stray top-level ``config_*`` modules"), mirroring :mod:`teatree.config.speak`.
+stray top-level ``config_*`` modules").
 
 This module holds the *data* only. The repo-slug → channel routing policy and
 the cross-repo message assembly live in :mod:`teatree.core.review.mr_reminder`

@@ -20,7 +20,7 @@ from teatree.utils.run import DEVNULL, Popen, TimeoutExpired, run_allowed_to_fai
 logger = logging.getLogger(__name__)
 
 _LOOPBACK = "127.0.0.1"
-_TTYD_INSTALL_HINT = "ttyd not found on PATH — install with `brew install ttyd` (macOS) or `apt install ttyd` (Linux)"
+_TTYD_INSTALL_HINT = "ttyd not found on PATH — install with `apt install ttyd`"
 #: How long an unconnected ``--writable`` ttyd may sit with no client before it is
 #: reaped. Generous enough for a human to click the dashboard button and connect,
 #: short enough that an abandoned (or never-opened) one does not linger.

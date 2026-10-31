@@ -33,7 +33,6 @@ def is_gone_within(pid: int, *, seconds: float) -> bool:
 
 
 def _is_zombie(pid: int) -> bool:
-    # No /proc (macOS): its init reaps orphans promptly, so kill(0) alone is the answer there.
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:

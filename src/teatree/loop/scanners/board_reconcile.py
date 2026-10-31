@@ -15,7 +15,8 @@ piece is a driver that asks the FORGE about the ticket's own item — which is w
 rule B below is. (The 205 ``review_delivered`` rows are all ``role = reviewer``: that
 state is the reviewer terminal, so they are correctly not merge candidates.)
 
-Seven rules, one path, applied in cheapest-first order:
+Seven rules, one path. Rule D runs last, because it is the only unbudgeted one and so only spends
+the scan deadline the other rules leave:
 
 Rule A — a linked ``PullRequest`` row is MERGED, unless the ticket was reopened over
     every such row (#5031). The #3540 sweep: a ticket entered via a non-ladder phase
@@ -57,8 +58,9 @@ network-free per-tick render pass leaves such a ticket for the next full run.
 
 Every rule is idempotent by construction: each candidate queryset excludes the state
 its rule targets, so a second consecutive run finds nothing. Forge reads are
-fail-CLOSED — an unreachable forge is UNKNOWN, never "merged" — and bounded by
-``probe_budget`` per run so the janitor can never saturate the box.
+fail-CLOSED — an unreachable forge is UNKNOWN, never "merged" — concurrent and stopped
+by the scan deadline (``board_reconcile_reads``), and bounded by ``probe_budget`` per run
+so the janitor can never saturate the box.
 
 :class:`BoardReconcileScanner` is the cadenced host, registered in the
 ``housekeeping`` domain. The host must NOT be ``colleague_facing``: such a loop is
@@ -98,6 +100,7 @@ from teatree.loop.scanners.board_reconcile_partial_merge import (
     settlement_block,
 )
 from teatree.loop.scanners.board_reconcile_pr_rows import settle_live_pr_rows
+from teatree.loop.scanners.board_reconcile_reads import read_concurrently, read_per_overlay
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
 from teatree.url_classify import Forge, forge_of
 
@@ -204,7 +207,7 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool, reads: ReadBudget
 def _forge_truth_transitions(
     *, overlay: str, dry_run: bool, probe_budget: int, reads: ReadBudget
 ) -> tuple[list[BoardTransition], int]:
-    """Rules B/C/D/E/F/G — the live forge reads, bounded by *probe_budget*.
+    """Rules B/C, E, F, G and D, in that order — the live forge reads, bounded by *probe_budget*.
 
     Newest-ticket-first, because a freshly merged PR is what makes the board
     untrustworthy minute to minute; the budget is what keeps an unbounded backlog
@@ -220,6 +223,9 @@ def _forge_truth_transitions(
     spent its capped share by the time F runs. The reservation is a floor, not a
     guarantee at every budget: ``remaining // 2`` is 0 when *remaining* is 0 or 1, so at
     those smallest budgets rule E can still take the only probe even when F has work.
+
+    Rule D has no probe budget, so it goes last: the deadline stops its reads once the
+    bounded rules have applied their verdicts.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
@@ -228,10 +234,9 @@ def _forge_truth_transitions(
         overlay,
     ).order_by("-pk")
     pr_tickets = [t for t in without_voided(candidates) if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
-    states = {ticket.issue_url: pr_open_state(ticket.issue_url) for ticket in pr_tickets}
+    states = dict(read_concurrently(list(dict.fromkeys(t.issue_url for t in pr_tickets)), pr_open_state))
 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run, reads=reads))
-    transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     remaining = probe_budget - len(states)
     reserved_for_g = settled_probe_reservation(overlay, remaining)
     reserved_for_f = min(max((remaining - reserved_for_g) // 2, 0), _rule_f_candidate_count(overlay))
@@ -253,6 +258,7 @@ def _forge_truth_transitions(
         already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
     )
     transitions.extend(held)
+    transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     return transitions, len(states) + reopen_probes + close_probes + held_probes
 
 
@@ -394,19 +400,8 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
 
 
 def _issue_done_urls(tickets: "list[Ticket]") -> set[str]:
-    """The subset of *tickets*' issue URLs the owning overlay reports as done.
-
-    Grouped by the ticket's own overlay so each URL is judged by the overlay that
-    owns it; a ticket whose overlay is not installed here is simply not judged.
-    """
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: registry read at call time
-
-    overlays = get_all_overlays()
-    return {
-        ticket.issue_url
-        for ticket in tickets
-        if ticket.overlay in overlays and issue_is_done(overlays[ticket.overlay], ticket.issue_url)
-    }
+    """The subset of *tickets*' issue URLs the owning overlay reports as done."""
+    return {ticket.issue_url for ticket, done in read_per_overlay(tickets, issue_is_done) if done}
 
 
 def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool, reads: ReadBudget) -> BoardTransition | None:

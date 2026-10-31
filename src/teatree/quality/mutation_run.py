@@ -430,16 +430,6 @@ def _usable_cpu_count(
     return max(min(limits), 1)
 
 
-def _mutmut_env() -> dict[str, str]:
-    env = dict(os.environ)
-    # macOS aborts a fork()ed child that touches the Objective-C runtime once a
-    # parent thread has initialized it (mutmut starts a timeout thread before
-    # forking). Disabling the fork-safety check lets the child run the test;
-    # the var is a no-op on Linux CI.
-    env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
-    return env
-
-
 # Neutralizes the project's heavy pytest addopts (``--doctest-modules``,
 # ``--cov``, ``--failed-first``) inside the ``mutants/`` copy. ``pytest.ini``
 # outranks ``pyproject.toml`` in pytest's config discovery, and mutmut copies
@@ -465,7 +455,6 @@ def _run_mutmut(
         build_mutmut_config(modules, tests_dir=tests_dir, test_selection=test_selection), encoding="utf-8"
     )
     pytest_ini.write_text(_MUTANTS_PYTEST_INI, encoding="utf-8")
-    env = _mutmut_env()
     cpu_max = _read_cgroup_cpu_max()
     sched_getaffinity = getattr(os, "sched_getaffinity", None)
     try:
@@ -488,7 +477,6 @@ def _run_mutmut(
             [*_MUTMUT_CMD, "run", "--max-children", str(max_children)],
             expected_codes=None,
             cwd=repo,
-            env=env,
             timeout=timeout,
         )
         # ``results --all=1`` lists killed mutants too — without it mutmut hides
@@ -498,7 +486,6 @@ def _run_mutmut(
             [*_MUTMUT_CMD, "results", "--all=1"],
             expected_codes=None,
             cwd=repo,
-            env=env,
             timeout=60,
         )
     except TimeoutExpired as exc:

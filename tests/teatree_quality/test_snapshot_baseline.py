@@ -16,7 +16,7 @@ class TestIsSnapshotBaseline:
 
     def test_per_spec_snapshots_dir_matches(self) -> None:
         assert is_snapshot_baseline("e2e/login.spec.ts-snapshots/hero-chromium.png")
-        assert is_snapshot_baseline("packages/w/e2e/cart.spec.ts-snapshots/a-darwin.png")
+        assert is_snapshot_baseline("packages/w/e2e/cart.spec.ts-snapshots/a-linux.png")
 
     def test_nested_baseline_matches(self) -> None:
         assert is_snapshot_baseline("a/b/c/__snapshots__/deep/thing.txt")

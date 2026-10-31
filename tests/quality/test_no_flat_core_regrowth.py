@@ -346,7 +346,8 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # hub, beside _checking_gather.py. checking_types is the leaf both checking.py and checking_remaining.py
 # import, which breaks their cycle; checking_remaining gathers the live Remaining group and would push
 # checking.py past the 500-LOC module-health cap. No subpackage owns the check-in report.
-PINNED_FLAT_CORE_MODULES = 131
+# 128: -speak.py / -speak_cleaning.py / -presence.py (#5857) — the speech feature, removed.
+PINNED_FLAT_CORE_MODULES = 128
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

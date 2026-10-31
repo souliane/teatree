@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     "django_tasks_db",
     "teatree.agents",
     "teatree.backends",
+    "teatree.loops",
     "teatree.dash",
     *_discover_overlay_apps(),
 ]
@@ -157,10 +158,10 @@ SQLITE_WRITE_SERIALIZATION_OPTIONS = {
 
 # ``teatree.db.sqlite3_boundary`` is Django's SQLite backend plus ONE guarantee:
 # a database the containerized stack owns can only be opened read-only from the
-# host. Two writers on opposite sides of Docker Desktop's shared-folder layer
+# host. Two writers on opposite sides of a shared-folder layer
 # have already cross-linked pages in this install's ``teatree_outbound_claim``.
 # Host-reachable paths use TRUNCATE to avoid shared-memory sidecars, but SQLite's
-# cross-process locking remains POSIX advisory across the VM boundary. The
+# cross-process locking remains POSIX advisory across that boundary. The
 # read-only boundary stands on its own — see teatree/db/boundary.py.
 SQLITE_BOUNDARY_ENGINE = "teatree.db.sqlite3_boundary"
 

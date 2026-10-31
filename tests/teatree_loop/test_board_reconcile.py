@@ -12,6 +12,7 @@ its idempotence, its fail-closed probe, and its per-run work bound.
 """
 
 import contextlib
+import threading
 from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -432,6 +433,23 @@ class TestForgeMergedRule(TestCase):
         assert ticket.state == Ticket.State.IGNORED
         assert [t.action for t in report.applied] == [BoardAction.IGNORED_CLOSED]
 
+    def test_the_pr_probes_overlap(self) -> None:
+        both_in_flight = threading.Barrier(2, timeout=5)
+        answered: list[str] = []
+        urls = [f"https://github.com/souliane/teatree/pull/80{n}" for n in range(2)]
+        for url in urls:
+            Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=url)
+
+        def probe(pr_url: str) -> PrOpenState:
+            both_in_flight.wait()
+            answered.append(pr_url)
+            return PrOpenState.OPEN
+
+        with patch.object(board_reconcile, "pr_open_state", probe), rule_f_inert():
+            reconcile_board()
+
+        assert sorted(answered) == urls
+
     def test_second_consecutive_run_is_a_no_op(self) -> None:
         self._ticket()
 
@@ -544,6 +562,30 @@ class TestIssueDoneRule(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.RETRO_RECORDED
         assert [t.action for t in report.applied] == [BoardAction.ADVANCED_DELIVERED]
+
+    def test_a_ticket_the_forge_does_not_confirm_merged_is_refused_not_delivered(self) -> None:
+        """A done issue behind a CLOSED, never-merged PR must not walk the ticket through MERGED."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=self.URL)
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/souliane/teatree/pull/3842",
+            repo="souliane/teatree",
+            iid="3842",
+            overlay=ticket.overlay,
+            state=PullRequest.State.CLOSED,
+        )
+        not_merged = SimpleNamespace(pr_merge_state=lambda: PrMergeState(state="CLOSED", merge_commit_oid=""))
+
+        with (
+            patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref", return_value=not_merged),
+            rule_f_inert(),
+        ):
+            report = reconcile_board()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert [t.action for t in report.refused] == [BoardAction.REFUSED]
 
     def test_a_pre_ship_ticket_is_not_advanced_by_a_done_issue(self) -> None:
         """Rule D's walk IS the author ladder, so a pre-ship row must never enter it."""

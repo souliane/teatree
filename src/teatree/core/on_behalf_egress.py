@@ -7,13 +7,9 @@ public method runs the identical fixed sequence in one place:
 
 1.  classify the destination self-vs-colleague via the backend's #1750
     ``route_token`` classifier;
-2.  a *self* destination (the user's own DM) → deliver via the shared
-    :func:`teatree.core.speak.deliver_user_dm` chokepoint and return —
-    ungated and unaudited, because a bot→user / self-ack is never an
-    on-behalf post. ``deliver_user_dm`` attaches spoken audio to the DM
-    when ``slack`` is on and plays it locally when ``local`` plays DMs
-    (#2060), so the ``notify post`` user-DM path runs the same DM+speak
-    chokepoint :func:`teatree.core.notify.notify_user` does;
+2.  a *self* destination (the user's own DM) → post it with
+    ``post_message`` and return — ungated and unaudited, because a
+    bot→user / self-ack is never an on-behalf post;
 3.  a *colleague/channel* destination → :func:`require_on_behalf_approval`
     *before* the wire call (a BLOCK verdict with no recorded approval
     raises :class:`OnBehalfPostBlockedError` and nothing posts), then the
@@ -35,7 +31,7 @@ The methods return the raw Slack body so callers keep their existing
 transport exceptions propagate to each caller's existing ``try``/``except``.
 
 Scope is *only* colleague Slack post/react. It does not own bot→user DM
-sinks (``notify_user``, ``reply_transport.post_dm``, ``speak``) — already
+sinks (``notify_user``, ``reply_transport.post_dm``) — already
 correct and ungated by design — the FSM
 ``signals.py`` reactions (already gate+audit-correct on the separate
 ``slack_reactions`` single-bot-token transport), or the GitLab
@@ -320,13 +316,8 @@ class OnBehalfSlackEgress:
     ) -> RawAPIDict:
         """Post to *channel*, gated+audited on a colleague surface.
 
-        Self-DM: deliver via the shared :func:`teatree.core.speak.deliver_user_dm`
-        chokepoint (ungated, unaudited) — a bot→user DM is exactly the
-        "text DM to the user" #2060 targets, so the user's own DM both
-        attaches spoken audio when ``slack`` is on AND plays locally
-        when ``local`` plays DMs, driven by the SAME chokepoint
-        :func:`teatree.core.notify.notify_user` uses (one place owns the
-        speak logic for both DM egress points). When this self-DM is a
+        Self-DM: one ``post_message`` (ungated, unaudited) — a bot→user DM
+        is never an on-behalf post. When this self-DM is a
         DELIBERATE threaded reply (``thread_ts`` set — the ``notify post
         --thread-ts`` answer route), it retires the queued question that
         thread roots on (#2053): only this answer path deliberately threads
@@ -347,11 +338,7 @@ class OnBehalfSlackEgress:
             if self._is_self_dm(channel):
 
                 def publish_self_dm() -> RawAPIDict:
-                    from teatree.core.speak import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
-                        deliver_user_dm,
-                    )
-
-                    return deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
+                    return self._messaging.post_message(channel=channel, text=text, thread_ts=thread_ts)
 
                 response = run_egress_transport(target, action, EgressKind.POST, publish_self_dm)
                 if response.get("ok") and response.get("ts"):
@@ -413,9 +400,8 @@ def _retire_threaded_answer(thread_ts: str) -> None:
     Called only from the self-DM branch of :meth:`OnBehalfSlackEgress.post`,
     which is the ``notify post --thread-ts`` answer egress: the caller
     deliberately threads the reply under the question, so ``thread_ts`` here
-    is a genuine "this DM answers that question" signal (unlike the shared
-    :func:`teatree.core.speak.deliver_user_dm` chokepoint, which carries the
-    most-recent active DM thread for any INFO/status DM). The matching
+    is a genuine "this DM answers that question" signal (unlike INFO/status DMs, which
+    carry the most-recent active DM thread). The matching
     :class:`PendingChatInjection` row is stamped on BOTH columns in one CAS —
     ``loop_replied_at`` so the reactive cycle stops re-delegating a
     ``t3:answerer`` Task, and ``answered_at`` (the agent personally replied).

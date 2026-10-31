@@ -155,8 +155,3 @@ jobs:
 
           # 3. Converge the stack (deploy.sh reads no secrets — compose's env_file does).
           $SSH "$TARGET" 'cd "$HOME/teatree-deploy" && TMPDIR=/var/tmp bash deploy/deploy.sh'
-
-          # 4. A macOS box whose OLD deploy.sh did the fast-forward never ran the host
-          #    pressure installer that the new one carries; run it once from the updated
-          #    checkout. A no-op anywhere else.
-          $SSH "$TARGET" 'cd "$HOME/teatree-deploy" && if [ "$(uname -s)" = Darwin ]; then zsh deploy/install-host-pressure.zsh; fi'

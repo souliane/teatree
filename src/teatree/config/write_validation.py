@@ -19,8 +19,8 @@ from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, config_key_
 from teatree.config.setting_registries import SETTING_BOUNDS
 
 # A canonical, JSON/TOML-storable config value — the shape every registry parser
-# returns (a ``StrEnum`` is a ``str``; the structured ``speak`` / ``mr_reminder``
-# parsers return plain dicts). Mirrors ``ConfigSetting.ConfigValue``, which lives in
+# returns (a ``StrEnum`` is a ``str``; the structured ``mr_reminder``
+# parser returns a plain dict). Mirrors ``ConfigSetting.ConfigValue``, which lives in
 # the ``core.models`` layer this platform module cannot import.
 type ConfigWriteValue = bool | int | float | str | list[object] | dict[str, object]
 

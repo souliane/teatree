@@ -21,15 +21,13 @@ the acquire race's winner count jumps from 1 to N — the same red the local-onl
 counter-proof already pins.
 
 Backend under test: a real ``git init --bare`` origin on ``tmp_path``, real
-``git`` subprocesses, real ``multiprocessing`` (fork on Linux; spawn on macOS,
-where forking a pytest process with native threads can crash SQLite).
+``git`` subprocesses, real ``multiprocessing`` (fork).
 """
 
 import json
 import multiprocessing
 import sqlite3
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -39,7 +37,7 @@ from teatree.core.fleet import claim as fleet_claim
 
 from ._git_origin import as_other_instance, init_bare, init_client, require_credential
 
-_CTX = multiprocessing.get_context("spawn" if sys.platform == "darwin" else "fork")
+_CTX = multiprocessing.get_context("fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _GATE_TIMEOUT_S = 30.0
 

@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from subprocess import CompletedProcess
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -25,53 +24,6 @@ from teatree.utils.ram_probe import (
     linux_mem_available_kb,
 )
 from teatree.utils.ram_scope import DEFAULT_AGENT_WORKLOAD_FLOOR_GIB, RamHeadroom
-
-
-class TestMacosPageSize:
-    """The mac probe must read the page size off ``vm_stat``, never assume 4 KiB.
-
-    Apple Silicon reports 16384-byte pages. Assuming 4096 shrinks the
-    reclaimable total 4x, which reads back as a near-full host and makes
-    ``check_provision_admission`` hold every provision on a host with GBs free.
-    """
-
-    # A real arm64 capture (24 GiB host): free + inactive = 470274 reclaimable pages.
-    _RECLAIMABLE_PAGES = 83371 + 386903 + 9228
-    _VM_STAT_16K = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
-Pages free:                                    83371.
-Pages active:                                  397317.
-Pages inactive:                               386903.
-Pages speculative:                               9228.
-Pages wired down:                              383587.
-"""
-
-    def _probe(self, vm_stat_output: str) -> int:
-
-        def fake_run(cmd, **_kwargs):
-            return CompletedProcess(args=cmd, returncode=0, stdout=vm_stat_output, stderr="")
-
-        with (
-            patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
-            patch("teatree.utils.run.run_checked", side_effect=fake_run),
-        ):
-            return host_available_ram_mib()
-
-    def _expected_mib(self, page_size: int) -> int:
-        return self._RECLAIMABLE_PAGES * page_size // (1024 * 1024)
-
-    def test_uses_the_page_size_from_the_vm_stat_header(self) -> None:
-        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
-            assert self._probe(self._VM_STAT_16K) == self._expected_mib(16384)
-
-    def test_does_not_fall_back_to_a_hardcoded_four_kib_page(self) -> None:
-        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
-            assert self._probe(self._VM_STAT_16K) != self._expected_mib(4096)
-
-    def test_unparsable_header_falls_back_to_four_kib(self) -> None:
-        # "Can't tell" keeps the historical 4 KiB arithmetic rather than raising.
-        headerless = self._VM_STAT_16K.replace("(page size of 16384 bytes)", "(page size unknown)")
-        with patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"):
-            assert self._probe(headerless) == self._expected_mib(4096)
 
 
 def test_default_provision_concurrency_halves_cpu_count() -> None:
@@ -135,189 +87,50 @@ def test_cgroup_v2_cpu_quota_missing_file_is_none() -> None:
 
 
 class TestHostTotalRamMib:
-    def test_linux_reads_memtotal(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
-            patch("teatree.utils.ram_probe._linux_meminfo", return_value={"MemTotal": 33554432}),
-        ):
+    def test_reads_memtotal(self) -> None:
+        with patch("teatree.utils.ram_probe._linux_meminfo", return_value={"MemTotal": 33554432}):
             # 33554432 kB / 1024 = 32768 MiB.
             assert host_total_ram_mib() == 32768
 
-    def test_linux_unreadable_is_zero(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
-            patch("teatree.utils.ram_probe._linux_meminfo", return_value={}),
-        ):
-            assert host_total_ram_mib() == 0
-
-    def test_unknown_platform_is_zero(self) -> None:
-        with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
+    def test_unreadable_is_zero(self) -> None:
+        with patch("teatree.utils.ram_probe._linux_meminfo", return_value={}):
             assert host_total_ram_mib() == 0
 
 
 class TestDeriveWorkerCpus:
     def test_reserves_one_core_for_sidecars(self) -> None:
-        assert DockerWorkerSizing.worker_cpus(cpu_count=8, daemon_cpus=0) == 7
+        assert DockerWorkerSizing.worker_cpus(cpu_count=8) == 7
 
     def test_floors_at_one(self) -> None:
-        assert DockerWorkerSizing.worker_cpus(cpu_count=1, daemon_cpus=0) == 1
-        assert DockerWorkerSizing.worker_cpus(cpu_count=0, daemon_cpus=0) == 1
-        assert DockerWorkerSizing.worker_cpus(cpu_count=8, daemon_cpus=1) == 1
+        assert DockerWorkerSizing.worker_cpus(cpu_count=1) == 1
+        assert DockerWorkerSizing.worker_cpus(cpu_count=0) == 1
 
     def test_reads_available_cpu_when_unset(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.available_cpu_count", return_value=4),
-            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_cpu_count", return_value=0),
-        ):
+        with patch("teatree.utils.ram_probe.available_cpu_count", return_value=4):
             assert DockerWorkerSizing.worker_cpus() == 3
-
-
-class TestWorkerCpusNeverExceedTheDockerEngine:
-    """Docker Desktop's VM can hold fewer CPUs than the host; the daemon rejects a larger ``cpus``."""
-
-    @pytest.mark.parametrize(
-        ("host", "engine", "expected"),
-        [
-            pytest.param(10, 8, 7, id="docker-desktop-vm-smaller-than-host"),
-            pytest.param(4, 8, 3, id="host-smaller-than-engine"),
-            pytest.param(8, 8, 7, id="linux-engine-equals-host"),
-            pytest.param(10, 0, 9, id="unreadable-engine-keeps-host"),
-        ],
-    )
-    def test_derives_from_the_smaller_of_host_and_engine(self, host: int, engine: int, expected: int) -> None:
-        assert DockerWorkerSizing.worker_cpus(cpu_count=host, daemon_cpus=engine) == expected
-
-    def test_probes_the_engine_by_default(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.available_cpu_count", return_value=10),
-            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_cpu_count", return_value=8),
-        ):
-            assert DockerWorkerSizing.worker_cpus() == 7
-
-
-class TestDockerDaemonCpuCount:
-    def test_parses_ncpu(self) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/docker"),
-            patch(
-                "subprocess.run",
-                return_value=CompletedProcess(args=[], returncode=0, stdout="8\n", stderr=""),
-            ) as run,
-        ):
-            assert DockerWorkerSizing.daemon_cpu_count() == 8
-        assert "{{.NCPU}}" in run.call_args.args[0]
-
-    def test_missing_docker_reads_zero(self) -> None:
-        with patch("shutil.which", return_value=None):
-            assert DockerWorkerSizing.daemon_cpu_count() == 0
-
-    def test_unreachable_daemon_reads_zero(self) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/docker"),
-            patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "docker")),
-        ):
-            assert DockerWorkerSizing.daemon_cpu_count() == 0
 
 
 class TestDeriveWorkerMemLimitMib:
     def test_reserves_siblings_and_headroom(self) -> None:
         # (32000 - 4352) * 0.8 = 22118.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000).mem_limit_mib == 22118
 
     def test_a_tiny_host_has_no_workable_cap_and_says_so(self) -> None:
         # Was a 2 GiB floor. A 2 GiB cap is HALF the floor `t3 doctor check` hard-FAILs as
         # a broken product, so "a usable worker cap" it was not — the sizer now refuses
         # rather than emitting one the product itself calls broken (#151).
-        sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=1000, daemon_ram_mib=0)
+        sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=1000)
 
         assert sizing.mem_limit_mib == 0
         assert sizing.refusal
 
     def test_unreadable_ram_returns_zero_so_default_holds(self) -> None:
         # 0 signals deploy.sh to keep the compose default rather than cap blindly.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=0).mem_limit_mib == 0
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0).mem_limit_mib == 0
 
     def test_reads_host_total_when_unset(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000),
-            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=0),
-        ):
+        with patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000):
             assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 22118
-
-
-class TestWorkerCapNeverExceedsTheDockerVm:
-    """Under Docker Desktop the daemon's VM, not host RAM, is the real ceiling.
-
-    A cap derived from a 24 GiB host but applied inside an 8 GiB VM can never
-    bind: the cgroup limit sits above the whole machine, so memory pressure
-    resolves as a GLOBAL oom-kill (``constraint=CONSTRAINT_NONE``) that reaps the
-    worker mid-run and leaves dockerd without an exit event — the container then
-    refuses `stop` and exits 137.
-    """
-
-    def test_daemon_vm_smaller_than_host_wins(self) -> None:
-        # 24 GiB host, 12 GiB Docker Desktop VM: (12288 - 4352) * 0.8 = 6348.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=24576, daemon_ram_mib=12288).mem_limit_mib == 6348
-
-    def test_a_daemon_vm_too_small_for_a_workable_cap_refuses_rather_than_using_the_host(self) -> None:
-        # The same property at a VM below the fit threshold: the host's roomier figure
-        # must not rescue it, because the cap would land where the brake never releases.
-        sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=24576, daemon_ram_mib=8192)
-
-        assert sizing.mem_limit_mib == 0
-        assert sizing.refusal
-        assert "8192" in sizing.refusal
-
-    def test_host_wins_when_it_is_the_smaller_of_the_two(self) -> None:
-        # Linux box: the daemon shares the host kernel, so neither figure inflates.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=32000).mem_limit_mib == 22118
-
-    def test_unreadable_daemon_falls_back_to_host(self) -> None:
-        # No docker binary / unreachable daemon must not zero out a good host read.
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
-
-    def test_daemon_alone_still_sizes_when_host_is_unreadable(self) -> None:
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=12288).mem_limit_mib == 6348
-
-    def test_probes_the_daemon_by_default(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=24576),
-            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=12288),
-        ):
-            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 6348
-
-
-class TestDockerDaemonTotalRamMib:
-    def test_parses_mem_total_bytes(self) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/docker"),
-            patch(
-                "subprocess.run",
-                return_value=CompletedProcess(args=[], returncode=0, stdout="8322101248\n", stderr=""),
-            ),
-        ):
-            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 7936
-
-    def test_missing_docker_reads_zero(self) -> None:
-        with patch("shutil.which", return_value=None):
-            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
-
-    def test_unreachable_daemon_reads_zero(self) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/docker"),
-            patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "docker")),
-        ):
-            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
-
-    def test_unparsable_output_reads_zero(self) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/docker"),
-            patch(
-                "subprocess.run",
-                return_value=CompletedProcess(args=[], returncode=0, stdout="<nil>\n", stderr=""),
-            ),
-        ):
-            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
 
 
 class TestComposeSizingMain:
@@ -326,7 +139,7 @@ class TestComposeSizingMain:
     def test_runs_as_a_module_without_importing_teatree(self) -> None:
         # deploy.sh invokes `python3 <file> compose-sizing` on the host with no
         # teatree on sys.path — the module must run pure-stdlib on that path.
-        # Exit 3 is a legitimate outcome here (this machine's daemon may be too small to
+        # Exit 3 is a legitimate outcome here (this machine may be too small to
         # host a workable cap), so the assertion is on the pure-stdlib run, never on the
         # runner's RAM: `check=True` would make the test fail on a small CI box.
         proc = self._run_compose_sizing({})
@@ -355,49 +168,12 @@ class TestComposeSizingMain:
 
 
 class TestHostAvailableRamMib:
-    def test_linux_reads_memavailable(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
-            patch("teatree.utils.ram_probe._linux_meminfo", return_value={"MemAvailable": 20971520}),
-        ):
+    def test_reads_memavailable(self) -> None:
+        with patch("teatree.utils.ram_probe._linux_meminfo", return_value={"MemAvailable": 20971520}):
             assert host_available_ram_mib() == 20480
 
-    def test_linux_unreadable_is_zero(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
-            patch("teatree.utils.ram_probe._linux_meminfo", return_value={}),
-        ):
-            assert host_available_ram_mib() == 0
-
-    def test_macos_counts_each_reclaimable_page_class(self) -> None:
-        stat = (
-            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\n"
-            "Pages inactive: 32768.\nPages purgeable: 16384.\nPages speculative: 8192.\n"
-        )
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
-            patch("shutil.which", return_value="/usr/bin/vm_stat"),
-            patch("teatree.utils.run.run_checked", return_value=CompletedProcess([], 0, stat, "")),
-        ):
-            assert host_available_ram_mib() == 1408
-
-    def test_macos_without_vm_stat_is_zero(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
-            patch("shutil.which", return_value=None),
-        ):
-            assert host_available_ram_mib() == 0
-
-    def test_macos_failing_vm_stat_is_zero(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
-            patch("shutil.which", return_value="/usr/bin/vm_stat"),
-            patch("teatree.utils.run.run_checked", side_effect=OSError),
-        ):
-            assert host_available_ram_mib() == 0
-
-    def test_unknown_platform_is_zero(self) -> None:
-        with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
+    def test_unreadable_is_zero(self) -> None:
+        with patch("teatree.utils.ram_probe._linux_meminfo", return_value={}):
             assert host_available_ram_mib() == 0
 
 
@@ -488,15 +264,15 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
     REFUSES.
     """
 
-    MEASURED_INCIDENT_DAEMON_MIB: ClassVar[int] = 9937
-    #: Daemon totals whose UNCLAMPED arithmetic lands at or under the resume floor.
-    BAND_DAEMON_MIB: ClassVar[tuple[int, int]] = (8448, 11008)
-    #: The smallest daemon total that can hold a floor-clearing cap beside the siblings.
-    MIN_WORKABLE_DAEMON_MIB: ClassVar[int] = 10497
+    MEASURED_INCIDENT_TOTAL_MIB: ClassVar[int] = 9937
+    #: Host totals whose UNCLAMPED arithmetic lands at or under the resume floor.
+    BAND_TOTAL_MIB: ClassVar[tuple[int, int]] = (8448, 11008)
+    #: The smallest host total that can hold a floor-clearing cap beside the siblings.
+    MIN_WORKABLE_TOTAL_MIB: ClassVar[int] = 10497
 
     @staticmethod
-    def _sizing(daemon_mib: int) -> ram_probe.WorkerSizing:
-        return DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=daemon_mib)
+    def _sizing(total_mib: int) -> ram_probe.WorkerSizing:
+        return DockerWorkerSizing.worker_sizing(total_ram_mib=total_mib)
 
     def test_the_restated_resume_floor_matches_its_owning_constant(self) -> None:
         """``ram_probe`` runs as a BARE script under ``deploy.sh``, so it cannot import it.
@@ -509,7 +285,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         assert int(RAM_RESUME_FLOOR_GB * 1024) == ram_probe._RESUME_FLOOR_MIB
 
     def test_the_emitted_cap_clears_the_conflict_predicate_that_names_the_fault(self) -> None:
-        assert resume_ceiling_conflict(self._sizing(self.MIN_WORKABLE_DAEMON_MIB).mem_limit_mib / 1024) is None
+        assert resume_ceiling_conflict(self._sizing(self.MIN_WORKABLE_TOTAL_MIB).mem_limit_mib / 1024) is None
 
     def test_the_emitted_cap_is_box_scoped_so_the_cgroup_still_governs(self) -> None:
         """The direction that matters: a cap must not buy safety by ceasing to govern.
@@ -519,24 +295,24 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         answers from the host component, so a freer host admits MORE work into a container
         that cannot hold it — unbounded, and invisible on every health surface.
         """
-        cap = self._sizing(self.MIN_WORKABLE_DAEMON_MIB).mem_limit_mib
+        cap = self._sizing(self.MIN_WORKABLE_TOTAL_MIB).mem_limit_mib
 
         assert RamHeadroom(available_mib=cap, cgroup_limit_mib=cap, host_available_mib=cap).cgroup_is_box_scoped
 
-    def test_no_daemon_total_yields_a_cap_at_or_under_the_resume_floor(self) -> None:
+    def test_no_host_total_yields_a_cap_at_or_under_the_resume_floor(self) -> None:
         """The whole invariant, swept: every emitted cap can release the brake."""
         offenders = {
-            daemon: sizing.mem_limit_mib
-            for daemon in range(2048, 32769, 64)
-            if 0 < (sizing := self._sizing(daemon)).mem_limit_mib <= int(RAM_RESUME_FLOOR_GB * 1024)
+            total: sizing.mem_limit_mib
+            for total in range(2048, 32769, 64)
+            if 0 < (sizing := self._sizing(total)).mem_limit_mib <= int(RAM_RESUME_FLOOR_GB * 1024)
         }
 
-        assert not offenders, f"caps at/under the resume floor for daemon totals: {sorted(offenders)[:8]}"
+        assert not offenders, f"caps at/under the resume floor for host totals: {sorted(offenders)[:8]}"
 
     def test_the_sweep_visits_totals_that_would_otherwise_offend(self) -> None:
         """Positive control: without the clamp the sweep above HAS offenders to find."""
         unclamped = [
-            int((daemon - 4352) * 0.8) for daemon in range(self.BAND_DAEMON_MIB[0], self.BAND_DAEMON_MIB[1] + 1, 64)
+            int((total - 4352) * 0.8) for total in range(self.BAND_TOTAL_MIB[0], self.BAND_TOTAL_MIB[1] + 1, 64)
         ]
 
         assert unclamped, "the control range is empty — the sweep would pass vacuously"
@@ -546,43 +322,43 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
         """The other half of the trap: a sub-floor cap is what ``t3 doctor check`` calls broken."""
         floor_mib = DEFAULT_AGENT_WORKLOAD_FLOOR_GIB * 1024
         offenders = {
-            daemon: sizing.mem_limit_mib
-            for daemon in range(2048, 32769, 64)
-            if 0 < (sizing := self._sizing(daemon)).mem_limit_mib < floor_mib
+            total: sizing.mem_limit_mib
+            for total in range(2048, 32769, 64)
+            if 0 < (sizing := self._sizing(total)).mem_limit_mib < floor_mib
         }
 
-        assert not offenders, f"caps under the doctor's hard floor for daemon totals: {sorted(offenders)[:8]}"
+        assert not offenders, f"caps under the doctor's hard floor for host totals: {sorted(offenders)[:8]}"
 
     def test_a_total_that_cannot_hold_a_floor_clearing_cap_refuses(self) -> None:
         """TOO-LOW control: no cap exists here, so the sizer must say so rather than guess.
 
-        Replaces an assertion that a 8192 MiB daemon sizes to 3891 — a cap BELOW the
+        Replaces an assertion that an 8192 MiB host sizes to 3891 — a cap BELOW the
         doctor's own hard floor, i.e. the head was already emitting a broken cap outside
         the band it was fixing.
         """
-        for daemon in (self.MEASURED_INCIDENT_DAEMON_MIB, 8192, self.MIN_WORKABLE_DAEMON_MIB - 1):
-            sizing = self._sizing(daemon)
+        for total in (self.MEASURED_INCIDENT_TOTAL_MIB, 8192, self.MIN_WORKABLE_TOTAL_MIB - 1):
+            sizing = self._sizing(total)
 
-            assert sizing.mem_limit_mib == 0, daemon
+            assert sizing.mem_limit_mib == 0, total
             assert sizing.refusal
-            assert str(self.MIN_WORKABLE_DAEMON_MIB) in sizing.refusal
+            assert str(self.MIN_WORKABLE_TOTAL_MIB) in sizing.refusal
 
     def test_the_fit_boundary_disagrees_across_one_mib(self) -> None:
         """Neither arm can pass vacuously: the two adjacent totals must answer differently."""
-        refused = self._sizing(self.MIN_WORKABLE_DAEMON_MIB - 1)
-        sized = self._sizing(self.MIN_WORKABLE_DAEMON_MIB)
+        refused = self._sizing(self.MIN_WORKABLE_TOTAL_MIB - 1)
+        sized = self._sizing(self.MIN_WORKABLE_TOTAL_MIB)
 
         assert refused.refusal
         assert refused.mem_limit_mib == 0
         assert sized.refusal is None
         assert sized.mem_limit_mib > int(RAM_RESUME_FLOOR_GB * 1024)
 
-    def test_a_daemon_total_above_the_band_is_unchanged(self) -> None:
+    def test_a_host_total_above_the_band_is_unchanged(self) -> None:
         """TOO-HIGH control: a real box sizes byte-identically — this is no blanket clamp."""
-        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22118
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000).mem_limit_mib == 22118
 
     def test_an_unreadable_basis_still_defers_to_the_compose_default(self) -> None:
-        sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=0)
+        sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=0)
 
         assert sizing.mem_limit_mib == 0
         assert sizing.refusal is None, "an unreadable basis is no opinion, never a refusal"
@@ -591,12 +367,9 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
 class TestTheComposeSizingEmitter:
     """What ``deploy/deploy.sh`` ``eval``s, and how a refusal reaches it."""
 
-    def _emit(
-        self, monkeypatch: pytest.MonkeyPatch, sizing: ram_probe.WorkerSizing, *, daemon_cpus: int = 8
-    ) -> tuple[str, str]:
+    def _emit(self, monkeypatch: pytest.MonkeyPatch, sizing: ram_probe.WorkerSizing) -> tuple[str, str]:
         monkeypatch.setattr(DockerWorkerSizing, "worker_sizing", classmethod(lambda cls, *a, **k: sizing))
         monkeypatch.setattr(DockerWorkerSizing, "worker_cpus", staticmethod(lambda *a, **k: 7))
-        monkeypatch.setattr(DockerWorkerSizing, "daemon_cpu_count", classmethod(lambda cls: daemon_cpus))
         out, err = io.StringIO(), io.StringIO()
         monkeypatch.setattr(ram_probe.sys, "stdout", out)
         monkeypatch.setattr(ram_probe.sys, "stderr", err)
@@ -633,29 +406,11 @@ class TestTheComposeSizingEmitter:
         assert "TEATREE_WORKER_MEM_LIMIT" not in out, "a derived line would overwrite the operator's own value"
         assert not err
 
-    def test_an_unreadable_daemon_cpu_count_emits_no_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A cap derived from host cores alone can exceed a Docker Desktop VM, which refuses the whole `up`."""
-        monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
-        monkeypatch.delenv("TEATREE_WORKER_CPUS", raising=False)
-
-        out, _ = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=0)
-
-        assert "TEATREE_WORKER_CPUS" not in out
-
-    def test_an_operator_value_above_the_daemon_is_capped_at_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
-        monkeypatch.setenv("TEATREE_WORKER_CPUS", "16")
-
-        out, err = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=4)
-
-        assert out == "TEATREE_WORKER_CPUS=4\n"
-        assert "16" in err
-
-    def test_an_operator_value_within_the_daemon_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_operator_set_cpu_cap_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
         monkeypatch.setenv("TEATREE_WORKER_CPUS", "2.5")
 
-        out, err = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=4)
+        out, err = self._emit(monkeypatch, ram_probe.WorkerSizing(0))
 
         assert "TEATREE_WORKER_CPUS" not in out
         assert not err

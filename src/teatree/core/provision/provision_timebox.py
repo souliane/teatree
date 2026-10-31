@@ -37,7 +37,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.config import get_effective_settings
+from teatree.config import UserSettings, get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.provision.provision_report import StepResult
@@ -46,23 +46,6 @@ from teatree.utils.run import run_allowed_to_fail
 from teatree.utils.thread_db import close_thread_db_connections
 
 logger = logging.getLogger(__name__)
-
-# Sensible default ceiling for one HEAVY provisioning subprocess (a DSLR
-# restore, a reference-DB ``migrate``, a frontend build). A healthy run
-# completes well within this; a forked graph or a genuine hang blows past it
-# and gets aborted + alerted. Overridable via the DB-home
-# ``provision_step_timeout_seconds`` setting (``t3 <overlay> config_setting
-# set provision_step_timeout_seconds <n>``, per-overlay overridable); a
-# ``[teatree]`` TOML value is ignored on read.
-DEFAULT_STEP_TIMEOUT_SECONDS = 1800
-
-# The uniform 1800s ceiling let two grinding FAST steps (symlinks, settings, a
-# compose override) burn an hour before failure even surfaced. A fast step
-# defaults to this short ceiling instead — only a step explicitly marked
-# ``heavy`` (``ProvisionStep.heavy``) keeps the long one. Overridable via the
-# DB-home ``provision_fast_step_timeout_seconds`` setting, per-overlay
-# overridable.
-DEFAULT_FAST_STEP_TIMEOUT_SECONDS = 120
 
 # Heartbeat cadence: emit "still <step>… (Nm elapsed)" this often while the op
 # runs, so the agent/statusline/monitor can tell progress from a hang.
@@ -111,27 +94,21 @@ def resolve_step_timeout_seconds(*, heavy: bool = False) -> int:
 
     ``heavy=False`` (the default — souliane/teatree#2949) reads
     ``provision_fast_step_timeout_seconds`` (per-overlay override → global →
-    :data:`DEFAULT_FAST_STEP_TIMEOUT_SECONDS`) — the ceiling for symlinks,
-    settings, a compose override, or any step that hasn't opted into the long
-    one. ``heavy=True`` reads ``provision_step_timeout_seconds`` (→
-    :data:`DEFAULT_STEP_TIMEOUT_SECONDS`) — a DB import, a frontend build, or
+    declared default) — the ceiling for symlinks, settings, a compose override,
+    or any step that hasn't opted into the long one. ``heavy=True`` reads
+    ``provision_step_timeout_seconds`` — a DB import, a frontend build, or
     anything else that can legitimately take tens of minutes. Always returns
     a positive ceiling — a non-positive or unreadable value degrades to the
-    matching default so a misconfiguration can never disable the time-box
-    (the "never hang" invariant must not be configurable away).
+    matching declared default so a misconfiguration can never disable the
+    time-box (the "never hang" invariant must not be configurable away).
     """
-    settings_ = get_effective_settings()
-    setting_name, default = (
-        ("provision_step_timeout_seconds", DEFAULT_STEP_TIMEOUT_SECONDS)
-        if heavy
-        else ("provision_fast_step_timeout_seconds", DEFAULT_FAST_STEP_TIMEOUT_SECONDS)
-    )
-    value = getattr(settings_, setting_name, default)
+    setting_name = "provision_step_timeout_seconds" if heavy else "provision_fast_step_timeout_seconds"
+    declared = getattr(UserSettings(), setting_name)
     try:
-        ceiling = int(value)
+        ceiling = int(getattr(get_effective_settings(), setting_name, declared))
     except (TypeError, ValueError):
-        return default
-    return ceiling if ceiling > 0 else default
+        return declared
+    return ceiling if ceiling > 0 else declared
 
 
 def detect_migration_conflict(output: str) -> str | None:

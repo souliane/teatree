@@ -5,15 +5,19 @@ task lifecycle) because the inbound queue is a separate concern: it answers
 "what is still owed a drain" rather than "where is this unit of work".
 """
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q, Window
+from django.db.models.functions import RowNumber
 from django.utils import timezone
 
 from teatree.utils.forge import FORGES
 
-__all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
+__all__ = ["HANDLING_LEASE", "IncomingEventQuerySet", "ReplyDispatchQuerySet"]
+
+HANDLING_LEASE = timedelta(seconds=120)
 
 #: Neither drained nor poisoned — the in-flight boundary both the drain and the
 #: pruner key on, so they can never disagree about what is still owed.
@@ -54,6 +58,21 @@ class IncomingEventQuerySet(models.QuerySet):
         """
         moment = now or timezone.now()
         return self.filter(_UNSETTLED).filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment))
+
+    def drain_batch(self, limit: int, *, budgeted: Iterable[tuple[str, str]], per_key: int) -> models.QuerySet:
+        # A preset-deferred row keeps next_retry_at None, so uncapped its key would fill every oldest-first batch.
+        due = self.unprocessed().order_by("received_at", "pk")
+        capped = Q()
+        for source, event_name in budgeted:
+            capped |= Q(source=source, event_name=event_name)
+        if not capped:
+            return due[:limit]
+        rank = Window(RowNumber(), partition_by=[F("source"), F("event_name")], order_by=[F("received_at"), F("pk")])
+        return due.annotate(key_rank=rank).filter(~capped | Q(key_rank__lte=per_key))[:limit]
+
+    def claim_for_handling(self, pk: int, now: datetime) -> bool:
+        # One conditional UPDATE: the control DB is SQLite, which has no row locks to select_for_update.
+        return self.unprocessed(now).filter(pk=pk).update(next_retry_at=now + HANDLING_LEASE) == 1
 
     def prunable(self, cutoff: datetime) -> models.QuerySet:
         # Settled events before *cutoff*, safe to delete (#3693). Excludes the _UNSETTLED

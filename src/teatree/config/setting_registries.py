@@ -26,11 +26,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
 # DB-home cutover emptied this: the per-overlay override of a setting now
-# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). ``speak`` was
-# never here — its per-overlay override merges bespoke (now off the DB overlay-scope
-# row, ``resolution._resolve_speak_db``); every other field is DB-home. Discovery
-# still unions this with the DB-home registry; with it empty the union is just the
-# DB-home registry.
+# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row); every field is
+# DB-home. Discovery still unions this with the DB-home registry; with it empty the union is
+# just the DB-home registry.
 TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 
 # ``T3_*`` env vars that win over both the per-overlay override and the

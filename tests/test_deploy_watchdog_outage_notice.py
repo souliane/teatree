@@ -18,7 +18,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -215,7 +214,6 @@ class TestDowntimeIsAnswerable:
 
 
 class TestDeployWindowDoesNotPage:
-    @pytest.mark.skipif(sys.platform == "darwin", reason="deploy image uses GNU date -d for container timestamps")
     def test_a_recently_recreated_stack_is_not_reported_as_an_outage(self, tmp_path: Path) -> None:
         """A rolling swap legitimately stops containers — that is a deploy, not an outage."""
         created = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 5)) + ".683288764Z"

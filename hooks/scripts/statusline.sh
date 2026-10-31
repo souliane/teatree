@@ -228,9 +228,10 @@ _statusline_chain_db() {
 # Echoes exactly one of `on`, `off`, `unknown`. `unknown` is NOT `off`: it means a
 # store exists here that no tier could read, so the shipped default is a guess and
 # must not be rendered as the owner's stored choice.
-# BEGIN GENERATED: autoload default
+# BEGIN GENERATED: statusline defaults
 _AUTOLOAD_DEFAULT=off
-# END GENERATED: autoload default
+_CADENCE_DEFAULT=720
+# END GENERATED: statusline defaults
 autoload_state() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
@@ -312,11 +313,8 @@ format_reset_time() {
     [ -z "$resets_at" ] || [ "$resets_at" = "empty" ] && return
     local reset_time=""
     if [[ "$resets_at" =~ ^[0-9]+$ ]]; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            reset_time=$(date -j -r "$resets_at" "+%H:%M" 2>/dev/null)
-        else
-            reset_time=$(date -d "@$resets_at" "+%H:%M" 2>/dev/null)
-        fi
+        reset_time=$(date -d "@$resets_at" "+%H:%M" 2>/dev/null) \
+            || reset_time=$(date -r "$resets_at" "+%H:%M" 2>/dev/null)
     fi
     [ -n "$reset_time" ] && _frt=" ${_DIM}(until ${reset_time})${_RST}"
     return 0
@@ -347,111 +345,28 @@ g_segend=""
 # and it is built BEFORE anything that reads a file, a repo or the control DB
 # so it survives every one of those being dead or slow (see `_render_tail`).
 
-# RAM, CPU and disk. This block used to spend thirteen processes — three
-# `sysctl` calls, `vm_stat`, `df` and eight `awk` invocations whose entire job
-# was dividing two integers and printing one decimal place. It now spends
-# three: the `sysctl` names are fetched in one call, `vm_stat` and `df` are
-# parsed with the `read` builtin, and every percentage and GB figure is
-# `$(( ))` arithmetic scaled by ten (`awk`'s "%.1f"/"%.0f" rounding reproduced
-# by adding half a unit before the integer divide).
-# NOTE(#962): the RAM computation is slated to move into `teatree.system.memory`
-# (`t3 tool memory --json`) as the single source consumed by both the statusline
-# and a provision-path RAM auto-throttle. See souliane/teatree#962.
+# RAM, swap, CPU and disk. /proc is read with builtins and every percentage and
+# GB figure is `$(( ))` arithmetic scaled by ten, so the group spends one process
+# (`df`). A host without /proc omits RAM, swap and CPU and renders the rest.
 _ram_segment=""
+_swap_segment=""
 _cpu_segment=""
 _disk_segment=""
 
-_ram_total=""
 _ncpu="${TEATREE_STATUSLINE_NCPU:-}"
 _loadavg_raw=""
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # One call, four keys — `vm.loadavg` arrives as `{ 1.23 4.56 7.89 }`.
-    # `vm.swapusage` is the host-only signal Docker Desktop cannot report.
-    _sysctl_l1=""; _sysctl_l2=""; _sysctl_l3=""; _sysctl_l4=""
-    { read -r _sysctl_l1; read -r _sysctl_l2; read -r _sysctl_l3; read -r _sysctl_l4; } <<EOF
-$(sysctl -n hw.memsize hw.ncpu vm.loadavg vm.swapusage 2>/dev/null)
-EOF
-    _ram_total="$_sysctl_l1"
-    [ -z "$_ncpu" ] && _ncpu="$_sysctl_l2"
-    _loadavg_raw="${_sysctl_l3#*\{ }"
-    _loadavg_raw="${_loadavg_raw%% *}"
-fi
-
-if [ -n "$_ram_total" ]; then
-    _page_sz=""; _free=""; _inact=""; _purgeable=0; _speculative=0
-    _vml=""
-    while IFS= read -r _vml; do
-        case "$_vml" in
-            *"page size of "*)
-                _page_sz="${_vml#*page size of }"
-                _page_sz="${_page_sz%% *}"
-                ;;
-            "Pages free:"*)
-                _free="${_vml##*[[:space:]]}"; _free="${_free%.}"
-                ;;
-            "Pages inactive:"*)
-                _inact="${_vml##*[[:space:]]}"; _inact="${_inact%.}"
-                ;;
-            "Pages purgeable:"*)
-                _purgeable="${_vml##*[[:space:]]}"; _purgeable="${_purgeable%.}"
-                ;;
-            "Pages speculative:"*)
-                _speculative="${_vml##*[[:space:]]}"; _speculative="${_speculative%.}"
-                ;;
-        esac
-    done <<EOF
-$(vm_stat 2>/dev/null)
-EOF
-    if [[ "$_page_sz" =~ ^[0-9]+$ ]] && [[ "$_free" =~ ^[0-9]+$ ]] && [[ "$_inact" =~ ^[0-9]+$ ]] && [[ "$_purgeable" =~ ^[0-9]+$ ]] && [[ "$_speculative" =~ ^[0-9]+$ ]]; then
-        _reclaimable_pages=$(( _free + _inact + _purgeable + _speculative ))
-        _ram_used=$(( _ram_total - _reclaimable_pages * _page_sz ))
-        _ram_pct=$(( _ram_used * 100 / _ram_total ))
-        _used_tenths=$(( (_ram_used * 10 + 536870912) / 1073741824 ))
-        _total_gb=$(( (_ram_total + 536870912) / 1073741824 ))
-        color_pct "$_ram_pct"
-        _ram_segment="${_LBL}ram=${_RST}${_cp}${_LBL} $(( _used_tenths / 10 )).$(( _used_tenths % 10 ))/${_total_gb}G${_RST}"
-        # Fallback publisher for a host whose launchd publisher is not running: write only
-        # once the feed is 45s old, so its every-15s sample (which alone carries the swap
-        # activity) is never overwritten, and the governor's 60s freshness still holds.
-        _swap_total="${_sysctl_l4#*total = }"
-        _swap_total="${_swap_total%%M*}"
-        _swap_used="${_sysctl_l4#*used = }"
-        _swap_used="${_swap_used%%M*}"
-        if [[ "$_ncpu" =~ ^[0-9]+$ ]] && [[ "$_loadavg_raw" =~ ^[0-9]+\.?[0-9]*$ ]] \
-            && [[ "$_swap_total" =~ ^[0-9]+\.?[0-9]*$ ]] && [[ "$_swap_used" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-            _host_pressure_dir="${T3_LOOP_REGISTRY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree}"
-            _host_pressure_file="${_host_pressure_dir}/host-pressure.json"
-            _host_epoch=$(date +%s)
-            _last_host_epoch=0
-            if [ -r "$_host_pressure_file" ]; then
-                IFS= read -r _old_host_json < "$_host_pressure_file"
-                if [[ "$_old_host_json" =~ \"epoch\":([0-9]+) ]]; then _last_host_epoch="${BASH_REMATCH[1]}"; fi
-            fi
-            if [ $(( _host_epoch - _last_host_epoch )) -ge 45 ]; then
-                _host_ram_mib=$(( _reclaimable_pages * _page_sz / 1048576 ))
-                _swap_total_mib="${_swap_total%%.*}"
-                _swap_used_mib="${_swap_used%%.*}"
-                if [ -d "$_host_pressure_dir" ] || mkdir -p "$_host_pressure_dir" 2>/dev/null; then
-                    _host_pressure_tmp="${_host_pressure_file}.$$"
-                    if printf '{"epoch":%s,"cores":%s,"load1":%s,"ram_available_mib":%s,"swap_used_mib":%s,"swap_total_mib":%s}\n' \
-                        "$_host_epoch" "$_ncpu" "$_loadavg_raw" "$_host_ram_mib" "$_swap_used_mib" "$_swap_total_mib" \
-                        >"$_host_pressure_tmp" 2>/dev/null; then
-                        mv -f "$_host_pressure_tmp" "$_host_pressure_file" 2>/dev/null || true
-                    fi
-                fi
-            fi
-        fi
-    fi
-elif [ -r /proc/meminfo ]; then
-    # Linux: /proc is read with builtins, so this branch spends no processes at all.
-    _ram_total_kb=""; _ram_avail_kb=""
+_meminfo_file="${TEATREE_STATUSLINE_MEMINFO_FILE:-/proc/meminfo}"
+if [ -r "$_meminfo_file" ]; then
+    _ram_total_kb=""; _ram_avail_kb=""; _swap_total_kb=""; _swap_free_kb=""
     _ml=""
     while IFS= read -r _ml; do
         case "$_ml" in
             MemTotal:*)     _ram_total_kb="${_ml//[!0-9]/}" ;;
             MemAvailable:*) _ram_avail_kb="${_ml//[!0-9]/}" ;;
+            SwapTotal:*)    _swap_total_kb="${_ml//[!0-9]/}" ;;
+            SwapFree:*)     _swap_free_kb="${_ml//[!0-9]/}" ;;
         esac
-    done < /proc/meminfo
+    done < "$_meminfo_file"
     if [[ "$_ram_total_kb" =~ ^[0-9]+$ ]] && [[ "$_ram_avail_kb" =~ ^[0-9]+$ ]] && [ "$_ram_total_kb" -gt 0 ]; then
         _ram_used_kb=$(( _ram_total_kb - _ram_avail_kb ))
         _ram_pct=$(( _ram_used_kb * 100 / _ram_total_kb ))
@@ -459,6 +374,14 @@ elif [ -r /proc/meminfo ]; then
         _total_gb=$(( (_ram_total_kb + 524288) / 1048576 ))
         color_pct "$_ram_pct"
         _ram_segment="${_LBL}ram=${_RST}${_cp}${_LBL} $(( _used_tenths / 10 )).$(( _used_tenths % 10 ))/${_total_gb}G${_RST}"
+    fi
+    if [[ "$_swap_total_kb" =~ ^[0-9]+$ ]] && [[ "$_swap_free_kb" =~ ^[0-9]+$ ]] && [ "$_swap_total_kb" -gt 0 ]; then
+        _swap_used_kb=$(( _swap_total_kb - _swap_free_kb ))
+        _swap_pct=$(( _swap_used_kb * 100 / _swap_total_kb ))
+        _used_tenths=$(( (_swap_used_kb * 10 + 524288) / 1048576 ))
+        _total_gb=$(( (_swap_total_kb + 524288) / 1048576 ))
+        color_pct "$_swap_pct"
+        _swap_segment="${_LBL}swap=${_RST}${_cp}${_LBL} $(( _used_tenths / 10 )).$(( _used_tenths % 10 ))/${_total_gb}G${_RST}"
     fi
 fi
 
@@ -475,18 +398,14 @@ if [[ "$_df_avail" =~ ^[0-9]+$ ]] && [[ "$_disk_used_pct" =~ ^[0-9]+$ ]]; then
     _disk_segment="${_LBL}disk=${_RST}${_cp}${_LBL} $(( (_df_avail + 524288) / 1048576 ))G free${_RST}"
 fi
 
-# CPU load (macOS/Linux). A single non-delayed read of the 1-minute load
-# average — never a multi-second sampler like `top -l 2`, so the hook stays
-# fast. The load is normalized by core count and rendered as a percent so it
-# reads alongside the RAM/disk indicators under the same color thresholds;
-# above 100% means more runnable work than cores, which color_pct paints red.
+# CPU load: a single non-delayed read of the 1-minute load average, normalized
+# by core count so it reads alongside RAM/disk; above 100% color_pct paints red.
 if [ -n "${TEATREE_STATUSLINE_LOADAVG_FILE:-}" ]; then
-    _loadavg_raw=""
     [ -r "$TEATREE_STATUSLINE_LOADAVG_FILE" ] && read -r _loadavg_raw _df_rest < "$TEATREE_STATUSLINE_LOADAVG_FILE"
-elif [ -z "$_loadavg_raw" ] && [ -r /proc/loadavg ]; then
+elif [ -r /proc/loadavg ]; then
     read -r _loadavg_raw _df_rest < /proc/loadavg
 fi
-if [ -z "$_ncpu" ] && [[ "$OSTYPE" != "darwin"* ]]; then
+if [ -z "$_ncpu" ] && [ -n "$_loadavg_raw" ]; then
     _ncpu=$(nproc 2>/dev/null)
 fi
 if [[ "$_loadavg_raw" =~ ^[0-9]+\.?[0-9]*$ ]] && [[ "$_ncpu" =~ ^[0-9]+$ ]] && [ "$_ncpu" -gt 0 ]; then
@@ -503,6 +422,10 @@ if [[ "$_loadavg_raw" =~ ^[0-9]+\.?[0-9]*$ ]] && [[ "$_ncpu" =~ ^[0-9]+$ ]] && [
 fi
 
 g_resource="$_ram_segment"
+if [ -n "$_swap_segment" ]; then
+    [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
+    g_resource="${g_resource}${_swap_segment}"
+fi
 if [ -n "$_cpu_segment" ]; then
     [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
     g_resource="${g_resource}${_cpu_segment}"
@@ -795,7 +718,7 @@ fi
 _stale_banner=""
 _now=""
 if [[ "$_rendered_at" =~ ^[0-9]+$ ]]; then
-    [[ "$_sl_cadence" =~ ^[0-9]+$ ]] || _sl_cadence=720
+    [[ "$_sl_cadence" =~ ^[0-9]+$ ]] || _sl_cadence=$_CADENCE_DEFAULT
     _sl_cutoff=$(( 2 * _sl_cadence ))
     [ "$_sl_cutoff" -lt 300 ] && _sl_cutoff=300
     _now=$(date +%s)

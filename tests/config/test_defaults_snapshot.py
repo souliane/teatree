@@ -280,12 +280,12 @@ class TestTheRenderedBlockIsNested:
         assert cadence < block.index("\nmerge_wip = ") < block.index('[teatree.Loops."Fan-out & admission"]')
 
     def test_a_genuine_sub_table_setting_keeps_its_own_top_level_path(self) -> None:
-        # ``speak`` is a declared setting whose value IS a table, not a group wrapper, so it
-        # must stay reachable at ``[teatree.speak]`` rather than sink into its group. Its
+        # ``mr_reminder`` is a declared setting whose value IS a table, not a group wrapper, so it
+        # must stay reachable at ``[teatree.mr_reminder]`` rather than sink into its group. Its
         # header carries the key's help text as the same trailing comment every other key's
         # line carries, so the path is read off the line with that comment removed.
         headers = {line.split(" #")[0] for line in render_toml(_shipped()).splitlines()}
-        assert "[teatree.speak]" in headers
+        assert "[teatree.mr_reminder]" in headers
 
     def test_nesting_the_block_moved_no_value(self) -> None:
         assert _emitted(render_toml(_shipped())) == _shipped()

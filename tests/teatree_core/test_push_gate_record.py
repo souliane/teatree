@@ -95,7 +95,7 @@ def test_push_gate_records_every_stage_and_finishes_via_exit_trap() -> None:
     assert "trap 'finish_push_gate_record \"$?\"' EXIT" in body
     stage_commands = (
         '"${UV_PROJECT_RUN[@]}" run pytest tests/test_gate_never_lockout_contract.py',
-        '"$timeout_bin" --kill-after=10s',
+        "timeout --kill-after=10s",
         '"${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run',
     )
     for stage, command in enumerate(stage_commands, start=1):

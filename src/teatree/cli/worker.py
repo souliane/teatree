@@ -2,7 +2,7 @@
 
 The worker acquires the ``worker`` flock singleton and runs K pinned ``django_tasks_db``
 executor threads that drain the self-rescheduling loop-timer chains (no OS cron /
-launchd / systemd). The worker owns the tick cadence out of the box; the SessionStart
+systemd). The worker owns the tick cadence out of the box; the SessionStart
 supervisor + ``t3 worker ensure`` keep at least one alive. Bare ``t3 worker`` runs the worker (the ``run`` alias — one
 documented invocation path); ``status``, ``ensure``, ``drain``, ``stop`` and ``restart``
 are the operator controls.

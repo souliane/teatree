@@ -338,7 +338,6 @@ class TestNoHostProcessHoldsTheDatabaseWritable:
         monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", _sound_db(tmp_path / "db.sqlite3"))
         monkeypatch.setattr(checks_db_integrity, "DATA_DIR", tmp_path / "data")
         monkeypatch.setattr("teatree.db.write_domain._PROC", tmp_path / "no-procfs")
-        monkeypatch.setattr("teatree.db.write_domain._which", lambda _: None)
 
         assert _check_no_host_process_holds_the_db_writable() is True
 

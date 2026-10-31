@@ -164,7 +164,6 @@ slack_user_id
 snapshot_baseline_gate_enabled
 snapshot_warmer_max_age_days
 solo_repo_url_pattern
-speak
 stale_stack_min_age_minutes
 standing_goal_stop_gate_enabled
 standing_grant_ask_gate_enabled
@@ -204,3 +203,4 @@ admission_load_resume_per_core
 forge_pool_max_connections
 RETIRED provision_ram_ceiling_percent
 RETIRED eval_local_skill
+RETIRED speak

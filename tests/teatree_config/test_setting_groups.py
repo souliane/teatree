@@ -245,9 +245,9 @@ class TestTheTomlRendererBothSurfacesShare:
         # The flattener's whole disambiguation rule: a sub-table named after a DECLARED
         # setting is that setting's value, any other is a group. A nested SETTING must
         # therefore survive the round trip whole rather than being descended into.
-        rows: dict[str, object] = {**_SAMPLE, "speak": {"local": "all"}}
+        rows: dict[str, object] = {**_SAMPLE, "mr_reminder": {"default_channel": "C1"}}
         parsed = tomllib.loads(_dumped(grouped_settings_table(rows)))["teatree"]
-        assert flatten_settings_table(parsed)["speak"] == {"local": "all"}
+        assert flatten_settings_table(parsed)["mr_reminder"] == {"default_channel": "C1"}
 
     def test_the_emitted_order_is_the_group_walk_not_the_alphabet(self) -> None:
         lines = _dumped(grouped_settings_table(_SAMPLE)).splitlines()
@@ -363,6 +363,6 @@ class TestNestedValueTable:
 
     def test_a_mapping_nests_recursively(self) -> None:
         document = tomlkit.document()
-        document["speak"] = nested_value_table({"channels": {"b": "y", "a": "x"}, "local": "all"})
-        parsed = tomllib.loads(tomlkit.dumps(document))["speak"]
-        assert parsed == {"channels": {"a": "x", "b": "y"}, "local": "all"}
+        document["mr_reminder"] = nested_value_table({"channels": {"b": "y", "a": "x"}, "default_channel": "C1"})
+        parsed = tomllib.loads(tomlkit.dumps(document))["mr_reminder"]
+        assert parsed == {"channels": {"a": "x", "b": "y"}, "default_channel": "C1"}

@@ -62,9 +62,7 @@ tests/teatree_backends/test_slack_scopes.py
 tests/teatree_backends/test_slack_self_identity.py
 tests/teatree_backends/test_slack_token_policy.py
 tests/teatree_backends/test_slack_token_prefix_validation.py
-tests/teatree_backends/test_slack_upload_audio.py
 tests/teatree_backends/test_slack_voice_classifier.py
-tests/teatree_backends/test_upload_response.py
 tests/teatree_cli/test_eval_docker.py
 tests/teatree_cli/test_eval_transcript_replay.py
 tests/teatree_cli/test_on_behalf_egress_cli_bypass_closed.py
@@ -73,7 +71,6 @@ tests/teatree_cli/test_review_approval_pagination.py
 tests/teatree_cli/test_review_live_approval_phrase.py
 tests/teatree_cli/test_review_post_impl_non_diffnote.py
 tests/teatree_core/management/test_questions_command_atomicity.py
-tests/teatree_core/management_commands/test_notify_post_speaks.py
 tests/teatree_core/management_commands/test_review_record_triggers_sweep.py
 tests/teatree_core/management_commands/test_tool.py
 tests/teatree_core/pr_command/test_post_test_plan_and_sweep.py

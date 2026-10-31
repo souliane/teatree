@@ -405,7 +405,6 @@ def test_invalid_admission_fields_do_not_reach_remote_exporter() -> None:
         "5h window spent (95%) — a hard rate limit is imminent",
         "weekly burn outruns the reset (pace 0.42) — pacing to the window",
         "load 10 at/over the 50 watermark on 10 core(s)",
-        "host swap 25% at/over the 25% watermark",
         "admitting up to 2 — signals healthy",
         "yield collapsed (0/5 terminal tasks completed) — the marginal token is buying zero",
         (f"5.2 GB available at/under the 6 GB watermark ({resume_ceiling_conflict(5.2)})"),
@@ -419,9 +418,8 @@ def test_admission_reason_allowlist_fails_closed_on_new_free_text() -> None:
     assert _safe_admission_reason("load 10 at/over the 50 watermark on 10 core(s); secret=abc") == "unknown"
 
 
-@pytest.mark.parametrize("source", ["host feed", "container reading"])
-def test_machine_reason_allowlist_keeps_the_deciding_reading(source: str) -> None:
-    reason = f"host paging 9.6 MiB/s at/over the 8 MiB/s watermark ({source})"
+def test_machine_reason_allowlist_keeps_the_deciding_reading() -> None:
+    reason = "load 10 at/over the 50 watermark on 10 core(s) (container reading)"
     assert _safe_admission_reason(reason) == reason
     assert _safe_admission_reason(reason + " secret=abc") == "unknown"
 

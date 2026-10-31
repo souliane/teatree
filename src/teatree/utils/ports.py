@@ -1,4 +1,3 @@
-import platform
 import socket
 from pathlib import Path
 
@@ -8,10 +7,9 @@ from teatree.utils.run import run_allowed_to_fail
 # through Django model registration.
 type Ports = dict[str, int]
 
-# Docker publishes the host under these names to containers. Docker Desktop provides
-# both; a Linux daemon provides them only when the container was started with
-# ``--add-host=host.docker.internal:host-gateway``, which is why neither may be
-# assumed and the fallback below exists.
+# Docker publishes the host under these names to containers only when the container was
+# started with ``--add-host=host.docker.internal:host-gateway``, which is why neither
+# may be assumed and the fallback below exists.
 _HOST_ALIASES = ("host.docker.internal", "gateway.docker.internal")
 
 # The default bridge gateway, which is the host on a stock Linux daemon that
@@ -22,16 +20,14 @@ _DEFAULT_BRIDGE_GATEWAY = "172.17.0.1"
 def running_in_container() -> bool:
     """Whether THIS process is executing inside a container.
 
-    Deliberately not an OS check. The containerized CLI reports ``platform.system()
-    == "Linux"`` whatever the host is, so branching on the OS answers "what kind of
-    machine is this" when the question is "which side of the boundary am I on".
+    Deliberately not an OS check: the question is "which side of the container
+    boundary am I on", not "what kind of machine is this".
     """
     if Path("/.dockerenv").exists():
         return True
     try:
         cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8")
     except OSError:
-        # No /proc at all (macOS, Windows): not a Linux container.
         return False
     return any(marker in cgroup for marker in ("docker", "containerd", "kubepods"))
 
@@ -44,9 +40,9 @@ def host_published_port_host() -> str:
     listening there, and a caller gets ECONNREFUSED against a port that is demonstrably
     open on the host -- so the host has to be named explicitly.
 
-    The alias is PROBED rather than inferred from the platform: Docker Desktop resolves
-    ``host.docker.internal``, a stock Linux daemon resolves neither alias, and asking
-    the resolver is the only answer that holds on both without special-casing either.
+    The alias is PROBED: a stock Linux daemon resolves neither alias unless the container
+    was started with ``--add-host``, and asking the resolver is the only answer that holds
+    either way.
     """
     if not running_in_container():
         return "localhost"
@@ -67,20 +63,13 @@ def _resolved_host_alias() -> str:
 def docker_host_address() -> str:
     """The address a container on this daemon reaches the host by.
 
-    Natively the host OS is a sound proxy for the daemon's: Docker Desktop
-    publishes an alias, a stock Linux daemon publishes none and the bridge
-    gateway is the address.
-
-    Inside a container that proxy breaks. ``platform.system()`` reports Linux
-    whatever the host is, so it answers "what kind of machine is this" when the
-    question is "which side of the boundary am I on" — and a containerized CLI on
-    a macOS host handed out the bridge gateway, which nothing is listening on
-    there. From inside, the daemon's own resolver is the authority, so the alias
-    is PROBED rather than inferred, exactly as in :func:`host_published_port_host`.
+    Natively a stock Linux daemon publishes no alias and the bridge gateway is the
+    address. Inside a container the daemon's own resolver is the authority, so the alias
+    is PROBED, exactly as in :func:`host_published_port_host`.
     """
     if running_in_container():
         return _resolved_host_alias()
-    return "host.docker.internal" if platform.system() in {"Darwin", "Windows"} else _DEFAULT_BRIDGE_GATEWAY
+    return _DEFAULT_BRIDGE_GATEWAY
 
 
 def find_free_port(host: str = "127.0.0.1") -> int:

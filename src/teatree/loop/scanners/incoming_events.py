@@ -33,7 +33,9 @@ from teatree.core.intake.event_router import RoutedAction, route_event
 from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
 from teatree.core.review.forge_actors import ForgeActors
+from teatree.loop.scanners import event_handlers
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.event_handlers import HandlingOutcome
 
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
@@ -95,10 +97,17 @@ def _event_forge_url(event: "IncomingEvent") -> str:
     return event.channel_ref or ""
 
 
+def _unwired_runner(event: "IncomingEvent") -> HandlingOutcome:
+    msg = f"incoming event {event.pk} has a registered handler but the scanner has no runner wired"
+    raise RuntimeError(msg)
+
+
 @dataclass(slots=True)
 class IncomingEventsScanner:
     limit: int = 25
+    handled_per_key: int = 5
     name: str = "incoming_events"
+    runner: Callable[["IncomingEvent"], HandlingOutcome] = _unwired_runner
     replier: Replier = field(default_factory=NoopReplier)
     messaging_resolver: MessagingResolver = field(default=_default_messaging_resolver)
 
@@ -114,7 +123,11 @@ class IncomingEventsScanner:
             # Transient OperationalError (lock timeout, connection drop)
             # and any other DatabaseError keep propagating to
             # `tick._run_job`, which surfaces them on the statusline.
-            events = list(event_model.objects.unprocessed().order_by("received_at", "pk")[: self.limit])
+            events = list(
+                event_model.objects.drain_batch(
+                    self.limit, budgeted=event_handlers.HANDLERS.keys(), per_key=self.handled_per_key
+                )
+            )
         except (OperationalError, ProgrammingError) as exc:
             if not _is_missing_relation(exc):
                 raise
@@ -122,6 +135,10 @@ class IncomingEventsScanner:
             return []
         signals: list[ScanSignal] = []
         for event in events:
+            if event_handlers.HANDLERS.lookup(event.source, event.event_name, event.action) is not None:
+                if self.runner(event) is HandlingOutcome.DEAD_LETTERED:
+                    signals.append(self._dead_letter_signal(event))
+                continue
             try:
                 signal = self._handle(event)
             except Exception as exc:

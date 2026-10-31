@@ -43,25 +43,34 @@ def committed_manifest() -> str:
     ).stdout
 
 
-_AUTOLOAD_BEGIN = "# BEGIN GENERATED: autoload default"
-_AUTOLOAD_END = "# END GENERATED: autoload default"
+_DEFAULTS_BEGIN = "# BEGIN GENERATED: statusline defaults"
+_DEFAULTS_END = "# END GENERATED: statusline defaults"
 
 
-def render_statusline_default(text: str) -> str:
-    default = declared_defaults()["autoload"]
-    if type(default) is not bool:
+def render_statusline_defaults(text: str) -> str:
+    declared = declared_defaults()
+    autoload, cadence = declared["autoload"], declared["loop_cadence_seconds"]
+    if type(autoload) is not bool:
         message = "autoload declaration must be boolean"
         raise TypeError(message)
-    if text.count(_AUTOLOAD_BEGIN) != 1 or text.count(_AUTOLOAD_END) != 1:
-        message = "statusline autoload default markers must each occur once"
+    if type(cadence) is not int:
+        message = "loop_cadence_seconds declaration must be an integer"
+        raise TypeError(message)
+    if text.count(_DEFAULTS_BEGIN) != 1 or text.count(_DEFAULTS_END) != 1:
+        message = "statusline defaults markers must each occur once"
         raise ValueError(message)
-    start = text.index(_AUTOLOAD_BEGIN)
-    end = text.index(_AUTOLOAD_END) + len(_AUTOLOAD_END)
+    start = text.index(_DEFAULTS_BEGIN)
+    end = text.index(_DEFAULTS_END) + len(_DEFAULTS_END)
     if start >= end:
-        message = "statusline autoload default markers are out of order"
+        message = "statusline defaults markers are out of order"
         raise ValueError(message)
-    block = f"{_AUTOLOAD_BEGIN}\n_AUTOLOAD_DEFAULT={'on' if default else 'off'}\n{_AUTOLOAD_END}"
-    return text[:start] + block + text[end:]
+    lines = (
+        _DEFAULTS_BEGIN,
+        f"_AUTOLOAD_DEFAULT={'on' if autoload else 'off'}",
+        f"_CADENCE_DEFAULT={cadence}",
+        _DEFAULTS_END,
+    )
+    return text[:start] + "\n".join(lines) + text[end:]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     validate_manifest_history(committed_manifest(), keys_text)
     changes = [
         (DEFAULTS_TOML, defaults_text, render_defaults_file(defaults_text)),
-        (STATUSLINE_SH, statusline_text, render_statusline_default(statusline_text)),
+        (STATUSLINE_SH, statusline_text, render_statusline_defaults(statusline_text)),
         (DECLARED_KEYS, keys_text, render_keys_manifest(keys_text, ALL_KNOWN_CONFIG_SETTINGS)),
     ]
     drifted = [(path, before, after) for path, before, after in changes if before != after]

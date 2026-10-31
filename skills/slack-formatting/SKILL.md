@@ -2,7 +2,7 @@
 name: slack-formatting
 description: Rendering tables and formatting messages for Slack — the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack.
 eval_exempt: pure formatting-reference companion auto-loaded for overlay work; carries no standalone agent behaviour of its own
-compatibility: any
+compatibility: Linux
 metadata:
   version: 0.0.1
 ---
@@ -59,7 +59,6 @@ Every outbound message is wrapped to a **maximum line length of 90 characters**,
 You do not call anything to get this. The wrap is applied at each Slack transport that carries a message body, so a **new sender inherits it by construction** rather than having to remember a helper:
 
 - `SlackBotBackend._post` — the single funnel every in-app `chat.postMessage` passes through, so `notify_user`, `post_routed`, `post_reply` and a raw `post_message` all get the same treatment,
-- `audio_upload.upload_audio_dm` — the audio DM's `initial_comment`; with `speak.slack` on, the whole DM goes out this way and never touches `chat.postMessage`,
 - `client.post_webhook_message` — the incoming-webhook post, raw `httpx` outside the backend transport.
 
 Exceeding 90 is fine where breaking would hurt. These are never broken and never count as a violation:

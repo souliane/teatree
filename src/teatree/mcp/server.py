@@ -529,7 +529,7 @@ def build_server(
     instructions = (
         _PREAMBLE
         + (
-            "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
+            "\n\nLive agent mailbox (busy peers receive now; idle peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
             if mailbox_client is not None
             else ""

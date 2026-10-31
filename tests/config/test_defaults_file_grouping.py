@@ -23,7 +23,7 @@ from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.setting_groups import grouped_key_order, grouped_settings_table, setting_group_path
 
 _MAX_REPORTED = 5
-_SUBTABLE_KEYS = ("mr_reminder", "speak")
+_SUBTABLE_KEYS = ("mr_reminder",)
 
 
 def _file_text() -> str:
@@ -33,8 +33,8 @@ def _file_text() -> str:
 def _teatree_block() -> str:
     """The GROUP region of ``[teatree]`` — the nested wrappers, before the sub-table settings.
 
-    ``speak`` / ``mr_reminder`` are declared settings whose value is a table, so they render
-    after the wrappers; their inner keys are values, not settings, and are excluded here.
+    ``mr_reminder`` is a declared setting whose value is a table, so it renders
+    after the wrappers; its inner keys are values, not settings, and are excluded here.
     """
     section = _file_text()[_file_text().index("\n[teatree.") :]
     return section[: section.index(f"\n[teatree.{_SUBTABLE_KEYS[0]}]")]
@@ -104,10 +104,10 @@ class TestTheShippedBlockIsNested:
         assert max(depths) >= 3, f"the tables are not nested several levels deep: depths={sorted(depths)}"
 
     def test_a_genuine_sub_table_setting_stays_at_its_own_top_level_path(self) -> None:
-        # ``speak`` and ``mr_reminder`` are declared settings whose value IS a table. They
-        # are not group wrappers, so they keep the paths every reader already knows. Each
-        # header carries its key's help text as the trailing comment every other key's line
-        # carries, so the path is read off the line with that comment removed.
+        # ``mr_reminder`` is a declared setting whose value IS a table. It is not a group
+        # wrapper, so it keeps the path every reader already knows. Its header carries the
+        # key's help text as the trailing comment every other key's line carries, so the path
+        # is read off the line with that comment removed.
         headers = {line.split(" #")[0] for line in _file_text().splitlines()}
         for key in _SUBTABLE_KEYS:
             assert f"[teatree.{key}]" in headers

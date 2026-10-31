@@ -2,7 +2,7 @@
 name: internals
 description: "How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`."
 eval_exempt: reference for teatree's own internals; the behaviours it describes are graded by the code/review skills' evals and by the repo's own gates, not by a trajectory over this overview
-compatibility: macOS/Linux, a teatree checkout; reading-only, no services required.
+compatibility: Linux, a teatree checkout; reading-only, no services required.
 metadata:
   version: 0.0.1
 ---

@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.backends.gitlab.inline_position import find_added_line, resolve_inline_position
-from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.audit import gitlab_mr_url
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence
@@ -532,36 +531,6 @@ class ReviewService:
             body = str(entry.get("note", ""))[:60]
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
-
-    def approve(self, repo: str, mr: int) -> tuple[str, int]:
-        blocked = check_on_behalf(repo, mr, "approve")
-        if blocked:
-            return blocked, 1
-        encoded = repo.replace("/", "%2F")
-        reviewed, error = identity_has_reviewed(self._get_api(), encoded, mr)
-        if error:
-            return error, 1
-        if not reviewed:
-            message = (
-                f"Refusing to approve !{mr}: review before approve — no review note authored by your identity "
-                "exists on this MR yet. Post a review (`t3 review post-comment`) first, then approve."
-            )
-            return (
-                message,
-                1,
-            )
-        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
-
-    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
-        blocked = check_on_behalf(repo, mr, "unapprove")
-        if blocked:
-            return blocked, 1
-        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        encoded = repo.replace("/", "%2F")
-        return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
 
 
 # Register sibling-module typer commands. Kept out of this file so the

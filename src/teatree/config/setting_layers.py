@@ -6,7 +6,7 @@ this module owns what ONE layer is and how a layer folds onto the one below it.
 
 :class:`SettingLayers` is the ascending-precedence stored-form tuple every resolution
 reads once. :func:`apply_structured_settings` folds the two nested-table fields
-(``speak`` / ``mr_reminder``) that a flat ``dataclasses.replace`` cannot carry.
+(``mr_reminder``) that a flat ``dataclasses.replace`` cannot carry.
 :func:`drop_db_home_overlay_keys` filters the per-overlay overlays-registry override
 layer by the #1775 home partition.
 
@@ -22,8 +22,6 @@ from typing import Any
 from teatree.config.homes import SETTING_HOMES, SettingHome
 from teatree.config.mr_reminder import mr_reminder_from_table
 from teatree.config.settings import UserSettings
-from teatree.config.speak import speak_from_subtable
-from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
 
@@ -33,7 +31,7 @@ class SettingLayers:
     """The stored-form tiers of one resolution, read ONCE and served in both forms.
 
     ``db_rows`` is the ascending-precedence ``(global, overlay)`` tuple
-    :func:`apply_structured_settings` walks (``speak`` / ``mr_reminder`` are JSON dicts
+    :func:`apply_structured_settings` walks (``mr_reminder`` is a JSON dict
     the row coercer skips), and ``global_db`` / ``overlay_db`` are those same two rows
     coerced, driving the generic ``dataclasses.replace``.
     """
@@ -52,37 +50,16 @@ class SettingLayers:
 def apply_structured_settings(
     settings: UserSettings,
     row_layers: tuple[Mapping[str, Any], ...],
-    base_speak: SpeakConfig,
 ) -> UserSettings:
     """Resolve the nested-table fields from *row_layers*, LOWEST precedence first (#1775).
 
     ``mr_reminder`` takes the HIGHEST layer that carries a table (no merge — it has no
     per-scope merge layer).
-    ``speak`` is the one non-generic override: each layer MERGES onto the one below it
-    (:func:`speak_from_subtable`), so a partial row overrides only the keys it sets.
     """
     mr_tables = [layer["mr_reminder"] for layer in row_layers if isinstance(layer.get("mr_reminder"), dict)]
     if mr_tables:
         settings = replace(settings, mr_reminder=mr_reminder_from_table(mr_tables[-1]))
-    speak = _merge_speak_layers(row_layers, base_speak)
-    if speak is not None:
-        settings = replace(settings, speak=speak)
     return settings
-
-
-def _merge_speak_layers(row_layers: tuple[Mapping[str, Any], ...], base: SpeakConfig) -> SpeakConfig | None:
-    """Merge each layer's ``speak`` table onto the one below it (#2050 semantics).
-
-    ``None`` (no ``speak`` table in any layer) → the dataclass default stands.
-    """
-    merged = base
-    found = False
-    for layer in row_layers:
-        table = layer.get("speak")
-        if isinstance(table, dict):
-            merged = speak_from_subtable(table, base=merged)
-            found = True
-    return merged if found else None
 
 
 def toml_home(key: str) -> bool:

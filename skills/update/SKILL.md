@@ -1,7 +1,7 @@
 ---
 name: update
 description: WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so. Use when the user wants to "sync teatree", "update teatree", "pull latest teatree", or after merging PRs that change framework/overlay code.
-compatibility: macOS/Linux, git, python3.13+, uv.
+compatibility: Linux, git, python3.13+, uv.
 metadata:
   version: 0.0.1
 ---

@@ -298,23 +298,19 @@ class TestCiCriticalParityHook:
         capped = [
             line
             for line in self._run_lines()
-            if line.startswith('"$timeout_bin" --kill-after=10s "$conformance_cap_s"')
+            if line.startswith('timeout --kill-after=10s "$conformance_cap_s"')
             and 'run pytest "${conformance_core[@]}"' in line
         ]
         assert capped, (
-            'the conformance core must run as `"$timeout_bin" --kill-after=10s "$conformance_cap_s" '
+            'the conformance core must run as `timeout --kill-after=10s "$conformance_cap_s" '
             '... run pytest "${conformance_core[@]}"`'
         )
 
-    def test_timeout_binary_is_resolved_to_gtimeout_or_timeout(self) -> None:
-        # macOS ships no `timeout(1)`; Homebrew's coreutils installs it as `gtimeout`
-        # unless the gnubin directory leads PATH. Probing only `timeout` blocked every
-        # such push with a remediation message that did not fix it (#172 review).
+    def test_a_host_without_timeout_refuses_to_run(self) -> None:
         body = self._script_body()
-        assert re.search(r"^for candidate in timeout gtimeout; do$", body, re.MULTILINE), (
-            "dev/push-gate.sh must probe both `timeout` and `gtimeout` before refusing to run"
+        assert re.search(r"^if ! command -v timeout >/dev/null; then$", body, re.MULTILINE), (
+            "dev/push-gate.sh must refuse to run when GNU timeout(1) is absent"
         )
-        assert '"$timeout_bin"' in body, "dev/push-gate.sh must invoke the resolved binary, not a literal `timeout`"
 
     def test_only_a_cap_expiry_defers_to_ci(self) -> None:
         # Exit 124 is timeout(1)'s own code; every other non-zero is a real verdict and

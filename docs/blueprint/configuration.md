@@ -78,8 +78,6 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 # A `[mr_reminder]` table left here is ignored on read; set it as a JSON dict:
 #   t3 <overlay> config_setting set mr_reminder \
 #     '{"default_channel":"C_FALLBACK","channels":{"souliane/teatree":"C_TEATREE","acme-engineering":"C_ACME"}}'
-# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"dm","slack":true}'
-#   (per-overlay override: add --overlay <name>; it MERGES onto the global speak row).
 
 ```
 
@@ -123,7 +121,7 @@ For an **existing** app, the command updates its manifest in place. When `[overl
 
 **One-command full setup** (`t3 setup slack-provision [--overlay <name>]`): runs the entire Slack lifecycle for one overlay — or every `messaging_backend = "slack"` overlay when `--overlay` is omitted — in one idempotent pass, replacing the `slack-bot` + `slack-user-token` + manual-channel-invite sequence ([#1686](https://github.com/souliane/teatree/issues/1686)). Per overlay it: resolves the app id (config → derive from bot token → prompt, persisted via the shared `cli/slack/app_resolve` helper that also stops `slack-bot --update` prompting); pushes the manifest (all bot + user scopes incl. `reactions:write`) via `apps.manifest.update`; prints + opens the OAuth (re)install URL (the one manual step — `--no-open-browser` suppresses); joins the bot to its review-broadcast channels via `conversations.join` so its first post/reaction does not fail `not_in_channel` (private/Connect channels print a manual `/invite` line); provisions the bot IM channel; and verifies the shared xoxp token carries every required scope. Never deletes credentials; safe to re-run.
 
-**Scope profiles.** An overlay's `slack_scope_profile` (DB `overlays` registry row) selects how much Slack reach its bot gets — set it with `t3 setup slack-provision --overlay <name> --dm-only` (or `--full` to revert; the flag persists the profile before provisioning, and is refused without `--overlay`). The default `"full"` provisions the read/write-everywhere bot plus the shared xoxp user token — the profile customer overlays use to post across channels and Slack-Connect. `"dm_only"` provisions a bot that may talk ONLY to its one owner's DM: `slack-provision` pushes a minimal bot-scope manifest (`chat:write`, `im:*`, `reactions:*`, `users:read`, `files:write`, plus `channels:manage` — the only scope Slack accepts for a bot to leave a public channel) with **no** `user` (xoxp) scope section, joins no review channels, and skips the user-token step; the socket doctor validates it against a DM-only requirement set so it is never re-widened; and the loader builds its `SlackBotBackend` with `owner_dm_only=True`, which raises `OwnerDmOnlyError` at the token funnels on any outbound to a channel or user that is not the owner's self-DM, and at the `_post` chokepoint on a non-owner `chat.postMessage` or `conversations.open` and on every `conversations.join` / `invite` / `create` (which `channels:manage` would otherwise permit). Any other profile value — a non-string one included — is refused rather than read as `"full"`: setup fails loud, and the runtime builds no Slack backend for that overlay. This is the profile teatree's own `t3-teatree` overlay uses so its bot is a private 1:1 with its human, not a workspace-wide agent.
+**Scope profiles.** An overlay's `slack_scope_profile` (DB `overlays` registry row) selects how much Slack reach its bot gets — set it with `t3 setup slack-provision --overlay <name> --dm-only` (or `--full` to revert; the flag persists the profile before provisioning, and is refused without `--overlay`). The default `"full"` provisions the read/write-everywhere bot plus the shared xoxp user token — the profile customer overlays use to post across channels and Slack-Connect. `"dm_only"` provisions a bot that may talk ONLY to its one owner's DM: `slack-provision` pushes a minimal bot-scope manifest (`chat:write`, `im:*`, `reactions:*`, `users:read`, plus `channels:manage` — the only scope Slack accepts for a bot to leave a public channel) with **no** `user` (xoxp) scope section, joins no review channels, and skips the user-token step; the socket doctor validates it against a DM-only requirement set so it is never re-widened; and the loader builds its `SlackBotBackend` with `owner_dm_only=True`, which raises `OwnerDmOnlyError` at the token funnels on any outbound to a channel or user that is not the owner's self-DM, and at the `_post` chokepoint on a non-owner `chat.postMessage` or `conversations.open` and on every `conversations.join` / `invite` / `create` (which `channels:manage` would otherwise permit). Any other profile value — a non-string one included — is refused rather than read as `"full"`: setup fails loud, and the runtime builds no Slack backend for that overlay. This is the profile teatree's own `t3-teatree` overlay uses so its bot is a private 1:1 with its human, not a workspace-wide agent.
 
 **Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. Each overlay connection stamps its entry in `slack-listener-heartbeat.json` on the shared data mount, and on every `hello` replays what Slack holds since that overlay was last alive (`teatree.slack_catchup`, BLUEPRINT § 7 "Inbound events"); while a stamp is stale the inbox mini-loop's `slack_catchup` job advances the same 24-hour slices from a per-overlay disk cursor on its minute cadence, with a 20-second soft budget per tick. With no prior stamp, `hello` walks the full capped window before stamping live. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty, 3 = the drain could not run, named on stderr) — designed for a fast cron (30s–1min). The listener uses the shared `teatree.utils.singleton` flock primitive (kernel-enforced, crash-safe) — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
@@ -194,10 +192,9 @@ PreToolUse readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
 `statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
 value is ignored on read and the how-to advisory points at
 `config_setting set autoload true` — and finally the last two, the nested structured
-tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
-(`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
-resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
-per-overlay MERGE — to the DB. The last NON-`UserSettings` config — the definition registries
+table `mr_reminder` — stored as a JSON-dict `ConfigSetting` row
+(`parse_mr_reminder_setting`) and rebuilt bespoke by the
+resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`) — to the DB. The last NON-`UserSettings` config — the definition registries
 (`REGISTRY_SETTINGS`: `[overlays]`, `[e2e_repos]`, `[peer_instances]`) — is DB-home too:
 each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
 `loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
@@ -293,10 +290,7 @@ string `"5"` is stored as the int `5`, an upper-case `"AUTO"` as the normalised
 `"auto"` — so the DB row and the read-time re-coercion always agree. Because
 writes are validated, a per-row coercion failure at read time can only mean an
 out-of-band DB corruption — so it is raised loud with the offending key named,
-not silently dropped back to the file value. The spoken-DM path
-(`speak._resolve_speak_safe`) honours that loudness: a `ValueError` from a corrupt
-config row is logged at **error** (the text DM still degrades gracefully), never
-swallowed at debug.
+not silently dropped back to the file value.
 
 The model reaches the
 resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime
@@ -399,7 +393,7 @@ The same worker pass also reclaims only abandoned `t3-verify-gates-*` and `t3-me
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
-| `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
+| `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. A non-positive value degrades to the default. Per-overlay overridable. |
 | `admission_write_concurrency_per_core` | Agents the admission governor admits per CPU core before weekly pacing, in every lane that asks `decide_admission` — the headless verdict, the loop claim budget and the interactive dispatch gate (default `WRITE_CONCURRENCY_PER_CORE`, so 8 cores admit 4). The ceiling is `floor(cores × factor)` scaled down by the weekly pace; the load, memory and quota brakes apply unchanged at every factor. The worker runs one `default` executor per coding seat (the whole ceiling). A write outside [`WRITE_CONCURRENCY_PER_CORE_MIN`, `WRITE_CONCURRENCY_PER_CORE_MAX`] (`config/settings.py`) is refused; an older row outside it is clamped on read, and an unreadable or non-finite value keeps the default. Above `HOST_AGENT_POPULATION_PER_CORE` the dispatch lanes admit more agents than the session-resume advisory treats as survivable. Read with no overlay, so box-global. `t3 worker status` shows the derivation, the lane widths, the occupancy and each class's denial. |
 | `cheap_phase_admission_ceiling` | Width W for each cheap class: reviews and work-retiring phases (shipping and review requests) each hold at most W seats, inside a shared W+1 cheap lane (minimum W=1). The worker also runs one executor per owner-answering seat (`ANSWERING_LANE_WIDTH`, harness-owned), one for architectural review, and one per maintenance seat. Cheap classes remain exempt from the machine brake; the token brake still applies. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
@@ -428,82 +422,6 @@ The same worker pass also reclaims only abandoned `t3-verify-gates-*` and `t3-me
 | `private_repos` | Host-qualified `host/owner` or `host/owner/repo` entries. A namespace entry declares EVERY repo below it private, so use one only for a group with no public repo; otherwise list individual repos. A reachable forge answer PUBLIC wins over a declaration. Matching preserves the host and path-segment boundaries. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[gate-escape:unknown_repo_push: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"dm","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
-
-### 10.1.1 Local text-to-speech (#2060)
-
-The `speak` config reads agent output aloud, gated on the macOS `say` binary (the
-whole feature is inert when it is absent). DB-home (#1775, config-unify):
-a JSON-dict `ConfigSetting` row, rebuilt bespoke by the resolver. Per-overlay
-overridable via a `--overlay <name>` row that MERGES onto the global row.
-
-```bash
-# local: "off" (default) | "dm" — what plays through this machine's speakers
-# slack: false (default) | attach a spoken audio file to each Slack DM you receive
-t3 <overlay> config_setting set speak '{"local": "dm", "slack": true}'
-```
-
-`local` is what plays through the speakers (macOS `say`): `off` nothing, `dm`
-the bot→user DM texts. Stored legacy `all` values resolve as `dm`. `slack`
-attaches the spoken audio to each bot→user DM in
-the **same message** (text + inline player, one DM) via
-`SlackBotBackend.post_audio_dm` — no separate audio-only post; it applies to
-DMs only by nature. This needs the token's **`files:write`** scope (else
-`ok:false` / `missing_scope` — the DM degrades to text-only and the failure
-surfaces once per error class to the user's DM with the scope-fix hint; re-run
-`t3 setup slack-bot` to grant it). On-behalf self-DMs use
-`teatree.core.speak.deliver_user_dm`; `notify_user` enriches its already-posted
-text DM through `deliver_user_dm_sidecar`.
-
-The two axes are fully independent. Slack never auto-plays, so local playback
-is never suppressed by `slack`. The config lives in the DB store.
-
-**Meeting-mute (#2171).** `_speak_local` silences local playback while a
-configured presence backend reports the user IN A MEETING — the gate lives at
-the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
-config is never mutated and the local leg of `deliver_user_dm` is gated by the one check. The `slack` arm is exempt (a
-Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
-presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
-token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
-resolves it: it probes the backend (`current_presence()`), caches the result
-~60s, and returns `free` / `in_meeting` / `unknown`. Only a positive
-`in_meeting` mutes; an unconfigured opt-in, an unreachable backend, or any probe
-failure resolves to `unknown` and does NOT suppress (fail-safe to audible). The
-MS Teams backend (`teatree.backends.msteams.presence`) reads MS Graph
-`GET /me/presence` and maps `Busy`/`InAConferenceCall`/`Presenting` →
-`in_meeting`; acquiring the delegated-`Presence.Read` Graph token is an operator
-step. Core never imports the backend — `teatree.backends` registers the factory
-at app-ready, the same inversion `backend_registry` uses.
-
-**Question audio parity (#2171, #4673).** When `slack` is on, a loop-driven
-AskUserQuestion (§17.1 invariant 9) carries a spoken rendition to the user's phone
-like any other `notify_user` DM — it IS one: the question is delivered by
-`drain_unmirrored_deferred_questions` → `notify_user`, whose speak sidecar attaches
-audio under the delivered text with an empty `initial_comment`. There is no separate
-mirror enricher and no `speak-dm` worker; #4673 deleted both with the duplicate
-Slack ask they served. An attended question renders in the terminal only, so it has
-no DM to carry audio.
-
-**Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
-playback fans out from independent DM deliveries, each spawning its own `say`. To stop
-concurrent reads talking over each other, `_speak_local()` wraps the actual
-`say` call in a single cross-process `fcntl.flock` on a lockfile under the
-teatree state dir (`get_data_dir("speak")/speaker.lock`), guaranteeing **mutual
-exclusion** (no two `say` calls overlap) across both the in-process daemon
-threads and separate DM delivery processes (a per-process queue would not
-serialize separate processes). The lock is acquired with a **bounded wait**, not
-blocking: `_serial_speaker()` retries a non-blocking acquire for a short total
-budget (`_SPEAKER_LOCK_WAIT_BUDGET_S`) and, if the speaker is still busy,
-plays without the lock rather than queuing indefinitely. A blocking acquire is not
-FIFO and builds an unbounded backlog under a flood of fan-out reads — a message
-could play many minutes after it was printed. The non-blocking daemon-thread
-dispatch keeps lock waiting off the caller's egress path. The lock is best-effort:
-a busy or unavailable lock never mutes audio.
-
-Callers read `get_effective_settings().speak`. Adding a new overridable key
-is a one-line registry change picked up via `dataclasses.replace`; `speak` is
-the one non-generic override (its overlay sub-table merges onto the base
-rather than flat-replacing).
 
 `mode` and `autonomy` are DB-home (#1775) — they live in the
 `ConfigSetting` store. Set them there, globally or scoped to one overlay with `--overlay`:
@@ -804,7 +722,7 @@ rendered by `config/declared_defaults.py` from those declarations; the
 refuses a drifted commit), so a shipped default is changed at its declaration and a hand
 edit here is rendered away. The table is EXACTLY the
 `config_setting export` / `import` shape — the declaration hierarchy as nested group
-sub-tables, with `speak` / `mr_reminder` as their own settings — and every reader flattens
+sub-tables, with `mr_reminder` as its own setting — and every reader flattens
 it back to the flat key namespace on read; three
 sibling top-level tables — `[loops]`, `[modes]`, `[schedules]` — carry the seed defaults
 for the loop / mode / schedule objects (below). It is NOT a
@@ -886,10 +804,21 @@ key requires an explicit `RETIRED` or `RENAMED` entry in that manifest.
 
 `effective_default` is the resolver's one no-override answer. The generated TOML is
 never read back as a resolution tier. `cold_defaults.py` retains only the cold-safe
-flattening primitive used by TOML interchange. The generated file is about 34 KB;
-its deployed live-system parse cost remains to be measured. A second runtime default source
-would add drift risk without a demonstrated cold-path saving, so Stage 2 runtime parsing
-is deferred until a measured reader needs it.
+flattening primitive used by TOML interchange. Readers take their fallback from the declared
+field default, and the statusline shell reads its two defaults from the generated
+`statusline defaults` block; `tests/teatree_config/test_declared_default_literals.py` fails when
+a module names a declared key and also holds an integer of 20 or more equal to its default.
+
+**A hand-authored `defaults.toml` as the default tier (Stage 2) is declined.** A new setting
+costs one declaration edit plus the generated rewrite: adding one `UserSettings` field and
+running `scripts/hooks/generate_defaults_toml.py --write` rewrote exactly `defaults.toml` and
+`declared_keys.txt`, one line each. Parsing is not the obstacle: `tomllib.loads` on the
+35,655-byte file has a median of 2.7-2.9 ms (`python3 -I`, 4 repeats of 50 runs, host load
+average 17) and 3.1-13.8 ms on the deployed box ([#4994](https://github.com/souliane/teatree/issues/4994)).
+Hand-authoring the file would turn the one edit into two and add a second runtime default
+source. Reopen only when a measured hook reader needs a packaged default; the design then
+covers the unset, computed, per-overlay, personal and secret keys, a hook-latency control, the
+missing-file posture, the four overlay-seed behaviours and a schema gate.
 The subprocess control in `tests/config/test_cold_defaults.py` still pins that this
 interchange helper imports neither pydantic nor Django.
 
@@ -1080,7 +1009,7 @@ real NESTED sub-tables (`[teatree.Gates.Quality."Merge & done"]`); the KEY NAMES
 flat, because that namespace is the persisted contract every reader, env override and cold
 sqlite3 read depends on. `cold_defaults.flatten_settings_table` — the single Django-free
 reader of the table — is the one place the two meet, and needs no marker to disambiguate: a
-sub-table named after a DECLARED setting (`speak`, `mr_reminder`) is that setting's value,
+sub-table named after a DECLARED setting (`mr_reminder`) is that setting's value,
 any other is a group wrapper. Import flattens the same way, so a nested file and a flat one
 resolve to the identical mapping and a grouped dump re-imports byte-identically to an
 ungrouped one.
@@ -1133,6 +1062,12 @@ Every entry in the `peer_instances` registry appears as an import-required row. 
 disabled because every dashboard API requires a signed-in staff session. No peer credential or
 credential route is configured for comparison. The operator signs in to each peer, downloads its
 snapshot, then imports the file here or through `t3 settings compare --snapshot`.
+
+Each row's `if imported: X` label names what applying the first OTHER instance's value to THIS
+box does, and Use here acts on that same classification: a peer at its shipped default is a
+`clear` of this box's row, any other differing peer value an `import`, and only this box's own
+`T3_*` pin makes a row `shadowed`. With several peers the label follows the first that holds a
+value; each peer's own button stays exact.
 
 * **Loaded from a saved snapshot file** (`core.settings.settings_files`). The page's one POST carries
     snapshot documents — picked files (`snapshot_files`, several at a time) or JSON pasted into

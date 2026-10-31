@@ -77,8 +77,7 @@ def parse_effort(value: object) -> str | None:
     ``None`` (absent) returns ``None``. Any present value must be a member of
     the strict CLI scale ``low | medium | high | xhigh | max`` (case- and
     whitespace-insensitive); anything else — including ``"off"`` and the empty
-    string — raises :class:`ValueError`, mirroring
-    :meth:`teatree.types.LocalPlayback.parse`.
+    string — raises :class:`ValueError`.
     """
     if value is None:
         return None

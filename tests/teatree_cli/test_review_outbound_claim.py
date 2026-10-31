@@ -170,16 +170,7 @@ class TestFailurePathsDoNotRecordClaims:
         # "already approved" probe (#1029) must not mask the real failure.
         service, stub = _service(approvers=[])
         monkeypatch.setattr(stub, "post_status", lambda _endpoint: 500)
-        _msg, code = service.approve(OWNED_REPO, 7)
-        assert code == 1
-        assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
-
-    def test_review_first_precondition_blocks_approve_and_records_no_claim(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        service, stub = _service()
-        monkeypatch.setattr(stub, "get_json_paginated", lambda _endpoint: [])
-        _msg, code = service.approve(OWNED_REPO, 8)
+        _msg, code = approve_impl(service, OWNED_REPO, 7, encoded=OWNED_REPO.replace("/", "%2F"))
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 

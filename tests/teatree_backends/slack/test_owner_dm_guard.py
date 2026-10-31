@@ -158,10 +158,6 @@ class TestWritePrimitivesRefuseNonOwner:
         with pytest.raises(OwnerDmOnlyError):
             _dm_only_bot().react_routed(channel="C-public", ts="1", emoji="wave")
 
-    def test_post_audio_dm_refused(self) -> None:
-        with pytest.raises(OwnerDmOnlyError):
-            _dm_only_bot().post_audio_dm(channel="C-public", filepath="/a.mp3", text="leak")
-
 
 class TestPostChokepointGuard:
     @pytest.mark.parametrize("method", ["conversations.join", "conversations.invite", "conversations.create"])

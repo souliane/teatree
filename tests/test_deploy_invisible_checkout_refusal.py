@@ -212,8 +212,7 @@ class TestTheHostIdentityWorkspaceMountIsTranslatable:
     differs from the container's, and that file binds ``${TEATREE_HOST_HOME}/workspace``
     at PATH IDENTITY into ``teatree-worker`` and ``teatree-admin``. So on any such host
     every checkout under the workspace root is readable inside the container under the
-    SAME absolute path — measured on a Docker Desktop box as
-    ``/host_mnt/<home>/workspace -> <home>/workspace``.
+    SAME absolute path.
 
     ``MOUNT_PAIRS`` listed only the ``t3-workspaces`` subtree, the worktree root and the
     source mount, so a sibling checkout under the workspace root was refused as "not

@@ -1,7 +1,7 @@
 ---
 name: ship
 description: Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests. Use when user says "commit", "push", "PR", "merge request", "pull request", "finalize", "deliver", "ship", or is in the delivery phase.
-compatibility: macOS/Linux, git, glab or gh CLI, CI system.
+compatibility: Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules
@@ -584,27 +584,27 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
   ```
 
   The flag remains the operator's named substrate control, and no autonomy tier collapses it (`config/resolution.py` `_AUTONOMY_COLLAPSED_GATE_VALUES`). Set it per-overlay with `t3 <overlay> config_setting set require_human_approval_to_merge <true|false> --overlay <name>`.
-- **The bot authors so the OWNER'S ACCOUNT stays eligible — and the AGENT records that approval (Non-Negotiable).** On a repo whose MRs are authored under a distinct non-owner credential (the overlay's `get_gitlab_token_for_remote` override), all four identities are fixed, and none of them is a person doing manual work:
+- **The bot authors so the consenting operator's account stays eligible — the PERSON records the consent, the AGENT approves through their grant (Non-Negotiable).** On a repo whose MRs are authored under a distinct non-owner credential (the overlay's `get_gitlab_token_for_remote` override), all four identities are fixed, and none of them is a person doing manual work:
 
   | step | identity | who performs it |
   |---|---|---|
   | author | the repo's scoped authoring credential (the bot) | the agent |
   | review | the agent, cold (maker != checker) | the agent |
-  | **approve** | **the owner's own account** | **the agent, on the owner's behalf** |
+  | **approve** | **the consenting operator's account (OAuth grant)** | **the agent, on the person's consent** |
   | merge | — | the agent, via the §17.4 keystone |
 
-  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the owner's account eligible. "Approved by the owner's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent.
+  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps that account eligible. "Approved by the operator's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent. With no consent or grant the command refuses naming the remedy (`skills/review/SKILL.md` § GIVE-review approval): show the person that command — you never record the consent or pick the operator.
 
   ```bash
-  # do X — the agent reviews cold, then records the approval under the owner's account:
-  t3 review approve <repo> <mr>        # resolves the OWNER credential, never the bot's
+  # do X — review cold, then approve on the person's recorded consent:
+  t3 review approve <repo> <mr>        # their grant, never a stored token or the bot's
   t3 <overlay> ticket clear <mr> <repo-slug> --reviewed-sha <sha> \
       --reviewer-identity <independent-reviewer> --blast-class <class> --forge gitlab
   t3 <overlay> ticket merge <clear_id>
-  # never Y — handing a green, cold-reviewed MR back as "waiting on the owner to approve".
+  # never Y — recording the consent yourself (approve-on-behalf), or handing a green MR back as "waiting on the owner to approve".
   ```
 
-  Two prohibitions survive unchanged, and nothing above weakens either. An approval recorded under the **BOT** identity is forbidden — the author cannot approve, and a self-approval is not review. An MR **authored by the owner's account** on such a repo is forbidden — it makes that account ineligible, leaving nobody who can approve. A gate enforcing either is correct and stays; only its MESSAGE is worth fixing if it reads as an approval prohibition on the agent.
+  Two prohibitions stay: no approval under the **BOT** identity, and no MR **authored by the owner's account** on such a repo. Full text: `skills/ship/references/bot-authored-approval.md`.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
 
 ### Git History Rewriting

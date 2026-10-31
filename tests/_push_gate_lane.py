@@ -95,10 +95,9 @@ def lane_repo(tmp_path: Path, *, vendored: bool) -> Path:
 
 
 def gnu_timeout() -> Path:
-    for name in ("timeout", "gtimeout"):
-        if found := shutil.which(name):
-            return Path(found)
-    pytest.skip("push-gate.sh needs GNU timeout(1) as `timeout` or `gtimeout`; neither is on PATH")
+    if found := shutil.which("timeout"):
+        return Path(found)
+    pytest.skip("push-gate.sh needs GNU timeout(1) as `timeout`; it is not on PATH")
 
 
 def link_gnu_timeout(tmp_path: Path) -> None:
