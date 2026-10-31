@@ -2,7 +2,7 @@
 name: e2e
 description: >
   Runs Playwright E2E tests, writes new tests, manages visual snapshots,
-  and posts testing evidence. Spawned by the orchestrator for E2E tasks.
+  and posts testing evidence. Dispatched by the control plane for E2E tasks.
 tools:
   - Read
   - Write

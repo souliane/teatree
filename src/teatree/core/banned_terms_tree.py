@@ -1,4 +1,4 @@
-"""Coordinator for the full-tree banned-term backstop scan.
+"""Orchestrator of the full-tree banned-term backstop scan.
 
 The high-confidence leak class comes from ``banned_term_registry`` through
 the Django-free hook resolver. Missing configuration always fails loud.

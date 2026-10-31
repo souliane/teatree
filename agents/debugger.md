@@ -2,7 +2,7 @@
 name: debugger
 description: >
   Troubleshoots and fixes errors, crashes, and broken functionality.
-  Full edit access for applying fixes. Spawned by the orchestrator.
+  Full edit access for applying fixes. Dispatched by the control plane.
 tools:
   - Read
   - Write

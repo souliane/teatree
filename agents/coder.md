@@ -1,8 +1,8 @@
 ---
 name: coder
 description: >
-  Implements features and fixes using TDD methodology. Spawned by
-  the orchestrator for coding tasks.
+  Implements features and fixes using TDD methodology. Dispatched by
+  the control plane for coding tasks.
 tools:
   - Read
   - Write

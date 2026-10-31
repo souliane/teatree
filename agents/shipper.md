@@ -2,7 +2,7 @@
 name: shipper
 description: >
   Commits, pushes, creates merge requests, and monitors pipelines.
-  Spawned by the orchestrator for delivery tasks.
+  Dispatched by the control plane for delivery tasks.
 tools:
   - Read
   - Bash

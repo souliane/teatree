@@ -2,7 +2,7 @@
 
 Holds the replay command plus the file-resolution concern (``--file`` /
 ``--session`` / ``--latest`` scoped to the cwd's project), so the command body
-stays a thin coordinator next to the resolver it drives.
+stays a thin orchestrator next to the resolver it drives.
 """
 
 import sys

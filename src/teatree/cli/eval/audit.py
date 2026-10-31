@@ -1,6 +1,6 @@
 """``t3 eval audit`` — run the conversation audit over recent captured sessions (#1861, #2192).
 
-Thin coordinator over the committed engine: sessions are listed by the
+Thin orchestrator over the committed engine: sessions are listed by the
 production ``claude_sessions`` reader (cwd-project scoped), resolved on disk by
 :func:`teatree.eval.transcript_resolver.find_session_file`, paired with a
 ground-truth label when a corpus entry's ``source_session_id`` matches, and
