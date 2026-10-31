@@ -8,17 +8,11 @@ from contextlib import suppress
 from typing import NotRequired, TypedDict
 
 from django.db import DatabaseError, close_old_connections
-from django.db.models import Q
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
-from teatree.core.modelkit.owner_decision import (
-    HELD_PR_MARKER_PREFIX,
-    OWNER_KEPT_DECISIONS,
-    OWNER_RAISABLE_DECISIONS,
-    OwnerDecision,
-)
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OWNER_RAISABLE_DECISIONS, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.utils.thread_db import close_thread_db_connections
 
@@ -40,18 +34,7 @@ def _recorded_decisions(ticket: str, kind: OwnerDecision) -> list[dict[str, str]
     if not ticket.isdecimal():
         return []
     close_old_connections()
-    rows = (
-        DeferredQuestion.objects.filter(
-            Q(parked_task__ticket_id=int(ticket)) | Q(task_session__ticket_id=int(ticket)),
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
-            answered_at__isnull=False,
-            resolved_via__in=DeferredQuestion.OWNER_CHANNELS,
-            evidence__decision=kind.value,
-        )
-        .exclude(evidence__has_key="action")
-        .exclude(dedupe_marker__startswith=HELD_PR_MARKER_PREFIX)
-        .order_by("-answered_at", "-pk")[:MAX_DECISIONS]
-    )
+    rows = DeferredQuestion.objects.owner_answers_on_ticket(int(ticket), kind)[:MAX_DECISIONS]
     return [{"question": row.question[:MAX_FIELD_CHARS], "answer": row.answer_text[:MAX_FIELD_CHARS]} for row in rows]
 
 
