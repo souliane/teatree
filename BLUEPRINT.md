@@ -1038,18 +1038,19 @@ post-write result.
   an INVOCATION, not a mention: the shared `forge_subcommand` traversal plus a
   markdown-code-span strip, so the gate documentation naming the bypass is not itself one,
   and a `FORBIDDEN` line is a documented counter-example. Its verb set is the one that HAS
-  a sanctioned replacement — `edit` and `close` are spared for the same reason the hook
-  spares them. The one real finding it had, the CI filer, now files through
+  a sanctioned replacement — `close` has no facade path yet and a label-only `edit` is not a body
+  write, so both are spared (the hook denies the body-flag `edit`). The one real finding it had, the CI filer, now files through
   `scripts/ci/file_selection_audit_issue.py` keyed on a stable audit marker.
 - **The raw CLI spelling of a note is denied too.** `hooks/scripts/raw_issue_write_guard`
   (matcher `teatree.hooks.raw_issue_write_detect`, registered in the shared
   `hard_deny_registry` so Lane A and Lane B refuse alike) hard-denies an INVOKED
   `gh issue comment` / `glab issue note` and names the purpose-routed remedy. The
   sibling `raw_review_post_guard` already covered the REST spelling of the same
-  surface. Scoped to the note on purpose: the create / body-edit / close verbs have
-  no complete sanctioned CLI replacement yet — the sweep's own fold runs
-  `gh issue edit --body-file`, and a label-only `--add-label` is not a body write —
-  so denying them would wedge documented workflows with nowhere to go. Reads and a
+  surface. It also denies `gh pr edit` / `gh issue edit` with a body flag and names
+  `t3 <overlay> publish`. Scoped to the note and the body edit on purpose: the create /
+  close verbs have no complete sanctioned CLI replacement yet, and an edit without a body
+  flag (a label, assignee, title or base change) is not a body write — so denying them
+  would wedge documented workflows with nowhere to go. Reads and a
   tool that merely QUOTES the spelling pass; the gate is a narrow
   targeted-command one and fails OPEN.
 - **Sweeps post zero comments, and the count is measured.** A `sweep_run_id` makes
