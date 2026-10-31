@@ -5,6 +5,8 @@ Split out of the over-cap ``result_schema.py`` (docs/module-health.md), not for 
 
 from typing import TypedDict
 
+from teatree.core.modelkit.coordinator_action import ACTION_SPECS
+
 type JSONSchema = dict[str, object]
 
 
@@ -34,6 +36,8 @@ class CoordinatorActionRequest(TypedDict, total=False):
 
     kind: str
     ticket: str
+    card: str
+    text: str
 
 
 ANSWER_SCHEMA_PROPERTY: JSONSchema = {
@@ -69,8 +73,8 @@ ACTIONS_SCHEMA_PROPERTY: JSONSchema = {
     "items": {
         "type": "object",
         "properties": {
-            "kind": {"type": "string"},
-            "ticket": {"type": "string"},
+            name: {"type": "string"}
+            for name in ("kind", *sorted({argument for spec in ACTION_SPECS.values() for argument in spec.arguments}))
         },
         "required": ["kind"],
     },
