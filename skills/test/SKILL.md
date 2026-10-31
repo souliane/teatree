@@ -1,7 +1,7 @@
 ---
 name: test
 description: Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence. Use when user says "run tests", "pytest", "lint", "CI failed", "pipeline", "test plan", "QA", or any test/CI task.
-compatibility: macOS/Linux, pytest, linting tools, CI CLI (glab/gh).
+compatibility: Linux, pytest, linting tools, CI CLI (glab/gh).
 requires:
   - workspace
   - rules

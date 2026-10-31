@@ -4,7 +4,7 @@ The :class:`ResourcePressureScanner` runs every loop tick but only
 *measures* once per its own ``cadence_minutes`` and only runs a freeing
 pass once per its own ``min_free_interval_minutes`` — both gates are
 carried across tick boundaries by this durable row. Without
-it a sub-minute tick cadence would re-shell ``df``/``vm_stat`` (and worse,
+it a sub-minute tick cadence would re-shell ``df`` and re-read ``/proc/meminfo`` (and worse,
 re-run cache purges) on every tick.
 
 There is one logical row (``singleton=True``, a unique boolean). Mirrors

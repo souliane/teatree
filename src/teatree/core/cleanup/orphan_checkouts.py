@@ -54,7 +54,7 @@ def db_tracked_worktree_paths() -> list[str]:
     """On-disk paths of every git worktree teatree has a ``Worktree`` row for.
 
     Returned unresolved so :func:`path_spellings` can apply its full symlink-variant set per
-    comparison (a bare ``.resolve()`` set misses the ``/private`` literal twin a
+    comparison (a bare ``.resolve()`` set misses the literal spelling a
     ``git worktree list`` path may carry).
     """
     return [wt.worktree_path for wt in Worktree.objects.all() if wt.worktree_path]

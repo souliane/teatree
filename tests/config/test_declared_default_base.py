@@ -48,8 +48,8 @@ _DIVERGING_FIXTURE = """\
 provision_slow_threshold_seconds = 42
 merge_wip = 7
 
-[teatree.speak]
-local = "all"
+[teatree.mr_reminder]
+default_channel = "C_DIVERGED"
 """
 
 
@@ -77,10 +77,9 @@ class TestTheShippedFileIsNotATier(TestCase):
         )
 
     def test_a_diverging_sub_table_leaves_the_declared_default_in_force(self) -> None:
-        assert (
-            tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"]["speak"]["local"] == "all"
-        )
-        assert get_effective_settings().speak.local == UserSettings().speak.local
+        shipped = tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"]
+        assert shipped["mr_reminder"]["default_channel"] == "C_DIVERGED"
+        assert get_effective_settings().mr_reminder == UserSettings().mr_reminder
 
     def test_a_db_row_still_wins_over_the_declared_default(self) -> None:
         # The control: the resolver is not inert — a real override still moves the value,

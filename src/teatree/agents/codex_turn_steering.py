@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.live_control import RejectCode, SteerRejectedError
 
 
@@ -73,6 +74,18 @@ class CodexTurnSteering:
             with suppress(asyncio.CancelledError):
                 await asyncio.gather(request, ended, return_exceptions=True)
 
+    async def follow_up(self, prompt: str) -> None:
+        if self._steer_closed:
+            raise SteerRejectedError(RejectCode.SESSION_CLOSED)
+        if self._steer_turn_id:
+            raise SteerRejectedError(RejectCode.NOT_IDLE)
+        try:
+            await self.query(prompt)
+        except HarnessFallbackError as exc:
+            if exc.kind is HarnessFallbackKind.TRANSPORT and not exc.side_effects_started:
+                raise SteerRejectedError(RejectCode.SESSION_CLOSED) from exc
+            raise
+
     async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
         steer = {
             "threadId": thread_id,
@@ -84,3 +97,5 @@ class CodexTurnSteering:
     if TYPE_CHECKING:
 
         async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]: ...
+
+        async def query(self, prompt: str) -> None: ...

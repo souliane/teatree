@@ -44,9 +44,7 @@ class TestPathsMatch(TestCase):
         assert paths_match("/ws/9-fix", "/ws/90-other") is False
 
     def test_resolved_symlink_matches_source(self) -> None:
-        # A path reached via a symlink matches its resolved target (the macOS
-        # ``/var`` → ``/private/var`` case generalised) — bare ``.resolve() ==``
-        # misses it only across the ``/private`` literal, which the variant set covers.
+        # A path reached via a symlink matches its resolved target.
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             target = tmp / "target"
@@ -102,7 +100,3 @@ class TestCandidatePaths(TestCase):
         path = "/nonexistent-t3/workspace/T1/repo"
         with patched_mount_table(("259:2", "/ws", "/nonexistent-t3/workspace")):
             assert _candidate_paths(path) == [path]
-
-    def test_private_prefix_stripped_variant(self) -> None:
-        out = _candidate_paths("/private/var/folders/x")
-        assert "/var/folders/x" in out

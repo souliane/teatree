@@ -1148,25 +1148,6 @@ class TestNotifyUserUnderAnEgressSuppressor(TestCase):
         backend.open_dm.assert_not_called()
         backend.post_message.assert_not_called()
 
-    def test_preview_does_not_run_speech_sidecar(self) -> None:
-        backend = _backend()
-
-        with (
-            suppress_on_behalf_egress(lambda *_args: {"ok": True, "ts": "dry-run"}),
-            patch("teatree.core.speak.deliver_user_dm_sidecar") as sidecar,
-        ):
-            outcome = notify_user_outcome(
-                "preview card",
-                kind=NotifyKind.QUESTION,
-                idempotency_key="preview-no-audio",
-                audience=NotifyAudience.OWNER_QUESTION,
-                options=NotifyOptions(backend=backend, user_id="U_ME"),
-            )
-
-        assert outcome.sent
-        sidecar.assert_not_called()
-        backend.post_audio_dm.assert_not_called()
-
 
 class TestNotifyUserNeverRaises(TestCase):
     """The never-raise contract holds for any DatabaseError, not just IntegrityError.

@@ -1,7 +1,7 @@
 ---
 name: coordinating
 description: "Operating instructions for the coordinator, the agent that keeps the TeaTree factory moving on any harness with no chat needed: watch the factory and handle BLOCKING abnormalities first, unblock by review and merge, drain stranded work, answer owner cards and agent asks from recorded decisions inside the owner's four limits, file and enqueue what it finds instead of implementing, and reach other agents over the mailbox both ways. Load it when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks, when a PR or task is stuck, when work sits uncommitted, unpushed or unmerged, or when a request must be filed rather than built."
-compatibility: any
+compatibility: Linux
 requires:
   - rules
 eval_exempt: the duties are read-and-route orders whose commands and symbols the skill-command and symbol-ref lanes pin, its split from the session-facing skill is pinned by tests/conformance/test_coordinating_skill_split.py, and the detectors are health collectors and doctor checks with their own tests, so it gets a trajectory eval once issue 5069 gives it one pure-read command to anchor on

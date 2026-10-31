@@ -136,7 +136,7 @@ class IncidentConfidenceTests(TestCase):
         assert SelfImproveFiring.objects.get(dedup_key="pressure_incident::load").ticket_id is not None
 
     def test_missing_pressure_file_preserves_otel_incident(self) -> None:
-        firing = _firing("pressure_incident", "swap")
+        firing = _firing("pressure_incident", "load")
         local_firing = _firing("pressure_incident", "ram-probe-inert")
         with (
             TemporaryDirectory() as directory,
@@ -153,7 +153,7 @@ class IncidentConfidenceTests(TestCase):
         assert result.degraded_scans == [("pressure_incident", "otel_missing")]
 
     def test_empty_pressure_scan_without_explicit_recovery_keeps_prior_incident(self) -> None:
-        firing = _firing("pressure_incident", "swap")
+        firing = _firing("pressure_incident", "load")
         with (
             TemporaryDirectory() as directory,
             patch.object(pressure_mod, "cgroup_memory_probe_inert", return_value=False),
@@ -172,7 +172,7 @@ class IncidentConfidenceTests(TestCase):
 
     def test_same_cause_full_admission_explicitly_recovers_pressure_incident(self) -> None:
         now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
-        recovered = _firing("pressure_incident", "swap", now=now - dt.timedelta(minutes=5))
+        recovered = _firing("pressure_incident", "load", now=now - dt.timedelta(minutes=5))
         other = _firing("pressure_incident", "memory", now=now - dt.timedelta(minutes=5))
         with (
             TemporaryDirectory() as directory,
@@ -180,7 +180,7 @@ class IncidentConfidenceTests(TestCase):
         ):
             row = {
                 "epoch": int(now.timestamp()),
-                "cause": "swap",
+                "cause": "load",
                 "pressure": 0.1,
                 "band": "full",
                 "admit": True,
@@ -201,10 +201,10 @@ class IncidentConfidenceTests(TestCase):
 
     def test_full_pressure_row_in_incomplete_stream_cannot_recover_prior_incident(self) -> None:
         now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
-        firing = _firing("pressure_incident", "swap", now=now - dt.timedelta(minutes=5))
+        firing = _firing("pressure_incident", "load", now=now - dt.timedelta(minutes=5))
         row = {
             "epoch": int(now.timestamp()),
-            "cause": "swap",
+            "cause": "load",
             "pressure": 0.1,
             "band": "full",
             "admit": True,
@@ -230,10 +230,10 @@ class IncidentConfidenceTests(TestCase):
 
     def test_full_pressure_row_before_last_firing_cannot_recover_incident(self) -> None:
         now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
-        firing = _firing("pressure_incident", "swap", now=now - dt.timedelta(minutes=1))
+        firing = _firing("pressure_incident", "load", now=now - dt.timedelta(minutes=1))
         row = {
             "epoch": int((now - dt.timedelta(minutes=2)).timestamp()),
-            "cause": "swap",
+            "cause": "load",
             "pressure": 0.1,
             "band": "full",
             "admit": True,
@@ -256,11 +256,11 @@ class IncidentConfidenceTests(TestCase):
 
     def test_later_denial_overrides_healthy_pressure_recovery(self) -> None:
         now = dt.datetime(2026, 9, 25, 6, tzinfo=dt.UTC)
-        firing = _firing("pressure_incident", "swap", now=now - dt.timedelta(minutes=5))
+        firing = _firing("pressure_incident", "load", now=now - dt.timedelta(minutes=5))
         rows = [
             {
                 "epoch": int((now - dt.timedelta(minutes=2)).timestamp()),
-                "cause": "swap",
+                "cause": "load",
                 "pressure": 0.1,
                 "band": "full",
                 "admit": True,
@@ -269,7 +269,7 @@ class IncidentConfidenceTests(TestCase):
             },
             {
                 "epoch": int((now - dt.timedelta(minutes=1)).timestamp()),
-                "cause": "swap",
+                "cause": "load",
                 "pressure": 0.95,
                 "band": "halt",
                 "admit": False,
@@ -409,7 +409,7 @@ class IncidentConfidenceTests(TestCase):
         assert SelfImproveFiring.objects.get(pk=firing.pk).resolved_at is None
 
     def test_later_action_receipt_resolves_gap_without_ledger_continuity(self) -> None:
-        source_key = "pressure_incident::swap"
+        source_key = "pressure_incident::load"
         incident_id = hashlib.sha256(source_key.encode()).hexdigest()[:16]
         gap = record_firing(
             DetectorReport(
@@ -464,7 +464,7 @@ class IncidentConfidenceTests(TestCase):
                 for index in range(100)
             ]
         )
-        source_key = "pressure_incident::swap"
+        source_key = "pressure_incident::load"
         incident_id = hashlib.sha256(source_key.encode()).hexdigest()[:16]
         gap = record_firing(
             DetectorReport(
@@ -524,7 +524,7 @@ class IncidentConfidenceTests(TestCase):
                 for index in range(199)
             ]
         )
-        source_key = "pressure_incident::swap"
+        source_key = "pressure_incident::load"
         incident_id = hashlib.sha256(source_key.encode()).hexdigest()[:16]
         gap = _firing("telemetry_action_gap", incident_id, now=now - dt.timedelta(hours=1))
         SelfImproveFiring.objects.filter(pk=gap.pk).update(payload={"incident_id": incident_id})

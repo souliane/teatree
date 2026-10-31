@@ -1,7 +1,7 @@
 ---
 name: ticket
 description: Ticket intake and kickoff — from zero to ready-to-code. Use when user says "I have ticket X", "new ticket", "start working on", "what should I do for this?", or provides a ticket/issue/PR link.
-compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
+compatibility: Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - workspace
   - architecture-design

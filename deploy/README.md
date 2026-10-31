@@ -11,6 +11,9 @@ so a fresh box boots deterministically and offline; see
 This is **teatree-only** — no customer or product overlays. The only registered
 overlay is the built-in `t3-teatree`.
 
+The factory is **Linux only**: the deploy scripts, the image and the compose stack run on
+a Linux host with the Docker daemon sharing the host kernel. macOS is supported for the interactive skill alone (hooks, skills, statusline).
+
 ## Disk headroom before a build
 
 `deploy/deploy.sh` asks the running worker to reclaim disk before staging a new
@@ -63,11 +66,10 @@ promoted tag names, so the serving generation and a rollback target keep their t
 Nothing is ever forced.
 
 `deploy/roll.sh` fetches, builds the generation with `deploy/build-generation.sh
-<sha>` (from `git archive <sha>`, idempotent on tag + label), holds the deploy lock
-— flock, or on a host without it the mkdir lock in `deploy/deploy-lock.sh`, which
-reclaims a lock left by a dead pid or held longer than any roll can run, one reclaimer
-at a time — and its `<pid> <heartbeat> <deadline>` record, whose deadline covers the
-`--drain-timeout` the roller receives. It then runs `t3 deploy roll --to <sha>` from the
+<sha>` (from `git archive <sha>`, idempotent on tag + label), holds the deploy
+`flock` (the roll refuses to run without it) and its `<pid> <heartbeat> <deadline>` record,
+written by `deploy/deploy-lock.sh`, whose deadline covers the `--drain-timeout` the roller
+receives. It then runs `t3 deploy roll --to <sha>` from the
 **new** image as the one-shot `teatree-roller` service (profile `roll`: docker socket,
 control DB, the deploy checkout and the host tmp read-only), passing its own pid.
 `t3 deploy roll` refuses to run unless the record beating in the lock carries that pid,
@@ -178,12 +180,6 @@ counts only when it names the running `TEATREE_GENERATION`.
 The first roll off a legacy stack finds no generation registry. It drains and stops
 the legacy stack like any roll, lets N+1's init create the registry, and registers
 N+1 only then, so nothing migrates under a worker that is still claiming.
-
-For the first roll on an existing source-mounted installation, export
-`TEATREE_HOST_OS=$(uname -s)` in the deploy shell before starting it. The checked-out
-`deploy.sh` can still be the old version when it reads the new Compose file, which
-needs this value. Once the checkout advances, run the new `deploy.sh` under supervision
-before relying on an unattended deploy.
 
 `deploy/docker-compose.yml` stays the source-mounted stack `deploy.sh` and
 `deploy/t3` run. A generation's topology is that file plus
@@ -405,7 +401,7 @@ nothing, because worker threads switch the plugin off and refuse any MCP server
 still loaded. Setup writes no `[mcp_servers]` table: one added to `config.toml` by
 hand survives that switch-off, and the worker then refuses every Codex thread. A
 miss on either check withholds the single ready marker, so the worker admits no
-work at all, not only Codex work. A laptop Codex beside a Docker deployment gets
+work at all, not only Codex work. A Codex on the host beside a Docker deployment gets
 nothing from setup, which reconciles only the container's volume home.
 
 ### The GPG home off-box: a container-local copy
@@ -415,10 +411,9 @@ box that home is a bind mount of a real local filesystem, binding works, and
 nothing below applies — every service shares the one home and therefore one
 `gpg-agent`, which is what makes the gpg-agent-cached-passphrase option above work.
 
-Off-box the same mount is served by a file-sharing transport that cannot host a
-unix socket at all (Docker Desktop for Mac reports the filesystem as `fakeowner`).
-A host whose `common.conf` carries `use-keyboxd` — the GnuPG 2.4 default on
-Homebrew — routes the **public** keyring through `keyboxd`, which then dies with
+Off-box the same mount can be served by a file-sharing transport that cannot host a
+unix socket at all (`virtiofs`, `9p`, an NFS or SSHFS share).
+A host whose `common.conf` carries `use-keyboxd` — the GnuPG 2.4 default — routes the **public** keyring through `keyboxd`, which then dies with
 `exit status 2` trying to bind `S.keyboxd`. Were a container to open that home, gpg
 would report `No Keybox daemon running`, find zero keys, and fail every `pass show`
 even though `private-keys-v1.d` is mounted and intact — surfacing at boot as *"the
@@ -431,8 +426,7 @@ own. It is pinned twice, and the redundancy is the point: `deploy/Dockerfile` ba
 `GNUPGHOME` for a bare `docker run`, and `docker-compose.yml` pins the same value on
 every service so a container running an image that predates the fix still resolves it
 — `up -d` applies create-time environment with no rebuild, which matters wherever
-`deploy.sh` cannot converge (it needs `flock`, which macOS does not ship) and the
-running image can therefore lag the merged fix.
+`deploy.sh` cannot converge and the running image can therefore lag the merged fix.
 `t3 doctor check` reads the running container's own environment and reports any that
 still opens the host keybox. `deploy/entrypoint.sh`'s
 `seed_container_gnupg_home` only ever SEEDS that path: it reads the mount table and,
@@ -447,7 +441,7 @@ logs which branch it took. Notes:
   live only in `public-keys.d/pubring.db`, so dropping it would find zero keys.
 - Host **daemon** configs (`gpg-agent.conf`, `scdaemon.conf`, `dirmngr.conf`) are
   deliberately not copied: they routinely name host-only binaries
-  (`pinentry-program …/pinentry-mac`) that do not exist in the image.
+  (`pinentry-program …/pinentry-host-only`) that do not exist in the image.
 - tmpfs, so the copied private key stays in RAM and vanishes with the container.
   It is re-derived at every boot, so a rotated host key is picked up on restart.
 - Absence stays a no-op: a host with no key material yields an empty derived home
@@ -489,8 +483,7 @@ one-shot, replaying the whole ~minute init.
 If either drain of a running worker fails, `deploy.sh` first proves the admin is
 answering before it stops that worker; otherwise it aborts with the worker still
 serving. The admin is probed from inside `teatree-admin` (`compose exec … curl`),
-because under Docker Desktop `network_mode: host` is the VM's network and the host's
-own loopback never reaches the dashboard. A non-zero `compose stop` always aborts. After a successful stop, the
+because the admin gunicorn binds the container's loopback. A non-zero `compose stop` always aborts. After a successful stop, the
 deploy reads the stopped container through `compose ps --all --quiet` and proceeds
 only when its state is `exited`/`dead` or the container is absent. That containment
 is an explicit alternate path through stages 5–6: after init, the deploy recreates
@@ -823,17 +816,16 @@ Only `init` compares the tool venv with the lockfile's boot constraints (and ref
 `docker compose build` is only required when the *image* itself must change (a new
 system package, a new baked stage) — not for source or dependency edits.
 
-### Off-box (an operator laptop)
+### Under another host user
 
 `TEATREE_HOST_HOME` is what makes the stack mountable off the box: dockerd refuses
 a bind whose source is absent on the host (`mounts denied: the path … is not shared
 from the host`), and `/home/teatree` exists only on the box. `deploy/t3` defaults
-it to `$HOME`, so on a laptop the sources follow the real host home (`/Users/…`)
+it to `$HOME`, so under another Linux user the sources follow the real host home
 while the targets stay canonical. Only *path identity* is given up there — an
 absolute host path recorded in the DB (a worktree row outside
 `$TEATREE_HOST_HOME/workspace/t3-workspaces`) does not resolve inside the
-container. On macOS every source must also be under a Docker Desktop shared path
-(*Settings → Resources → File sharing*).
+container.
 
 ### UID invariant — the container user must equal the host deploy user
 
@@ -1559,8 +1551,7 @@ stays connected:
 
 Without a `python3` >= 3.9 on the host, `deploy/t3` serves the session directly, with no proxy,
 and says so on stderr, and the SessionStart hook prints the same warning into the session: the tools
-then drop at the next restart until the server is reconnected from `/mcp`. On macOS without the Command Line
-Tools, `/usr/bin/python3` is only an installer stub, so install them (or another python3) first.
+then drop at the next restart until the server is reconnected from `/mcp`.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 
@@ -1596,10 +1587,9 @@ The factory once froze for ~7 hours and nobody noticed because **the worker was
 the monitor** — when the init/worker died, the thing that would have alerted died
 with it. The fix is a watchdog that lives **outside** the thing it watches, kept
 alive by a supervisor that survives a full stack outage. The **Docker daemon** is
-the only supervisor present on both Linux and macOS, so the watchdog is an
-**in-daemon sidecar container** (`teatree-watchdog`), not a host-level OS timer.
-This supersedes the Linux-only systemd timer of #3289 with a single mechanism
-that works identically on a Linux box and a macOS Docker Desktop host.
+that supervisor, so the watchdog is an **in-daemon sidecar container**
+(`teatree-watchdog`), not a host-level OS timer. This supersedes the systemd timer
+of #3289.
 
 The watchdog is just another compose service — **the deploy installs it; there is
 nothing to enable.** It has `restart: always` and **no** `depends_on`, so the
@@ -1692,9 +1682,8 @@ reason:
   service that can open it: the socket is mode `0660` root-owned and every app
   service runs as the non-root `TEATREE_UID`, so the grant is the worker's
   `group_add: ["${TEATREE_DOCKER_SOCKET_GID:-0}"]`, not the mount.
-  `deploy/deploy.sh` and `deploy/t3` resolve that GID — the host socket's group on
-  Linux (where the daemon shares the host kernel), `0` under Docker Desktop
-  (where the socket comes from the product's own VM as root:root).
+  `deploy/deploy.sh` and `deploy/t3` resolve that GID — the host socket's group
+  (the daemon shares the host kernel).
 
 **This is root-equivalent access to the host, and it is an accepted cost, not a
 mitigated one.** There is no materially safer shape that still does the job: a
@@ -1882,23 +1871,6 @@ applies when a container is next recreated; a log that grew before then stays un
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.
-
-### macOS (Docker Desktop) notes
-
-The same compose service runs unchanged on a macOS Docker Desktop host. Two
-Docker Desktop settings matter:
-
-- **Docker socket:** enable *Settings → Advanced → "Allow the default Docker
-  socket to be used"* so `/var/run/docker.sock` is present for the socket mount.
-- **File sharing:** the read-only checkout bind mount resolves to
-  `$TEATREE_DEPLOY_CHECKOUT` — the checkout `deploy.sh` / `deploy/t3` was invoked
-  out of — so it follows the host checkout automatically and needs no edit. It
-  must still be under a path Docker Desktop is allowed to share (*Settings →
-  Resources → File sharing*); a path outside that set leaves the container
-  `Created` with `mounts denied`.
-- **Start at login:** enable *Settings → General → "Start Docker Desktop when you
-  sign in"* so the daemon — and therefore the watchdog — comes back after a
-  reboot, the macOS analogue of "Docker enabled on boot" on Linux.
 
 ### Decommissioning the old systemd timer (#3289)
 

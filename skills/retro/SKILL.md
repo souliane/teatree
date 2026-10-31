@@ -6,7 +6,7 @@ requires:
   - rules
   - workspace
   - architecture-design
-compatibility: macOS/Linux, any project with teatree skills.
+compatibility: Linux, any project with teatree skills.
 metadata:
   version: 0.0.1
 ---

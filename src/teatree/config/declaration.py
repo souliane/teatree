@@ -7,7 +7,6 @@ from enum import StrEnum, auto
 from typing import Any, cast, get_type_hints
 
 from teatree.config.mr_reminder import MrReminderConfig
-from teatree.types import SpeakConfig
 
 _UNSET = object()
 
@@ -67,7 +66,7 @@ class SettingSpec:
 
 
 def stored_form(value: object) -> object:
-    return value.to_dict() if isinstance(value, SpeakConfig | MrReminderConfig) else value
+    return value.to_dict() if isinstance(value, MrReminderConfig) else value
 
 
 def setting[T](

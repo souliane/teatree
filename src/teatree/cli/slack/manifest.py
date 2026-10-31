@@ -27,7 +27,6 @@ _BOT_SCOPES = [
     "channels:manage",
     "channels:read",
     "chat:write",
-    "files:write",
     "groups:history",
     "groups:read",
     "groups:write",
@@ -98,12 +97,10 @@ _BOT_EVENTS = ["app_mention", "message.im", "reaction_added"]
 # talk to its one owner's DM — the DM post/read/react scopes, plus ``channels:manage``,
 # the only scope Slack accepts for a bot to leave a public channel. NO other channel,
 # group, or mpim scope, NO ``app_mentions:read``, and NO ``user`` (xoxp) section.
-# ``files:write`` is kept for voice/audio DMs (``post_audio_dm``). The ``SlackBotBackend``
-# built with ``owner_dm_only=True`` enforces the same restriction in-process.
+# The ``SlackBotBackend`` built with ``owner_dm_only=True`` enforces the same restriction in-process.
 _DM_ONLY_BOT_SCOPES = [
     "channels:manage",
     "chat:write",
-    "files:write",
     "im:history",
     "im:read",
     "im:write",

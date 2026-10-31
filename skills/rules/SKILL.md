@@ -1,7 +1,7 @@
 ---
 name: rules
 description: Cross-cutting agent safety rules — the always-embedded core carrying every non-negotiable's trigger and verdict, each naming the skills/rules/references/ file with its full text. Auto-loaded as a dependency by other skills.
-compatibility: any
+compatibility: Linux
 metadata:
   version: 0.0.1
 ---

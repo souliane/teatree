@@ -7,7 +7,6 @@ in a container and fails on a host — the exact venue-dependence #4244 is about
 Both helpers name every source, so the answer is the test's own.
 """
 
-import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,7 +80,7 @@ def nested_venue(root: Path, *, host_nspid: str = "NSpid:\t41\t7\n") -> Generato
     venue = this_process_in(root / "venue").parent
     (venue / "self" / "ns").mkdir(parents=True)
     (venue / "self" / "ns" / "pid").symlink_to("pid:[42]")
-    with pinned_process_table(venue=venue, host=host), patch.dict(os.environ, {"TEATREE_HOST_OS": "Linux"}):
+    with pinned_process_table(venue=venue, host=host):
         yield
 
 
@@ -114,6 +113,5 @@ def table_with_unreadable_pid(
         pinned_process_table(venue=tmp_path / "absent", host=host),
         patch.object(Path, "readlink", gated_readlink),
         patch.object(process_table.os, "geteuid", return_value=blind.stat().st_uid + uid_offset),
-        patch.dict(os.environ, {"TEATREE_HOST_OS": "Linux"}),
     ):
         return process_table.read_process_table(exclude_ancestors=True)

@@ -57,19 +57,6 @@ RESUME_LOAD_PER_CORE = ADMISSION_LOAD_RESUME_PER_CORE
 RAM_BRAKE_FLOOR_GB = 4.0
 RAM_RESUME_FLOOR_GB = 6.0
 
-#: Host paging rate (swap-ins + swap-outs) in MiB/s, the same brake/resume shape as load.
-#: Swap OCCUPANCY is no signal on macOS — it stays allocated long after the pressure that
-#: filled it (82% used while nothing paged at 0.00-0.05 MiB/s, measured 2026-09-26) — so
-#: only activity is judged. A thrashing box pages tens of MiB/s; resume sits well above
-#: the idle noise floor so the brake lifts once paging has actually stopped.
-SWAP_BRAKE_MIB_PER_S = 8.0
-SWAP_RESUME_MIB_PER_S = 1.0
-
-#: ``kern.memorystatus_vm_pressure_level`` — the kernel's own verdict, hysteresis included.
-VM_PRESSURE_NORMAL = 1
-VM_PRESSURE_WARN = 2
-VM_PRESSURE_CRITICAL = 4
-
 #: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
 SHORT_WINDOW_BRAKE = 0.95
 #: Weekly headroom below this is spent — nothing left to admit against.
@@ -91,8 +78,8 @@ SHED_AT_DEFAULT = 0.9
 HALT_AT = 1.0
 
 #: The pre-#4508 brake evaluation order — quota brakes in their ``if`` order, then the
-#: machine ones. Quota and kernel causes keep this rank; machine causes share the load
-#: rank and use this order only when their normalised severity ties.
+#: machine ones. Quota causes keep this rank; machine causes share the load rank and use
+#: this order only when their normalised severity ties.
 BRAKE_PRECEDENCE = (
     "accounts-exhausted",
     "weekly-quota",
@@ -100,14 +87,11 @@ BRAKE_PRECEDENCE = (
     "weekly-pace",
     "metered-lane-parked",
     "metered-spend",
-    "memory-pressure",
     "load",
     "memory",
-    "swap",
 )
-#: The machine causes the cheap lane is exempt from. Kernel memory pressure is not one:
-#: at critical the kernel is already reclaiming, and every lane adds to it.
-MACHINE_BRAKE_CAUSES = frozenset(("load", "memory", "swap"))
+#: The machine causes the cheap lane is exempt from.
+MACHINE_BRAKE_CAUSES = frozenset(("load", "memory"))
 
 
 @dataclass(frozen=True)
@@ -169,8 +153,6 @@ class MachineSignal:
     load1: float
     ram_available_gb: float | None
     memory_cap_gb: float | None = None
-    swap_mib_per_s: float | None = None
-    vm_pressure_level: int | None = None
     #: The cores ``load1`` was measured across, when that differs from the execution
     #: capacity in ``cores`` — a host load average read from inside a CPU-capped container.
     load_cores: int | None = None
@@ -286,7 +268,7 @@ class AdmissionPressure:
         """The one cause a refusal names, so N observations of it report as ONE incident.
 
         Among components that have REACHED :data:`HALT_AT`, :data:`BRAKE_PRECEDENCE`
-        ranks quota and kernel causes. Machine causes share one rank, with the worst
+        ranks quota causes. Machine causes share one rank, with the worst
         value winning and the old order breaking ties. An exhausted fleet still wins
         over its collapsed pace, even when pace has a higher numeric value.
         Below HALT nothing was ever named, so there is no order to preserve and the
@@ -448,9 +430,7 @@ def admission_pressure(
     if metered is not None and metered.fresh:
         components.extend(_metered_components(metered))
     if load_brake.applies:
-        components.extend(_machine_components(machine, braked=load_brake.braked, shed_at=shed_at))
-    elif machine.vm_pressure_level is not None and machine.vm_pressure_level >= VM_PRESSURE_CRITICAL:
-        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at, source=machine.source))
+        components.extend(_machine_components(machine, braked=load_brake.braked))
     return AdmissionPressure(components=tuple(components), shed_at=shed_at)
 
 
@@ -487,7 +467,7 @@ def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
     ]
 
 
-def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float) -> list[PressureComponent]:
+def _machine_components(machine: MachineSignal, *, braked: bool) -> list[PressureComponent]:
     cores = machine.load_scope_cores
     source = f" ({machine.source})" if machine.source else ""
     memory_source = f" ({machine.memory_source})" if machine.memory_source else ""
@@ -524,31 +504,7 @@ def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float)
                 detail=f"{detail} ({conflict}){memory_source}" if conflict else f"{detail}{memory_source}",
             )
         )
-    if machine.swap_mib_per_s is not None:
-        swap_watermark = SWAP_RESUME_MIB_PER_S if braked else SWAP_BRAKE_MIB_PER_S
-        components.append(
-            PressureComponent(
-                name="swap",
-                value=_clamp(machine.swap_mib_per_s / swap_watermark),
-                detail=(
-                    f"host paging {machine.swap_mib_per_s:.1f} MiB/s at/over "
-                    f"the {swap_watermark:g} MiB/s watermark{source}"
-                ),
-            )
-        )
-    if machine.vm_pressure_level is not None:
-        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at, source=machine.source))
     return components
-
-
-def _kernel_component(level: int, *, shed_at: float, source: str = "") -> PressureComponent:
-    """Warn sheds the expensive class and keeps the drain; critical halts every lane."""
-    value = HALT_AT if level >= VM_PRESSURE_CRITICAL else shed_at if level >= VM_PRESSURE_WARN else 0.0
-    return PressureComponent(
-        name="memory-pressure",
-        value=value,
-        detail=f"kernel memory pressure level {level} (1 normal, 2 warn, 4 critical){f' ({source})' if source else ''}",
-    )
 
 
 def _load_watermark(*, cores: int, braked: bool, brake_per_core: float, resume_per_core: float) -> float:
@@ -590,13 +546,8 @@ __all__ = [
     "RESUME_LOAD_PER_CORE",
     "SHED_AT_DEFAULT",
     "SHORT_WINDOW_BRAKE",
-    "SWAP_BRAKE_MIB_PER_S",
-    "SWAP_RESUME_MIB_PER_S",
     "UNBRAKED",
     "UNREAD_QUOTA",
-    "VM_PRESSURE_CRITICAL",
-    "VM_PRESSURE_NORMAL",
-    "VM_PRESSURE_WARN",
     "WEEKLY_WINDOW_BRAKE",
     "WEEKLY_WINDOW_SECONDS",
     "AdmissionPressure",

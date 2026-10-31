@@ -88,7 +88,7 @@ def _run(
     docker.chmod(docker.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     for name, body in {
         "curl": "#!/bin/sh\nexit 0\n",
-        "open": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >{browser_witness}\n",
+        "xdg-open": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >{browser_witness}\n",
         "bash": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >{forward_witness}\n",
     }.items():
         stub = stub_dir / name

@@ -2,7 +2,7 @@
 name: sweeping-tickets
 description: Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, recording the reason in the description first. Posts zero comments, and touches only tickets the owner or factory bot filed. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "group tickets", "prune the tracker", or "clean up the issue tracker".
 eval_exempt: evidence-gated ticket-consolidation walkthrough — its one-decision-per-question discipline is pinned in scenarios under the rules skill, and its evidence-gated close/consolidate discipline is pinned by the stale_open_issue_gate scenarios; no standalone agent trajectory beyond those to grade
-compatibility: macOS/Linux, git, gh CLI.
+compatibility: Linux, git, gh CLI.
 requires:
   - rules
   - platforms

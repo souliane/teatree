@@ -240,7 +240,6 @@
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
 "src/teatree/core/signals.py" = 5 # the shared admission walk (lazy, avoids app-registry-at-load)
-"src/teatree/core/speak.py" = 1
 "src/teatree/core/provision/step_runner.py" = 1
 # #61 availability+preset merge: the unified operating-mode resolver defers its
 # intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry) and the

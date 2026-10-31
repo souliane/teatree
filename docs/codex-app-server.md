@@ -102,7 +102,9 @@ last verified cache from pass.
 A running Codex turn accepts operator input or a peer message through the App Server's
 `turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
 only when the answer names that turn. A timeout, lost answer or turn-end race is
-`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
+`unknown_delivery` and is never replayed; an idle or ended turn rejects the input. After a clean result the thread
+stays open for the 60-second idle window, and `follow_up` starts one new `turn/start` on that thread
+(`not_idle` while a turn runs, `session_closed` after close or when the server is gone).
 In the worker's Codex sandbox, MCP is unavailable. New threads receive mailbox
 dynamic tools, and the worker retains their inbox until the task exits. Resumed
 threads keep their creation-time tool catalog; their peer messages use the push
@@ -136,8 +138,8 @@ coding and debugging attempts act on that field: the attempt fails as a venue fa
 question, and the next route candidate can retry. Landing is verified from the local commit.
 
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
-(one credential writer). When the routed token changes, an idle server is retired and one new server
-starts; a busy server answers a fast `TRANSPORT` fallback ("busy with another credential") that the
+(one credential writer). When the routed token changes, a server with no turn running (a thread held idle for a follow-up is closed) is
+retired and one new server starts; a server with a turn running answers a fast `TRANSPORT` fallback ("busy with another credential") that the
 route turns into the next candidate or a later redispatch. The worker cap is fixed for the server's
 lifetime. Neither the token nor its fingerprint is logged.
 

@@ -1,7 +1,7 @@
 ---
 name: e2e
 description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "test plan", "post test plan", "post evidence", or is working with Playwright-based tests.
-compatibility: macOS/Linux, Playwright, Node.js, t3 CLI.
+compatibility: Linux, Playwright, Node.js, t3 CLI.
 requires:
   - test
   - workspace

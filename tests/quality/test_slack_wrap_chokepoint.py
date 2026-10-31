@@ -37,13 +37,11 @@ _SRC = _REPO_ROOT / "src" / "teatree"
 _TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "chat.update", "files.completeUploadExternal"})
 
 #: The only modules that may NAME one of those methods in a call. ``egress``
-#: posts solely through the ``_post`` it is handed (the wrap seam), while
-#: ``audio_upload`` wraps in its own body. ``bot`` is absent by construction:
+#: posts solely through the ``_post`` it is handed (the wrap seam). ``bot`` is absent by construction:
 #: its seam dispatches on the *method* parameter, so it never names the string
 #: in a call. Anything else reaches Slack unwrapped.
 _WRAP_ROUTED_MODULES = frozenset(
     {
-        "backends/slack/audio_upload.py",
         "backends/slack/egress.py",
     }
 )

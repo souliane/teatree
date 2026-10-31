@@ -3,11 +3,15 @@
 import copy
 import dataclasses
 import json
+from datetime import timedelta
 from typing import TypedDict
 from unittest.mock import MagicMock
 
+from django.utils import timezone
+
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand, plain_text
+from teatree.core.models import Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer
 
@@ -120,6 +124,28 @@ OWNER_DECISION = OwnerDecisionFields(card=OWNER_CARD)
 
 def owner_card(decision: OwnerDecision = OwnerDecision.ARCHITECTURE, *checked: str) -> QuestionCard:
     return dataclasses.replace(OWNER_CARD, decision=decision, checked=checked or OWNER_CARD.checked)
+
+
+def answered_owner_row(
+    ticket: Ticket,
+    question: str,
+    answer: str,
+    *,
+    decision: OwnerDecision = OwnerDecision.CREDENTIALS,
+    ago: timedelta = timedelta(hours=2),
+    **fields: object,
+) -> DeferredQuestion:
+    """An owner card on *ticket*'s session, answered *ago* before now."""
+    row: dict[str, object] = {
+        "question": question,
+        "audience": DeferredQuestion.Audience.OWNER_QUESTION,
+        "evidence": owner_card(decision).to_evidence(),
+        "answered_at": timezone.now() - ago,
+        "answer_text": answer,
+        "resolved_via": DeferredQuestion.ResolvedVia.SLACK,
+        "task_session": Session.objects.create(ticket=ticket),
+    }
+    return DeferredQuestion.objects.create(**row | fields)
 
 
 def legacy_owner_row(

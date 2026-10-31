@@ -1,7 +1,7 @@
 ---
 name: scanning-news
 description: Scans today's AI news for scoped teatree improvements, checks backlog fit and duplicates, and returns article decisions for the server to settle and file through the issue facade. Use when user says "scan news", "scanning news", "ai newsletter scan", "improvement scan", "tldr scan", or runs the daily improvement routine.
-compatibility: macOS/Linux, WebFetch. Runs shell-denied — no git/gh/CLI.
+compatibility: Linux, WebFetch. Runs shell-denied — no git/gh/CLI.
 requires:
   - workspace
   - rules

@@ -44,6 +44,7 @@ from teatree.agents.review_envelope_recorder import (
 )
 from teatree.agents.runner_result import ResultEnvelopeError
 from teatree.agents.sweep_report_gate import sweep_report_error
+from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.modelkit.db_retry import wait_out_locked_writes
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OWNER_RAISABLE_DECISIONS, owner_decision
@@ -172,6 +173,13 @@ def _validate_result_keys(result: AgentResultBlob, misfit: MisfitAction | None) 
         )
         return owner_stop_refusal(detail)
     return ""
+
+
+def _earlier_answer_refusal(task: Task, result: AgentResultBlob) -> str:
+    if result.get("needs_user_input") is not True or (card := QuestionCard.from_envelope(result)) is None:
+        return ""
+    problem = earlier_answer_problem(task.ticket_id, card, str(result.get("user_input_reason", "")))
+    return owner_stop_refusal(problem) if problem else ""
 
 
 @wait_out_locked_writes()
@@ -416,6 +424,7 @@ def _check_before_recording(
     if error := (
         (_AUTOMATIC_REVIEW_PREFIX if misfit is MisfitAction.BACKGROUND_RETRY else "")
         or _validate_result_keys(result, misfit)
+        or _earlier_answer_refusal(task, result)
         or review_head_mismatch_refusal(task, result, phase=phase)
         or review_venue_limit_refusal(task, result, phase=phase)
         or (

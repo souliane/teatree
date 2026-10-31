@@ -37,7 +37,7 @@ In an image generation the self-update scanner is not built, `reinstall_running_
 ## The roll: entry and lock
 
 - `deploy/roll.sh [<rev> [roller args]]` is the entry: it fetches, builds the generation, and runs the roller (`teatree/deploy/roll.py`) from the NEW image as the one-shot `teatree-roller` service, repeating a progress line at least every 30 s.
-- It takes the deploy lock `deploy.sh` uses — flock, or on a host without it the shared `deploy/deploy-lock.sh` mkdir lock, which reclaims a lock from a dead pid or past its age, one reclaimer at a time under the symlink `<lock>.reclaim` (it names the reclaimer's pid) so none removes a lock another has just taken; waiting on a live reclaimer spends none of the reclaim budget.
+- It takes the deploy lock `deploy.sh` uses — the host `flock`, and it refuses to run without it.
 - It keeps the same `<pid> <heartbeat> <deadline>` record `deploy.sh` keeps; the deadline covers the `--drain-timeout` the roller receives (read in base 10).
 - `t3 deploy roll --to <sha>` refuses unless the record beating in the lock (read through the roller's read-only `/host-tmp` mount) carries the pid `roll.sh` passed as `TEATREE_ROLL_RECORD_PID`, so a roll never runs outside its own `roll.sh`, nor during another convergence.
 
@@ -94,8 +94,6 @@ The first roll off a legacy stack finds no registry table: it drains and stops t
 
 ## Known limits
 
-- **A crashed reclaimer leaves a narrow race.** A reclaimer that dies while holding `<lock>.reclaim` leaves the symlink behind. It is abandoned once its pid is dead or it is a minute old. Two reclaimers that find it abandoned at the same instant can both remove it and both enter the critical section, which is the original check-then-remove race, narrowed to that coincidence (`deploy/deploy-lock.sh`, `_take_reclaim_mutex`).
 - **Image protection reads only this host's containers and this shell's promoted tag.**
   - An image held only by a leftover stopped container is never pruned until that container is removed.
   - A second stack with no containers left loses protection of its own promoted tag unless `TEATREE_PROMOTED_TAG` names it in the shell that runs `build-generation.sh`.
-- **On a host without flock, a SIGKILLed roll.sh leaves its roller running.** Another roll can then reclaim the mkdir lock from the dead pid while that roller still works. On hosts with flock the kernel releases the lock only when every holder exits, so they are not exposed. The lock's record also stops beating, which is what the watchdog and `t3 deploy roll` read.

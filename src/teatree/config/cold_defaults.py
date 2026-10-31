@@ -21,7 +21,7 @@ def flatten_settings_table(table: Mapping[str, Any]) -> dict[str, Any]:
     """Collapse a nested ``[teatree]`` table to the flat key namespace readers depend on.
 
     A sub-table named after a DECLARED setting is that setting's value and is returned
-    whole (``speak``, ``mr_reminder`` — genuine nested settings). Every other sub-table is
+    whole (``mr_reminder`` — a genuine nested setting). Every other sub-table is
     a grouping wrapper the file uses to render the declaration hierarchy, so it is
     descended into and contributes its own keys to the flat result.
 

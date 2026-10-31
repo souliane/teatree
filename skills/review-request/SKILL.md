@@ -1,7 +1,7 @@
 ---
 name: review-request
 description: Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels. Use when user says "request review", "send for review", or wants to batch-notify reviewers.
-compatibility: macOS/Linux, git, issue tracker CLI (glab, gh, etc.), team chat integration.
+compatibility: Linux, git, issue tracker CLI (glab, gh, etc.), team chat integration.
 requires:
   - workspace
   - platforms

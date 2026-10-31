@@ -659,13 +659,3 @@ class MessagingBackend(Protocol):
     def resolve_usergroup_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def auth_test(self) -> RawAPIDict: ...  # pragma: no branch
-
-    def post_audio_dm(
-        self,
-        *,
-        channel: str,
-        filepath: str,
-        text: str,
-        thread_ts: str = "",
-        title: str = "",
-    ) -> RawAPIDict: ...  # pragma: no branch

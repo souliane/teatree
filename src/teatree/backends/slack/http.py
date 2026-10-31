@@ -179,24 +179,6 @@ class SlackHttpClient(BoundedRetryTransport):
 
         return _scope_guarded(method, token, call)
 
-    def post_external(self, url: str, *, content: bytes) -> int:
-        """POST raw ``content`` to an off-Slack upload URL, returning the status code.
-
-        The Slack ``files.getUploadURLExternal`` step returns a one-shot
-        ``upload_url`` on Slack's file storage host (not ``slack.com/api``)
-        that the caller POSTs the file bytes to before
-        ``files.completeUploadExternal``. The host accepts the bytes only on
-        POST and 302-redirects any other verb to ``slack.com``. The POST
-        carries no token (the URL is itself the capability) and the upload is
-        idempotent — the same bytes to the same one-shot URL — so it is
-        retried under the standard bounded-backoff like any read.
-        """
-
-        def attempt() -> httpx.Response:
-            return httpx.post(url, content=content, timeout=self._timeout)
-
-        return self._run(attempt, idempotent=True).status_code
-
     @override
     def _is_transient_response(self, response: httpx.Response) -> bool:
         return super()._is_transient_response(response) or self._is_slack_ratelimited(response)

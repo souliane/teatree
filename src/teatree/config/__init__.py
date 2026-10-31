@@ -70,7 +70,6 @@ from teatree.config.setting_registries import (
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
 )
 from teatree.config.settings import OverlayEntry, TeaTreeConfig, UserSettings
-from teatree.config.speak import resolve_speak, speak_from_subtable
 from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.paths import DATA_DIR, get_data_dir
 
@@ -139,8 +138,6 @@ __all__ = [
     "load_peer_instances",
     "mr_reminder_from_table",
     "resolve_mr_reminder",
-    "resolve_speak",
-    "speak_from_subtable",
     "worker_is_quiescing",
     "worktree_root",
 ]

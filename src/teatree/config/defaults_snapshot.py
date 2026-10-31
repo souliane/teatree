@@ -33,7 +33,7 @@ from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
 # A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips. The table
 # arm is a ``Mapping`` because nothing here mutates one, and an invariant ``dict`` would
-# refuse the narrower tables the structured settings (``speak`` / ``mr_reminder``) store.
+# refuse the narrower table the structured setting (``mr_reminder``) stores.
 type SettingValue = bool | int | float | str | list[object] | dict[str, object]
 
 #: Owner-workflow + engagement keys kept at the current shipped value even when the live
@@ -76,8 +76,8 @@ _HEADER = """\
 # differ from the shipped ones, and writes nothing: adopting one means editing the
 # declaration that states it, reviewed as the code change it is.
 #
-# `[teatree]` — the `config_setting export`/`import` schema, with `speak`/`mr_reminder` as
-# sub-tables. EXACTLY the Category.DEFAULT keys of
+# `[teatree]` — the `config_setting export`/`import` schema, with `mr_reminder` as a
+# sub-table. EXACTLY the Category.DEFAULT keys of
 # `teatree.config.schema.TeatreeSettingsSchema` appear here; PERSONAL/SECRET keys
 # (operator identifiers, machine paths, model-routing tables, customer/brand terms,
 # credential coordinates) are ABSENT by construction and resolve from their empty
@@ -87,7 +87,7 @@ _HEADER = """\
 # renders and the export dump emits. The KEY NAMESPACE stays flat: that namespace is the
 # persisted contract every reader, env override and cold sqlite3 read depends on, and
 # `config/cold_defaults.py` flattens the group wrappers back on read. A sub-table named
-# after a declared setting (`speak`, `mr_reminder`) is a setting; any other is a group.
+# after a declared setting (`mr_reminder`) is a setting; any other is a group.
 # Put a new key under its group's table; CI refuses one sitting outside its group.
 # Each key's trailing comment says what it ACCEPTS — the stored type, plus the alternatives
 # where the schema constrains them to a set — then what it means. Both halves are DERIVED

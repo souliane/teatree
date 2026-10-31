@@ -41,15 +41,6 @@ from teatree.core.admission_governor import (
     resume_shed_directive,
     weekly_pace,
 )
-from teatree.core.admission_pressure import (
-    SWAP_BRAKE_MIB_PER_S,
-    SWAP_RESUME_MIB_PER_S,
-    VM_PRESSURE_CRITICAL,
-    VM_PRESSURE_NORMAL,
-    VM_PRESSURE_WARN,
-    PressureBand,
-    admission_pressure,
-)
 from teatree.core.models import ConfigSetting
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.quality.pytest_resource_contract import POOL_ROOT_ENV, TOTAL_TEST_WORKERS_PER_CORE, worker_pool_root
@@ -138,63 +129,11 @@ class TestTokenBudgetIsPrimary:
 
 
 class TestMachinePressureIsSecondary:
-    def test_swap_activity_brakes_and_holds_until_the_resume_rate(self) -> None:
-        thrashing = _decide(machine=_machine(swap_mib_per_s=SWAP_BRAKE_MIB_PER_S))
-        assert not thrashing.admit
-        assert thrashing.cause == "swap"
-        braked = MachineBrake(braked=True)
-        between = (SWAP_BRAKE_MIB_PER_S + SWAP_RESUME_MIB_PER_S) / 2
-        assert _decide(machine=_machine(swap_mib_per_s=between)).admit
-        assert not _decide(machine=_machine(swap_mib_per_s=between), load_brake=braked).admit
-        assert _decide(machine=_machine(swap_mib_per_s=SWAP_RESUME_MIB_PER_S * 0.5), load_brake=braked).admit
-
-    def test_idle_swap_admits_however_full_the_swap_file_is(self) -> None:
-        assert _decide(machine=_machine(swap_mib_per_s=0.0, vm_pressure_level=VM_PRESSURE_NORMAL)).admit
-
-    def test_critical_kernel_memory_pressure_halts(self) -> None:
-        decision = _decide(machine=_machine(vm_pressure_level=VM_PRESSURE_CRITICAL))
-        assert not decision.admit
-        assert decision.cause == "memory-pressure"
-
-    def test_warn_kernel_memory_pressure_sheds_without_halting(self) -> None:
-        pressure = admission_pressure(quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN))
-        assert pressure.band is PressureBand.SHED
-        assert pressure.dominant.name == "memory-pressure"
-
-    def test_critical_kernel_memory_pressure_halts_the_cheap_class_too(self) -> None:
-        exempt = admission_pressure(
-            quota=_quota(),
-            machine=_machine(vm_pressure_level=VM_PRESSURE_CRITICAL),
-            load_brake=MachineBrake(applies=False),
-        )
-        assert exempt.band is PressureBand.HALT
-
-    def test_warn_kernel_memory_pressure_never_touches_the_cheap_class(self) -> None:
-        exempt = admission_pressure(
-            quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN), load_brake=MachineBrake(applies=False)
-        )
-        assert exempt.band is PressureBand.FULL
-
-    def test_warn_kernel_memory_pressure_sits_at_the_configured_shed_threshold(self) -> None:
-        pressure = admission_pressure(quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN), shed_at=0.8)
-        assert pressure.value == pytest.approx(0.8)
-        assert pressure.band is PressureBand.SHED
-
-    def test_critical_kernel_pressure_is_named_ahead_of_a_load_brake(self) -> None:
-        # The worker keeps the cheap lane under a load brake; kernel-critical must not be hidden behind one.
-        machine = _machine(load1=8 * 5.0 + 1, vm_pressure_level=VM_PRESSURE_CRITICAL)
-        assert _decide(machine=machine).cause == "memory-pressure"
-
     def test_host_load_is_judged_against_the_cores_it_was_measured_on(self) -> None:
         # A host-scoped load under its brake can exceed a smaller container's watermark.
         machine = _machine(cores=7, load_cores=10, load1=15.0)
         assert _decide(machine=machine).admit
         assert not _decide(machine=_machine(cores=7, load1=15.0)).admit
-
-    def test_high_swap_occupancy_without_paging_still_admits(self) -> None:
-        # Occupancy can remain at 82% after paging stops; only the rate is a signal.
-        assert "swap_used_fraction" not in MachineSignal.__dataclass_fields__
-        assert _decide(machine=_machine(swap_mib_per_s=0.0)).admit
 
     def test_load_above_the_brake_denies_while_quota_is_healthy(self) -> None:
         decision = _decide(machine=_machine(load1=8 * 5.0 + 1))

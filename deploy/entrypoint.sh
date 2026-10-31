@@ -130,10 +130,8 @@ path_fstype() {
 # `S.*` sockets there.
 #
 # An ALLOWLIST of real local filesystems, deliberately, not a denylist of the
-# bad ones: the failing set is every desktop/VM file-SHARING transport, and it is
-# open-ended and renamed often (Docker Desktop alone has shipped osxfs,
-# gRPC-FUSE, virtiofs and now `fakeowner`; Colima/Lima/OrbStack/Rancher add 9p,
-# sshfs and more). An unknown name therefore takes the DERIVE path, which works
+# bad ones: the failing set is every file-SHARING transport (virtiofs, 9p, sshfs, NFS, …),
+# and it is open-ended and renamed often. An unknown name therefore takes the DERIVE path, which works
 # on every filesystem, rather than the in-place path, which fails on exactly the
 # names we could not enumerate.
 fstype_hosts_unix_sockets() {
@@ -165,7 +163,7 @@ fstype_hosts_unix_sockets() {
 # (a per-machine entropy pool gpg regenerates), `openpgp-revocs.d` (revocation
 # certificates, irrelevant to decryption), and gpg-agent.conf / scdaemon.conf /
 # dirmngr.conf — host DAEMON configs that routinely name host-only binaries
-# (`pinentry-program /opt/homebrew/bin/pinentry-mac`) which do not exist in this
+# (`pinentry-program /usr/local/bin/pinentry-host-only`) which do not exist in this
 # image; the container's own defaults are the headless-correct ones.
 same_directory() {
     [ "$(readlink -f "$1" 2>/dev/null)" = "$(readlink -f "$2" 2>/dev/null)" ]
@@ -218,7 +216,7 @@ derive_container_gnupg_home() {
 # `docker exec` — the loop's own subprocesses included — started from the container's
 # create-time environment and reached for the HOST home instead, where two things go
 # wrong at once. gpg-agent and keyboxd bind their `S.*` sockets inside GNUPGHOME, which a
-# file-sharing transport (Docker Desktop for Mac: `fakeowner`) cannot host at all, so
+# file-sharing transport (virtiofs, 9p, …) cannot host at all, so
 # keyboxd dies and gpg finds zero keys; and gpg's dotlock records `pid` + `hostname`, so a
 # lock the HOST's own keyboxd holds on the shared keybox names a hostname no container can
 # match — gpg will not judge it stale and waits forever. Both disappear once no container

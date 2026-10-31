@@ -48,8 +48,7 @@ from teatree.config.settings_provisioning import (
     WRITE_CONCURRENCY_PER_CORE_MIN,
     _ProvisioningSettings,
 )
-from teatree.config.speak import parse_speak_setting
-from teatree.types import DEFAULT_MR_TITLE_REGEX, SpeakConfig
+from teatree.types import DEFAULT_MR_TITLE_REGEX
 
 __all__ = [
     "PYDANTIC_AI_MAX_TOKENS_DEFAULT",
@@ -609,22 +608,10 @@ class _RetentionSettings:
 
 @dataclass
 class _PrePublishGateSettings:
-    """Slack voice, speak/mr-reminder, the pre-publish gate kill-switches, repo patterns, review batching."""
+    """Slack voice, mr-reminder, the pre-publish gate kill-switches, repo patterns, review batching."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
-    # #2060 The resolved speak config — a local playback enum (off/dm) + a
-    # slack bool. DB-home (#1775, DB-home cutover): stored as a JSON dict
-    # ConfigSetting (``parse_speak_setting``), rebuilt bespoke by the resolver; the
-    # direct and sidecar DM paths read it via ``resolve_speak``. See :class:`SpeakConfig`.
-    speak: SpeakConfig = setting(
-        default_factory=SpeakConfig,
-        spec=SettingSpec(
-            help="text-to-speech delivery, and which surfaces are spoken",
-            parse=parse_speak_setting,
-            stored=dict[str, Any],
-        ),
-    )
     # The resolved slug→channel routing table for the cross-repo "my open MRs"
     # reminder; empty default keeps it inert. DB-home (#1775): stored as a JSON dict
     # ConfigSetting (``parse_mr_reminder_setting``), rebuilt bespoke by the resolver.

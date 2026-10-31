@@ -1,7 +1,7 @@
 ---
 name: wip
 description: The bounded-WIP throughput dial — slow / medium / full / boost — plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", "set wip", "work unattended", or "tackle tickets".
-compatibility: any
+compatibility: Linux
 requires:
   - rules
   - workspace

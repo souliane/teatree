@@ -1,7 +1,7 @@
 ---
 name: sweeping-prs
 description: Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases. Use when user says "sweep PRs", "update all my PRs", "merge main into open PRs", or wants to keep open PRs up to date with main.
-compatibility: macOS/Linux, zsh, git, issue tracker CLI (glab, gh).
+compatibility: Linux, zsh, git, issue tracker CLI (glab, gh).
 requires:
   - workspace
   - ship

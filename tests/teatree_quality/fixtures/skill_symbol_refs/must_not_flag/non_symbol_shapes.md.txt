@@ -1,6 +1,6 @@
 # Teatree-shaped tokens that are not importable names
 
-A config section header is not a module: `[teatree.speak] local = "all"`.
+A config section header is not a module: `[teatree.mr_reminder] default_channel = "C1"`.
 
 An entry-point group inside a TOML header is not a module either:
 
