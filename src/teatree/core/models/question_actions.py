@@ -1,14 +1,15 @@
 """Dedupe and answer helpers for durable owner action questions."""
 
+import datetime as dt
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Self
 
 from django.db import models
-from django.db.models import Value
+from django.db.models import Q, Value
 from django.db.models.functions import Concat
 
 from teatree.core.modelkit.owner_action import read_action
-from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, owner_kept_decision
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision, owner_kept_decision
 from teatree.core.modelkit.question_card import QuestionCard, match_action_option
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
@@ -98,6 +99,21 @@ class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
             .exclude(audits__action__in=ACTION_OUTCOMES)
             .order_by("answered_at", "pk")
         )
+
+    def owner_answers_on_ticket(self, ticket_id: int, kind: OwnerDecision, *, since: dt.datetime | None = None) -> Self:
+        answers = (
+            self.filter(
+                Q(parked_task__ticket_id=ticket_id) | Q(task_session__ticket_id=ticket_id),
+                audience=self.model.Audience.OWNER_QUESTION,
+                answered_at__isnull=False,
+                resolved_via__in=self.model.OWNER_CHANNELS,
+                evidence__decision=kind.value,
+            )
+            .exclude(evidence__has_key="action")
+            .exclude(dedupe_marker__startswith=HELD_PR_MARKER_PREFIX)
+            .order_by("-answered_at", "-pk")
+        )
+        return answers if since is None else answers.filter(answered_at__gte=since)
 
 
 class DeferredQuestionAuditQuerySet(models.QuerySet["DeferredQuestionAudit"]):
