@@ -590,22 +590,22 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
   |---|---|---|
   | author | the repo's scoped authoring credential (the bot) | the agent |
   | review | the agent, cold (maker != checker) | the agent |
-  | **approve** | **the consenting operator's own account, through their `t3 login <forge> --approvals` grant** | **the agent, on that operator's recorded consent** |
+  | **approve** | **the consenting operator's account (OAuth grant)** | **the agent, on their consent** |
   | merge | — | the agent, via the §17.4 keystone |
 
-  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the operator's account eligible. "Approved by the operator's account" is therefore the DESIGNED outcome of the agent's own run once the consent and the grant exist, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent. The command reads no personal token: with no consent or no grant it refuses naming the remedy and posts nothing, and that refusal is the only legitimate stop.
+  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps that account eligible. "Approved by the operator's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent. With no consent or grant the command refuses naming the remedy (`skills/review/SKILL.md` § GIVE-review approval); that refusal is the only legitimate stop.
 
   ```bash
-  # do X — the agent reviews cold, records the operator's consent, then approves through their grant:
+  # do X — review cold, record the consent, approve through the operator's grant:
   t3 review approve-on-behalf <repo>!<mr> approve --approver <platform:handle>
-  t3 review approve <repo> <mr>        # acts only through that operator's OAuth grant: no stored token, never the bot's
+  t3 review approve <repo> <mr>        # never a stored token or the bot's
   t3 <overlay> ticket clear <mr> <repo-slug> --reviewed-sha <sha> \
       --reviewer-identity <independent-reviewer> --blast-class <class> --forge gitlab
   t3 <overlay> ticket merge <clear_id>
   # never Y — handing a green, cold-reviewed MR back as "waiting on the owner to approve".
   ```
 
-  Two prohibitions survive unchanged, and nothing above weakens either. An approval recorded under the **BOT** identity is forbidden — the author cannot approve, and a self-approval is not review. An MR **authored by the owner's account** on such a repo is forbidden — it makes that account ineligible, leaving nobody who can approve. A gate enforcing either is correct and stays; only its MESSAGE is worth fixing if it reads as an approval prohibition on the agent.
+  Two prohibitions stay: no approval under the **BOT** identity, and no MR **authored by the owner's account** on such a repo. Full text: `skills/ship/references/bot-authored-approval.md`.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
 
 ### Git History Rewriting
