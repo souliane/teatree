@@ -11,6 +11,7 @@ from teatree.agents.live_control import PeerIdentity
 from teatree.agents.live_delivery import SendReceipt
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
 from teatree.core.answering.escalation import ESCALATION_DEADLINE, EscalationRefusedError
+from teatree.core.modelkit.coordinator_action import MESSAGE_PEER_MAX_CHARS
 from teatree.core.modelkit.phase_tools import mcp_write_tools_for_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -19,6 +20,7 @@ from tests.factories import SessionFactory, TaskFactory, TicketFactory
 _ASKER = "asker-address"
 _COORDINATOR = "coordinator-address"
 _MESSAGE = "Should the migration run before or after the backfill"
+_WORK_URL = "https://github.com/souliane/teatree/issues/4084"
 
 
 class FakeMailbox(MailboxClient):
@@ -48,8 +50,8 @@ class FakeMailbox(MailboxClient):
         return {"id": 1, "to": to, "outcome": self.outcome, "code": None, "queued_in_inbox": False}
 
 
-def _running(phase: str = "planning") -> Task:
-    ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED)
+def _running(phase: str = "planning", issue_url: str = "") -> Task:
+    ticket = TicketFactory.create(state=Ticket.State.WORK_STARTED, issue_url=issue_url)
     return TaskFactory.create(
         ticket=ticket,
         session=SessionFactory.create(ticket=ticket, agent_id=phase),
@@ -118,6 +120,21 @@ class TestEscalatingToALiveCoordinator(TestCase):
         assert not {"question_answer", "mailbox"} & set(text.lower().replace(".", " ").split())
         assert Task.objects.filter(parent_task__isnull=False).count() == 0
 
+    def test_the_message_tells_the_coordinator_how_to_answer_the_asking_task(self) -> None:
+        asker = _running(issue_url=_WORK_URL)
+        mailbox = FakeMailbox(_identity(asker), [_coordinator(asker.ticket_id)])
+
+        _call(mailbox)
+
+        text = mailbox.sent[0][1]
+        assert f'{{"kind": "message_peer", "ticket": "{_WORK_URL}", "text": "<your answer>"}}' in text
+        assert f"at most {MESSAGE_PEER_MAX_CHARS} characters" in text
+
+    def test_a_ticket_with_no_url_is_given_no_way_to_answer(self) -> None:
+        _call(self.mailbox)
+
+        assert "message_peer" not in self.mailbox.sent[0][1]
+
     def test_a_repeated_identical_call_returns_the_same_request_and_sends_under_the_same_key(self) -> None:
         first = _call(self.mailbox)
         again = _call(self.mailbox)
@@ -159,6 +176,15 @@ class TestEscalatingWithoutALiveCoordinator(TestCase):
         assert f"Escalation {row.pk} from planning task {self.asker.pk}" in child.execution_reason
         assert "<<<ESCALATION" in child.execution_reason
         assert self.mailbox.sent == []
+
+    def test_the_resumed_task_is_told_how_to_answer_the_asking_task(self) -> None:
+        asker = _running(issue_url=_WORK_URL)
+        parent = _answering_task(asker.ticket)
+
+        _call(FakeMailbox(_identity(asker)))
+
+        child = Task.objects.get(parent_task=parent)
+        assert f'{{"kind": "message_peer", "ticket": "{_WORK_URL}", "text": "<your answer>"}}' in child.execution_reason
 
     def test_a_peer_that_does_not_accept_in_time_leaves_the_request_to_the_resumed_task(self) -> None:
         self.mailbox.live_peers = [_coordinator(self.asker.ticket_id)]
