@@ -91,7 +91,8 @@ def ask_owner_about_parked(tasks: list[Task]) -> DeferredQuestion | None:
         options=(
             CardOption(
                 RETIRE_ANSWER,
-                "I close these work records so any wanted issue can be picked up again.",
+                "I close these work records and queue the removal of their checkouts,"
+                " so any wanted issue can be picked up again.",
                 recommended=True,
             ),
             CardOption(KEEP_ANSWER, "I leave these work records parked."),
@@ -152,13 +153,16 @@ def apply_retire_answers(aged: list[Task]) -> int:
     retired = 0
     spent = list(_owner_answers(RETIRE_ANSWER))
     for question in spent:
-        retired += _retire_parked(_card_pairs(question), aged)
+        ticket_ids = _retire_parked(_card_pairs(question), aged)
+        if ticket_ids:
+            logger.info("parked-tickets: owner answer %s retired tickets %s", question.pk, ticket_ids)
+        retired += len(ticket_ids)
     DeferredQuestion.objects.filter(pk__in=[question.pk for question in spent]).release_markers()
     return retired
 
 
-def _retire_parked(pairs: set[TaskPair], aged: list[Task]) -> int:
-    count = 0
+def _retire_parked(pairs: set[TaskPair], aged: list[Task]) -> list[int]:
+    ticket_ids: list[int] = []
     for task in aged:
         if task_pair(task) not in pairs:
             continue
@@ -173,5 +177,5 @@ def _retire_parked(pairs: set[TaskPair], aged: list[Task]) -> int:
             ticket.ignore()
             ticket.save(update_fields=["state", "extra"])
             escalate_unshipped_work_once(ticket, paths=unshipped)
-            count += 1
-    return count
+            ticket_ids.append(ticket.pk)
+    return ticket_ids

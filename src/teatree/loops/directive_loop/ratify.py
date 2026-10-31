@@ -40,6 +40,7 @@ _APPROVE = CardOption("Approve", "I build it and switch it on.")
 _REJECT = CardOption("Reject", "I drop the idea and change nothing.")
 _UNDECIDABLE = "Your last answer was not a clear yes or no, so the change is on hold."
 _NOT_FROM_THE_OWNER = "The last answer did not come from you, so the change is on hold."
+_CLOSED_UNANSWERED = "The last question was closed before you answered, so the change is on hold."
 
 
 def _why(directive: Directive, sketch: MechanismSketch) -> str:
@@ -113,13 +114,13 @@ def try_admit(directive: Directive) -> str:
     answer decided nothing — undecidable, or not given on an owner channel — so a
     fresh question replaces it and the directive holds), or ``"pending"`` (no answer
     yet). The single :meth:`Directive.admit` call site — a denial rejects with the
-    human's words, and a question dismissed unanswered (aged out, never answered)
-    rejects with the dismissal reason so the directive does not hold a slot forever.
+    human's words, and a question the owner dismissed or the age ceiling retired
+    unanswered rejects with the dismissal reason so the directive does not hold a slot
+    forever. A question any other automated sweep closed decided nothing, so it is re-asked.
     """
     question = directive.ratify_question
     if question is not None and question.answered_at is None and question.dismissed_at is not None:
-        directive.reject(f"ratification not answered: {question.dismissed_reason}")
-        return "rejected"
+        return _resolve_dismissed(directive, question)
     if question is None or question.answered_at is None:
         return "pending"
     if not question.answered_on_owner_channel:
@@ -133,6 +134,16 @@ def try_admit(directive: Directive) -> str:
         directive.reject(f"ratification denied: {question.answer_text.strip()!r}")
         return "rejected"
     directive.reask_ratification(_reask_question(directive, why=_UNDECIDABLE))
+    return "reasked"
+
+
+def _resolve_dismissed(directive: Directive, question: DeferredQuestion) -> str:
+    """Reject on an owner dismissal or the age ceiling; any other automated close decided nothing, so re-ask."""
+    owner_dismissed = question.resolved_via != DeferredQuestion.ResolvedVia.STALE
+    if owner_dismissed or DeferredQuestion.objects.filter(pk=question.pk).retired_by_age_ceiling().exists():
+        directive.reject(f"ratification not answered: {question.dismissed_reason}")
+        return "rejected"
+    directive.reask_ratification(_reask_question(directive, why=_CLOSED_UNANSWERED))
     return "reasked"
 
 

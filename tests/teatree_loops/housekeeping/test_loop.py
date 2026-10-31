@@ -1,6 +1,11 @@
 """The housekeeping loop's registered global jobs, run against real registry rows and checkouts."""
 
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
+
+from django.test import SimpleTestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.loops.housekeeping.loop import MINI_LOOP
@@ -31,3 +36,25 @@ class GlobalJobsReleaseDeadRowsTest(_DeadRowCase):
         assert Worktree.objects.filter(pk=live.pk).exists()
         assert Worktree.objects.filter(pk=pinned.pk).exists()
         assert pinned_path.is_dir()
+
+
+class LoopModuleImportTest(SimpleTestCase):
+    def test_importing_the_loop_module_leaves_the_orm_to_tick_time(self) -> None:
+        src = Path(__file__).resolve().parents[3] / "src"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; sys.path.insert(0, sys.argv[1]); "
+                    "import teatree.loops.housekeeping.loop; "
+                    "assert 'teatree.core.models' not in sys.modules"
+                ),
+                str(src),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr

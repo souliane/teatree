@@ -17,13 +17,15 @@ _DIRTY_PROBE = "teatree.core.models.ticket_worktree_checks.collect_dirty_worktre
 
 
 class ParkedTicketQuestionTest(TestCase):
-    def _parked(self, *, title: str = "") -> tuple[Ticket, Task]:
+    def _parked(self, *, title: str = "", earlier_task: str = "") -> tuple[Ticket, Task]:
         ticket = Ticket.objects.create(
             issue_url=f"https://example.com/issues/{Ticket.objects.count() + 1}",
             state=Ticket.State.WORK_STARTED,
             short_description=title,
         )
         session = Session.objects.create(overlay="test", ticket=ticket)
+        if earlier_task:
+            Task.objects.create(ticket=ticket, session=session, status=earlier_task)
         task = Task.objects.create(
             ticket=ticket, session=session, status=Task.Status.FAILED, execution_reason=HALT_STAMP
         )
@@ -44,6 +46,7 @@ class ParkedTicketQuestionTest(TestCase):
         assert "created over two weeks ago" in row.question
         assert "created over two weeks ago" in row.evidence["checked"][0]
         assert "Retire them" in row.options_json
+        assert "queue the removal of their checkouts" in row.options_json
         assert "issues/" not in str(row.evidence)
 
     def test_owner_retires_only_unchanged_tasks_listed_in_card(self) -> None:
@@ -69,6 +72,46 @@ class ParkedTicketQuestionTest(TestCase):
         ParkedTicketQuestionScanner(tasks=lambda: [stale_task]).scan()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_a_ticket_whose_newest_task_completed_is_not_retired(self) -> None:
+        ticket, stale_task = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.create(ticket=ticket, session=stale_task.session, status=Task.Status.COMPLETED)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_a_ticket_in_pr_opened_with_no_recorded_pull_request_is_not_retired(self) -> None:
+        ticket, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.PR_OPENED)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PR_OPENED
+
+    def test_a_ticket_with_a_queued_task_is_not_retired(self) -> None:
+        ticket, _ = self._parked(earlier_task=Task.Status.COMPLETED)
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        Task.objects.filter(ticket=ticket, status=Task.Status.COMPLETED).update(status=Task.Status.PENDING)
+        self._answer("Retire them")
+        scanner.scan()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_an_owner_answer_logs_which_tickets_it_retired(self) -> None:
+        first, _ = self._parked()
+        second, _ = self._parked()
+        scanner = ParkedTicketQuestionScanner()
+        scanner.scan()
+        self._answer("Retire them")
+        with self.assertLogs("teatree.core.factory.parked_ticket_decision", level="INFO") as logs:
+            scanner.scan()
+        assert [line for line in logs.output if f"retired tickets [{first.pk}, {second.pk}]" in line]
 
     def test_retirement_rechecks_for_an_open_pull_request_after_selection(self) -> None:
         ticket, stale_task = self._parked()

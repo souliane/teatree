@@ -96,6 +96,32 @@ class TestIntakeBranches(TestCase):
         assert result.action == "rejected"
         assert directive.state == Directive.State.REJECTED
 
+    def test_dismissed_clarification_of_an_earlier_generation_leaves_the_directive_waiting(self) -> None:
+        directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
+        directive.mark_clarifying()
+        old = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")
+        DeferredQuestion.consume(old.pk, dismissed_reason="unanswered after repeated owner notices")
+        directive.bump_generation()
+        DeferredQuestion.record("which one now?", options_hash=f"directive_clarify:{directive.pk}:1:0")
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        directive.refresh_from_db()
+        assert result.action == "waiting"
+        assert result.reason == "awaiting_clarification"
+        assert directive.state == Directive.State.CLARIFYING
+
+    def test_answered_clarification_later_marked_dismissed_still_reinterprets(self) -> None:
+        directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
+        directive.mark_clarifying()
+        question = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")
+        DeferredQuestion.consume(question.pk, answer="this one")
+        DeferredQuestion.objects.filter(pk=question.pk).update(
+            dismissed_at=timezone.now(), dismissed_reason="retired in bulk"
+        )
+        result = run_tick(settings=_open_settings(), seams=_seams())
+        directive.refresh_from_db()
+        assert result.action == "reinterpret_dispatched"
+        assert directive.state != Directive.State.REJECTED
+
     def test_captured_dispatches_the_interpreter(self) -> None:
         Directive.objects.capture("do X", source=Directive.Source.CLI)
         result = run_tick(settings=_open_settings(), seams=_seams())

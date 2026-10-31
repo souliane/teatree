@@ -206,6 +206,35 @@ class TestTryAdmit(TestCase):
         assert directive.state == Directive.State.REJECTED
         assert "unanswered" in directive.decision_reason
 
+    def test_a_dismissal_by_the_age_ceiling_rejects(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        question.mark_stale("unanswered through 3 escalations", resolver_id="age_ceiling")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "rejected"
+        assert directive.state == Directive.State.REJECTED
+
+    def test_a_card_the_sweep_retired_as_a_duplicate_is_asked_again_not_rejected(self) -> None:
+        directives = [_interpreted_directive() for _ in range(2)]
+        for directive in directives:
+            question = ask_ratification(directive)
+            evidence = {key: value for key, value in question.evidence.items() if key != "subject"}
+            DeferredQuestion.objects.filter(pk=question.pk).update(evidence=evidence)
+
+        assert run_sweep().resolved == 1
+
+        results = []
+        for directive in directives:
+            directive.refresh_from_db()
+            results.append(try_admit(directive))
+        assert results == ["pending", "reasked"]
+        assert {directive.state for directive in directives} == {Directive.State.RATIFY_PENDING}
+        assert run_sweep().resolved == 0
+        second = directives[1]
+        assert second.ratify_question is not None
+        assert second.ratify_question.dismissed_at is None
+        assert second.ratify_question.evidence["subject"] == f"directive:{second.pk}"
+
     def test_pending_while_the_question_is_unanswered(self) -> None:
         directive = _interpreted_directive()
         ask_ratification(directive)
