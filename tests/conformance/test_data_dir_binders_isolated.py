@@ -9,8 +9,10 @@ entry that no longer binds anything, and on a roster that ``tests/conftest.py`` 
 
 # test-path: cross-cutting
 import ast
+import importlib
 from pathlib import Path
 
+from teatree import paths
 from tests._data_dir_binders import DATA_DIR_BINDERS, EXEMPT_MODULES
 
 _TESTS = Path(__file__).resolve().parents[1]
@@ -110,7 +112,13 @@ class TestRosterCoversTheTree:
     def test_no_binder_is_both_patched_and_exempt(self) -> None:
         assert not sorted(binder for binder in DATA_DIR_BINDERS if _is_exempt(binder))
 
-    def test_conftest_applies_the_roster_to_every_test(self) -> None:
-        conftest = (_TESTS / "conftest.py").read_text(encoding="utf-8")
+    def test_every_roster_binder_resolves_under_the_per_test_data_dir(self) -> None:
+        escaped = sorted(
+            binder
+            for binder in DATA_DIR_BINDERS
+            if not Path(
+                getattr(importlib.import_module(binder.split(":", 1)[0]), binder.split(":", 1)[1])
+            ).is_relative_to(paths.DATA_DIR)
+        )
 
-        assert "isolate_data_dir_binders(monkeypatch" in conftest
+        assert not escaped, f"These binders still point outside the per-test data directory: {escaped}"

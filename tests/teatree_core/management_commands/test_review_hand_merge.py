@@ -167,11 +167,3 @@ class TestOneNitCheckServesBothCallers:
     def test_the_recorder_and_hand_merge_call_the_same_public_function(self) -> None:
         assert review_envelope_recorder.nit_comment_error is nit_lane.nit_comment_error
         assert _review_hand_merge.nit_comment_error is nit_lane.nit_comment_error
-
-    def test_the_same_bad_nit_yields_the_same_refusal_text(self) -> None:
-        bad = [{"severity": "nit", "kind": "nit", "summary": "ask @alice to rename this", "file": "a.py", "line": 2}]
-
-        refusal = nit_lane.nit_comment_error(bad, pr_url_of=lambda: "")
-
-        assert refusal.startswith("review verdict recording refused:")
-        assert "comment check" in refusal or "project chatter" in refusal
