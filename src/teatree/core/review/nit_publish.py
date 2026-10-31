@@ -13,23 +13,12 @@ from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.critic_verdict import CriticItemVerdict
-    from teatree.core.models.review_verdict import Finding
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import JSONObject
 
 
 _RECEIPTS_KEY = "nit_lane_receipts"
 _PUBLICATION_KEY = "nit_publication"
-
-
-def review_nits(findings: Iterable["Finding"]) -> tuple[NitPoint, ...]:
-    return tuple(
-        dict.fromkeys(
-            NitPoint(finding.file, finding.line, finding.summary)
-            for finding in findings
-            if finding.kind == FindingKind.NIT
-        )
-    )
 
 
 def critic_nits(items: Iterable["CriticItemVerdict"]) -> tuple[NitPoint, ...]:

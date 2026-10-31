@@ -525,6 +525,7 @@ Group root — forces sub-commands to be addressed by name.
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
 | `findings` | Print the recorded findings for *mr_url* — the surface a HOLD is acted on through |
 | `apply-reviewer-policy` | Put the overlay's configured reviewers on this repo's open bot-authored MRs |
+| `hand-merge` | Record the verdict a reviewer returned as prose, refusing before any write |
 | `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
 | `publish-findings` | Post a recorded verdict's findings to its PR, so the author sees them where the work is |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |

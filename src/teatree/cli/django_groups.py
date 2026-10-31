@@ -386,6 +386,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Persist + look up cold-review verdicts per MR.",
         [
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("hand-merge", "Record a verdict a reviewer returned as prose, refusing before any write."),
             ("record-evidence", "Record a review-evidence artifact for a ticket."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
             ("findings", "Print a recorded verdict's findings, so a HOLD can be read and acted on."),

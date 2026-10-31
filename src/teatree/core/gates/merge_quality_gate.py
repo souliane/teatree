@@ -61,7 +61,8 @@ from teatree.core.review.critic_rubric import (
     merge_item_questions,
 )
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.nit_lane import review_nits
+from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.brief_constraints import ConstraintViolation, extract_constraints
 from teatree.quality.changed_set import ChangedSetError

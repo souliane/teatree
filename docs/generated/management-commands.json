@@ -1033,6 +1033,10 @@
           "name": "apply-reviewer-policy"
         },
         {
+          "help": "Record the verdict a reviewer returned as prose, refusing before any write",
+          "name": "hand-merge"
+        },
+        {
           "help": "Record a PR-08 review-evidence artifact for a ticket",
           "name": "record-evidence"
         },

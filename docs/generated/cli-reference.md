@@ -14165,6 +14165,8 @@ Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ record                 Persist a cold-review verdict for a PR at an exact    │
 │                        reviewed SHA.                                         │
+│ hand-merge             Record a verdict a reviewer returned as prose,        │
+│                        refusing before any write.                            │
 │ record-evidence        Record a review-evidence artifact for a ticket.       │
 │ status                 Report whether an MR is safe to approve at its        │
 │                        current head (read-only).                             │
@@ -14240,6 +14242,32 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │ --json                                Emit the record result as JSON on      │
 │                                       stdout.                                │
 │ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review hand-merge`
+
+```
+Usage: t3 teatree review hand-merge [OPTIONS] PR_ID SLUG
+
+ Record the verdict a reviewer returned as prose, refusing before any write.
+
+ Checks the envelope, NIT comments, head and order text first; a moved head or
+ a stale order refuses.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     repo slug owner/repo (e.g. acme/widgets), NEVER a   │
+│                          branch name                                         │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --envelope-file        TEXT  File holding the reviewer's raw reply with its  │
+│                              review_verdict.                                 │
+│ --order-text           TEXT  The owner's order; a sha or PR it cites must be │
+│                              the live one.                                   │
+│ --json                       Emit the result as JSON on stdout.              │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
