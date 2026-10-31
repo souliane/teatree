@@ -23,9 +23,10 @@ from django.urls import reverse
 
 import teatree.core.settings.settings_compare as settings_compare_module
 import teatree.dash
-from teatree.config import PeerInstance
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, PeerInstance
 from teatree.config.declared_defaults import declared_defaults
 from teatree.config.provenance import ValueSource
+from teatree.config.seed_defaults import SEED_FAMILIES
 from teatree.config.setting_registries import ENV_VAR_BY_SETTING, SAFETY_POSTURE_KEYS
 from teatree.core.models import ConfigSetting
 from teatree.core.setting_control import SettingControl
@@ -45,6 +46,7 @@ from teatree.core.settings.settings_compare_sync import SEED, SETTING, SYNC_RULE
 from teatree.core.settings.settings_compat import COMPAT_SIGNALS, Severity, build_compat_report
 from teatree.core.settings.settings_peers import LOCAL_LABEL, PeerSnapshot, SnapshotOrigin, peer_snapshots
 from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, canonical_json
+from teatree.core.settings_snapshot.payload import setting_family
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
@@ -321,6 +323,11 @@ class TestTheEndpoints(TestCase):
             False,
         )
         assert b'name="family"' in response.content
+
+    def test_the_compare_page_lists_global_differences_only_until_asked_for_more(self) -> None:
+        response = self.client.get(reverse("dash:settings_compare"), **_LOOPBACK)
+
+        assert response.context["filters"] == CompareFilters(scope="global", differs_only=True)
 
     def test_the_compare_page_changes_nothing_however_it_is_reached(self) -> None:
         """Its POST carries snapshot FILES to compare against — it is not a write path."""
@@ -659,6 +666,69 @@ class TestTheRenderCapLimitsOnlyIdenticalRows(_RowBuilderCase):
 
         assert len(view.rows) == RENDER_CAP + 100
         assert not view.truncated
+
+
+class TestTheDefaultViewAndTheFamilyList(_RowBuilderCase):
+    _FAMILIES = ("cold", "credential", "hook-gate", "loop", "preset", "registry", "schedule", "setting", "table")
+
+    def _box_of_every_family(self, label: str) -> PeerSnapshot:
+        keys = {setting_family(key): key for key in sorted(ALL_KNOWN_CONFIG_SETTINGS)}
+        stub = {"__redacted__": "credential-coordinate", "sha256": "0" * 64}
+        payload = _payload(
+            {"": {**dict.fromkeys(keys.values(), 1), "notion_token_pass_key": stub}}, declares=tuple(keys.values())
+        )
+        tables = SEED_FAMILIES.values()
+        payload["registry"]["seed"] = {table: {"fields": {"description": {"syncable": True}}} for table in tables}
+        payload["values"]["seed"] = {table: {"entry": {"description": "same"}} for table in tables}
+        return PeerSnapshot(
+            label=label, url="" if label == LOCAL_LABEL else f"http://127.0.0.1/{label}", note="", payload=payload
+        )
+
+    def _view_of_every_family(self, filters: CompareFilters | None = None) -> Any:
+        return self._view(self._box_of_every_family(LOCAL_LABEL), self._box_of_every_family("peer"), filters=filters)
+
+    def test_the_family_list_names_every_family_even_when_nothing_differs(self) -> None:
+        view = self._view_of_every_family()
+
+        assert view.rows == ()
+        assert view.families == self._FAMILIES
+
+    def test_every_listed_family_selects_exactly_its_own_rows(self) -> None:
+        for family in self._FAMILIES:
+            with self.subTest(family=family):
+                view = self._view_of_every_family(CompareFilters(family=family, differs_only=False))
+
+                assert view.rows
+                assert {row.family for row in view.rows} == {family}
+
+    def test_a_family_filter_narrows_the_rows_but_not_the_family_list(self) -> None:
+        view = self._view_of_every_family(CompareFilters(family="table", differs_only=False))
+
+        assert view.families == self._FAMILIES
+
+    def test_overlay_scope_rows_stay_out_until_a_scope_is_chosen(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 1}, "example": {"merge_wip": 2}})
+        peer = _box("peer", {"": {"merge_wip": 3}, "example": {"merge_wip": 4}})
+
+        by_default = self._view(local, peer)
+        chosen = self._view(local, peer, filters=CompareFilters(scope="example"))
+        everything = self._view(local, peer, filters=CompareFilters(scope="all"))
+
+        assert [row.scope for row in by_default.rows] == [""]
+        assert by_default.scopes == ("", "example")
+        assert [row.scope for row in chosen.rows] == ["example"]
+        assert [row.scope for row in everything.rows] == ["", "example"]
+
+    def test_identical_rows_stay_out_until_all_rows_are_asked_for(self) -> None:
+        local = _box(LOCAL_LABEL, {"": {"merge_wip": 1, "overlays": {}}})
+        peer = _box("peer", {"": {"merge_wip": 2, "overlays": {}}})
+
+        by_default = self._view(local, peer)
+        all_rows = self._view(local, peer, filters=CompareFilters(differs_only=False))
+
+        assert [row.title for row in by_default.rows] == ["merge_wip"]
+        assert by_default.identical == 1
+        assert {row.title for row in all_rows.rows} == {"merge_wip", "overlays"}
 
 
 class TestCompareFiltersAndAliasResolution(_RowBuilderCase):
