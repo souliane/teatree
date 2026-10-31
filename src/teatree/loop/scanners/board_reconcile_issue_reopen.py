@@ -17,6 +17,7 @@ from django_fsm import can_proceed
 from teatree.backends.issue_reads import issue_reopen_state
 from teatree.core.backend_protocols import IssueReopenState
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
+from teatree.loop.scanners.board_reconcile_reads import read_per_overlay
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
 if TYPE_CHECKING:
@@ -76,25 +77,16 @@ def reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: int
 def _reopened_issue_urls(tickets: "list[Ticket]") -> tuple[set[str], int]:
     """The subset of *tickets*' issue URLs their own overlay's forge reports as REOPENED.
 
-    Grouped by the ticket's own overlay for the same reason rule D groups: each URL is
-    judged by the overlay that owns it, and a ticket whose overlay is not installed here
-    is simply not judged. Only a DEFINITE ``REOPENED`` counts — the ``UNKNOWN`` every
+    Each URL is judged by the overlay that owns it, and a ticket whose overlay is not installed
+    here is simply not judged. Only a DEFINITE ``REOPENED`` counts — the ``UNKNOWN`` every
     failure and every forge without a reopen marker collapses to leaves the ticket alone.
 
-    The second element counts the reads actually ISSUED, not the candidates considered
+    The second element counts the reads that completed, not the candidates considered
     (mirrors rule F's ``_closed_issue_verdicts``), so a ticket whose overlay is not
     installed here is never charged against the probe budget.
     """
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: registry read at call time
-
-    overlays = get_all_overlays()
-    judged = [ticket for ticket in tickets if ticket.overlay in overlays]
-    reopened = {
-        ticket.issue_url
-        for ticket in judged
-        if issue_reopen_state(overlays[ticket.overlay], ticket.issue_url) is IssueReopenState.REOPENED
-    }
-    return reopened, len(judged)
+    states = read_per_overlay(tickets, issue_reopen_state)
+    return {ticket.issue_url for ticket, state in states if state is IssueReopenState.REOPENED}, len(states)
 
 
 def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | None:
