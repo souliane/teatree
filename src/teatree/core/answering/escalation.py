@@ -12,7 +12,7 @@ from typing import Final
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import ANSWERING_PHASES
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import Task
@@ -96,11 +96,8 @@ def resume_coordinator(ticket_id: int, *, event_id: str, message: str) -> Task |
     return None if parent is None else schedule_card_discussion(parent, event_id=event_id, message=message)
 
 
-def _unserved_card(decision: OwnerDecision, asked: str) -> tuple[str, QuestionCard]:
-    question = (
-        f"A running task needs your decision on {_KIND_SUBJECT[decision]} and nobody else answered in time, "
-        "what should it do?"
-    )
+def _unserved_card(decision: OwnerDecision, subject: str, asked: str) -> tuple[str, QuestionCard]:
+    question = f"A running task needs your decision on {subject} and nobody else answered in time, what should it do?"
     card = QuestionCard(
         decision=decision,
         checked=("The request went to the coordinator and nobody answered it in time.",),
@@ -121,9 +118,8 @@ def settle_request(row: DeferredQuestion) -> bool:
         if task is None or task.status in Task.Status.terminal():
             pending.mark_stale("the asking task finished before the deadline", resolver_id=_RESOLVER)
             return True
-        decision = owner_decision(kind)
-        if decision in OWNER_RAISABLE_DECISIONS:
-            question, card = _unserved_card(decision, pending.question)
+        if (subject := _KIND_SUBJECT.get(kind)) is not None:
+            question, card = _unserved_card(OwnerDecision(kind), subject, pending.question)
             raised = DeferredQuestion.record(
                 question,
                 card=card,

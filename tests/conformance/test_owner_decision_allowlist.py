@@ -9,9 +9,12 @@ never a side effect of one more ``record(...)``.
 import ast
 from pathlib import Path
 
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from tests.conformance._src_tree import REPO_ROOT, parsed_modules, src_modules
 
 _DECLARED_BY_THE_CALLER = "<declared by the caller>"
+_ESCALATION_CARD_KINDS = frozenset({"CREDENTIALS", "MONEY_OR_PLAN", "PUBLIC_POST", "IRREVERSIBLE", "ARCHITECTURE"})
+_ESCALATION_SITE = ("src/teatree/core/answering/escalation.py", "_unserved_card")
 
 _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
     {
@@ -39,11 +42,11 @@ _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-_CARD_KINDS: frozenset[tuple[str, str, str]] = frozenset(
+_CARD_KINDS: frozenset[tuple[str, str, str | frozenset[str]]] = frozenset(
     {
         ("src/teatree/agents/reactive_envelope_recorders.py", "<module>", "PUBLIC_POST"),
         ("src/teatree/agents/sweep_proposals_recorder.py", "_fold_card", "ARCHITECTURE"),
-        ("src/teatree/core/answering/escalation.py", "_unserved_card", _DECLARED_BY_THE_CALLER),
+        (*_ESCALATION_SITE, _ESCALATION_CARD_KINDS),
         ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "ARCHITECTURE"),
         ("src/teatree/core/gates/gate_escape_request.py", "request_owner_escape", "CREDENTIALS"),
         ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver", "ARCHITECTURE"),
@@ -99,11 +102,13 @@ def _is_call_to(call: ast.Call, name: str) -> bool:
     return func.attr == name and (name != "record" or ast.unparse(func.value).endswith("DeferredQuestion"))
 
 
-def _kind(card_call: ast.Call) -> str:
+def _kind(site: tuple[str, str], card_call: ast.Call) -> str | frozenset[str]:
     for keyword in card_call.keywords:
         if keyword.arg == "decision":
             value = keyword.value
-            return value.attr if isinstance(value, ast.Attribute) else _DECLARED_BY_THE_CALLER
+            if isinstance(value, ast.Attribute):
+                return value.attr
+            return _ESCALATION_CARD_KINDS if site == _ESCALATION_SITE else _DECLARED_BY_THE_CALLER
     return _DECLARED_BY_THE_CALLER
 
 
@@ -138,8 +143,12 @@ def test_only_the_pinned_call_sites_record_an_owner_card() -> None:
 
 
 def test_only_the_pinned_places_build_a_card_and_name_its_kind() -> None:
-    built = {(path, function, _kind(call)) for path, function, call in _calls("QuestionCard")}
+    built = {(path, function, _kind((path, function), call)) for path, function, call in _calls("QuestionCard")}
     assert built == _CARD_KINDS
+
+
+def test_the_escalation_card_names_exactly_the_kinds_the_owner_may_be_asked_about() -> None:
+    assert {decision.name for decision in OWNER_RAISABLE_DECISIONS} == _ESCALATION_CARD_KINDS
 
 
 def test_only_the_review_request_sender_asks_the_owner_about_a_merge_request() -> None:

@@ -8,8 +8,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.answering.escalation import (
+    _KIND_SUBJECT,
     ESCALATION_DEADLINE,
     INTERNAL_KIND,
+    KINDS,
     MARKER_PREFIX,
     UNSERVED_PREFIX,
     EscalationRefusedError,
@@ -21,12 +23,14 @@ from teatree.core.answering.escalation import (
     settle_request,
 )
 from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_drain import drain_pending_questions
 from tests.factories import SessionFactory, TaskFactory, TicketFactory
 
 _MESSAGE = "Which of the two migration orders should I follow"
+_OWNER_RAISABLE = frozenset({"credentials", "money_or_plan", "public_post", "irreversible", "architecture"})
 
 
 def _asker(**task: object) -> Task:
@@ -266,22 +270,29 @@ class TestTheDeadline(TestCase):
         asker.refresh_from_db()
         assert asker.status == Task.Status.CLAIMED
 
-    def test_every_raisable_kind_makes_a_card_the_owner_checks_accept_that_names_its_subject(self) -> None:
-        questions = set()
-        for decision in OWNER_RAISABLE_DECISIONS:
-            with self.subTest(decision=decision):
-                DeferredQuestion.objects.all().delete()
-                self._expired(decision)
+    def test_the_cards_subjects_are_exactly_the_kinds_the_owner_may_be_asked_about(self) -> None:
+        assert set(_KIND_SUBJECT) == set(OWNER_RAISABLE_DECISIONS)
+        assert {kind.value for kind in _KIND_SUBJECT} == _OWNER_RAISABLE
 
-                settle_expired_escalations()
+    def test_each_owner_raisable_kind_raises_one_card_of_that_kind_that_names_its_subject(self) -> None:
+        raisable = [kind for kind in KINDS if kind in _OWNER_RAISABLE]
+        assert set(raisable) == _OWNER_RAISABLE
+        for kind in raisable:
+            with self.subTest(kind=kind):
+                DeferredQuestion.objects.all().delete()
+                asker, _row = self._expired(kind)
+
+                assert settle_expired_escalations() == 1
 
                 card = DeferredQuestion.owner_pending().get()
-                assert card.evidence["decision"] == decision.value
-                questions.add(card.question)
-        assert len(questions) == len(OWNER_RAISABLE_DECISIONS)
+                assert QuestionCard.from_row(card.evidence, card.options_json).decision == OwnerDecision(kind)
+                assert _KIND_SUBJECT[OwnerDecision(kind)] in card.question
+                assert card.parked_task_id == asker.pk
 
     def test_a_kind_that_is_not_owner_raisable_fails_the_asker_with_a_typed_reason_and_no_card(self) -> None:
-        for kind in (INTERNAL_KIND, OwnerDecision.PRODUCT_SCOPE.value):
+        unraisable = [kind for kind in KINDS if kind not in _OWNER_RAISABLE]
+        assert set(unraisable) == {INTERNAL_KIND, OwnerDecision.PRODUCT_SCOPE.value}
+        for kind in unraisable:
             asker, row = self._expired(kind)
 
             assert settle_expired_escalations() == 1
