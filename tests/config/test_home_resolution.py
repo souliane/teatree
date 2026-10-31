@@ -49,8 +49,8 @@ class TestDbHomeResolution(TestCase):
         assert get_effective_settings().autoload is True
 
 
-class TestSpeakDbHome(TestCase):
-    """``speak`` is DB-home — resolved from a JSON-dict ``ConfigSetting`` row."""
+class TestStatuslineChainDbHome(TestCase):
+    """``statusline_chain`` is DB-home — resolved from a JSON-list ``ConfigSetting`` row."""
 
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
