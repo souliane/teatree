@@ -63,6 +63,14 @@ class TestEnrichPrPipeline:
         assert enriched["source_branch"] == "5145-merge-gate-b"
         assert "headRefName" in mock_run.call_args.args[mock_run.call_args.args.index("--json") + 1]
 
+    def test_enrichment_carries_the_base_sha(self) -> None:
+        detail = json.dumps({"headRefOid": "cafef00d", "baseRefOid": "b45e5ee1", "statusCheckRollup": []})
+        hit = {"number": 9, "html_url": "https://github.com/o/r/pull/9"}
+        with patch.object(pr_reads, "_run_gh", return_value=_completed(detail)) as mock_run:
+            enriched = pr_reads.enrich_pr_pipeline(hit, token="tok")
+        assert enriched["base_sha"] == "b45e5ee1"
+        assert "baseRefOid" in mock_run.call_args.args[mock_run.call_args.args.index("--json") + 1]
+
     def test_unparseable_url_left_unenriched(self) -> None:
         with patch.object(pr_reads, "_run_gh") as mock_run:
             enriched = pr_reads.enrich_pr_pipeline({"number": 1, "html_url": "not-a-url"}, token="tok")

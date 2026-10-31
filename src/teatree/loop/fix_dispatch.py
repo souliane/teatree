@@ -45,6 +45,12 @@ FIX_REASON_BY_KIND: dict[str, str] = {
 }
 
 
+_CONFLICT_ESCAPE = (
+    "when the merge cannot be completed, end the task with needs_user_input naming the conflicting paths; "
+    "never rebase, force-push or resolve on the target branch"
+)
+
+
 def fix_reason(payload: ActionPayload, pr_url: str) -> str:
     fix_kind = fix_kind_of(payload)
     reason = FIX_REASON_BY_KIND[fix_kind]
@@ -58,7 +64,7 @@ def fix_reason(payload: ActionPayload, pr_url: str) -> str:
         head_sha=str(payload.get("head_sha") or ""),
         base_sha=str(payload.get("base_sha") or ""),
         agent_type="debugging",
-        escape=str(payload.get("escape") or ""),
+        escape=_CONFLICT_ESCAPE,
         checkout_kind="ticket worktree on the PR head branch",
         findings=(reason,),
     ).render()

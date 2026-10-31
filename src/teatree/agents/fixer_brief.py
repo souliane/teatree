@@ -26,7 +26,8 @@ class FixerBrief:
         return "\n".join(lines)
 
     def _anchors(self) -> list[str]:
-        anchors = [f"PR head: verified at {self.head_sha}." if self.head_sha else "PR head: not read; read it first."]
-        if self.base_sha:
-            anchors.append(f"Merge base: verified at {self.base_sha}.")
-        return anchors
+        return [_anchor("PR head", self.head_sha), _anchor("PR base", self.base_sha)]
+
+
+def _anchor(label: str, sha: str) -> str:
+    return f"{label}: verified at {sha}." if sha else f"{label}: not read; read it first."

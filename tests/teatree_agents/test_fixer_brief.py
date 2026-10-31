@@ -44,8 +44,8 @@ class TestFixerBriefRender:
     def test_a_brief_full_of_specifics_passes_the_real_anchor_scanner(self) -> None:
         assert brief_anchor_scanner.find_unanchored_assertions(_brief().render()) is None
 
-    def test_a_blank_base_drops_only_the_base_anchor(self) -> None:
+    def test_a_blank_base_says_it_was_not_read_instead_of_dropping_the_anchor(self) -> None:
         text = _brief(base_sha="").render()
         assert f"verified at {_HEAD}" in text
-        assert "verified at  " not in text
+        assert "PR base: not read; read it first." in text
         assert brief_anchor_scanner.find_unanchored_assertions(text) is None
