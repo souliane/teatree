@@ -1,21 +1,15 @@
 import asyncio
 import os
-import shlex
 import signal
-import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
 from teatree.utils.process_group import stop_process_group
-from tests._process_liveness import is_gone_within, written_pids
+from tests._process_liveness import HOLDS_THE_PIPES_FROM_ANOTHER_SESSION, is_gone_within, written_pids
 
 _IGNORES_TERM = "trap '' TERM; echo $$ > leader; sleep 30 & echo $! > child; wait"
-_LEAVES_THE_SESSION = shlex.quote(
-    "import os, time; os.setsid(); open('escapee', 'w').write(str(os.getpid())); time.sleep(8)"
-)
-_HOLDS_THE_PIPES_FROM_ANOTHER_SESSION = f"{shlex.quote(sys.executable)} -c {_LEAVES_THE_SESSION} & sleep 30"
 _STOP_BUDGET_SECONDS = 1.5
 
 
@@ -69,7 +63,7 @@ class TestStopProcessGroup:
         self, tmp_path: Path
     ) -> None:
         async def run() -> tuple[float, int | None, int]:
-            process = await _start(_HOLDS_THE_PIPES_FROM_ANOTHER_SESSION, tmp_path)
+            process = await _start(HOLDS_THE_PIPES_FROM_ANOTHER_SESSION, tmp_path)
             (escapee,) = await written_pids(tmp_path, "escapee")
             try:
                 started = time.monotonic()

@@ -22,7 +22,14 @@ from teatree.agents.lane_b.shell import (
     _resolve_shell,
     build_shell_toolset,
 )
-from tests._process_liveness import GATED_FORKING_COMMAND, is_gone_within, release_gate, written_pids
+from tests._process_liveness import (
+    GATED_FORKING_COMMAND,
+    HOLDS_THE_PIPES_FROM_ANOTHER_SESSION,
+    is_gone_within,
+    is_running,
+    release_gate,
+    written_pids,
+)
 
 
 def _bash(config):
@@ -219,6 +226,27 @@ class TestAStoppedCommandDiesWithEverythingItStarted:
             return await written_pids(tmp_path, "leader", "child")
 
         self._assert_group_stopped(tmp_path, asyncio.run(run()))
+
+    def test_a_descendant_outside_the_session_holding_the_pipes_does_not_delay_the_stop(self, tmp_path: Path) -> None:
+        async def run() -> tuple[float, bool]:
+            started = time.monotonic()
+            with pytest.raises(ShellTimeoutError):
+                await _bash(LaneBToolConfig(fs_root=tmp_path, shell_timeout_seconds=2))(
+                    HOLDS_THE_PIPES_FROM_ANOTHER_SESSION
+                )
+            elapsed = time.monotonic() - started
+            (escapee,) = await written_pids(tmp_path, "escapee")
+            survived = is_running(escapee)
+            with suppress(ProcessLookupError):
+                os.kill(escapee, signal.SIGKILL)
+            await asyncio.to_thread(is_gone_within, escapee, seconds=3)
+            await asyncio.sleep(0.2)  # the pipes' EOF closes their transports before the loop ends
+            return elapsed, survived
+
+        elapsed, survived = asyncio.run(run())
+
+        assert survived
+        assert elapsed < 2 + 1.5
 
 
 class TestTheCommandNeverReadsTheHostsInput:

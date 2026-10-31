@@ -10,11 +10,17 @@ it at once and both probes agree.
 
 import asyncio
 import os
+import shlex
+import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 
 GATED_FORKING_COMMAND = "mkfifo gate; echo $$ > leader; (cat gate > /dev/null; touch finished) & echo $! > child; wait"
+_LEAVES_THE_SESSION = shlex.quote(
+    "import os, time; os.setsid(); open('escapee', 'w').write(str(os.getpid())); time.sleep(8)"
+)
+HOLDS_THE_PIPES_FROM_ANOTHER_SESSION = f"{shlex.quote(sys.executable)} -c {_LEAVES_THE_SESSION} & sleep 30"
 
 
 def is_running(pid: int) -> bool:
