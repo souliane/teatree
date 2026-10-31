@@ -30,7 +30,7 @@ The tickets loop rechecks pending tasks older than 24 hours. A per-task timestam
 
 Identical checkout parks double the retry from 30 minutes to a 24-hour cap; from the third with no known holder, one health row names the halt. A daily scanner retries the checkout fence for pending writing tasks without admitting an agent. When the fence passes, it re-arms the task and clears the halt; a stamped task that is no longer pending or has been superseded also clears its stale halt. A known holder's release continues to re-arm its own parked tasks immediately.
 
-The dead-worktree scanner classifies registry rows on an hourly cadence and records one durable health row per kept disposition; the render phase reads those rows without running another git probe. On macOS, the host RAM estimate sums `vm_stat` free, inactive, purgeable, and speculative pages. An unreadable memory sample holds provision and self-improve admission with a named unknown reason.
+The dead-worktree scanner classifies registry rows on an hourly cadence and records one durable health row per kept disposition; the render phase reads those rows without running another git probe. An unreadable memory sample holds provision and self-improve admission with a named unknown reason.
 
 ## Shared pytest worker slots
 

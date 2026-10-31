@@ -61,7 +61,7 @@ class TestALiveConvergenceIsNeverCalledGone:
         assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE
 
     def test_a_beating_convergence_is_live_however_long_it_has_run(self, tmp_path: Path) -> None:
-        # No process table to fall back on (a Docker Desktop host): the heartbeat alone answers.
+        # No process table to fall back on: the heartbeat alone answers.
         view = DeployView(lock=_lock(tmp_path, _record(beat_age=30, deadline_in=600)), proc_root=None)
 
         assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE

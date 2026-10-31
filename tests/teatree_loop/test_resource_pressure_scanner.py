@@ -1,26 +1,23 @@
 """Tests for :class:`ResourcePressureScanner` — disk/RAM auto-free scanner (#128).
 
 The scanner measures *absolute* free disk (``os.statvfs``) and reclaimable
-RAM (``/proc/meminfo`` on Linux, ``vm_stat`` on macOS) every cadence window,
+RAM (``/proc/meminfo``) every cadence window,
 classifies a pressure level, and emits ``resource.*`` signals. The freeing
 itself is the mechanical handler's job (tested in
 ``test_resource_pressure_mechanical``); these tests pin the measurement
-parsing, the per-platform RAM reader dispatch and its INERT signal (#4104),
-the absolute-bytes classification (the APFS / "99 % RAM used" traps), the
+parsing, the RAM reader and its INERT signal (#4104),
+the absolute-bytes classification, the
 cadence + freeing-rate-limit gates, and the consecutive-CRITICAL counter.
 
 Only the unstoppable externals are mocked: ``os.statvfs`` (a real fill-up
-can't be staged on the CI disk), ``vm_stat`` output and ``platform.system``
-(host-dependent), and the clock via marker timestamps. The Linux reader is
+can't be staged on the CI disk) and the clock via marker timestamps. The reader is
 exercised against a REAL ``/proc/meminfo``-shaped file on disk. The marker,
 signals, and classification run against the real Django ORM + real scanner.
 """
 
 import datetime as _dt
 import inspect
-import platform
 from pathlib import Path
-from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -35,7 +32,6 @@ from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.resource_pressure import (
     ResourcePressureScanner,
     _disk_probe_paths,
-    _parse_vm_stat_avail_gb,
     measure_resources,
     read_disk_free_gb,
     read_disk_reserved_gb,
@@ -49,18 +45,6 @@ _GIB = 1024 * 1024 * 1024
 _MODULE = "teatree.loop.scanners.resource_pressure"
 _RAM_PROBE = "teatree.utils.ram_probe"
 _RAM_SCOPE = "teatree.utils.ram_scope"
-
-# A representative ``vm_stat`` capture (16 KB pages). free=13407, inactive=288140,
-# purgeable=10000, speculative=5000 → 316547 reclaimable pages * 16384 bytes.
-_VM_STAT_SAMPLE = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
-Pages free:                               13407.
-Pages active:                            287425.
-Pages inactive:                          288140.
-Pages speculative:                         5000.
-Pages throttled:                              0.
-Pages wired down:                        313028.
-Pages purgeable:                          10000.
-"""
 
 # A real ``/proc/meminfo`` head from a 30 GiB Linux box under the pressure that
 # OOM-killed the worker three times (#4104): 1 GiB MemAvailable, below the 1.5 GB
@@ -82,46 +66,6 @@ MemAvailable:   20971520 kB
 Buffers:          409600 kB
 Cached:          2097152 kB
 """
-
-
-class VmStatParsingTests(TestCase):
-    """The ``vm_stat`` parser sums only the reclaimable page classes."""
-
-    def test_sums_reclaimable_page_classes(self) -> None:
-        avail_gb = _parse_vm_stat_avail_gb(_VM_STAT_SAMPLE)
-        expected_pages = 13407 + 288140 + 10000 + 5000
-        assert avail_gb is not None
-        assert avail_gb == pytest.approx(expected_pages * 16384 / _GIB)
-
-    def test_excludes_wired_active_from_reclaimable(self) -> None:
-        """Wired + active pages are genuinely committed — never counted as available."""
-        avail_gb = _parse_vm_stat_avail_gb(_VM_STAT_SAMPLE)
-        # If active(287425)+wired(313028) leaked in, the figure would roughly double.
-        committed_pages = 287425 + 313028
-        assert avail_gb is not None
-        assert avail_gb < committed_pages * 16384 / _GIB
-
-    def test_unparsable_output_returns_none(self) -> None:
-        assert _parse_vm_stat_avail_gb("garbage with no page size") is None
-
-    def test_missing_all_reclaimable_labels_returns_none(self) -> None:
-        header_only = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages wired down: 100.\n"
-        assert _parse_vm_stat_avail_gb(header_only) is None
-
-    def test_page_size_header_without_digit_returns_none(self) -> None:
-        """A 'page size of' line whose tokens are all non-numeric yields no page size."""
-        no_digit = "Mach Virtual Memory Statistics: (page size of N/A bytes)\nPages free: 100.\n"
-        assert _parse_vm_stat_avail_gb(no_digit) is None
-
-    def test_label_with_non_numeric_value_is_ignored(self) -> None:
-        """A reclaimable label whose value is non-numeric contributes zero, not a crash."""
-        mixed = (
-            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
-            "Pages free: not-a-number\n"
-            "Pages inactive: 100.\n"
-        )
-        avail = _parse_vm_stat_avail_gb(mixed)
-        assert avail == pytest.approx(100 * 16384 / _GIB)
 
 
 class DiskMeasurementTests(TestCase):
@@ -284,60 +228,15 @@ class DiskProbePathTests(TestCase):
         )
 
 
-class MacosRamMeasurementTests(TestCase):
-    """On macOS, RAM available is the reclaimable ``vm_stat`` sum — never raw percent-used."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Darwin"))
-        # A Mac has no cgroup; the real test container does, so pin it away.
-        self.enterContext(patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None))
-
-    def test_vm_stat_absent_returns_none(self) -> None:
-        with patch(f"{_MODULE}.shutil.which", return_value=None):
-            assert read_ram_avail_gb() is None
-
-    def test_vm_stat_nonzero_exit_returns_none(self) -> None:
-        with (
-            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
-            patch(
-                f"{_MODULE}.run_allowed_to_fail",
-                return_value=CompletedProcess(args=["vm_stat"], returncode=1, stdout="", stderr="boom"),
-            ),
-        ):
-            assert read_ram_avail_gb() is None
-
-    def test_vm_stat_invocation_error_returns_none(self) -> None:
-        with (
-            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
-            patch(f"{_MODULE}.run_allowed_to_fail", side_effect=OSError),
-        ):
-            assert read_ram_avail_gb() is None
-
-    def test_vm_stat_success_parses_output(self) -> None:
-        with (
-            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
-            patch(
-                f"{_MODULE}.run_allowed_to_fail",
-                return_value=CompletedProcess(args=["vm_stat"], returncode=0, stdout=_VM_STAT_SAMPLE, stderr=""),
-            ),
-        ):
-            avail = read_ram_avail_gb()
-        assert avail is not None
-        assert avail == pytest.approx((13407 + 288140 + 10000 + 5000) * 16384 / _GIB)
-
-
 class LinuxRamMeasurementTests(TestCase):
-    """#4104 — on Linux the reader is ``/proc/meminfo``'s ``MemAvailable``, not ``vm_stat``.
+    """#4104 — the reader is ``/proc/meminfo``'s ``MemAvailable``.
 
-    ``vm_stat`` does not exist on Linux, so the pre-#4104 reader returned ``None``
-    on every pass and the whole RAM ladder was skipped on the platform this
-    deployment actually runs on.
+    A reader that returned ``None`` on every pass skipped the whole RAM ladder on the
+    platform this deployment actually runs on.
     """
 
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
         # The real test container HAS a cgroup cap; pin it away so these cases
         # isolate the machine-scope reader (the cgroup floor has its own class).
         self.enterContext(patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None))
@@ -365,14 +264,6 @@ class LinuxRamMeasurementTests(TestCase):
         with patch(f"{_RAM_PROBE}._MEMINFO_PATH", "/nonexistent/meminfo"):
             assert read_ram_avail_gb() is None
 
-    def test_never_shells_out_to_vm_stat_on_linux(self) -> None:
-        with (
-            patch(f"{_RAM_PROBE}._MEMINFO_PATH", self._meminfo_file(_MEMINFO_HEALTHY)),
-            patch(f"{_MODULE}.run_allowed_to_fail") as run,
-        ):
-            read_ram_avail_gb()
-        run.assert_not_called()
-
 
 class CgroupHeadroomTests(TestCase):
     """#4104 — a capped container OOMs at its OWN ceiling while the host still looks roomy.
@@ -384,7 +275,6 @@ class CgroupHeadroomTests(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
         self.enterContext(patch(f"{_MODULE}.linux_mem_available_kb", return_value=15 * 1024 * 1024))
         # The real test container HAS a memory.stat; pin the credit so these cases
         # isolate the limit/current arithmetic (the correction has its own case below).
@@ -430,7 +320,6 @@ class CgroupReclaimableCacheTests(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
         self.enterContext(patch(f"{_MODULE}.linux_mem_available_kb", return_value=30 * 1024 * 1024))
 
     def _read_with_cache(self, *, reclaimable_mib: int) -> float | None:
@@ -454,19 +343,9 @@ class CgroupReclaimableCacheTests(TestCase):
         assert [s for s in signals if s.payload.get("resource") == "ram"] == []
 
 
-class UnknownPlatformRamMeasurementTests(TestCase):
-    """A platform with no reader and no cgroup yields ``None`` — which the scanner must SAY."""
-
-    def test_returns_none(self) -> None:
-        with (
-            patch(f"{_MODULE}.platform.system", return_value="SunOS"),
-            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
-        ):
-            assert read_ram_avail_gb() is None
-
+class ThisHostRamMeasurementTests(TestCase):
     def test_this_host_can_answer(self) -> None:
         """A probe that cannot answer on the host it runs on is the #4104 defect itself."""
-        assert platform.system() in {"Linux", "Darwin"}, "test host is neither supported platform"
         assert read_ram_avail_gb() is not None, "the RAM ladder is inert on this host"
 
 
@@ -553,7 +432,6 @@ class LinuxRamLadderTests(TestCase):
         path = Path(self.enterContext(TemporaryDirectory())) / "meminfo"
         path.write_text(body, encoding="utf-8")
         with (
-            patch(f"{_MODULE}.platform.system", return_value="Linux"),
             patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
             patch(f"{_MODULE}.cgroup_memory_probe_inert", return_value=False),
             patch(f"{_RAM_PROBE}._MEMINFO_PATH", str(path)),
@@ -594,8 +472,8 @@ class RamProbeInertTests(TestCase):
 
     def _scan_without_ram_reader(self, *, disk_gb: float | None = 100.0) -> list:
         with (
-            patch(f"{_MODULE}.platform.system", return_value="SunOS"),
             patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_RAM_PROBE}._MEMINFO_PATH", "/nonexistent/meminfo"),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=disk_gb),
         ):
             return ResourcePressureScanner().scan()
@@ -606,17 +484,10 @@ class RamProbeInertTests(TestCase):
             f"an inert RAM ladder must be reported, got {[s.kind for s in signals]}"
         )
         assert signals[0].payload["resource"] == "ram"
-        assert signals[0].payload["platform"] == "SunOS"
 
     def test_inert_reason_names_the_real_cause(self) -> None:
         """An operator must not chase platform support when the file simply failed to read."""
-        with (
-            patch(f"{_MODULE}.platform.system", return_value="Linux"),
-            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
-            patch(f"{_RAM_PROBE}._MEMINFO_PATH", "/nonexistent/meminfo"),
-            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
-        ):
-            signals = ResourcePressureScanner().scan()
+        signals = self._scan_without_ram_reader()
         assert signals[0].payload["reason"] == "/proc/meminfo unreadable and no cgroup memory limit"
 
     def test_inert_signal_accompanies_a_disk_critical(self) -> None:

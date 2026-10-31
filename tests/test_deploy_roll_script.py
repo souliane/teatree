@@ -146,7 +146,7 @@ def test_roll_does_not_run_planted_git_commands(tmp_path: Path) -> None:
 
 
 def _forwarded(*extra: str) -> str:
-    names = ["TEATREE_DEPLOY_CHECKOUT", "TEATREE_HOST_HOME", "TEATREE_HOST_OS", "TEATREE_UID", "TEATREE_SOURCE_MOUNT"]
+    names = ["TEATREE_DEPLOY_CHECKOUT", "TEATREE_HOST_HOME", "TEATREE_UID", "TEATREE_SOURCE_MOUNT"]
     names += ["TEATREE_DOCKER_SOCKET_GID", "TEATREE_WORKER_CPUS", "TEATREE_WORKER_MEM_LIMIT", "TEATREE_HOST_TMP"]
     names += ["TEATREE_LEGACY_CLONE_DIR", "TEATREE_WATCHDOG_DEPLOY_LOCK", *extra]
     return " ".join(f"-e {name}" for name in names)

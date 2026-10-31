@@ -16,7 +16,6 @@ the cgroup arm now does the same, from one reader both consumers share.
 """
 
 import os
-import platform
 from dataclasses import dataclass
 from typing import Literal
 
@@ -103,14 +102,12 @@ def cgroup_headroom_mib() -> int | None:
 
 
 def cgroup_memory_probe_inert() -> bool:
-    """Whether Linux silently lost a cgroup RAM floor while host RAM still reads.
+    """Whether the host silently lost a cgroup RAM floor while host RAM still reads.
 
     An explicit ``max`` or v1 unlimited sentinel is an uncapped cgroup, not a
     broken probe. A numeric cap with unreadable usage is broken: the host's
     ``MemAvailable`` may still succeed, masking a worker OOM ceiling.
     """
-    if platform.system() != "Linux":
-        return False
     for version, controller, limit_name, current_name in (
         (2, "", "memory.max", "memory.current"),
         (1, "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"),

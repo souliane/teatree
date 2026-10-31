@@ -86,8 +86,6 @@ os.environ["T3_OVERLAY_NAME"] = "t3-teatree"
 # reports a broken scanner and blocks clean content. 45s clears every contended scan
 # measured here, and stays under the 60s per-test `timeout` so a hang still fails loud.
 os.environ["T3_BANNED_TERMS_SCAN_TIMEOUT_S"] = "45"
-# Synthetic /host-proc tables model a Linux host; the refusal tests unset or change it themselves.
-os.environ["TEATREE_HOST_OS"] = "Linux"
 
 
 @pytest.fixture(autouse=True)

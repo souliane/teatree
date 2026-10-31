@@ -27,7 +27,7 @@ the tick command of every ``off_live_tick`` loop, the ONLY driver those loops ha
 expires stale ``default``- and ``cheap``-queue jobs BEFORE spawning executors (so a box that
 queued days-old provision/ship jobs while no worker ran never blind-fires them on the
 default-ON flip), so a fresh or crash-recovered box catches up and
-self-heals with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
+self-heals with no OS scheduler (no cron / systemd). The worker supervisor +
 reconciler IS the process-watchdog surface.
 """
 

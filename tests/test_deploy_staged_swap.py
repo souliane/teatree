@@ -160,7 +160,6 @@ start)
     exit 0
     ;;
 up)
-    printf 'host-os %s\\n' "${{TEATREE_HOST_OS:-unset}}" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
     case " $* " in
     *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
     *" teatree-ro-executor "*) exit "${{STUB_EXECUTOR_UP_EXIT:-0}}" ;;
@@ -996,13 +995,6 @@ def _beat_every_second(checkout: Path) -> None:
     script.write_text(
         body.replace("\nDEPLOY_HEARTBEAT_INTERVAL=60\n", "\nDEPLOY_HEARTBEAT_INTERVAL=1\n"), encoding="utf-8"
     )
-
-
-class TestTheContainersLearnTheHostOs:
-    def test_the_convergence_exports_the_host_os_to_compose(self, checkout: Path, tmp_path: Path) -> None:
-        _, calls = _run(checkout, tmp_path, TEATREE_HOST_OS="")
-
-        assert f"host-os {os.uname().sysname}" in calls
 
 
 class TestTheHostHookEnvFollowsTheConvergedCheckout:

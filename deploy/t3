@@ -144,10 +144,6 @@ if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
 fi
 export TEATREE_DOCKER_SOCKET_GID
 
-# Unset, a container refuses /host-proc: under Docker Desktop it is the VM's table, not this host's.
-TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
-export TEATREE_HOST_OS
-
 # The sources must PRE-EXIST: dockerd auto-creates a missing bind source, and on
 # the box it creates it ROOT-owned, locking the non-root container out of the
 # mount (deploy.sh pre-creates the same set for the same reason). Credential-plane

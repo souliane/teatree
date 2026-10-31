@@ -9,16 +9,8 @@
   protected_attrs: [run, Popen, check_output, check_call, call]
   allowed_modules:
     - teatree.utils.run
-    # ram_probe's `compose-sizing` entry point is executed by deploy/deploy.sh as a
-    # bare `python3 ram_probe.py` on the HOST, where the teatree package is not
-    # importable at all — `from teatree.utils.run import ...` raises ImportError,
-    # deploy.sh suppresses stderr, and the worker silently keeps a compose default
-    # sized for a different box. The wrapper cannot reach this path. Both calls are
-    # stdlib-only by necessity and each degrades to 0 rather than raising, which is
-    # the same never-fail-silently property this gate exists to protect.
-    - teatree.utils.ram_probe
     # deploy/t3 runs mcp_stdio_proxy as `python3 -I -S` on the HOST, where teatree is not
-    # importable either. Its one Popen is the supervised MCP server, and every exit of it is
+    # importable. Its one Popen is the supervised MCP server, and every exit of it is
     # observed: logged, then respawned or relayed as the proxy's own exit code.
     - teatree.utils.mcp_stdio_proxy
   refs:

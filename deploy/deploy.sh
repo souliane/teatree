@@ -476,11 +476,6 @@ if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
 fi
 export TEATREE_DOCKER_SOCKET_GID
 
-# Under Docker Desktop the containers' /host-proc is the VM's process table, not this
-# host's, so they must not read it as the table a host deploy.sh would appear in.
-TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
-export TEATREE_HOST_OS
-
 install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg" "$HOME/.config/teatree-master-key"
 install -d \
     "$HOME/.local/share/teatree" \

@@ -41,8 +41,6 @@ name: teatree
 # covering a venue the others cannot (a bare `docker run`; the tree the entrypoint
 # seeds). tests/test_deploy_gnupg_lock_isolation.py holds the three in sync.
 x-teatree-create-env: &teatree-create-env
-  # Host launchers export uname; bare compose gets a nonempty fail-closed value.
-  TEATREE_HOST_OS: ${TEATREE_HOST_OS:-unknown}
   TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
   GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
   TEATREE_TRANSCRIPT_SOURCE: ${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}

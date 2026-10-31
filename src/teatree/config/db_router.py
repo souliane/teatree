@@ -72,7 +72,7 @@ def pinned_config_db(
     cutover marker must be routed away from its local DB.
 
     Both sides are resolved before comparison so a symlinked home or data root
-    (``/tmp`` → ``/private/tmp`` on macOS) cannot fake a difference and register
+    cannot fake a difference and register
     a redundant second connection onto the very same sqlite file.
 
     A canonical DB that does not exist on disk also returns ``None``: there is

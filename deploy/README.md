@@ -179,12 +179,6 @@ The first roll off a legacy stack finds no generation registry. It drains and st
 the legacy stack like any roll, lets N+1's init create the registry, and registers
 N+1 only then, so nothing migrates under a worker that is still claiming.
 
-For the first roll on an existing source-mounted installation, export
-`TEATREE_HOST_OS=$(uname -s)` in the deploy shell before starting it. The checked-out
-`deploy.sh` can still be the old version when it reads the new Compose file, which
-needs this value. Once the checkout advances, run the new `deploy.sh` under supervision
-before relying on an unattended deploy.
-
 `deploy/docker-compose.yml` stays the source-mounted stack `deploy.sh` and
 `deploy/t3` run. A generation's topology is that file plus
 `deploy/docker-compose.generation.yml`, both read out of the generation's own image
