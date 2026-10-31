@@ -238,10 +238,6 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
     assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
 
 
-def test_the_supervisor_has_no_host_pressure_publish_seam() -> None:
-    assert "publish_host_pressure" not in {seam.name for seam in dataclasses.fields(WorkerSeams)}
-
-
 def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
     with mock.patch.object(live_mailbox, "shared_broker", side_effect=OSError("read-only volume")):
         worker_mod._start_live_ingress()

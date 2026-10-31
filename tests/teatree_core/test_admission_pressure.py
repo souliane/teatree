@@ -60,7 +60,6 @@ def _machine(**kwargs: object) -> MachineSignal:
 
 
 def test_load_and_memory_are_the_only_machine_brakes() -> None:
-    # Swap activity and kernel memory pressure were fed only by the host-pressure feed, which is gone.
     assert {"load", "memory"} == MACHINE_BRAKE_CAUSES
     assert not {"swap", "memory-pressure"} & set(BRAKE_PRECEDENCE)
     assert not {"swap_mib_per_s", "vm_pressure_level"} & set(MachineSignal.__dataclass_fields__)

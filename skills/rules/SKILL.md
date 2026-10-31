@@ -219,7 +219,7 @@ Visibility, ownership and collaboration are independent: a private or owned repo
 
 ## Commit Before Declaring Done (Non-Negotiable)
 
-Commit as soon as implementation is verified, and before any long pre-push step — uncommitted work in a reaped worktree leaves nothing for `git fsck`. Full text: `skills/rules/references/worktrees-and-commits.md`.
+Commit as soon as implementation is verified, and always before any long pre-push step — uncommitted work in a reaped worktree leaves nothing for `git fsck`. Full text: `skills/rules/references/worktrees-and-commits.md`.
 
 ## Worktree-First Work (Non-Negotiable)
 

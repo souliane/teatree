@@ -6,9 +6,9 @@
 
 ## Platform Support
 
-The factory — the worker, the loops, the deploy scripts, the image and the dev tooling — is Linux only. macOS is supported for the interactive skill alone: the hooks, skills and statusline an attended session runs on a developer machine, whose host scripts stay bash 3.2 and Python 3.9 compatible with no GNU-only flags. Shell scripts use `#!/usr/bin/env bash` for portability — never hardcode a platform-specific path like `/opt/homebrew/bin/bash`.
+The factory — the worker, the loops, the deploy scripts, the image and the dev tooling — is Linux only. macOS is covered only by the hooks, skills and statusline that run on a developer machine, whose host scripts stay bash 3.2 and Python 3.9 compatible with no GNU-only flags. Shell scripts use `#!/usr/bin/env bash` for portability — never hardcode a platform-specific path like `/opt/homebrew/bin/bash`.
 
-Interactive-side scripts that need Bash 4+ features (associative arrays) include a version guard that auto-detects and re-execs with a modern bash from well-known locations (`/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/home/linuxbrew/.linuxbrew/bin/bash`), and use platform-agnostic alternatives for common utilities: `md5sum` on Linux vs `md5 -q` on macOS, `stat -c '%Y'` on Linux vs `stat -f '%m'` on macOS. <!-- privacy-scan:allow — the documented Linuxbrew prefix -->
+Hook scripts that need Bash 4+ features (associative arrays) include a version guard that auto-detects and re-execs with a modern bash from well-known locations (`/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/home/linuxbrew/.linuxbrew/bin/bash`), and use platform-agnostic alternatives for common utilities: `md5sum` on Linux vs `md5 -q` on macOS, `stat -c '%Y'` on Linux vs `stat -f '%m'` on macOS. <!-- privacy-scan:allow — the documented Linuxbrew prefix -->
 
 ## Required Tools
 
@@ -34,7 +34,7 @@ Interactive-side scripts that need Bash 4+ features (associative arrays) include
 
 ## Shell Script Portability Checklist
 
-When writing or modifying a shell script on the interactive side (`hooks/`, `scripts/hooks/lib/`), verify:
+When writing or modifying a shell script under `hooks/` or `scripts/hooks/lib/`, verify:
 
 1. **Shebang:** `#!/usr/bin/env bash` — never a hardcoded path.
 2. **Bash version features:** If the script uses `declare -A` (associative arrays), add the Bash 4+ version guard with re-exec (see `hooks/scripts/statusline.sh` for the pattern).
