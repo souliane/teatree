@@ -15,12 +15,12 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
-["A headless orchestrator may answer"]
+["A headless coordinator may answer"]
 radius = 180
-"BLUEPRINT.md" = ["7edd1e39f0b3ea19"]
+"BLUEPRINT.md" = ["69bdc773eeed9aaf"]
 
-["A headless orchestrator may answer".coverage]
-"BLUEPRINT.md" = 394
+["A headless coordinator may answer".coverage]
+"BLUEPRINT.md" = 393
 
 ["Factory retries may re-attest interrupted writer files"]
 radius = 200
