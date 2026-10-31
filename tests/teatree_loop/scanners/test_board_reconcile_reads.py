@@ -7,6 +7,7 @@ helper; these pin the helper's own contract.
 """
 
 import threading
+from time import monotonic
 
 from django.test import SimpleTestCase
 
@@ -67,6 +68,7 @@ class TestReadConcurrently(SimpleTestCase):
         def read(item: int) -> int:
             issued.append(item)
             if item < READ_WORKERS:
+                assert clock.read_by_owner.wait(timeout=5)
                 first_wave_in_flight.wait()
             return item
 
@@ -75,3 +77,20 @@ class TestReadConcurrently(SimpleTestCase):
 
         assert sorted(issued) == list(range(READ_WORKERS))
         assert results == [(item, item) for item in range(READ_WORKERS)]
+
+    def test_a_read_still_in_flight_at_the_deadline_does_not_hold_the_call(self) -> None:
+        release = threading.Event()
+        self.addCleanup(release.set)
+        slow_read_returned = threading.Event()
+
+        def read(item: int) -> int:
+            if item == 0:
+                release.wait(timeout=5)
+                slow_read_returned.set()
+            return item
+
+        with scanner_deadline(monotonic() + APPLY_MARGIN_SECONDS + 0.5):
+            results = read_concurrently([0, 1], read)
+
+        assert not slow_read_returned.is_set()
+        assert results == [(1, 1)]

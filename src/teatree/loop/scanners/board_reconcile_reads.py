@@ -7,7 +7,7 @@ deadline so the verdicts already read still have time to be applied.
 
 import logging
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextvars import copy_context
 from time import monotonic
 from typing import TYPE_CHECKING
@@ -29,8 +29,9 @@ APPLY_MARGIN_SECONDS = 20.0
 def read_concurrently[T, R](items: Sequence[T], read: Callable[[T], R]) -> list[tuple[T, R]]:
     """The ``(item, result)`` pairs of *read* over *items*, in input order.
 
-    A read that raises, or that the deadline stopped before it started, is absent from the
-    result. Without a scan deadline every item is read.
+    A read that raises, that the deadline stopped before it started, or that is still in flight
+    when the deadline arrives is absent from the result — the call returns then, and the
+    straggler finishes on its own thread. Without a scan deadline every item is read.
     """
     deadline = current_scan_deadline()
     stop_at = None if deadline is None else deadline - APPLY_MARGIN_SECONDS
@@ -47,8 +48,16 @@ def read_concurrently[T, R](items: Sequence[T], read: Callable[[T], R]) -> list[
         finally:
             close_thread_db_connections()
 
-    with ThreadPoolExecutor(max_workers=READ_WORKERS) as pool:
-        outcomes = list(pool.map(lambda item: context.copy().run(read_one, item), items))
+    def read_in_context(item: T) -> tuple[T, R] | None:
+        return context.copy().run(read_one, item)
+
+    pool = ThreadPoolExecutor(max_workers=READ_WORKERS)
+    try:
+        futures = [pool.submit(read_in_context, item) for item in items]
+        done = wait(futures, timeout=None if stop_at is None else max(stop_at - monotonic(), 0.0)).done
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    outcomes = [future.result() for future in futures if future in done]
     results = [outcome for outcome in outcomes if outcome is not None]
     if len(results) < len(items):
         logger.warning(

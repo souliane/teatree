@@ -10,8 +10,12 @@ class FakeClock:
     def __init__(self, now: float = 1_000.0) -> None:
         self.now = now
         self._lock = threading.Lock()
+        self._owner = threading.get_ident()
+        self.read_by_owner = threading.Event()
 
     def __call__(self) -> float:
+        if threading.get_ident() == self._owner:
+            self.read_by_owner.set()
         return self.now
 
     def advance(self, seconds: float) -> None:
