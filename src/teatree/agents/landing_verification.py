@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from teatree.agents.already_fixed import already_fixed_accepted
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.fix_record_types import already_fixed_claim
 from teatree.core.models.ticket_worktree_checks import (
     WorktreeProbeUnverifiableError,
     worktree_has_commits_ahead,
@@ -51,11 +52,14 @@ def landing_verification_error(task: "Task", *, phase: str = "", result: Mapping
     verifiably not ahead of its base (HEAD never advanced). A non-coding/debugging
     phase, a ticket with no checkable worktree, or any worktree whose probe cannot
     answer, is a no-op (``""``). A no-commit ending lands when *result* carries a
-    verified ``fix_record.already_fixed`` claim (:func:`already_fixed_accepted`).
+    verified ``fix_record.already_fixed`` claim (:func:`already_fixed_accepted`); a claim that stands
+    in for ``files_modified`` must be verified against a worktree, so no checkable worktree refuses it.
     """
     if normalize_phase(phase or task.phase) not in _LANDING_VERIFIED_PHASES:
         return ""
     checkable = [wt for wt in Worktree.objects.for_ticket(task.ticket) if _on_disk_repo(wt)]
+    if _claim_stands_in_for_files(result) and not already_fixed_accepted(result, checkable):
+        return f"{_UNVERIFIED_PREFIX} already_fixed names no HEAD that a ticket worktree is checked out at"
     if not checkable:
         return ""
     for wt in checkable:
@@ -66,6 +70,11 @@ def landing_verification_error(task: "Task", *, phase: str = "", result: Mapping
         return ""
     branch = checkable[0].branch or "(detached)"
     return f"{_UNVERIFIED_PREFIX} no new commit on {branch} — HEAD has not advanced past the base"
+
+
+def _claim_stands_in_for_files(result: Mapping[str, object] | None) -> bool:
+    result = result or {}
+    return all(already_fixed_claim(result.get("fix_record"))) and not result.get("files_modified")
 
 
 def blocked_before_edits_error(task: "Task", result: Mapping[str, object], *, phase: str, routed: bool) -> str:

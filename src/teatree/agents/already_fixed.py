@@ -3,23 +3,15 @@
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from teatree.core.models.fix_record_types import already_fixed_claim
 from teatree.core.models.worktree import Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 
-def already_fixed_claim(result: Mapping[str, object] | None) -> tuple[str, str]:
-    """The ``(verified_head, evidence)`` the result's ``fix_record.already_fixed`` names, blank when absent."""
-    record = (result or {}).get("fix_record")
-    claim = record.get("already_fixed") if isinstance(record, Mapping) else None
-    if not isinstance(claim, Mapping):
-        return "", ""
-    return str(claim.get("verified_head") or "").strip().lower(), str(claim.get("evidence") or "").strip()
-
-
 def already_fixed_accepted(result: Mapping[str, object] | None, worktrees: Iterable[Worktree]) -> bool:
     """Whether the claim names non-blank evidence and the HEAD one of *worktrees* is checked out at."""
-    verified_head, evidence = already_fixed_claim(result)
+    verified_head, evidence = already_fixed_claim((result or {}).get("fix_record"))
     if not verified_head or not evidence:
         return False
     return any(_head_of(worktree) == verified_head for worktree in worktrees)

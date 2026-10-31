@@ -1,5 +1,6 @@
 """The fix-ticket Definition-of-Done record and its field roster, carried on ``Ticket.extra['fix_record']``."""
 
+from collections.abc import Mapping
 from typing import Final, TypedDict
 
 
@@ -25,7 +26,7 @@ class FixRecord(TypedDict, total=False):
     :data:`FIX_RECORD_FIELDS` derived from it is the ONE definition the gate, the
     recorder, the envelope schema and the agent brief all read. ``already_fixed`` is the one
     optional claim: a no-commit ending that names the HEAD it verified and the evidence, read
-    by ``agents.already_fixed`` and never stored or required.
+    by ``agents.already_fixed``, accepted alone as a record and never stored or required.
     """
 
     root_cause: str
@@ -72,3 +73,20 @@ def fix_record_missing_fields(record: object, *, red_required: bool = True) -> l
     if not isinstance(record, dict):
         return list(required)
     return [field for field in required if not str(record.get(field, "")).strip()]
+
+
+def already_fixed_claim(record: object) -> tuple[str, str]:
+    """The ``(verified_head, evidence)`` *record*'s ``already_fixed`` names, blank when absent."""
+    claim = record.get("already_fixed") if isinstance(record, Mapping) else None
+    if not isinstance(claim, Mapping):
+        return "", ""
+    return str(claim.get("verified_head") or "").strip().lower(), str(claim.get("evidence") or "").strip()
+
+
+def is_claim_only(record: object) -> bool:
+    """Whether *record* carries ``already_fixed`` and none of the DoD fields, so it is a no-commit ending alone."""
+    return (
+        isinstance(record, Mapping)
+        and "already_fixed" in record
+        and not any(str(record.get(field, "")).strip() for field in FIX_RECORD_FIELDS)
+    )

@@ -79,11 +79,14 @@ class TestFixRecordSchema:
 
     def test_properties_derive_from_the_field_tuple(self) -> None:
         schema = _PROPERTIES["fix_record"]
-        assert tuple(schema["properties"]) == FIX_RECORD_FIELDS
+        assert tuple(schema["properties"]) == (*FIX_RECORD_FIELDS, "already_fixed")
 
     def test_schema_allows_omitting_red_attestation_for_an_opted_out_fix(self) -> None:
         schema = _PROPERTIES["fix_record"]
-        assert schema["required"] == ["root_cause", "evidence", "regression_test", "recurrence_fingerprint"]
+        assert schema["anyOf"][0]["required"] == ["root_cause", "evidence", "regression_test", "recurrence_fingerprint"]
+
+    def test_schema_allows_the_already_fixed_claim_alone(self) -> None:
+        assert _PROPERTIES["fix_record"]["anyOf"][1] == {"required": ["already_fixed"]}
 
     def test_it_is_no_phase_required_evidence(self) -> None:
         """Kind-conditional, not phase-conditional — requiring it would refuse every non-fix run."""
