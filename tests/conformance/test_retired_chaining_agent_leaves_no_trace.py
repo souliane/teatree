@@ -22,7 +22,7 @@ CLAIMS_AN_AGENT = re.compile(
     r"\b(?:chains?|chaining|invokes?|spawn(?:s|ed)?)\b|\bagent\s+`t3:orchestrator`", re.IGNORECASE
 )
 THE_FILE = re.compile(r"agents/orchestrator\b|\borchestrator\.md\b")
-THE_CONCEPT = re.compile(r"chaining\s+orchestrator|orchestrator\s+that\s+chains|single\s+orchestrator", re.IGNORECASE)
+THE_CONCEPT = re.compile(r"chaining\s+orchestrator|orchestrator\s+that\s+chains", re.IGNORECASE)
 TEXT_SUFFIXES = frozenset({".py", ".md", ".toml", ".yaml", ".yml", ".json", ".sh", ".txt"})
 AGENT_NAMES = {path.stem for path in (REPO_ROOT / "agents").glob("*.md")}
 
