@@ -1,9 +1,8 @@
 """Branches CI doesn't exercise without explicit help.
 
 These tests force code paths that locally take a different branch than they
-do in a fresh CI checkout (macOS symlinks under ``/private``, worktree
-``.git`` pointer files, having multiple registered overlays). Without these
-the project's coverage floor passes locally but slips in CI — the kind of
+do in a fresh CI checkout (worktree ``.git`` pointer files, having multiple
+registered overlays). Without these the project's coverage floor passes locally but slips in CI — the kind of
 drift the coverage guardrail (``tests/test_coverage_floor_guard.py``) is
 designed to prevent, but only if the targeted branches are reachable from
 the test suite at all.

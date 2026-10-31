@@ -35,19 +35,9 @@ set -euo pipefail
 # every path below (`scripts/hooks/lib/resolve-uv.sh` first) then resolves nowhere.
 cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
-# GNU timeout(1) caps the conformance core below. Linux ships it as `timeout`;
-# Homebrew's coreutils installs it as `gtimeout` unless the gnubin directory is
-# put first on PATH (prerequisites.md) — probing only `timeout` blocked every
-# macOS push with a message that named a fix which did not apply.
-timeout_bin=""
-for candidate in timeout gtimeout; do
-    if command -v "$candidate" >/dev/null; then
-        timeout_bin="$candidate"
-        break
-    fi
-done
-if [ -z "$timeout_bin" ]; then
-    echo "push-gate: no GNU timeout(1) found (checked: timeout, gtimeout) — brew install coreutils on macOS (Linux ships it); see prerequisites.md" >&2
+# GNU timeout(1) caps the conformance core below.
+if ! command -v timeout >/dev/null; then
+    echo "push-gate: no GNU timeout(1) found — install coreutils; see prerequisites.md" >&2
     exit 2
 fi
 
@@ -104,7 +94,7 @@ record_push_gate_stage 2
 conformance_rc=0
 # `--kill-after` because a child that ignores SIGTERM would otherwise wedge this
 # wrapper (and the push) forever instead of failing loud.
-"$timeout_bin" --kill-after=10s "$conformance_cap_s" "${UV_PROJECT_RUN[@]}" run pytest "${conformance_core[@]}" -n 0 -q 9>&- || conformance_rc=$?
+timeout --kill-after=10s "$conformance_cap_s" "${UV_PROJECT_RUN[@]}" run pytest "${conformance_core[@]}" -n 0 -q 9>&- || conformance_rc=$?
 if [ "$conformance_rc" -eq 124 ]; then
     echo "=== push-gate: conformance core NOT verified here — it exceeded its ${conformance_cap_s}s cap ($(uptime)); CI runs tests/conformance whole-tree on this MR ===" >&2
 elif [ "$conformance_rc" -ne 0 ]; then

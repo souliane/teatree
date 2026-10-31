@@ -15,14 +15,12 @@ distinguishing. (An earlier form asserted only that the test-local mutant differ
 from ``BLOCK``, which is true of the mutant's own source text and would hold with
 ``on_behalf_gate.py`` deleted.) ``TestMutmutKillsTheMutant`` drives the REAL mutmut
 runner over ``on_behalf_gate.py`` and asserts mutmut reports at least one killed
-mutant; mutmut's fork+output-capture model segfaults on macOS (a mutmut-3.5 bug,
-not a test gap), so when the run yields only inconclusive results the test SKIPs
-rather than failing — the deterministic proof above still guards the contract,
-and Linux CI exercises the real run.
+mutant; when the run yields only inconclusive results (a mutmut segfault or timeout)
+the test SKIPs rather than failing — the deterministic proof above still guards the contract,
+and CI exercises the real run.
 """
 
 import shutil
-import sys
 from collections.abc import Callable
 
 import pytest
@@ -91,8 +89,6 @@ class TestMutmutKillsTheMutant:
     def test_mutmut_reports_a_killed_mutant(self, tmp_path) -> None:
         if shutil.which("uv") is None:
             pytest.skip("uv not available")
-        if sys.platform == "darwin":
-            pytest.skip("mutmut-3.5 fork+output-capture segfaults on macOS; Linux CI runs the real check")
 
         from teatree.quality.mutation_run import _run_mutmut  # noqa: PLC0415
 
