@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.agents.already_fixed import already_fixed_accepted
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket_worktree_checks import (
     WorktreeProbeUnverifiableError,
@@ -42,14 +43,15 @@ _LANDING_VERIFIED_PHASES = frozenset({"coding", "debugging"})
 _UNVERIFIED_PREFIX = "landing_unverified:"
 
 
-def landing_verification_error(task: "Task", *, phase: str = "") -> str:
+def landing_verification_error(task: "Task", *, phase: str = "", result: Mapping[str, object] | None = None) -> str:
     """Return a ``landing_unverified:`` error if a coding/debugging result did not land, else ``""``.
 
     Refuses when a checkable ticket worktree has uncommitted tracked changes (the
     files were edited but never committed) or every checkable worktree is
     verifiably not ahead of its base (HEAD never advanced). A non-coding/debugging
     phase, a ticket with no checkable worktree, or any worktree whose probe cannot
-    answer, is a no-op (``""``).
+    answer, is a no-op (``""``). A no-commit ending lands when *result* carries a
+    verified ``fix_record.already_fixed`` claim (:func:`already_fixed_accepted`).
     """
     if normalize_phase(phase or task.phase) not in _LANDING_VERIFIED_PHASES:
         return ""
@@ -60,7 +62,7 @@ def landing_verification_error(task: "Task", *, phase: str = "") -> str:
         dirty_path = worktree_tracked_dirty_path(wt)
         if dirty_path is not None:
             return f"{_UNVERIFIED_PREFIX} uncommitted tracked changes in {dirty_path} — files_modified never committed"
-    if not all(commits_ahead_or_unknown(wt) is False for wt in checkable):
+    if not all(commits_ahead_or_unknown(wt) is False for wt in checkable) or already_fixed_accepted(result, checkable):
         return ""
     branch = checkable[0].branch or "(detached)"
     return f"{_UNVERIFIED_PREFIX} no new commit on {branch} — HEAD has not advanced past the base"

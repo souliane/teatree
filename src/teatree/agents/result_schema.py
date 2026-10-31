@@ -31,8 +31,9 @@ from teatree.agents.result_schema_review import (
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS, FixRecord, fix_record_required_fields
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, fix_record_required_fields
+from teatree.core.models.types import PlanAdequacy
 
 
 class FileChange(TypedDict, total=False):

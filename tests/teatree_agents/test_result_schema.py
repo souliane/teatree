@@ -22,8 +22,8 @@ from teatree.agents.result_schema import (
     check_evidence,
     required_evidence_for_phase,
 )
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS
 from teatree.core.models.plan_adequacy import REQUIRED_ADEQUACY_SECTIONS
-from teatree.core.models.types import FIX_RECORD_FIELDS
 
 _PROPERTIES = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
 

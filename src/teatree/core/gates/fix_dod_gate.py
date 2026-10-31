@@ -33,7 +33,7 @@ Satisfying artifact
 How that artifact gets written
     The fixing agent returns a ``fix_record`` object in its result envelope;
     :mod:`teatree.agents.fix_record_recorder` validates it against the same
-    :func:`~teatree.core.models.types.fix_record_missing_fields` parse this gate
+    :func:`~teatree.core.models.fix_record_types.fix_record_missing_fields` parse this gate
     uses and writes it through ``ticket.merge_extra``. Self-attestation through a
     CLI was rejected for the reason ``repro_waiver`` already gives. An agent that
     returns NO record is a no-op (an overlay that never emits one keeps today's
@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.modelkit.gate_registry import get_resolver, register_gate
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.types import fix_record_missing_fields, fix_record_required_fields
+from teatree.core.models.fix_record_types import fix_record_missing_fields, fix_record_required_fields
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -95,7 +95,7 @@ def missing_fix_record_fields(ticket: "Ticket") -> list[str]:
     """Return the required FixRecord fields that are absent or blank.
 
     An empty list means a complete record. Delegates to the shared
-    :func:`~teatree.core.models.types.fix_record_missing_fields` parse, so the
+    :func:`~teatree.core.models.fix_record_types.fix_record_missing_fields` parse, so the
     stored record and the returned envelope are judged by ONE predicate.
     """
     return fix_record_missing_fields(

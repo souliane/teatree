@@ -32,7 +32,7 @@ from teatree.core.gates.repro_gate import failing_run_required
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
-from teatree.core.models.types import FixRecord, fix_record_missing_fields, fix_record_required_fields
+from teatree.core.models.fix_record_types import FixRecord, fix_record_missing_fields, fix_record_required_fields
 
 
 def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:

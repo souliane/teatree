@@ -465,7 +465,7 @@ def _check_before_recording(
         ""
         if owner_kept_stop
         else blocked_before_edits_error(task, result, phase=phase, routed=routed)
-        or landing_verification_error(task, phase=phase)
+        or landing_verification_error(task, phase=phase, result=result)
         or sweep_report_error(task, phase=phase)
     )
     return _PreRecordCheck(landing_error, result)

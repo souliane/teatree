@@ -1,4 +1,4 @@
-from teatree.core.models.types import fix_record_required_fields
+from teatree.core.models.fix_record_types import fix_record_required_fields
 
 
 def test_forced_repro_requires_every_fix_record_field() -> None:

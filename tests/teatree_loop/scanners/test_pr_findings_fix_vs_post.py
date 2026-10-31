@@ -28,7 +28,7 @@ from teatree.core.models import CriticVerdict, PullRequest, Ticket
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.loop.dispatch_tables import AGENT_BY_KIND, DUAL_DISPATCH, STATUSLINE_ZONE_BY_KIND
-from teatree.loop.persistence import _FIX_REASON_BY_KIND
+from teatree.loop.fix_dispatch import FIX_REASON_BY_KIND
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.pr_findings import (
     FindingDisposition,
@@ -180,7 +180,7 @@ class TestTheFixDispatchGetsItsOwnLedgerSlotAndRemedy:
         assert signal.payload["fix_kind"] == RedMrFixAttempt.Kind.REVIEW_FINDINGS
 
     def test_the_remedy_says_implement_and_push_never_comment(self) -> None:
-        remedy = _FIX_REASON_BY_KIND[RedMrFixAttempt.Kind.REVIEW_FINDINGS]
+        remedy = FIX_REASON_BY_KIND[RedMrFixAttempt.Kind.REVIEW_FINDINGS]
         assert "IMPLEMENT" in remedy
         assert "push" in remedy
         assert "another comment" in remedy

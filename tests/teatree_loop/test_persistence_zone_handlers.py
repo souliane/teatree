@@ -13,12 +13,14 @@ so ``persist_agent_actions`` returned ``[]`` and created no rows — every
 ``created`` / ``Task.objects.filter(...)`` assertion here was RED before the fix.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.mode_resolution import egress_forbidden
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models import DeferredQuestion, HeadCarryOver, Mode, ModeOverride, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
@@ -28,8 +30,10 @@ from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.on_behalf_gate_recorded import owner_voice_permitted
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
+from teatree.hooks.brief_anchor_scanner import TRUST_THE_CODE_CLAUSE, find_unanchored_assertions
 from teatree.loop.dispatch import DispatchAction, dispatch
-from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
+from teatree.loop.fix_dispatch import FIX_REASON_BY_KIND
+from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
@@ -760,8 +764,47 @@ class TestFullDispatchPersistWire(TestCase):
         assert len(created) == len(signals), f"expected one task per revived zone, got {[t.phase for t in created]}"
 
 
+class TestFixDispatchRereadsTheLiveHead(TestCase):
+    """A fix dispatch re-reads the PR head first; a moved head settles the attempt and mints nothing."""
+
+    _PR = "https://github.com/acme/repo/pull/301"
+    _SCANNED = "a" * 40
+
+    def _persist(self, *, live_head: str, fix_kind: str = RedMrFixAttempt.Kind.CI_RED) -> list[Task]:
+        planned_ticket(issue_url=self._PR, overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        signal = ScanSignal(
+            kind="my_pr.conflicted" if fix_kind == RedMrFixAttempt.Kind.MERGE_CONFLICT else "my_pr.failed",
+            summary="PR needs a fix",
+            payload={"pr_url": self._PR, "head_sha": self._SCANNED, "fix_kind": fix_kind, "overlay": "acme"},
+        )
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+            return_value=SimpleNamespace(live_head_read=lambda: LiveHeadRead.of(live_head)),
+        ):
+            return persist_agent_actions(_agent_actions(signal))
+
+    def test_a_moved_head_mints_no_task_and_settles_the_scanned_head(self) -> None:
+        created = self._persist(live_head="b" * 40)
+        assert created == []
+        assert not Task.objects.filter(ticket__issue_url=self._PR).exists()
+        assert RedMrFixAttempt.objects.filter(pr_url=self._PR, head_sha=self._SCANNED).count() == 1
+
+    def test_an_unmoved_head_mints_the_fix_task(self) -> None:
+        assert [task.phase for task in self._persist(live_head=self._SCANNED)] == ["debugging"]
+
+    def test_an_unreadable_head_does_not_block_the_fix(self) -> None:
+        assert [task.phase for task in self._persist(live_head="")] == ["debugging"]
+
+    def test_the_conflict_fix_carries_the_fixer_brief(self) -> None:
+        (task,) = self._persist(live_head=self._SCANNED, fix_kind=RedMrFixAttempt.Kind.MERGE_CONFLICT)
+        assert f"verified at {self._SCANNED}" in task.execution_reason
+        assert TRUST_THE_CODE_CLAUSE in task.execution_reason
+        assert "MERGING the target branch" in task.execution_reason
+        assert find_unanchored_assertions(task.execution_reason) is None
+
+
 class TestEveryFixKindHasAScheduledRemedy(TestCase):
-    """``_FIX_REASON_BY_KIND`` ↔ ``RedMrFixAttempt.Kind`` parity.
+    """``FIX_REASON_BY_KIND`` ↔ ``RedMrFixAttempt.Kind`` parity.
 
     ``_handle_debug`` indexes the table with the payload's resolved fix kind, which
     ``fix_kind_of`` guarantees is one of the ledger's kinds — so a kind added to the
@@ -770,12 +813,12 @@ class TestEveryFixKindHasAScheduledRemedy(TestCase):
     """
 
     def test_the_remedy_table_covers_exactly_the_ledger_kinds(self) -> None:
-        assert set(_FIX_REASON_BY_KIND) == set(RedMrFixAttempt.Kind.values)
+        assert set(FIX_REASON_BY_KIND) == set(RedMrFixAttempt.Kind.values)
 
     def test_every_remedy_names_the_merge_request_it_is_scheduled_for(self) -> None:
         # Each reason is formatted with ``pr_url``; one that drops the placeholder
         # would schedule a task naming no merge request.
-        assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())
+        assert all("{pr_url}" in reason for reason in FIX_REASON_BY_KIND.values())
 
 
 class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
@@ -859,7 +902,7 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         ):
             reason = self._reason(permitted=True, pr_id=pr_id, signal_kind=signal_kind, fix_kind=fix_kind)
             pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
-            assert reason == _FIX_REASON_BY_KIND[fix_kind].format(pr_url=pr_url)
+            assert FIX_REASON_BY_KIND[fix_kind].format(pr_url=pr_url) in reason
 
     def test_posture_is_not_read_when_role_or_open_work_blocks_debugging(self) -> None:
         for pr_id, role, open_work in (
@@ -880,7 +923,7 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
                     "overlay": "acme",
                 },
             )
-            with patch("teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted") as read_posture:
+            with patch("teatree.loop.fix_dispatch.on_behalf_gate_recorded.owner_voice_permitted") as read_posture:
                 created = persist_agent_actions(_agent_actions(signal))
             assert created == []
             read_posture.assert_not_called()
@@ -895,7 +938,7 @@ class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
         )
         errors: dict[str, str] = {}
         with patch(
-            "teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted",
+            "teatree.loop.fix_dispatch.on_behalf_gate_recorded.owner_voice_permitted",
             side_effect=RuntimeError("posture unreadable"),
         ):
             created = persist_agent_actions(_agent_actions(signal), errors=errors)

@@ -11727,6 +11727,8 @@ Usage: t3 teatree tasks list [OPTIONS]
 │                                    [default: no-session]                     │
 │ --json                             Emit the task rows as JSON on stdout      │
 │                                    instead of the human table.               │
+│ --branch                     TEXT  Show only this branch's claimed and       │
+│                                    pending tasks.                            │
 │ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
