@@ -8,8 +8,8 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.merge.carrier import frozen_by_carrier
 from teatree.core.models import PullRequest, Ticket
+from teatree.core.models.carrier_freeze import frozen_by_carrier
 from tests._send_gate import allow_github_repos
 from tests.factories import planned_ticket
 from tests.teatree_core.publishing._recording_host import RecordingHost

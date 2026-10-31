@@ -1,7 +1,7 @@
 """The fixer brief carries what a fixing agent needs to overrule it, and passes the dispatch anchor gate."""
 
-from teatree.agents.fixer_brief import FixerBrief
 from teatree.hooks import brief_anchor_scanner
+from teatree.loop.fix_dispatch import FixerBrief
 
 _PR = "https://github.com/souliane/teatree/pull/5870"
 _HEAD = "50ce18cd4b1f3a9e8d7c6b5a4f3e2d1c0b9a8f7e"

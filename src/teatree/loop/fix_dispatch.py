@@ -1,12 +1,13 @@
 """What a fix dispatch tells its agent, and when a fix dispatch has already been overtaken by a push."""
 
 import logging
+from dataclasses import dataclass
 
-from teatree.agents.fixer_brief import FixerBrief
 from teatree.core import on_behalf_gate_recorded
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.ticket_scheduling import with_reread_first
+from teatree.hooks.brief_anchor_scanner import TRUST_THE_CODE_CLAUSE
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import ActionPayload
 from teatree.utils.url_slug import pr_ref_from_url
@@ -50,6 +51,34 @@ _CONFLICT_ESCAPE = (
     "when the merge cannot be completed, end the task with needs_user_input naming the conflicting paths; "
     "never rebase, force-push or resolve on the target branch"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class FixerBrief:
+    """The brief a fix dispatch carries: anchored to the heads it was written against, and overrulable by the code."""
+
+    pr_url: str
+    head_sha: str
+    base_sha: str
+    agent_type: str
+    escape: str
+    checkout_kind: str
+    findings: tuple[str, ...] = ()
+
+    def render(self) -> str:
+        lines = [
+            f"Fix {self.pr_url} as the {self.agent_type} agent, in the {self.checkout_kind}.",
+            _anchor("PR head", self.head_sha),
+            _anchor("PR base", self.base_sha),
+            f"Recorded escape: {self.escape or 'none'}.",
+            *(f"- {finding}" for finding in self.findings),
+            TRUST_THE_CODE_CLAUSE,
+        ]
+        return "\n".join(lines)
+
+
+def _anchor(label: str, sha: str) -> str:
+    return f"{label}: verified at {sha}." if sha else f"{label}: not read; read it first."
 
 
 def fix_reason(payload: ActionPayload, pr_url: str) -> str:

@@ -17,7 +17,6 @@ from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
-from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
@@ -29,6 +28,7 @@ from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolv
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.quality.gate_receipt import append_gate_notice
 from teatree.utils import git
+from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -44,7 +44,7 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     """Replace ``Closes/Fixes/Resolves #N`` with ``Relates to`` when not closing."""
     if close_ticket:
         return description
-    return CLOSE_KEYWORD_RE.sub(r"Relates to \g<ref>", description)
+    return CLOSING_REFERENCE_RE.sub(r"Relates to \g<ref>", description)
 
 
 def get_overlay_publish_gates(overlay_name: str = "") -> list[str]:

@@ -10,7 +10,7 @@ from teatree.core.publishing.live_text import FindingKind, scan_live_text
 _REPO = "souliane/teatree"
 _FOOTER = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
 _OWN_ISSUE = "souliane/teatree#12"
-_CORE = Path(__file__).resolve().parents[3] / "src" / "teatree" / "core"
+_SRC = Path(__file__).resolve().parents[3] / "src" / "teatree"
 
 
 def _kinds(text: str, allowed: frozenset[str] = frozenset()) -> set[FindingKind]:
@@ -74,10 +74,10 @@ class TestPublicTargetScans:
         assert scan_live_text("Connect to 10.24.8.9", _REPO, "github").clean  # privacy-scan:allow synthetic fixture
 
 
-def test_the_close_keyword_pattern_is_defined_in_exactly_one_core_module() -> None:
+def test_the_closing_reference_pattern_is_defined_in_exactly_one_module() -> None:
     definitions = [
-        path.relative_to(_CORE).as_posix()
-        for path in _CORE.rglob("*.py")
-        if re.search(r"^CLOSE_KEYWORD_RE\s*=", path.read_text(encoding="utf-8"), re.MULTILINE)
+        path.relative_to(_SRC).as_posix()
+        for path in _SRC.rglob("*.py")
+        if re.search(r"^CLOSING_REFERENCE_RE\s*=", path.read_text(encoding="utf-8"), re.MULTILINE)
     ]
-    assert definitions == ["publishing/close_keyword.py"]
+    assert definitions == ["utils/close_keywords.py"]

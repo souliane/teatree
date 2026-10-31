@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.merge.carrier import parse_carries, record_published_round
+from teatree.core.merge.head_overlap import parse_carries, record_published_round
 from teatree.core.publishing.host import build_publish_host
 from teatree.core.publishing.publish import PublishKind, PublishRefusedError, PublishRequest, publish_text
 

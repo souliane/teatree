@@ -6,9 +6,9 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from teatree.core.gates.privacy_gate import BUILTIN_QUOTE_PATTERN_NAMES, format_refusal, scan_outbound_text
-from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.hooks import quote_scanner
 from teatree.hooks.ai_signature_scan import scan_text, summary
+from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 
 _ISSUE_URL_RE = re.compile(r"^https?://[^/]+/(?P<slug>.+?)/(?:-/)?(?:issues|work_items)/(?P<number>\d+)", re.IGNORECASE)
 
@@ -88,6 +88,6 @@ def _closing_keyword_findings(text: str, repo: str, allowed: Collection[str]) ->
     permitted = {canonical_ref(ref, repo) for ref in allowed}
     return [
         LiveTextFinding(FindingKind.CLOSING_KEYWORD, f"`{match.group(0)}` would auto-close {match['ref']} on merge")
-        for match in CLOSE_KEYWORD_RE.finditer(text)
+        for match in CLOSING_REFERENCE_RE.finditer(text)
         if canonical_ref(match["ref"], repo) not in permitted
     ]
