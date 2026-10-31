@@ -159,14 +159,14 @@ class MailboxClient:
         """Send one idempotent message to an addressed live peer and wait for session acceptance.
 
         The receipt's outcome is accepted_current_turn (pushed into the peer's running turn), accepted_new_turn
-        (an idle session started a new turn), accepted_inbox_read (the peer read its inbox), or rejected
+        (an idle Claude session started a new turn), accepted_inbox_read (the peer read its inbox), or rejected
         with a code: not_accepted_in_time, not_idle, stale_command, session_closed or dropped_unread.
         Acceptance is not obedience. With queued_in_inbox true, not_accepted_in_time remains queued
         and a same key retry keeps waiting. With queued_in_inbox false, it is a settled rejection
         and a same key retry returns it immediately. A new key sends a second copy. A new Codex
         thread can read its worker inbox; a resumed thread uses push only.
         A pydantic_ai peer can use native inbox tools without an MCP session.
-        An idle peer can be woken once during its bounded live window. An uncertain push is unknown_delivery.
+        An idle Claude peer can be woken once during its bounded live window. An uncertain push is unknown_delivery.
         """
         return cast(
             "SendReceipt", await self._request("send", to=to, text=text, key=key, timeout_seconds=timeout_seconds)

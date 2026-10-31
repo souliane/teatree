@@ -1656,7 +1656,7 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
         assert receipt in mailbox["agent_mailbox_send"]
     assert "queued_in_inbox false" in mailbox["agent_mailbox_send"]
     assert "same key" in mailbox["agent_mailbox_send"]
-    assert "idle peer" in mailbox["agent_mailbox_send"]
+    assert "idle Claude peer" in mailbox["agent_mailbox_send"]
     assert "in order" in mailbox["agent_mailbox_inbox"]
     assert "20 seconds" in mailbox["agent_mailbox_wait"]
     assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
