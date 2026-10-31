@@ -119,6 +119,19 @@ class TestSweepReportGate(TestCase):
 
         assert sweep_report_error(task) == ""
 
+    def test_a_checkout_git_cannot_read_is_logged_not_silently_passed(self) -> None:
+        task = self._claimed()
+        unreadable = self._tmp_path / "not-a-repo"
+        unreadable.mkdir()
+        Worktree.objects.create(
+            ticket=task.ticket, repo_path=str(unreadable), branch="b", extra={"worktree_path": str(unreadable)}
+        )
+
+        with self.assertLogs("teatree.agents.sweep_report_gate", level="WARNING") as logged:
+            assert sweep_report_error(task) == ""
+
+        assert str(unreadable) in logged.output[0]
+
     def test_task_without_a_checkout_is_untouched(self) -> None:
         assert sweep_report_error(self._claimed()) == ""
 

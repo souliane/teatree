@@ -1,5 +1,6 @@
 """Refuse a coding result for in-scope code whose revert sweep is absent, stale, or lists an unpinned hunk."""
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,8 @@ from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+
+logger = logging.getLogger(__name__)
 
 SWEEP_UNPINNED_PREFIX = "sweep_unpinned:"
 
@@ -34,6 +37,7 @@ def _checkout_error(repo: Path) -> str:
         base = git.merge_base(str(repo), _resolve_base_branch(str(repo)))
         scoped = in_scope_diff_paths(repo, base=base, head=head)
     except (CommandFailedError, OSError):
+        logger.warning("could not read the git state of %s — the revert-sweep receipt was not checked", repo)
         return ""
     return _receipt_error(repo, head, scoped) if scoped else ""
 

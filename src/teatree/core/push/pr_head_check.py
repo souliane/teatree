@@ -5,6 +5,7 @@ remote-ref read-back is not proof the PR carries the work. ``confirm_pr_head`` r
 forge's own account of the open PR and says whether it is the pushed sha.
 """
 
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +20,9 @@ class PrHeadStatus(StrEnum):
     LAGS = "lags"
     UNVERIFIABLE = "unverifiable"
 
+
+_SETTLE_READS = 3
+_SETTLE_SECONDS = 2.0
 
 _PASSING = frozenset({PrHeadStatus.MATCHES, PrHeadStatus.NO_OPEN_PR, PrHeadStatus.NOT_CHECKED})
 
@@ -36,9 +40,20 @@ class PrHeadVerdict:
         return {"status": self.status.value, "detail": self.detail}
 
 
-def confirm_pr_head(repo: str | Path, branch: str, pushed_sha: str) -> PrHeadVerdict:
-    """Return whether the open PR for *branch* is at *pushed_sha*; an unreadable head is never a pass."""
+def confirm_pr_head(
+    repo: str | Path, branch: str, pushed_sha: str, *, settle_seconds: float = _SETTLE_SECONDS
+) -> PrHeadVerdict:
+    """Return whether the open PR for *branch* is at *pushed_sha*; an unreadable head is never a pass.
+
+    A PR head that differs is re-read up to :data:`_SETTLE_READS` more times, *settle_seconds* apart, so a forge
+    that has not yet synced a fresh push is not reported as lagging.
+    """
     head = github_open_pr_head(repo, branch)
+    for _ in range(_SETTLE_READS):
+        if head is None or head.head == pushed_sha:
+            break
+        time.sleep(settle_seconds)
+        head = github_open_pr_head(repo, branch)
     if head is not None:
         if head.head == pushed_sha:
             return PrHeadVerdict(PrHeadStatus.MATCHES, f"{head.url} is at {pushed_sha}")

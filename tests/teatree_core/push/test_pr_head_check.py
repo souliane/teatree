@@ -30,7 +30,7 @@ def _confirm(repo: Path, *, head: GithubOpenPrHead | None, probe: PrProbe | None
         patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=head),
         patch("teatree.core.push.pr_head_check.find_open_pr_for_branch", return_value=probe or PrProbe.unknown()),
     ):
-        return confirm_pr_head(repo, "feature", PUSHED)
+        return confirm_pr_head(repo, "feature", PUSHED, settle_seconds=0)
 
 
 class TestConfirmPrHead:
@@ -48,6 +48,21 @@ class TestConfirmPrHead:
         assert PUSHED in verdict.detail
         assert LAGGING in verdict.detail
         assert PR_URL in verdict.detail
+
+    def test_a_head_that_catches_up_within_the_settle_window_matches(self, repo: Path) -> None:
+        reads = [_open_pr(LAGGING), _open_pr(LAGGING), _open_pr(PUSHED)]
+        with patch("teatree.core.push.pr_head_check.github_open_pr_head", side_effect=reads) as read:
+            verdict = confirm_pr_head(repo, "feature", PUSHED, settle_seconds=0)
+
+        assert verdict.status is PrHeadStatus.MATCHES
+        assert read.call_count == 3
+
+    def test_a_head_that_never_catches_up_lags_after_a_bounded_number_of_reads(self, repo: Path) -> None:
+        with patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=_open_pr(LAGGING)) as read:
+            verdict = confirm_pr_head(repo, "feature", PUSHED, settle_seconds=0)
+
+        assert verdict.status is PrHeadStatus.LAGS
+        assert read.call_count == 4
 
     def test_no_open_pr_for_the_branch_passes_with_a_note(self, repo: Path) -> None:
         verdict = _confirm(repo, head=None, probe=PrProbe.none())
