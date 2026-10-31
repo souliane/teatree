@@ -667,6 +667,40 @@ Conversation anchors are kind-qualified. `conversation_anchor(kind, key)` keeps 
 | factory event | later | #5816 group L1 |
 | schedule | later | #5816 group L2 |
 
+**Coordinator duty map.** Each duty of the coordinator is a `##` section of `skills/coordinating/SKILL.md`; each section of `skills/interactive/SKILL.md` is the attended seat's addition to those duties or its counterpart. The table maps every section, by its exact heading, to the action kind that carries it out, to an open point when no built kind does, to `attended-only` when the section exists only for a seat with a person at the keyboard, or to `n/a` when it is a reading rule with no action to run. A kind's row is the section its `ActionSpec.duty` names. `tests/conformance/test_coordinator_contract.py` fails when a section is missing or listed twice, when a mapped kind does not exist, when a kind has no row, and when an open point is used but not defined.
+
+| Skill | Section | Carried by |
+|---|---|---|
+| coordinating | Resolve settled owner cards and agent asks | `settle_card` |
+| coordinating | File and enqueue — never implement (Non-Negotiable) | `bind_thread`, `queue_task`, O1 |
+| coordinating | Factory watch — BLOCKING first (Non-Negotiable) | O1, O5 |
+| coordinating | Unblock — review, merge, advance the board | O2, O3, O5 |
+| coordinating | Drain stranded work | O4 |
+| coordinating | Mailbox, both ways | `message_peer` |
+| coordinating | A status field is a report, not the state | n/a |
+| interactive | What this session adds to the coordinating duties | attended-only |
+| interactive | Authoring exemptions and the gate backstop | attended-only |
+| interactive | And it does not investigate inline — a sub-agent does (Non-Negotiable) | `queue_task` |
+| interactive | If it does code, it plans first (Non-Negotiable) | attended-only |
+| interactive | No work-bearing state is terminal | O4 |
+| interactive | Skill Loading | attended-only |
+| interactive | Standing directives | attended-only |
+| interactive | Reach a running factory agent | `message_peer`, O3 |
+| interactive | Claude-only hook automation | attended-only |
+| interactive | Interactive vs Headless Output | attended-only |
+| interactive | Related Skills | attended-only |
+
+**Open points.** What the built kinds do not carry.
+
+| Point | Meaning |
+|---|---|
+| O1 | filing work from a trigger that is not a chat message (group L5) |
+| O2 | CLEAR and merge through the keystone |
+| O3 | re-run, cancel, pause and steer a running task |
+| O4 | durable records that something else drains |
+| O5 | `notify_owner`, and `queue_task` for a reviewing task |
+| O6 | naming decisions D1 to D4: role prose and headings 17.4 and 17.8, the identifiers of the attended gate machinery and the two budget keys, the retired `agents/orchestrator.md`, the zone label and the standing-directive text |
+
 **Event-driven wake is the primary drain; the timer is a fallback (default 5m).** The Socket Mode receiver (`t3 slack listen`) records the configured owner's arriving DM as a `PendingChatInjection` row and then enqueues a one-shot `wake_slack_answer` task when it appends the event to the durable JSONL queue; the callback wakes for an event of any type from the owner or a registered operator, for unresolved backends, and for duplicate owner DMs, but not for an event of any type identified as coming from someone other than the configured owner or a registered operator, nor for any event when no owner id is configured, so the answer cycle runs on the worker's next ~1s loops-queue poll (~1s latency) instead of lagging up to a full cadence behind the arrival. For an owner's DM, recording first makes the wake useful: the cycle reads `PendingChatInjection.loop_unreplied()`, so a wake that arrived before the row would find an empty queue and stop without re-arming. Every writer of those rows — the live receiver, the listener-downtime catch-up (§ 7 "Inbound events") and the `slack_mentions` drain of the JSONL queue — records through the one `SlackDmRecorder.record_events` seam, so the write-side checks (`filter_self_messages`, `is_on_behalf_posted`, the fail-closed identity probe, and `owner_identity.sent_by_operator`) apply to every path structurally. Only the overlay's configured owner can send owner work (a registered operator's DM is recorded too, and the answer cycle confines it to the operator's own cards and new work): when the owner id resolves, a colleague's DM is queued as transport but records no row, emits no `slack.dm` signal and wakes nothing, and owner-only readers (`AskUserQuestionReplyScanner`, `RedCardScanner`, the `inbound_unanswered` incident detector) use `owner_identity.owner_rows`, which treats an unreadable owner id as nobody; the answer cycle uses `owner_identity.operator_rows` and confines registered operators to their own cards and new work. A row recorded before the sender filter stays stored and inert. Each catch-up slice that recorded at least one new row enqueues ONE wake, however many rows it recorded. The receiver posts nothing to Slack; every outbound reply stays in the answer cycle, which is what leaves exactly one `:eyes:` source (the `mark_eyes_reacted` CAS). Because the wake carries the primary path, the `run_slack_answer` timer chain is only a missed-wake / retry / startup catch-up safety net — its `T3_SLACK_ANSWER_CADENCE` default is therefore **300s (5m)**, not a tight spin (a deliberate low override is still honoured down to the 15s floor). The wake shares the cadence chain's lease-guarded body (`_run_slack_answer_cycle_under_lease` under the `loop-slack-answer` `LoopLease`) so it can never double-post with the chain or an owner session, self-dedups so an event burst collapses to one cycle, and does not re-arm. The receiver's `backends` layer cannot reach the orchestration layer, so the enqueue is injected as an `on_event` callback wired at the CLI composition root (best-effort — a failed signal only costs latency; the JSONL write is already durable).
 
 **The wake is filtered at the trigger, and debounced (#4707).** The receiver refuses the wake for an event this app itself produced (`is_self_originated` — `api_app_id`, `bot_id`, or a match against the identity `auth.test` resolved once per connection). Without that the cycle fed on its own output: the answer cycle posts, Slack returns the post as a plain `message` event, and the wake fires again — loop gain ≥ 1, measured at 2,391 `chat.postMessage` in 24h. `filter_self_messages` already refused to *answer* such a row, but it runs in the scanner, downstream of the wake, so the guard had to move to where the gain is introduced. The wake additionally dedups against a wake that finished under `WAKE_MIN_INTERVAL_SECONDS` ago, re-arming once at the far edge — a trailing-edge debounce, so a burst costs O(1) cycles and its last event is still answered.
