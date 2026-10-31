@@ -29,12 +29,13 @@ from teatree.core.management.commands._ensure_pr import (
     defer_unpushed_pr,
 )
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.models import PendingPullRequest, PullRequest, RubricCriterion, Ticket, Worktree
+from teatree.core.models import PendingPullRequest, PullRequest, Rubric, RubricCriterion, Ticket, Worktree
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, run_checked
+from tests._issue_read import issue_read
 from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 
@@ -48,8 +49,8 @@ def _raise(error: Exception) -> NoReturn:
 class TestTicketExtraForBranch(TestCase):
     """Resolve the owning ticket's ``extra`` from the orphan-branch name (#873).
 
-    Lets the pre-push ``ensure-pr`` fallback honor the explicit
-    ``more_prs_coming`` opt-out even though it has no ticket handle.
+    Lets the pre-push ``ensure-pr`` fallback read the ``more_prs_coming`` flag the rubric derives even
+    though it has no ticket handle.
     """
 
     def setUp(self) -> None:
@@ -60,12 +61,9 @@ class TestTicketExtraForBranch(TestCase):
     def test_returns_none_when_no_worktree_for_branch(self) -> None:
         assert _ticket_extra_for_branch("no-such-branch") is None
 
-    def test_returns_ticket_extra_for_known_branch(self) -> None:
-        ticket = Ticket.objects.create(
-            overlay="test",
-            issue_url="https://github.com/souliane/teatree/issues/873",
-            extra={"more_prs_coming": True},
-        )
+    def test_returns_the_derived_flag_for_a_known_branch(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/873")
+        Rubric.populate(ticket, ["The first thing works"])
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -73,7 +71,12 @@ class TestTicketExtraForBranch(TestCase):
             branch="fix/873-x",
             extra={"worktree_path": "/tmp/repo873"},
         )
-        assert _ticket_extra_for_branch("fix/873-x") == {"more_prs_coming": True}
+        issue = {"state": "open", "body": "## Acceptance\n- The first thing works\n- The second thing works\n"}
+
+        with issue_read(issue):
+            assert (_ticket_extra_for_branch("fix/873-x") or {})["more_prs_coming"] is True
+        with issue_read({**issue, "body": "## Acceptance\n- The first thing works\n"}):
+            assert (_ticket_extra_for_branch("fix/873-x") or {})["more_prs_coming"] is False
 
     def test_returns_latest_worktree_when_branch_reused(self) -> None:
         old = Ticket.objects.create(
@@ -82,7 +85,7 @@ class TestTicketExtraForBranch(TestCase):
         new = Ticket.objects.create(overlay="test", issue_url="https://x/2", extra={})
         Worktree.objects.create(ticket=old, overlay="test", repo_path="souliane/teatree", branch="shared")
         Worktree.objects.create(ticket=new, overlay="test", repo_path="souliane/teatree", branch="shared")
-        assert _ticket_extra_for_branch("shared") == {}
+        assert _ticket_extra_for_branch("shared") == {"more_prs_coming": False, "more_prs_coming_derived": False}
 
     def test_another_repos_row_on_the_branch_owns_nothing(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", extra={"more_prs_coming": True})

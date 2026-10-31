@@ -39,6 +39,7 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.gates.pr_creation_refusal import pr_creation_refusal, seed_rules_rubric_row
 from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
+from teatree.core.gates.rubric_gate import record_more_prs_coming
 from teatree.core.intake.rubric_from_issue import seed_rubric_notice
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -63,6 +64,7 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
     from teatree.core.models.pending_pull_request import PendingPullRequestManager, SerializedPrSpec
+    from teatree.core.models.types import TicketExtra
     from teatree.core.overlay import OverlayBase
     from teatree.types import RawAPIDict
 
@@ -238,19 +240,14 @@ def _ticket_for_branch(branch_name: str, repo_path: str = ".") -> "Ticket | None
     return ticket_owning_pr_branch(branch_name, slug=git_remote.slug_from_remote(git.remote_url(repo=repo_path)))
 
 
-def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> dict | None:
-    """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
+def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> "TicketExtra | None":
+    """Return the owning ticket's ``extra`` for an orphan-branch PR, with ``more_prs_coming`` derived and recorded.
 
-    Resolving the ``extra`` via the branch's ``Worktree`` row lets
-    ``should_close_ticket`` honor an explicit ``more_prs_coming`` opt-out
-    even on this fallback. A genuinely orphan branch (no row) yields
-    ``None`` — ``should_close_ticket`` then applies the close-on-merge
-    default driven solely by the overlay setting.
+    A genuinely orphan branch (no row) yields ``None`` — ``should_close_ticket`` then applies the
+    close-on-merge default driven solely by the overlay setting.
     """
     ticket = _ticket_for_branch(branch_name, repo_path)
-    if ticket is None:
-        return None
-    return ticket.extra if isinstance(ticket.extra, dict) else None
+    return None if ticket is None else record_more_prs_coming(ticket)
 
 
 def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, str]:

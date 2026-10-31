@@ -29,6 +29,7 @@ from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
     ForgeMergeResult,
+    IssueCloseReason,
     IssueResolutionSpec,
     PrMergeState,
     PrMessage,
@@ -315,8 +316,8 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
         return _list_repo_open_issues(repo=repo, token=self._token)
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
-        """Close a GitHub issue, optionally leaving an audit-trail comment first.
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> RawAPIDict:
+        """Close a GitHub issue with *reason*, optionally leaving an audit-trail comment first.
 
         Idempotent: ``PATCH state=closed`` is a no-op on an already-closed issue.
         Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
@@ -329,7 +330,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             self.post_issue_comment(issue_url=issue_url, body=comment)
         data = _gh_api_patch(
             f"repos/{repo}/issues/{number}",
-            {"state": "closed", "state_reason": "not_planned"},
+            {"state": "closed", "state_reason": reason.value},
             token=self._token,
         )
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}

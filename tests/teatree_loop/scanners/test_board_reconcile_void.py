@@ -4,11 +4,14 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.backends import forge_merge_rpc
 from teatree.core.backend_protocols import PrMergeState, PrOpenState
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.loop.scanners import board_reconcile
 from teatree.loop.scanners.board_reconcile import reconcile_board
+from teatree.loop.scanners.board_reconcile_report import BoardAction
+from tests.teatree_core.merge.partial_merge_helpers import pr_bodies
 from tests.void_merge_fixtures import ISSUE_URL, MERGED_SHA, PR_URL, SLUG, landed_ticket, void_pr
 
 State = Ticket.State
@@ -180,8 +183,12 @@ class TestTheJanitorResumesOnceAnotherPrCarriesTheWork(TestCase):
             state=PullRequest.State.MERGED,
         )
 
-        report = reconcile_board(probe_forge=False)
+        with (
+            _forge_after_the_void([]),
+            patch.object(forge_merge_rpc, "gh_runner", return_value=pr_bodies({"42": f"Closes {ISSUE_URL}\n"})),
+        ):
+            report = reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == State.MERGED
-        assert [t.ticket_id for t in report.applied] == [ticket.pk]
+        assert ticket.state == State.RETRO_RECORDED
+        assert next(t.action for t in report.applied if t.ticket_id == ticket.pk) == BoardAction.ADVANCED_MERGED

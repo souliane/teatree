@@ -137,6 +137,7 @@ _WAVE2_WRITE_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
     ],
     "close_issue": [
         ("issue_url", inspect.Parameter.KEYWORD_ONLY),
+        ("reason", inspect.Parameter.KEYWORD_ONLY),
         ("comment", inspect.Parameter.KEYWORD_ONLY),
     ],
     "update_issue": [

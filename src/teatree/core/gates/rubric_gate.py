@@ -29,24 +29,37 @@ a recorded FAIL. Delivery also accepts an owner-merged forge PR when its recorde
 merge SHA matches the forge read, its ``merged_by`` matches an owner alias, no keystone
 audit exists, and no PR remains live. This exception never waives a recorded FAIL.
 
-The merge check is pure over the durable rubric row; delivery additionally reads
-recorded merge evidence, PR rows and owner aliases, without a network call. The merge block raises
+The merge check also holds the rubric to the whole issue: every acceptance item of the ticket's
+open issue, including those added under a later dated Acceptance heading, needs a rubric criterion
+or an owner waiver that restates it, and an issue the forge does not return refuses the merge. That
+one read is the merge check's only network call; delivery additionally reads recorded merge
+evidence, PR rows and owner aliases, without one. The merge block raises
 :class:`RubricNotSatisfiedError`, which the merge precondition gate re-wraps as a
 ``MergePreconditionError``; the delivery block raises :class:`RubricNotVerifiedError`,
 an ``InvalidTransitionError`` so the loop's outer atomic rolls the advance back and the
 ticket stays RETRO_RECORDED — merged on the forge, not yet *done*.
+
+The same reading of the issue decides whether a pull request keeps its closing keyword: one that covers
+every acceptance item keeps ``Closes #N``; one that leaves an item without a rubric criterion or owner
+waiver says ``Relates to #N``, and so does one on an umbrella issue, one whose issue cannot be read and
+one the ticket declares partial by hand. :func:`record_more_prs_coming` writes the answer to
+``Ticket.extra['more_prs_coming']``, where the ship, the preview and the orphan-branch path read it;
+``more_prs_coming_derived`` marks a flag the derivation raised, so it drops once the rubric covers the
+issue while a hand-set one stays.
 """
 
 import logging
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from teatree.core.gates.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.plan_adequacy import is_plan_bypass_shaped
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import Rubric
+from teatree.core.models.types import TicketExtra
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -64,6 +77,14 @@ _REMEDY = (
     '0, "status": "pass", "rationale": "<what proves it>"}}, ...]\'`. The criteria come from the plan\'s '
     "`acceptance_criteria` section; a ticket with genuinely nothing to grade records "
     "`ticket plan-bypass --human-authorize`."
+)
+
+
+_COVERAGE_REMEDY = (
+    "State each as a criterion that restates it with `t3 <overlay> ticket rubric-set {pk} --criteria-json '[...]'` "
+    "(it replaces the checklist, so list every criterion) and have an independent verifier grade it; an item the "
+    "owner defers is waived with `t3 <overlay> ticket rubric-waive {pk} --text-hash <hash> --waived-by <owner> "
+    "--reason <why>` once it is stated."
 )
 
 
@@ -85,7 +106,7 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     return Rubric.objects.active_for_ticket(ticket)
 
 
-def _plan_is_bypassed(ticket: "Ticket") -> bool:
+def plan_is_bypassed(ticket: "Ticket") -> bool:
     """Whether the ticket's LATEST plan is the human-authorized bypass."""
     latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
     return latest is not None and is_plan_bypass_shaped(latest.adequacy)
@@ -98,11 +119,28 @@ def _refusal_reason(ticket: "Ticket", head_sha: str | None) -> str:
     whose head has long since moved). A bypassed plan waives the missing rubric and
     every rung except a recorded FAIL.
     """
-    waived = _plan_is_bypassed(ticket)
+    waived = plan_is_bypassed(ticket)
     rubric = latest_rubric(ticket)
     if rubric is None:
         return "" if waived else _NO_RUBRIC_REASON
     return rubric.unverified_reason(head_sha, waived=waived)
+
+
+def _uncovered_reason(ticket: "Ticket") -> str:
+    """Why an acceptance item of the ticket's issue has no rubric criterion or owner waiver, or ``""``."""
+    if not holds_on_issue(ticket) or plan_is_bypassed(ticket):
+        return ""
+    try:
+        items = read_ticket_issue(ticket).items_for(ticket)
+    except Exception:
+        logger.warning("rubric gate: could not read %s", ticket.issue_url, exc_info=True)
+        return f"the issue {ticket.issue_url} cannot be read, so its acceptance items cannot be checked"
+    if not (missing := uncovered(items, stated_texts(ticket))):
+        return ""
+    listing = "; ".join(f'"{item}"' for item in missing)
+    return (
+        f"{len(missing)} acceptance item(s) of {ticket.issue_url} have no rubric criterion or owner waiver: {listing}"
+    )
 
 
 def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
@@ -145,20 +183,23 @@ def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) 
     """Refuse a ``transition`` whose ticket rubric is not fully PASS at ``head_sha``.
 
     Fail-closed: a missing, empty, ungraded, failed, uncited, maker-graded or
-    stale-SHA rubric is refused. ``transition`` names the gated action for the message.
+    stale-SHA rubric is refused, and so is one that leaves an acceptance item of the ticket's
+    issue uncovered or cannot be checked against it. ``transition`` names the gated action for the message.
 
     On a refusal it also records a ``shipped_incomplete`` honesty escalation
     (teatree#2263 trigger #4 backstop) for the ticket's active session before
     raising, so the next verification spawn routes to the most-honest model.
     """
-    reason = _refusal_reason(ticket, head_sha)
+    reason, remedy = _refusal_reason(ticket, head_sha), _REMEDY
+    if not reason:
+        reason, remedy = _uncovered_reason(ticket), _COVERAGE_REMEDY
     if not reason:
         return
     _record_shipped_incomplete_escalation(ticket)
     short_sha = head_sha.strip()[:8] or head_sha.strip()
     msg = (
         f"refusing the '{transition}' transition for ticket {ticket.pk} at head {short_sha}: {reason}. "
-        + _REMEDY.format(pk=ticket.pk)
+        + remedy.format(pk=ticket.pk)
     )
     raise RubricNotSatisfiedError(msg)
 
@@ -183,6 +224,41 @@ def check_rubric_verified(ticket: "Ticket") -> None:
             return
     msg = f"Refusing to mark ticket {ticket.pk} done — {reason}. " + _REMEDY.format(pk=ticket.pk)
     raise RubricNotVerifiedError(msg)
+
+
+def _declared_by_hand(ticket: "Ticket") -> bool:
+    extra = ticket.extra or {}
+    return bool(extra.get("more_prs_coming")) and not extra.get("more_prs_coming_derived")
+
+
+def _derived_from_issue(ticket: "Ticket") -> bool:
+    if not holds_on_issue(ticket):
+        return False
+    try:
+        issue = read_ticket_issue(ticket)
+    except Exception:
+        logger.warning(
+            "close disposition: could not read %s; assuming more pull requests are coming",
+            ticket.issue_url,
+            exc_info=True,
+        )
+        return True
+    if issue.umbrella(ticket):
+        return True
+    return not plan_is_bypassed(ticket) and bool(uncovered(issue.items_for(ticket), stated_texts(ticket)))
+
+
+def more_prs_coming_for(ticket: "Ticket") -> bool:
+    return _declared_by_hand(ticket) or _derived_from_issue(ticket)
+
+
+def record_more_prs_coming(ticket: "Ticket") -> TicketExtra:
+    """Persist the effective flag and return the ticket's extra as the ship reads it."""
+    declared = _declared_by_hand(ticket)
+    flag = declared or _derived_from_issue(ticket)
+    raised = {"more_prs_coming": flag, "more_prs_coming_derived": flag and not declared}
+    ticket.merge_extra(set_keys=TicketExtra(**raised))
+    return TicketExtra(**{**(ticket.extra or {}), **raised})
 
 
 register_gate("rubric_verified", check_rubric_verified)

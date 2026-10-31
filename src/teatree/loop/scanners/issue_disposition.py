@@ -8,7 +8,7 @@ same candidate; the mechanical close handler is idempotent (a no-op on an
 already-closed issue), so re-emission does no harm.
 
 Three deterministic dead-evidence buckets, each falsified by a single live fact.
-``already_shipped``: a delivered/merged :class:`Ticket` already exists for the
+``already_shipped``: a delivered :class:`Ticket` already exists for the
 issue URL — a *live in-flight* ticket (any pre-delivery state) FALSIFIES it, the
 issue is being worked, not dead. ``exact_duplicate``: the issue's title
 fingerprint matches another OPEN issue on the same repo — a *unique* fingerprint
@@ -163,7 +163,7 @@ class IssueDispositionScanner:
         states = set(ticket_model.objects.filter(issue_url=url).values_list("state", flat=True))
         if states & _LIVE_TICKET_STATES:
             return ""
-        return "already_shipped" if states & ticket_model.merged_states() else ""
+        return "already_shipped" if ticket_model.State.DELIVERED in states else ""
 
     def _duplicate_survivor(self, url: str, title: str) -> str:
         """The open issue *url* duplicates, or ``""`` when *url* is the one its group keeps.

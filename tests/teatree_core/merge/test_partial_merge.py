@@ -1,4 +1,4 @@
-"""A merged ``Part of #N`` pull request that declares a remainder keeps its ticket out of ``merged``.
+"""A merged pull request that links its issue without closing it holds the ticket unless it delivers every item.
 
 The reading tests use paraphrased shapes of real merged bodies. The keystone tests drive
 ``merge_ticket_pr`` and then the board's per-tick reconcile, with only the ``gh`` subprocess
@@ -8,8 +8,8 @@ and the issue read stubbed.
 import io
 import json
 import logging
-from contextlib import redirect_stdout
-from unittest.mock import patch
+from contextlib import AbstractContextManager, redirect_stdout
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -57,10 +57,27 @@ _SPACE_AT_THE_CAP = "Part of #4242\n\nUnmet: " + "x" * 299 + " and then more wor
 _OPEN_CAVEAT = "Part of #4242\n\nopen: independent review still needs completion before merge.\n"
 _KEEPS_ISSUE_OPEN = "Part of #4242\n\nThis change keeps the issue open: the link rules need a separate path.\n"
 
-_ISSUE_WITH_BOXES = (
-    "Intro\n\n## Acceptance\n- [x] done thing\n- [ ] route the retro rows\n- [ ] measure live\n\n"
-    "## Notes\n- [ ] unrelated box\n"
+_QUOTED_MARKERS = (
+    "Part of #4242\n\n"
+    "A body that says `does not close` or `the issue remains open` in code declares nothing.\n\n"
+    "> The issue remains open: a quoted description of the marker.\n\n"
+    "```\nUnmet: inside a fence\n```\n"
 )
+_PLAIN_MARKERS = "Part of #4242\n\nThis change does not close the issue: step two is still to do.\n"
+
+_NO_ITEMS_ISSUE = {"state": "open", "body": "Do the thing."}
+_ITEMS = ("Route rows exist for the three phases", "The probe refuses a missing plugin", "Live rows are re-homed")
+_ISSUE_SHAPES = {
+    "numbered": "## Acceptance\n\n1. Route rows exist for the three phases\n2. The probe refuses a missing plugin\n"
+    "3. Live rows are re-homed\n",
+    "bullets": "## Acceptance\n- Route rows exist for the three phases\n- The probe refuses a missing plugin\n"
+    "- Live rows are re-homed\n",
+    "checkboxes": "## Acceptance\n- [ ] Route rows exist for the three phases\n- [ ] The probe refuses a missing "
+    "plugin\n- [ ] Live rows are re-homed\n",
+    "dated section": "## Acceptance\n- Route rows exist for the three phases\n- The probe refuses a missing plugin\n\n"
+    "## Request added (2026-10-31)\n\n## Acceptance\n- Live rows are re-homed\n",
+}
+_LINK_PHRASES = ("Part of", "Relates to", "Related to", "Tracks", "Touches")
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +112,7 @@ def _ticket() -> Ticket:
 def test_a_declared_remainder_is_named_from_the_body(body: str, unmet: tuple[str, ...]) -> None:
     reading = MergedPrReading.parse(body, _ticket())
 
-    assert reading.link is PrLink.PARTIAL
+    assert reading.link is PrLink.NON_CLOSING
     assert reading.unmet == unmet
     assert reading.leaves_remainder
 
@@ -108,8 +125,21 @@ def test_a_declared_remainder_is_named_from_the_body(body: str, unmet: tuple[str
 def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> None:
     reading = MergedPrReading.parse(body, _ticket())
 
-    assert reading.link is PrLink.PARTIAL
+    assert reading.link is PrLink.NON_CLOSING
     assert not reading.leaves_remainder
+
+
+def test_marker_words_inside_code_spans_quotes_and_fences_declare_nothing() -> None:
+    reading = MergedPrReading.parse(_QUOTED_MARKERS, _ticket())
+
+    assert reading.link is PrLink.NON_CLOSING
+    assert reading.unmet == ()
+
+
+def test_the_same_marker_words_as_a_plain_sentence_still_declare_a_remainder() -> None:
+    reading = MergedPrReading.parse(_PLAIN_MARKERS, _ticket())
+
+    assert reading.unmet == ("This change does not close the issue: step two is still to do.",)
 
 
 @pytest.mark.parametrize(
@@ -117,8 +147,10 @@ def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> Non
     [
         ("Closes #4242\n\nopen: the rest.\n", PrLink.CLOSING),
         ("Fixes souliane/teatree#4242. Remaining after this PR: nothing real.", PrLink.CLOSING),
-        ("Part of https://github.com/souliane/teatree/issues/4242\n\nopen: step two\n", PrLink.PARTIAL),
-        ("Related to souliane/teatree#4242\n\nopen: step two\n", PrLink.PARTIAL),
+        ("Part of https://github.com/souliane/teatree/issues/4242\n\nopen: step two\n", PrLink.NON_CLOSING),
+        ("Related to souliane/teatree#4242\n\nopen: step two\n", PrLink.NON_CLOSING),
+        ("Tracks #4242\n\nopen: step two\n", PrLink.NON_CLOSING),
+        ("Moves the widget (#4242).\n", PrLink.NON_CLOSING),
         ("Part of #1111\n\nopen: step two\n", PrLink.NONE),
         ("Part of other/repo#4242\n\nopen: step two\n", PrLink.NONE),
         ("Tidies the widget.\n\nopen: step two\n", PrLink.NONE),
@@ -128,6 +160,8 @@ def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> Non
         "closing-qualified",
         "partial-url",
         "related-qualified",
+        "tracks",
+        "bare-mention",
         "other-issue",
         "other-repo",
         "no-link",
@@ -141,16 +175,6 @@ def test_a_remainder_item_cut_at_the_cap_carries_no_trailing_space() -> None:
     (item,) = MergedPrReading.parse(_SPACE_AT_THE_CAP, _ticket()).unmet
 
     assert item == "x" * 299
-
-
-def test_unchecked_acceptance_boxes_the_body_does_not_claim_are_the_fallback_remainder() -> None:
-    reading = MergedPrReading.parse(_BOILERPLATE, _ticket())
-
-    unmet = reading.with_unclaimed_issue_boxes(
-        _ISSUE_WITH_BOXES, "Part of #4242. Delivered here: route the retro rows."
-    ).unmet
-
-    assert unmet == ("measure live",)
 
 
 class _BodyStub(_GhStub):
@@ -171,10 +195,25 @@ class _BodyStub(_GhStub):
         return result
 
 
-def _merge(ticket: Ticket, body: str, *, pr_id: int = 859, unreadable_after_merge: bool = False) -> str:
+def _issue_read(issue: dict[str, str] | Exception) -> AbstractContextManager[MagicMock]:
+    return (
+        patch(_ISSUE_READ, side_effect=issue)
+        if isinstance(issue, Exception)
+        else patch(_ISSUE_READ, return_value=issue)
+    )
+
+
+def _merge(
+    ticket: Ticket,
+    body: str,
+    *,
+    pr_id: int = 859,
+    issue: dict[str, str] | Exception = _NO_ITEMS_ISSUE,
+    unreadable_after_merge: bool = False,
+) -> str:
     clear = _clear(ticket, pr_id=pr_id)
     stub = _BodyStub(body, unreadable_after_merge=unreadable_after_merge)
-    with patch(_GH_RUNNER, return_value=stub):
+    with patch(_GH_RUNNER, return_value=stub), _issue_read(issue):
         return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop").ticket_state
 
 
@@ -270,16 +309,6 @@ class TestPartOfWithDeclaredRemainder(TestCase):
         assert passed is False
         assert "1 unresolved PR branch row(s)" in output.getvalue()
 
-    def test_the_fallback_remainder_comes_from_the_issue_acceptance_boxes(self) -> None:
-        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
-
-        with patch(_ISSUE_READ, return_value={"body": _ISSUE_WITH_BOXES}):
-            state = _merge(ticket, _BOILERPLATE)
-
-        assert state == Ticket.State.WORK_STARTED
-        (task,) = _planning_tasks(ticket)
-        assert "route the retro rows" in task.execution_reason
-
     def test_an_item_cut_at_the_cap_on_a_space_is_still_recognised_by_a_second_merge(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
         _merge(ticket, _SPACE_AT_THE_CAP)
@@ -361,28 +390,109 @@ class TestMergesThatStillReachMerged(TestCase):
         assert MergeClear.objects.get(ticket=ticket).consumed_at is not None
         assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
 
-    def test_an_issue_read_that_raises_keeps_the_merge_and_the_audit(self) -> None:
-        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
-
-        with (
-            patch(_ISSUE_READ, side_effect=RuntimeError("forge down")),
-            self.assertLogs("teatree.core.merge.partial_merge", level=logging.ERROR),
-        ):
-            state = _merge(ticket, _BOILERPLATE)
-
-        assert state == Ticket.State.MERGED
-        assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
-
     def test_a_ticket_with_no_edge_back_to_planning_keeps_the_merge(self) -> None:
         ticket = _ticket_in(Ticket.State.PLAN_RECORDED)
 
         assert _merge(ticket, _STATUS_TABLE) == Ticket.State.MERGED
 
-    def test_an_unreadable_body_after_the_merge_keeps_the_merge_and_the_audit(self) -> None:
+    def test_an_issue_the_forge_reports_closed_lets_the_merge_through(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        closed = {"state": "closed", "body": _ISSUE_SHAPES["bullets"]}
+
+        assert _merge(ticket, "Part of #4242\n", issue=closed) == Ticket.State.MERGED
+
+    def test_an_umbrella_issue_holds_on_declared_markers_only_not_on_unquoted_items(self) -> None:
+        umbrella = {"state": "open", "body": "# Never close this issue\n\n" + _ISSUE_SHAPES["bullets"]}
+        quiet = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        assert _merge(quiet, "Part of #4242\n", issue=umbrella) == Ticket.State.MERGED
+
+        Ticket.objects.filter(issue_url=_ISSUE_URL).delete()
+        declared = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        assert _merge(declared, _OPEN_LINE, issue=umbrella) == Ticket.State.WORK_STARTED
+
+
+def _delivering(phrase: str, items: tuple[str, ...]) -> str:
+    return f"{phrase} #4242\n\nDelivered:\n" + "".join(f"- {item}\n" for item in items)
+
+
+class TestNonClosingLinkHoldsUntilEveryItemIsDelivered(TestCase):
+    def test_each_link_phrase_holds_on_an_unquoted_item_and_merges_once_every_item_is_quoted(self) -> None:
+        issue = {"state": "open", "body": _ISSUE_SHAPES["bullets"]}
+        for phrase in _LINK_PHRASES:
+            with self.subTest(phrase=phrase):
+                Ticket.objects.filter(issue_url=_ISSUE_URL).delete()
+                held = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+                assert _merge(held, _delivering(phrase, _ITEMS[:2]), issue=issue) == Ticket.State.WORK_STARTED
+                (task,) = _planning_tasks(held)
+                assert _ITEMS[2] in task.execution_reason
+                assert _ITEMS[0] not in task.execution_reason
+
+                Ticket.objects.filter(issue_url=_ISSUE_URL).delete()
+                complete = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+                assert _merge(complete, _delivering(phrase, _ITEMS), issue=issue) == Ticket.State.MERGED
+                assert _planning_tasks(complete) == []
+
+    def test_each_issue_shape_names_the_item_the_body_omits(self) -> None:
+        for shape, body in _ISSUE_SHAPES.items():
+            with self.subTest(shape=shape):
+                Ticket.objects.filter(issue_url=_ISSUE_URL).delete()
+                ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+                state = _merge(ticket, _delivering("Part of", _ITEMS[:2]), issue={"state": "open", "body": body})
+
+                assert state == Ticket.State.WORK_STARTED
+                (task,) = _planning_tasks(ticket)
+                assert _ITEMS[2] in task.execution_reason
+
+    def test_a_closing_keyword_reaches_merged_with_an_item_unquoted(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        issue = {"state": "open", "body": _ISSUE_SHAPES["bullets"]}
+
+        assert _merge(ticket, "Closes #4242\n", issue=issue) == Ticket.State.MERGED
+        assert _planning_tasks(ticket) == []
+
+    def test_an_item_quoted_only_in_an_unmet_row_is_not_delivered(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        issue = {"state": "open", "body": _ISSUE_SHAPES["bullets"]}
+        body = (
+            "Part of #4242\n\n| Item | Status |\n| --- | --- |\n"
+            f"| {_ITEMS[0]} | Met |\n| {_ITEMS[1]} | Met |\n| {_ITEMS[2]} | **Unmet** |\n"
+        )
+
+        assert _merge(ticket, body, issue=issue) == Ticket.State.WORK_STARTED
+        (task,) = _planning_tasks(ticket)
+        assert _ITEMS[2] in task.execution_reason
+
+
+class TestAnUnreadableMergeIsNotSettled(TestCase):
+    def test_an_issue_read_that_raises_consumes_the_clear_and_leaves_the_ticket_where_it_was(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        with self.assertLogs("teatree.core.merge.partial_merge", level=logging.WARNING) as logs:
+            state = _merge(ticket, _BOILERPLATE, issue=RuntimeError("forge down"))
+
+        ticket.refresh_from_db()
+        assert state == ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert MergeClear.objects.get(ticket=ticket).consumed_at is not None
+        assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
+        assert _planning_tasks(ticket) == []
+        assert any("859" in line for line in logs.output)
+
+    def test_a_body_the_forge_stops_returning_after_the_merge_leaves_the_ticket_where_it_was(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
 
         with self.assertLogs("teatree.core.merge.partial_merge", level=logging.WARNING):
             state = _merge(ticket, _STATUS_TABLE, unreadable_after_merge=True)
 
-        assert state == Ticket.State.MERGED
+        ticket.refresh_from_db()
+        assert state == ticket.state == Ticket.State.REVIEW_REQUESTED
         assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
+
+    def test_a_closing_keyword_merge_does_not_wait_for_the_issue_to_be_readable(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        assert _merge(ticket, "Closes #4242\n", issue=RuntimeError("forge down")) == Ticket.State.MERGED

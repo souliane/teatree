@@ -23,6 +23,7 @@ class BoardAction(StrEnum):
     IGNORED_ISSUE_CLOSED = "ignored_issue_closed"
     REVIEW_CLOSED = "review_closed"
     REVIVED_REOPENED = "revived_reopened"
+    HELD_FOR_REMAINDER = "held_for_remainder"
     REFUSED = "refused"
 
 

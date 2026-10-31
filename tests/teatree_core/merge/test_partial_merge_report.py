@@ -65,7 +65,7 @@ class TestPartialMergeReport(TestCase):
                 "state": Ticket.State.MERGED,
                 "issue_url": ticket.issue_url,
                 "pr_url": "https://github.com/souliane/teatree/pull/860",
-                "link": "partial",
+                "link": "non_closing",
                 "unmet": ["finish the report"],
             }
         ]
@@ -133,8 +133,8 @@ class TestPartialMergeReport(TestCase):
         )
 
         assert [(row["ticket_id"], row["state"], row["link"], row["unmet"]) for row in result["matches"]] == [
-            (bare.pk, Ticket.State.MERGED, "partial", []),
-            (boxed.pk, Ticket.State.RETRO_RECORDED, "partial", ["Finish the audit"]),
+            (bare.pk, Ticket.State.MERGED, "non_closing", []),
+            (boxed.pk, Ticket.State.RETRO_RECORDED, "non_closing", ["Finish the audit"]),
             (delivered.pk, Ticket.State.DELIVERED, "none", []),
         ]
 
@@ -292,7 +292,10 @@ class TestPartialMergeReport(TestCase):
 
         pr_url = "https://github.com/souliane/teatree/pull/860"
         assert stderr.getvalue().splitlines() == [
-            f"ticket {partial.pk} (merged, partial) {partial.issue_url} — {pr_url}: finish the report, wire the docs",
+            (
+                f"ticket {partial.pk} (merged, non_closing) {partial.issue_url} — {pr_url}: "
+                "finish the report, wire the docs"
+            ),
             f"ticket {unreadable.pk}: unreadable (issue state unreadable)",
         ]
 

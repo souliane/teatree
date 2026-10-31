@@ -25,7 +25,7 @@ its ``Service`` is declared, so an undeclared forge exposes no write tool
 """
 
 from itertools import starmap
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
@@ -33,7 +33,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend, IssueCloseReason
 from teatree.mcp.service_resolver import FORGE_CLIENTS
 
 if TYPE_CHECKING:
@@ -267,8 +267,13 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
 
         return await _run_hygiene_write(_note)
 
-    async def issue_close(issue_url: str, *, rationale: str) -> dict[str, Any]:
-        """Close an issue via the hygiene facade: the reason lands in the description, never a comment (#162).
+    async def issue_close(
+        issue_url: str, *, rationale: str, reason: Literal["completed", "not_planned"]
+    ) -> dict[str, Any]:
+        """Close an issue via the hygiene facade: the rationale lands in the description, never a comment (#162).
+
+        *reason* is the forge's close reason: ``completed`` is refused unless a delivered ticket or
+        a merged closing pull request covers the issue, ``not_planned`` closes without one.
 
         Routes through :func:`teatree.core.issue_hygiene.close_with_rationale` —
         the same self-author guard, leak scrub and #117 audit every other write
@@ -278,13 +283,15 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         """
 
         def _close() -> dict[str, Any]:
-            from teatree.core.issue_hygiene import close_with_rationale  # noqa: PLC0415 — deferred: ORM-adjacent import
+            from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
+                IssueClose,
+                close_with_rationale,
+            )
 
             outcome = close_with_rationale(
                 host=_forge_client(service),
                 issue_url=issue_url,
-                rationale=rationale,
-                action=f"{prefix}_issue_close",
+                close=IssueClose(rationale, IssueCloseReason(reason), action=f"{prefix}_issue_close"),
             )
             return {"issue_url": outcome.issue_url, "outcome": outcome.kind}
 

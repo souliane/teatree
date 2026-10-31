@@ -18,6 +18,7 @@ from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
     ForgeMergeResult,
+    IssueCloseReason,
     IssueResolutionSpec,
     PrMergeState,
     PrMessage,
@@ -427,13 +428,14 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """
         return _issue_ops.get_issue(self._client, issue_url)
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> RawAPIDict:
         """Close a GitLab issue, optionally leaving an audit-trail note first.
 
         The note is posted here (not in the delegate) so the delegate stays a
         single-purpose state transition; an unparsable URL still short-circuits
-        there, before any write.
+        there, before any write. GitLab records no close reason, so the one asked for is logged.
         """
+        logger.info("closing %s as %s; GitLab records no close reason", issue_url, reason.value)
         if comment:
             self.post_issue_comment(issue_url=issue_url, body=comment)
         return _issue_ops.close_issue(self._client, issue_url)

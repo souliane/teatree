@@ -12,6 +12,7 @@ from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.gates.privacy_gate import refusal_for_pr_generic_findings
+from teatree.core.gates.rubric_gate import record_more_prs_coming
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -567,7 +568,7 @@ class ShipExecutor(RunnerBase):
             PrTitleInputs(branch=branch, subject=subject, body=body or "", title_override=title_override),
         )
         close_ticket = should_close_ticket(
-            extra,
+            record_more_prs_coming(ticket),
             setting_enabled=overlay.config.mr_close_ticket,
         )
         # Build the description's FIRST LINE from the (sanitized) title, not the

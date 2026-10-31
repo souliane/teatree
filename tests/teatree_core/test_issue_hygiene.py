@@ -19,23 +19,25 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import IssueResolutionSpec
+from teatree.core.backend_protocols import IssueCloseReason, IssueResolutionSpec, PrMessage
 from teatree.core.issue_hygiene import (
     MAX_APPEND_ATTEMPTS,
     CreateDecision,
     DescriptionSection,
+    IssueClose,
     IssueDraft,
     IssueWriteConflictError,
     NotePurpose,
     SweepCommentRefusedError,
     _resolve_repo,
     append_description_section,
+    close_with_rationale,
     create_or_extend,
     create_or_extend_by_marker,
     record_issue_note,
     section_marker,
 )
-from teatree.core.models import ConfigSetting, SendAudit, TicketSweepRun
+from teatree.core.models import ConfigSetting, PullRequest, SendAudit, Ticket, TicketSweepRun
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
 if TYPE_CHECKING:
@@ -707,3 +709,102 @@ class TestMarkerJudgedCreate(TestCase):
             create_or_extend_by_marker(host=host, draft=draft, marker="<!-- fp: abc -->")
             create_or_extend_by_marker(host=host, draft=draft, marker="<!-- fp: abc -->")
         assert len(host.updates) == 1
+
+
+class _ClosingHost(_FakeHost):
+    """A forge that records the close reason it was handed and reports back the one it landed."""
+
+    def __init__(
+        self, issues: dict[str, dict[str, Any]], *, landed: str = "", merged_bodies: dict[int, str] | None = None
+    ):
+        super().__init__(issues)
+        self.closes: list[tuple[str, IssueCloseReason]] = []
+        self.landed = landed
+        self.merged_bodies = merged_bodies or {}
+
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> dict[str, Any]:
+        self.closes.append((issue_url, reason))
+        return {"state": "closed", "state_reason": self.landed or reason.value}
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        return PrMessage(title="A change", body=self.merged_bodies[pr_id]) if pr_id in self.merged_bodies else None
+
+
+def _close(host: _ClosingHost, reason: IssueCloseReason) -> None:
+    with _no_scrub():
+        close_with_rationale(host=host, issue_url=_ISSUE, close=IssueClose("why", reason))
+
+
+def _ticket_on_the_issue(state: str) -> Ticket:
+    return Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=state)
+
+
+class TestACloseCarriesAClosedSetReason(TestCase):
+    def test_a_not_planned_close_needs_no_delivery_and_hands_the_reason_to_the_forge(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)})
+
+        _close(host, IssueCloseReason.NOT_PLANNED)
+
+        assert host.closes == [(_ISSUE, IssueCloseReason.NOT_PLANNED)]
+
+    def test_a_completed_close_with_nothing_delivered_is_refused_and_writes_nothing(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)})
+        _ticket_on_the_issue(Ticket.State.PR_OPENED)
+
+        with pytest.raises(IssueWriteConflictError, match="completed"):
+            _close(host, IssueCloseReason.COMPLETED)
+
+        assert (host.updates, host.closes) == ([], [])
+
+    def test_a_completed_close_behind_a_delivered_author_ticket_goes_through(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)})
+        _ticket_on_the_issue(Ticket.State.DELIVERED)
+
+        _close(host, IssueCloseReason.COMPLETED)
+
+        assert host.closes == [(_ISSUE, IssueCloseReason.COMPLETED)]
+
+    def test_a_merged_ticket_alone_is_not_delivery(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)})
+        _ticket_on_the_issue(Ticket.State.MERGED)
+
+        with pytest.raises(IssueWriteConflictError):
+            _close(host, IssueCloseReason.COMPLETED)
+
+    def test_a_completed_close_behind_a_merged_pull_request_with_a_closing_keyword_goes_through(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)}, merged_bodies={4: "Closes #7"})
+        ticket = _ticket_on_the_issue(Ticket.State.MERGED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://gitlab.com/acme/widgets/-/merge_requests/4",
+            repo=_REPO,
+            iid="4",
+            state=PullRequest.State.MERGED,
+        )
+
+        _close(host, IssueCloseReason.COMPLETED)
+
+        assert host.closes == [(_ISSUE, IssueCloseReason.COMPLETED)]
+
+    def test_a_merged_pull_request_that_only_relates_to_the_issue_is_not_delivery(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)}, merged_bodies={4: "Part of #7"})
+        ticket = _ticket_on_the_issue(Ticket.State.MERGED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://gitlab.com/acme/widgets/-/merge_requests/4",
+            repo=_REPO,
+            iid="4",
+            state=PullRequest.State.MERGED,
+        )
+
+        with pytest.raises(IssueWriteConflictError):
+            _close(host, IssueCloseReason.COMPLETED)
+
+    def test_a_forge_that_lands_another_reason_than_the_one_asked_for_is_reported(self) -> None:
+        host = _ClosingHost({_ISSUE: _issue(_ISSUE)}, landed="not_planned")
+        _ticket_on_the_issue(Ticket.State.DELIVERED)
+
+        with pytest.raises(IssueWriteConflictError, match="not_planned"):
+            _close(host, IssueCloseReason.COMPLETED)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 from django.db import transaction
 from django_fsm import can_proceed
 
+from teatree.core.backend_protocols import IssueCloseReason
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.models.task_attempt_settlement import complete_with_strict_lease
 from teatree.core.review.author_trust import classify_author
@@ -457,6 +458,7 @@ def close_dead_issue(payload: ActionPayload) -> None:
     no Task or claim.
     """
     from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
+        IssueClose,
         IssueWriteConflictError,
         close_with_rationale,
     )
@@ -472,8 +474,11 @@ def close_dead_issue(payload: ActionPayload) -> None:
     if rationale is None:
         return
     try:
+        close_reason = IssueCloseReason.COMPLETED if reason == "already_shipped" else IssueCloseReason.NOT_PLANNED
         outcome = close_with_rationale(
-            host=host, issue_url=issue_url, rationale=rationale, action="issue_disposition_close"
+            host=host,
+            issue_url=issue_url,
+            close=IssueClose(rationale, close_reason, action="issue_disposition_close"),
         )
     except (OutboundBlockedError, IssueWriteConflictError):
         logger.warning(

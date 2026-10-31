@@ -20,7 +20,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, 
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
-from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.models import PullRequest, Rubric, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
@@ -31,13 +31,17 @@ from teatree.core.runners.ship import (
     resolve_and_reconcile_branch,
     resolve_ship_worktree,
     sanitize_close_keywords,
-    should_close_ticket,
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.run import CommandFailedError
+from tests._issue_read import issue_read
 from tests.teatree_core.conftest import CommandOverlay
 
 pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
+_FIRST_ITEM = "The first thing works"
+_SECOND_ITEM = "The second thing works"
+_ITEMS_ISSUE = {"state": "open", "body": f"## Acceptance\n- {_FIRST_ITEM}\n- {_SECOND_ITEM}\n"}
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
@@ -1209,52 +1213,22 @@ class TestSanitizeCloseKeywords:
         assert sanitize_close_keywords("Closes #123", close_ticket=True) == "Closes #123"
 
 
-class TestShouldCloseTicket:
-    """The auto-close disposition resolver (#873).
-
-    Default = close-on-merge when the overlay setting is enabled.
-    Suppression is the exception: only an explicit ``more_prs_coming``
-    opt-out (declared partial / umbrella with remaining scope) keeps the
-    issue open.
-    """
-
-    def test_setting_enabled_standalone_full_resolve_closes(self) -> None:
-        # (a) setting True + standalone non-umbrella full-resolve PR ⇒ close.
-        assert should_close_ticket({}, setting_enabled=True) is True
-
-    def test_setting_enabled_none_extra_closes(self) -> None:
-        # Orphan-branch path with no ticket extra still close-on-merge.
-        assert should_close_ticket(None, setting_enabled=True) is True
-
-    def test_setting_enabled_explicit_followup_opt_out_keeps_open(self) -> None:
-        # (b) umbrella / declared-partial PR ⇒ issue stays open.
-        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=True) is False
-
-    def test_setting_disabled_never_closes(self) -> None:
-        # (c) setting False ⇒ no auto-close regardless of opt-out flag.
-        assert should_close_ticket({}, setting_enabled=False) is False
-        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=False) is False
-
-    def test_followup_flag_falsey_value_still_closes(self) -> None:
-        # An explicitly-false / absent opt-out keeps the close-on-merge default.
-        assert should_close_ticket({"more_prs_coming": False}, setting_enabled=True) is True
-
-
 class TestShipExecutorHonorsAutoCloseSetting(TestCase):
     """End-to-end: the PR description the ship path sends to the code host.
 
-    Proves the setting is wired through ``build_pr_spec`` — the exact
-    regression: a True setting + standalone PR must keep ``Closes #N`` so
-    the platform auto-closes on merge; an explicit ``more_prs_coming``
-    opt-out (umbrella/partial) must rewrite to ``Relates to``.
+    The flag is derived from the rubric, never defaulted: a pull request whose ticket covers every
+    acceptance item of the issue keeps ``Closes #N`` so the platform closes the issue on merge, while
+    one that leaves an item uncovered, or whose issue cannot be read, says ``Relates to``.
     """
 
-    def _ticket_with_extra(self, extra: dict) -> Ticket:
+    def _ticket_with_extra(self, extra: dict, *criteria: str) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://github.com/souliane/teatree/issues/873",
             extra=extra,
         )
+        if criteria:
+            Rubric.populate(ticket, list(criteria))
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -1289,21 +1263,57 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
             ShipExecutor(ticket).run()
         return host.create_pr.call_args[0][0].description
 
-    def test_setting_true_standalone_keeps_closes_keyword(self) -> None:
-        ticket = self._ticket_with_extra({})
-        description = self._capture_pr_description(ticket, setting_enabled=True)
+    def test_a_ticket_whose_rubric_covers_every_item_keeps_the_closes_keyword(self) -> None:
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
         assert "Closes #873" in description
         assert "Relates to #873" not in description
 
-    def test_setting_true_umbrella_partial_rewrites_to_relates(self) -> None:
-        ticket = self._ticket_with_extra({"more_prs_coming": True})
-        description = self._capture_pr_description(ticket, setting_enabled=True)
+    def test_a_flag_set_by_hand_keeps_the_relates_keyword(self) -> None:
+        ticket = self._ticket_with_extra({"more_prs_coming": True}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        ticket.refresh_from_db()
+        assert "Relates to #873" in description
+        assert ticket.extra["more_prs_coming"] is True
+
+    def test_a_flag_an_earlier_derivation_raised_does_not_survive_a_covering_rubric(self) -> None:
+        ticket = self._ticket_with_extra(
+            {"more_prs_coming": True, "more_prs_coming_derived": True}, _FIRST_ITEM, _SECOND_ITEM
+        )
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        ticket.refresh_from_db()
+        assert "Closes #873" in description
+        assert ticket.extra["more_prs_coming"] is False
+
+    def test_an_umbrella_issue_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read({"state": "open", "body": "- [ ] #11\n- [ ] #12\n"}):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
         assert "Relates to #873" in description
         assert "Closes #873" not in description
 
+    def test_an_uncovered_item_rewrites_to_relates_and_records_the_flag(self) -> None:
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM)
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        ticket.refresh_from_db()
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
+        assert ticket.extra["more_prs_coming"] is True
+
+    def test_an_issue_the_forge_cannot_read_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read(RuntimeError("forge down")):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Relates to #873" in description
+
     def test_setting_false_rewrites_to_relates(self) -> None:
-        ticket = self._ticket_with_extra({})
-        description = self._capture_pr_description(ticket, setting_enabled=False)
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=False)
         assert "Relates to #873" in description
         assert "Closes #873" not in description
 

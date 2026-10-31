@@ -185,9 +185,14 @@ class TicketExtra(TicketCarrierExtra, total=False):
     # ``ReviewedPrHeadScanner``'s rotation clock — least-recently-checked first,
     # so its per-tick cap cannot pin one window of a longer watch list.
     head_checked_at: str
+    # Rule G's rotation clock — least-recently-checked settled ticket first, so the
+    # per-run inspection cap walks the whole backlog.
+    settled_checked_at: str
     retro_scheduled: bool
     tracker_404: bool
     more_prs_coming: bool
+    # True while ``more_prs_coming`` was raised by the rubric derivation, not set by hand.
+    more_prs_coming_derived: bool
     e2e_recipe: "E2ERecipeSerialized"
     # Durable refusal when the ship-time branch-currency check rejects the push.
     # Stacked-delivery override keyed by canonical owner/repo slug. The string

@@ -37,7 +37,7 @@ When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry 
 
 ### 0. Ticket Reference
 
-Use the active overlay's `validate_pr(title, description)` policy for title and ticket-reference requirements (surfaced as `t3 tool validate-mr`). When `mr_close_ticket = True`, the ship path keeps `Closes/Fixes #<number>` unless `Ticket.extra['more_prs_coming']` asks for `Relates to #N`. Resolve a missing reference with the policy in § 0a below.
+Use the active overlay's `validate_pr(title, description)` policy for title and ticket-reference requirements (surfaced as `t3 tool validate-mr`). When `mr_close_ticket = True`, the ship path keeps `Closes/Fixes #<number>` only while the rubric covers every acceptance item, else `Relates to #N` (`core/gates/rubric_gate.py`). Resolve a missing reference with the policy in § 0a below.
 
 ### 0a. Missing Issue Reference Policy (Non-Negotiable)
 
@@ -123,7 +123,7 @@ prek keeps every patch it writes rather than deleting it on restore, so
 `git apply ~/.cache/prek/patches/<ts>-<pid>.patch`, newest timestamp first.
 
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
-- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) when the active overlay's `validate_pr` requires it. With `mr_close_ticket = True`, the ship path keeps a `Closes/Fixes #<number>` body keyword by default; set `Ticket.extra['more_prs_coming']` to emit `Relates to #N` for a declared partial.
+- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) when the active overlay's `validate_pr` requires it. With `mr_close_ticket = True`, the body keyword is `Closes/Fixes #<number>` when the rubric covers the whole issue, else `Relates to #N`.
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
 - **No commit-type bypass for the quality gates.** The teatree `quality-gates` and `module-health` hooks have no `relax:` escape hatch (souliane/teatree#525). When the gate fires, fix the architecture: split the file by concern, refactor module-level functions onto a class, replace `dict[str, object]` with a typed dataclass, or delegate the suppressed import/call to a module the hook already exempts (`tests/`, `scripts/hooks/`, `e2e/`, `skills/`, `docs/`). The legitimate house pattern around `subprocess` (`# noqa: S404` on the import, `# noqa: S603` on each call) belongs in a CLI helper module that already lives under one of those exempt paths — not in newly suppressed source files.
 
@@ -314,7 +314,7 @@ If `t3 <overlay> pr create` errors, **fix the error** (create the missing sessio
 
 The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by default** (overlay `mr_close_ticket = True`). Before relying on that, re-read the linked issue end-to-end and **enumerate every acceptance criterion, phase, or deliverable it names**. For each one, mark it ✅ shipped, ⚠️ partial, or ❌ not started, and paste the matrix into the PR body. Auto-close is correct only when every row is ✅. Otherwise (a partial, or an umbrella with remaining tracked scope):
 
-- Set `Ticket.extra['more_prs_coming'] = True` before `pr create` so `should_close_ticket` rewrites the body keyword to `Relates-to #N` and the issue stays open.
+- Leave the uncovered rows without a rubric criterion (or set `more_prs_coming` by hand): `pr create` writes `Relates-to #N` (always on an umbrella); the issue stays open.
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 

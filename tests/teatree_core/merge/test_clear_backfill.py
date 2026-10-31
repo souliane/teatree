@@ -11,9 +11,12 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends import forge_merge_rpc
+from teatree.backends.github import client as github_client
 from teatree.core.merge.clear_backfill import BackfillOutcome, backfill_clear_tickets
-from teatree.core.models import MergeClear, PullRequest, Ticket
+from teatree.core.models import MergeAudit, MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.pull_request import PullRequestQuerySet
+from tests.teatree_core.merge.partial_merge_helpers import pr_bodies
 
 _SLUG = "org/repo"
 _PR_ID = 4120
@@ -92,3 +95,62 @@ class RepairIsAllOrNothingTest(_BackfillCase):
         clear.refresh_from_db()
         assert clear.ticket_id is None, "a half-applied repair takes the row out of `ticket__isnull=True` forever"
         assert list(MergeClear.objects.filter(ticket__isnull=True)) == [clear]
+
+
+class HoldsAMergeThatLeavesAnItemOutTest(TestCase):
+    def _consumed_clear(self, body: str, *, issue: dict[str, str] | Exception) -> tuple[Ticket, MergeClear]:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.PR_OPENED,
+        )
+        PullRequest.objects.create(
+            overlay="t3-teatree",
+            ticket=ticket,
+            url="https://github.com/souliane/teatree/pull/859",
+            repo="souliane/teatree",
+            iid="859",
+        )
+        clear = MergeClear.objects.create(
+            slug="souliane/teatree",
+            pr_id=859,
+            host_kind="github",
+            reviewed_sha=_SHA,
+            reviewer_identity="reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+            consumed_at=timezone.now(),
+        )
+        MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, repo_slug="souliane/teatree")
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=pr_bodies({"859": body})),
+            patch.object(
+                github_client.GitHubCodeHost,
+                "get_issue",
+                side_effect=issue if isinstance(issue, Exception) else lambda _url: issue,
+            ),
+        ):
+            backfill_clear_tickets()
+        ticket.refresh_from_db()
+        return ticket, clear
+
+    def test_a_merge_that_leaves_an_item_out_sends_the_ticket_back_to_planning(self) -> None:
+        issue = {"state": "open", "body": "## Acceptance\n- The first thing\n- The second thing\n"}
+
+        ticket, _ = self._consumed_clear("Part of #4242\n\n- The first thing\n", issue=issue)
+
+        assert ticket.state == Ticket.State.WORK_STARTED
+        (task,) = Task.objects.filter(ticket=ticket, phase="planning")
+        assert "The second thing" in task.execution_reason
+
+    def test_a_merge_that_quotes_every_item_advances_the_ticket(self) -> None:
+        issue = {"state": "open", "body": "## Acceptance\n- The first thing\n- The second thing\n"}
+
+        ticket, _ = self._consumed_clear("Part of #4242\n\n- The first thing\n- The second thing\n", issue=issue)
+
+        assert ticket.state == Ticket.State.MERGED
+
+    def test_a_merge_the_forge_cannot_read_leaves_the_ticket_where_it_was(self) -> None:
+        ticket, _ = self._consumed_clear("Part of #4242\n", issue=RuntimeError("forge down"))
+
+        assert ticket.state == Ticket.State.PR_OPENED
