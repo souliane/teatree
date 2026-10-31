@@ -7,7 +7,7 @@ from teatree.core.models import PullRequest, Ticket
 from teatree.core.models.carrier_freeze import frozen_by_carrier
 from teatree.url_classify import repo_and_iid
 
-__all__ = ["carried_pr_ids", "frozen_by_carrier", "parse_carries", "record_carry_freeze"]
+__all__ = ["carried_pr_ids", "frozen_by_carrier", "parse_carries", "record_carry_freeze", "record_published_round"]
 
 _CARRIES_LINE = re.compile(r"^Carries:[ \t]*(?P<urls>.*)$", re.MULTILINE)
 _TRAILING_PUNCTUATION = ",.;)"
@@ -29,8 +29,24 @@ def carried_pr_ids(body: str, *, repo: str) -> frozenset[int]:
 
 
 def record_carry_freeze(*, carrier_ticket: Ticket, carrier_url: str, member_urls: Sequence[str]) -> None:
-    """Mark the carrier ticket ``carries`` and each member ticket ``carried_by``; never the carrier itself."""
+    """Declare the round as exactly *member_urls*: freeze each member, release one the carrier no longer names."""
+    dropped = [url for url in carrier_ticket.extra.get("carries") or [] if url not in member_urls]
+    for pull_request in PullRequest.objects.filter(url__in=dropped).select_related("ticket"):
+        if pull_request.ticket.extra.get("carried_by") == carrier_url:
+            pull_request.ticket.merge_extra(pop_keys=["carried_by"])
     members = PullRequest.objects.filter(url__in=member_urls).exclude(ticket=carrier_ticket).select_related("ticket")
     for pull_request in members:
         pull_request.ticket.merge_extra(set_keys={"carried_by": carrier_url})
-    carrier_ticket.merge_extra(set_keys={"carries": list(member_urls)})
+    if member_urls:
+        carrier_ticket.merge_extra(set_keys={"carries": list(member_urls)})
+    else:
+        carrier_ticket.merge_extra(pop_keys=["carries"])
+
+
+def record_published_round(*, carrier_url: str, member_urls: Sequence[str]) -> bool:
+    """Record the round a published carrier body declares; ``False`` when no ticket tracks the carrier PR."""
+    carrier = PullRequest.objects.filter(url=carrier_url).select_related("ticket").first()
+    if carrier is None:
+        return False
+    record_carry_freeze(carrier_ticket=carrier.ticket, carrier_url=carrier_url, member_urls=member_urls)
+    return True
