@@ -176,6 +176,20 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         assert result.success is False
         assert "timed out" in result.error
 
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_with_no_timeout_is_bounded_by_the_declared_heavy_ceiling(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        declared = MagicMock(provision_step_timeout_seconds=321)
+        with (
+            provision_timebox_unimportable(),
+            patch("teatree.core.provision.step_runner.UserSettings", return_value=declared),
+        ):
+            run_step("bounded", ["true"], timeout=None)
+
+        assert mock_sp.run.call_args.kwargs["timeout"] == 321
+
     def test_run_step_propagates_when_module_present_but_internally_broken(self) -> None:
         """A present ``provision_timebox`` failing on its OWN broken import must NOT be swallowed.
 

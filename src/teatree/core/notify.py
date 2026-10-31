@@ -201,7 +201,6 @@ def notify_user_outcome(
         )
         finalize_failed(idempotency_key=idempotency_key, error=failure)
         return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
-    _deliver_speech_sidecar(resolved_backend, channel=channel, text=outgoing_text, posted_ts=posted_ts)
     if options.thread_ts:
         record_ticket_thread_post_after_delivery(
             channel=channel,
@@ -356,20 +355,8 @@ def _deliver_dm(
     (c) ``post_message`` returns ``ok:false`` (missing_scope,
     channel_not_found) or ``ok:true`` with no ``ts`` — nothing landed.
 
-    **Why ``post_message`` instead of ``deliver_user_dm`` (#2054):** the
-    speak chokepoint (:func:`teatree.core.speak.deliver_user_dm`) posts
-    the text body via ``post_audio_dm`` (``files.getUploadURLExternal`` +
-    ``files.completeUploadExternal``) when ``speak.slack`` is on and
-    synthesis succeeds. That response does NOT carry a ``ts`` at the top
-    level — Slack populates it only under
-    ``files[].shares.private.<channel>[].ts``, which is frequently absent.
-    Reading ``response.get("ts", "")`` therefore always returns ``""`` and
-    every delivery fails with "Slack post returned no message ts".
-
-    The fix: use ``backend.post_message`` (``chat.postMessage``) for the
-    canonical text delivery — it always returns ``{"ok": true, "ts": "…"}``
-    — and let ``notify_user_outcome`` run ``deliver_user_dm_sidecar`` after
-    the delivery transaction closes. A speak failure never suppresses the text.
+    The text goes out through ``backend.post_message`` (``chat.postMessage``),
+    which always returns ``{"ok": true, "ts": "…"}``.
     """
     # A preview (`t3 loops tick --loop followup --dry-run`) installs a suppressor and must
     # not DM the owner either — a run that "posts nothing" still pinging them is a lie. The
@@ -407,17 +394,6 @@ def _deliver_dm(
         return channel, posted_ts, detail
 
     return channel, posted_ts, ""
-
-
-def _deliver_speech_sidecar(backend: MessagingBackend, *, channel: str, text: str, posted_ts: str) -> None:
-    if channel == "dry-run":
-        return
-    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    try:
-        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
-    except Exception as exc:  # noqa: BLE001 — sidecar is best-effort; a delivered DM must never be undone by it
-        logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
 
 
 def _operator_proxy_gate(

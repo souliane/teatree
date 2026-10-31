@@ -40,11 +40,9 @@ _POLL_SECONDS = 0.05
 _WAIT_SECONDS = 30.0
 _STATE_FIELD = 0
 _PGRP_FIELD = 2
-_DARWIN_PLANTED_PGIDS: set[int] = set()
 
 #: The holder stays outside the planted group but in its session. Its direct ``true``
-#: child joins that group and remains a real zombie until the holder waits for it, so
-#: the zombie oracle works on macOS as well as Linux without Linux-only ``prctl``.
+#: child joins that group and remains a real zombie until the holder waits for it.
 _GROUP_HOLDER = """
 import subprocess, sys
 leader = subprocess.Popen(sys.argv[1], shell=True, process_group=0)
@@ -56,62 +54,12 @@ zombie.wait()
 """
 
 
-def _darwin_group_rows(pgid: int) -> list[tuple[int, str, str]]:
-    """Observe the real group through Darwin's process table when procfs is absent."""
-    output = subprocess.run(
-        ["/bin/ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "state=", "-o", "command="],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    rows = []
-    for line in output.splitlines():
-        fields = line.strip().split(maxsplit=3)
-        if len(fields) == 4 and fields[0].isdigit() and fields[1] == str(pgid):
-            rows.append((int(fields[0]), fields[2][0], fields[3]))
-    return rows
-
-
-def _darwin_live_group_members(pgid: int) -> tuple[int, ...]:
-    return tuple(sorted(pid for pid, state, _command in _darwin_group_rows(pgid) if state != "Z"))
-
-
-def _darwin_group(pgid: int) -> OrphanGroup | None:
-    """Read one planted, still-live group through macOS's real process table."""
-    rows = _darwin_group_rows(pgid)
-    if not any(state != "Z" for _pid, state, _command in rows):
-        return None
-    members = []
-    for pid, state, command in rows:
-        try:
-            argv = tuple(shlex.split(command))
-        except ValueError:
-            argv = tuple(command.split())
-        members.append(GroupMember(pid=pid, comm=Path(argv[0]).name if argv else "", state=state, argv=argv))
-    return OrphanGroup(
-        pgid=pgid,
-        members=tuple(members),
-        age_seconds=1.0,
-        cpu_seconds=1.0,
-        signalable=True,
-        source="ps",
-    )
-
-
-def _darwin_group_survey() -> OrphanSurvey:
-    """Show every live planted group, so the requested-PGID filter still has teeth."""
-    groups = tuple(group for pgid in sorted(_DARWIN_PLANTED_PGIDS) if (group := _darwin_group(pgid)) is not None)
-    return OrphanSurvey(groups=groups, gaps=())
-
-
 def _member_states(pgid: int) -> list[str]:
-    """Every member of *pgid* as the kernel reports it, via procfs or Darwin ``ps``.
+    """Every member of *pgid* as the kernel reports it, via procfs.
 
     Deliberately NOT the production probe: ``os.killpg(pgid, 0)`` succeeds for an all-zombie
     group, so a test sharing that call structurally cannot catch the bug this file pins.
     """
-    if sys.platform == "darwin":
-        return [state for _pid, state, _command in _darwin_group_rows(pgid)]
     states = []
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -159,7 +107,7 @@ def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Generato
     """A real group whose leader has exited and whose child is still burning CPU.
 
     Its zombie member is a direct child of a holder outside the group, so it remains
-    visible after TERM on Linux and macOS alike.
+    visible after TERM.
 
     *program* selects the surviving child's PROGRAM WORD, which is what the never-reap
     rules key on — ``sh`` is unprotected, a ``python`` running teatree code is not.
@@ -176,18 +124,9 @@ def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Generato
     assert holder.stdin is not None
     assert holder.stdout is not None
     pgid = int(holder.stdout.readline())
-    if sys.platform == "darwin":
-        _DARWIN_PLANTED_PGIDS.add(pgid)
     try:
-        with contextlib.ExitStack() as stack:
-            if sys.platform == "darwin":
-                stack.enter_context(patch(_SURVEY, side_effect=lambda **_kwargs: _darwin_group_survey()))
-                stack.enter_context(
-                    patch("teatree.cli.reap_orphan_groups.live_group_members", side_effect=_darwin_live_group_members)
-                )
-            yield pgid
+        yield pgid
     finally:
-        _DARWIN_PLANTED_PGIDS.discard(pgid)
         with contextlib.suppress(OSError):
             os.killpg(pgid, signal.SIGKILL)
         holder.stdin.close()

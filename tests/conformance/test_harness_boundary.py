@@ -32,7 +32,6 @@ _HARNESS_HOOKS = frozenset(
 _ATTENDED_HOOKS = frozenset(
     {
         "hooks/scripts/headless_authoring_gate.py",
-        "hooks/scripts/host-pressure-publish.zsh",
         "hooks/scripts/orchestrator_delegation_gate.py",
         "hooks/scripts/orchestrator_investigation_gate.py",
         "hooks/scripts/owner_turn_context.py",

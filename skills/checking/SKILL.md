@@ -1,7 +1,7 @@
 ---
 name: checking
 description: The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders). Use when the user says "what did I miss", "checking", "catch me up", "what changed since", "ask me the questions", "task list", "todos", "what's on my list", "my tasks", "followup", "check status", "advance tickets", or "PR reminders".
-compatibility: any
+compatibility: Linux
 requires:
   - workspace
   - rules

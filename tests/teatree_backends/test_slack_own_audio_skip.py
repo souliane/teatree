@@ -1,7 +1,7 @@
 """Backend read chokepoint strips the bot's OWN TTS audio (teatree#2089).
 
-The Slack-TTS feature attaches a synthesised ``speech.m4a`` to the bot's own
-DM messages. When the loop reads Slack history (``fetch_message``,
+A bot-authored DM in an older thread can carry a synthesised ``speech.m4a`` of
+its own text. When the loop reads Slack history (``fetch_message``,
 ``fetch_channel_history``, ``fetch_thread_replies``) the bot's own audio
 attachment must NOT be surfaced to the agent — re-transcribing a spoken copy
 of text the bot already wrote is pure token waste. Audio on messages authored

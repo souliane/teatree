@@ -34,7 +34,6 @@ src/teatree/config/settings_communication.py
 src/teatree/config/settings_loop_flags.py
 src/teatree/config/settings_loop_owned.py
 src/teatree/config/settings_provisioning.py
-src/teatree/config/speak.py
 src/teatree/config/trusted_authors.py
 src/teatree/config/value_coercion.py
 src/teatree/forge_credentials.py

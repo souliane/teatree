@@ -10,14 +10,19 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.codex_app_server import CodexAppServerSession
-from teatree.agents.codex_app_server_errors import request_error
+from teatree.agents.codex_app_server_errors import request_error, transport_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_read_only_server import executor_session
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
 from teatree.agents.codex_turn_steering import CodexSteerUnknownError
+from teatree.agents.harness_registry import HarnessFallbackError
 from teatree.agents.live_control import RejectCode, SteerableSession, SteerRejectedError
 
 _CONTRACT = Path(__file__).parents[1] / "fixtures/codex_app_server/0.155.1-contract.json"
+_TURN_COMPLETED = {
+    "method": "turn/completed",
+    "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}},
+}
 
 
 def _session(tmp_path: Path, answer: dict[str, Any] | None = None) -> tuple[CodexAppServerSession, AsyncMock]:
@@ -303,3 +308,74 @@ def test_idle_ended_and_closed_sessions_refuse_without_writing(tmp_path: Path) -
 def test_the_production_shared_session_and_the_executor_class_are_steerable() -> None:
     assert issubclass(SharedCodexSession, SteerableSession)
     assert get_args(get_type_hints(executor_session)["return"])[0] is SharedCodexSession
+
+
+async def _finished_first_turn(session: CodexAppServerSession) -> None:
+    session._next_event = AsyncMock(return_value=_TURN_COMPLETED)
+    await session.query("start")
+    async for _ in session.receive_response():
+        pass
+
+
+def test_a_follow_up_during_a_running_turn_is_not_idle_and_writes_nothing(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await session.query("start")
+        with pytest.raises(SteerRejectedError) as running:
+            await session.follow_up("too early")
+        assert running.value.code is RejectCode.NOT_IDLE
+
+    asyncio.run(run())
+    assert [call.args[0] for call in request.call_args_list] == ["turn/start"]
+
+
+def test_a_follow_up_after_close_is_session_closed_and_writes_nothing(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await _finished_first_turn(session)
+        await session.close()
+        with pytest.raises(SteerRejectedError) as closed:
+            await session.follow_up("late")
+        assert closed.value.code is RejectCode.SESSION_CLOSED
+
+    asyncio.run(run())
+    assert [call.args[0] for call in request.call_args_list] == ["turn/start"]
+
+
+def test_a_follow_up_the_transport_refused_before_any_write_is_session_closed(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await _finished_first_turn(session)
+        request.side_effect = AsyncMock(side_effect=transport_error("shared worker"))
+        with pytest.raises(SteerRejectedError) as refused:
+            await session.follow_up("held server is gone")
+        assert refused.value.code is RejectCode.SESSION_CLOSED
+
+    asyncio.run(run())
+
+
+def test_a_follow_up_whose_write_may_have_landed_is_not_reported_as_unsent(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await _finished_first_turn(session)
+        request.side_effect = AsyncMock(side_effect=transport_error("shared worker", side_effects_started=True))
+        with pytest.raises(HarnessFallbackError):
+            await session.follow_up("the write may have landed")
+
+    asyncio.run(run())
+
+
+def test_a_follow_up_the_server_answered_without_a_turn_is_not_reported_as_a_rejection(tmp_path: Path) -> None:
+    session, request = _session(tmp_path)
+
+    async def run() -> None:
+        await _finished_first_turn(session)
+        request.side_effect = AsyncMock(return_value={})
+        with pytest.raises(CodexAppServerError):
+            await session.follow_up("answered, but no turn id")
+
+    asyncio.run(run())

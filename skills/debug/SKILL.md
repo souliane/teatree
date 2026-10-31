@@ -1,7 +1,7 @@
 ---
 name: debug
 description: Troubleshooting and fixing — something is broken, find and fix it. Use when user says "broken", "error", "not working", "crash", "blank page", "can't connect", "debug", or reports any failure.
-compatibility: macOS/Linux, any language/framework supported by the project.
+compatibility: Linux, any language/framework supported by the project.
 requires:
   - workspace
   - systematic-debugging

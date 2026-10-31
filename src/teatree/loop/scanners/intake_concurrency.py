@@ -87,7 +87,7 @@ class IntakeConcurrencyScanner:
         previous = marker.adaptive_intake_concurrency or self.static_ceiling
         available_gb = available_mib / _MIB_PER_GB
         # Sizing rides the CPUs this process can use; the load watermark rides the cores the
-        # load average was measured across, which is the host's when the host feed answers.
+        # load average was measured across, which is the host's.
         cores = available_cpu_count()
         machine = read_machine_signal(ram_available_gb=available_gb)
         load1 = machine.load1

@@ -16,10 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase, override_settings
 
+from teatree.config import UserSettings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.provision.provision_timebox import (
-    DEFAULT_FAST_STEP_TIMEOUT_SECONDS,
-    DEFAULT_STEP_TIMEOUT_SECONDS,
     ProgressAlert,
     alert_provision_user,
     detect_migration_conflict,
@@ -80,10 +79,10 @@ class TestResolveStepTimeout(TestCase):
         assert resolve_step_timeout_seconds() > 0
 
     def test_default_is_the_fast_ceiling(self) -> None:
-        assert resolve_step_timeout_seconds() == DEFAULT_FAST_STEP_TIMEOUT_SECONDS
+        assert resolve_step_timeout_seconds() == UserSettings().provision_fast_step_timeout_seconds
 
     def test_heavy_is_the_long_ceiling(self) -> None:
-        assert resolve_step_timeout_seconds(heavy=True) == DEFAULT_STEP_TIMEOUT_SECONDS
+        assert resolve_step_timeout_seconds(heavy=True) == UserSettings().provision_step_timeout_seconds
 
     def test_fast_ceiling_is_shorter_than_heavy(self) -> None:
         assert resolve_step_timeout_seconds() < resolve_step_timeout_seconds(heavy=True)
@@ -104,7 +103,23 @@ class TestResolveStepTimeout(TestCase):
     def test_non_positive_heavy_value_falls_back_to_default(self) -> None:
         with patch("teatree.core.provision.provision_timebox.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_step_timeout_seconds=0)
-            assert resolve_step_timeout_seconds(heavy=True) == DEFAULT_STEP_TIMEOUT_SECONDS
+            assert resolve_step_timeout_seconds(heavy=True) == UserSettings().provision_step_timeout_seconds
+
+    def test_an_unreadable_ceiling_degrades_to_the_declared_default_of_its_own_setting(self) -> None:
+        for heavy, setting_name in (
+            (True, "provision_step_timeout_seconds"),
+            (False, "provision_fast_step_timeout_seconds"),
+        ):
+            for unusable in ("soon", 0, -5):
+                unreadable = MagicMock(**{setting_name: unusable})
+                with (
+                    patch("teatree.core.provision.provision_timebox.get_effective_settings", return_value=unreadable),
+                    patch(
+                        "teatree.core.provision.provision_timebox.UserSettings",
+                        return_value=MagicMock(**{setting_name: 777}),
+                    ),
+                ):
+                    assert resolve_step_timeout_seconds(heavy=heavy) == 777, (heavy, unusable)
 
 
 class TestRunTimeboxedStep(TestCase):

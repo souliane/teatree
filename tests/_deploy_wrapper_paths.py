@@ -21,7 +21,6 @@ def copy_wrapper(source: Path, destination: Path) -> None:
     """Materialize the host wrapper with the sibling project and topology helper it sources."""
     shutil.copy2(source, destination)
     shutil.copy2(source.parent / "generation-topology.sh", destination.parent / "generation-topology.sh")
-    shutil.copy2(source.parent / "install-host-pressure.zsh", destination.parent / "install-host-pressure.zsh")
     shutil.copy2(source.parent / "secret-read.sh", destination.parent / "secret-read.sh")
 
 

@@ -54,8 +54,7 @@ class TicketWorkspaceDivergenceError(RuntimeError):
 def _group_equivalent_dirs(parents: set[Path]) -> set[Path]:
     """Collapse *parents* to one representative per :func:`paths_match` class.
 
-    A ``/var`` candidate and its ``/private/var`` twin — or a configured symlink
-    and its target — are two spellings of ONE workspace dir. Counting them raw
+    A configured symlink and its target are two spellings of ONE workspace dir. Counting them raw
     reports a healthy ticket as split and refuses a registration that would
     actually land as a sibling.
     """
@@ -137,9 +136,9 @@ def assert_joins_ticket_workspace(ticket: "Ticket", candidate: Path) -> None:
     The structural half of "same ticket → same workspace": every seam that
     REGISTERS a worktree row calls this, so joining a ticket from a foreign root
     fails at registration rather than producing a ticket whose repos cannot see
-    each other. Symlink-tolerant via :func:`paths_match` — a ``/var`` candidate
-    must match its ``/private/var`` twin, or a macOS caller would trip the
-    refusal on two spellings of one directory.
+    each other. Symlink-tolerant via :func:`paths_match` — a symlinked candidate
+    must match its target, or a caller would trip the refusal on two spellings of
+    one directory.
     """
     workspace = ticket_workspace_dir(ticket)
     if workspace is None or paths_match(workspace, candidate.parent):

@@ -135,7 +135,6 @@ services:
       - t3
     env_file: *generation-env-file
     environment:
-      TEATREE_HOST_OS: ${TEATREE_HOST_OS:-}
       TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
       GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db

@@ -1,7 +1,7 @@
 ---
 name: interactive
 description: "Shared Claude Code and Codex contract for an attended TeaTree session: it carries every duty of `t3:coordinating` (factory watch, unblocking, owner cards, filing and enqueuing, the mailbox) and adds what only a session with a person at the keyboard needs — no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
-compatibility: any
+compatibility: macOS/Linux
 requires:
   - rules
   - coordinating
@@ -158,7 +158,7 @@ When a running factory task needs something only this session has — a page or 
 4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
 5. `t3 <overlay> live pause <task>` — ACTIVE: interrupts the running turn and parks the task with its conversation; the receipt is `paused`, and a Slack `resume` in the ticket's thread releases the same task.
 
-Commands carry the selected session's attempt and worker generation. `stale_command` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
+Commands carry the selected session's attempt and worker generation. `stale_command` means either changed before delivery: inspect the live session before sending again.
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 
@@ -168,15 +168,19 @@ The plugin's `t3 mcp serve --interactive` child joins a live worker as this atte
 
 ## Claude-only hook automation
 
-Claude hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for Claude hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution. Codex does not consume this file; shared behavior must live in the skill or CLI seam, never rely silently on a Claude hook.
+Claude hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for Claude hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`, and remove any `settings.json` equivalent in the same change that moves a hook to the plugin. Codex does not consume this file; shared behavior must live in the skill or CLI seam, never rely silently on a Claude hook.
 
 ## Interactive vs Headless Output
 
-The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.
+The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it is noise: show only the text summary.
+
+## Platform
+
+The factory is Linux only; macOS is supported for this skill alone. Its host scripts stay bash 3.2 and Python 3.9 compatible, with no GNU-only flags, and every such path must also work on Linux.
 
 ## Related Skills
 
-Each skill below declares `requires: interactive`, so loading it engages the session too — that is the contract, and `tests/conformance/test_engagement_skill_requires_walk.py` keeps this table and those edges in agreement.
+Each skill below declares `requires: interactive`, so loading it engages the session too; `tests/conformance/test_engagement_skill_requires_walk.py` keeps this table and those edges in agreement.
 
 | Skill | When to load |
 |-------|--------------|
@@ -184,4 +188,4 @@ Each skill below declares `requires: interactive`, so loading it engages the ses
 
 `/t3:wip` is deliberately absent: it is cross-cutting, so working a backlog does not by itself engage teatree.
 
-`/t3:internals` is NOT in this table on purpose: it loads from the CHECKOUT, not from a mode. Teatree's own architecture and management-command rules are needed on a teatree ticket and irrelevant on a customer ticket, so `SkillLoadingPolicy.detect_internals_skill` keys it on the worktree being a teatree checkout — which reaches a headless worker too, where a mode skill never would.
+`/t3:internals` is NOT in this table on purpose: it loads from the CHECKOUT, not from a mode. Its architecture and management-command rules apply on a teatree ticket and not on a customer ticket, so `SkillLoadingPolicy.detect_internals_skill` keys it on the worktree being a teatree checkout, which reaches a headless worker too.

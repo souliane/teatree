@@ -37,8 +37,9 @@ MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES = 1440
 def parse_self_improve_owner_wait_minutes(raw: object) -> int:
     if type(raw) is int and 1 <= raw <= MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES:
         return raw
-    logger.error("Invalid self_improve_owner_wait_minutes %r; using 60", raw)
-    return 60
+    fallback = _SelfImproveLoopSettings.self_improve_owner_wait_minutes
+    logger.error("Invalid self_improve_owner_wait_minutes %r; using %d", raw, fallback)
+    return fallback
 
 
 @dataclass
@@ -243,8 +244,7 @@ class _ResourcePressureLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "resource_pressure")
 
-    # Measures ABSOLUTE reclaimable bytes (``vm_stat`` pages) — never
-    # percent-of-nominal, which macOS "99 % RAM used" misleads about.
+    # Measures ABSOLUTE reclaimable bytes (``MemAvailable``), never percent-of-nominal.
     ram_warn_avail_gb: float = setting(
         3.0, spec=SettingSpec(help="available RAM below this many GB warns", parse=_parse_strict_float)
     )

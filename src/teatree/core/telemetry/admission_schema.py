@@ -29,7 +29,6 @@ _ADMISSION_CAUSES = frozenset(
         "weekly-pace",
         "load",
         "memory",
-        "swap",
         "yield-collapse",
         "metered-lane-parked",
         "metered-spend",
@@ -88,7 +87,7 @@ _LIFECYCLE_FIELDS = frozenset({"epoch", "kind", "entity_id", "ticket_id", "task_
 _TRACE_FIELDS = frozenset({"trace_id", "span_id"})
 _ATTEMPT_FIELDS = frozenset({"iteration", "error_fingerprint", "session_ref"})
 _REASON_NUMBER = r"\d+(?:\.\d+)?(?:e[+-]?\d+)?"
-_READING_SUFFIX = r"(?: \((?:host feed|container reading)\))?"
+_READING_SUFFIX = r"(?: \(container reading\))?"
 # Only the governor's fixed, numeric templates may leave the process. An
 # arbitrary decision.reason must never become a remote OTLP span attribute.
 _SAFE_ADMISSION_REASONS = tuple(
@@ -106,9 +105,6 @@ _SAFE_ADMISSION_REASONS = tuple(
             rf"RAM_RESUME_FLOOR_GB={_REASON_NUMBER} GiB, so once braked this lane can NEVER resume\. "
             rf"Raise the container mem_limit above the resume floor \(or lower the floor\)\.\))?{_READING_SUFFIX}"
         ),
-        r"host swap \d+% at/over the \d+% watermark",
-        rf"host paging {_REASON_NUMBER} MiB/s at/over the {_REASON_NUMBER} MiB/s watermark{_READING_SUFFIX}",
-        rf"kernel memory pressure level \d+ \(1 normal, 2 warn, 4 critical\){_READING_SUFFIX}",
         r"admitting up to \d+ — signals healthy",
         r"yield collapsed \(\d+/\d+ terminal tasks completed\) — the marginal token is buying zero",
         (

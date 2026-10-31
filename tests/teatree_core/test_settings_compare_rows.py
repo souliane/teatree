@@ -105,7 +105,6 @@ def test_a_clear_disposition_uses_the_restore_endpoint() -> None:
             ),
             Cell(label="peer", present=True, known=True, value=False),
         ),
-        equals_shipped_default=True,
         control=SettingControl("merge_wip", declared_defaults()),
     )
     assert row.outcome.disposition is Disposition.CLEAR
@@ -177,14 +176,13 @@ def test_use_here_requires_an_import_or_clear_disposition() -> None:
     clear = replace(
         base,
         cells=(replace(base.cells[0], default_value=3), base.cells[1]),
-        equals_shipped_default=True,
     )
     assert clear.outcome.disposition is Disposition.CLEAR
     assert not clear.readings[1].apply_url
-    assert replace(base, env_shadowed=True, source="db").readings[1].apply_url
+    assert replace(base, source="db").readings[1].apply_url
     for changed, disposition in (
         (replace(base, syncable=False), Disposition.MANUAL),
-        (replace(base, env_shadowed=True, source="env"), Disposition.SHADOWED),
+        (replace(base, source="env"), Disposition.SHADOWED),
         (replace(base, cells=(base.cells[0], replace(base.cells[1], value=None))), Disposition.BLOCKED),
     ):
         assert changed.outcome.disposition is disposition

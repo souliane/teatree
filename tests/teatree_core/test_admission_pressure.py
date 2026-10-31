@@ -13,6 +13,7 @@ import pytest
 
 from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
+    BRAKE_PRECEDENCE,
     DEGRADE_AT,
     HALT_AT,
     MACHINE_BRAKE_CAUSES,
@@ -56,6 +57,12 @@ def _quota(**kwargs: object) -> QuotaSignal:
 def _machine(**kwargs: object) -> MachineSignal:
     base: dict[str, object] = {"cores": 8, "load1": 1.0, "ram_available_gb": 20.0}
     return MachineSignal(**{**base, **kwargs})
+
+
+def test_load_and_memory_are_the_only_machine_brakes() -> None:
+    assert {"load", "memory"} == MACHINE_BRAKE_CAUSES
+    assert not {"swap", "memory-pressure"} & set(BRAKE_PRECEDENCE)
+    assert not {"swap_mib_per_s", "vm_pressure_level"} & set(MachineSignal.__dataclass_fields__)
 
 
 def _at_pace_deny() -> QuotaSignal:
@@ -250,14 +257,10 @@ class TestHaltEquivalence:
         ("causes", "expected"),
         [
             ([("load", 1.1), ("memory", 1.5)], "memory"),
-            ([("load", 1.1), ("swap", 1.8)], "swap"),
-            ([("memory", 1.5), ("swap", 1.8)], "swap"),
             ([("load", 1.5), ("memory", 1.1)], "load"),
-            ([("load", 1.5), ("memory", 1.5), ("swap", 1.5)], "load"),
-            ([("memory", 1.5), ("swap", 1.5)], "memory"),
+            ([("load", 1.5), ("memory", 1.5)], "load"),
             ([("5h-quota", 1.0), ("memory", 2.0)], "5h-quota"),
-            ([("metered-spend", 1.0), ("swap", 2.0)], "metered-spend"),
-            ([("memory-pressure", 1.0), ("load", 2.0)], "memory-pressure"),
+            ([("metered-spend", 1.0), ("load", 2.0)], "metered-spend"),
         ],
     )
     def test_halted_cause_ranking(self, causes: list[tuple[str, float]], expected: str) -> None:

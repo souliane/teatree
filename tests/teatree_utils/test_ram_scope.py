@@ -71,7 +71,6 @@ def test_reclaimable_memory_stat_preserves_duplicate_key_totals(tmp_path: Path) 
 
 def test_cgroup_cap_unreadable_is_inert_even_when_host_memory_is_readable(tmp_path: Path) -> None:
     with (
-        patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),
         patch("teatree.utils.ram_scope.cgroup_file", return_value=tmp_path / "missing"),
         patch("teatree.utils.ram_probe.cgroup_file", return_value=tmp_path / "missing"),
         patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=20000),
@@ -83,7 +82,6 @@ def test_cgroup_cap_unreadable_is_inert_even_when_host_memory_is_readable(tmp_pa
 def test_intentionally_unlimited_cgroup_is_not_inert(tmp_path: Path) -> None:
     (tmp_path / "memory.max").write_text("max\n")
     with (
-        patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),
         patch("teatree.utils.ram_scope.cgroup_file", side_effect=lambda name, **_kwargs: tmp_path / name),
     ):
         assert not cgroup_memory_probe_inert()

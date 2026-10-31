@@ -34,6 +34,7 @@ from django.utils import timezone
 from django_typer.management import command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
+from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.question_coordinator import coordinate_answer
 from teatree.core.answering.record_settling import settle_before_recording
 from teatree.core.machine_output import MachineOutputCommand, emit
@@ -263,8 +264,11 @@ class Command(MachineOutputCommand):
                 options=parsed_options(options_json, self.stderr),
                 quoted=proposed_text,
             )
+        ticket = resolve_invoking_ticket()
+        if card is not None and (problem := earlier_answer_problem(ticket.pk if ticket else None, card, question)):
+            self.stderr.write(f"{problem}. {OWNER_QUESTION_ROUTE}")
+            raise SystemExit(2)
         try:
-            ticket = resolve_invoking_ticket()
             session = (
                 Session.objects.filter(ticket=ticket).order_by("-started_at", "-pk").first()
                 if ticket is not None

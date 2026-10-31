@@ -49,6 +49,7 @@ RETIRED_CONFIG_SETTINGS = {
     "ask_before_post_on_behalf": "retired: no readers; posting uses resolve_on_behalf_verdict (#2731)",
     "ask_before_creating_news_tickets": "retired: article decisions settle during the news scan (#5687)",
     "provision_ram_ceiling_percent": "retired: provisioning reads the admission governor's available-memory floor",
+    "speak": "retired: the factory has no speech output; spoken DMs were removed (#5857)",
 }
 
 

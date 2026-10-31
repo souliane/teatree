@@ -18,7 +18,6 @@ from teatree.config.declared_defaults import declared_defaults, render_defaults_
 from teatree.config.defaults_snapshot import _HEADER, default_category_keys
 from teatree.config.mr_reminder import MrReminderConfig
 from teatree.config.settings import UserSettings
-from teatree.types import SpeakConfig
 
 
 def _line(text: str, key: str) -> str:
@@ -79,12 +78,11 @@ class TestEveryShippedKeyIsDeclared:
 
 
 class TestStoredForm:
-    def test_the_two_structured_settings_render_as_their_stored_dict(self) -> None:
+    def test_the_structured_setting_renders_as_its_stored_dict(self) -> None:
         defaults = declared_defaults()
-        assert defaults["speak"] == UserSettings().speak.to_dict()
         assert defaults["mr_reminder"] == UserSettings().mr_reminder.to_dict()
 
-    @pytest.mark.parametrize("value", [True, 3, 2.5, "full", ["a"], SpeakConfig(), MrReminderConfig()])
+    @pytest.mark.parametrize("value", [True, 3, 2.5, "full", ["a"], MrReminderConfig()])
     def test_every_shape_the_file_carries_is_renderable(self, value: object) -> None:
         assert module._renderable(value) is not None
 

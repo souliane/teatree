@@ -23,7 +23,7 @@ from teatree.loop.self_improve.persistence import record_firing
 class TelemetryActionGapTests(TestCase):
     def test_reconciliation_queries_only_active_gaps_and_incident_digests(self) -> None:
         now = timezone.now()
-        original_key = "pressure_incident::swap"
+        original_key = "pressure_incident::load"
         incident_id = hashlib.sha256(original_key.encode()).hexdigest()[:16]
         for index in range(100):
             record_firing(
@@ -40,7 +40,7 @@ class TelemetryActionGapTests(TestCase):
         row = {
             "epoch": int((now - timedelta(minutes=3)).timestamp()),
             "kind": "pressure_incident",
-            "cause": "swap",
+            "cause": "load",
             "severity": "critical",
             "count": 1,
             "incident_id": incident_id,
@@ -62,7 +62,7 @@ class TelemetryActionGapTests(TestCase):
         assert incident_id in firing_reads[1]
 
     def test_firing_receipt_stores_the_issue_identity_digest(self) -> None:
-        key = "pressure_incident::swap"
+        key = "pressure_incident::load"
         firing = record_firing(
             DetectorReport(
                 detector="pressure_incident",
@@ -70,7 +70,7 @@ class TelemetryActionGapTests(TestCase):
                 state_hash="seen",
                 severity="warn",
                 max_rung=ActionRung.LOG,
-                summary="swap",
+                summary="load",
             ),
             action=ActionRung.LOG,
         )
@@ -82,7 +82,7 @@ class TelemetryActionGapTests(TestCase):
         row = {
             "epoch": int((now - timedelta(minutes=3)).timestamp()),
             "kind": "pressure_incident",
-            "cause": "swap",
+            "cause": "load",
             "severity": "critical",
             "count": 1,
             "incident_id": "a" * 16,
@@ -108,12 +108,12 @@ class TelemetryActionGapTests(TestCase):
 
     def test_unactioned_factory_issue_becomes_one_fix_ticket_report(self) -> None:
         now = timezone.now()
-        original_key = "pressure_incident::swap"
+        original_key = "pressure_incident::load"
         incident_id = hashlib.sha256(original_key.encode()).hexdigest()[:16]
         row = {
             "epoch": int((now - timedelta(minutes=3)).timestamp()),
             "kind": "pressure_incident",
-            "cause": "swap",
+            "cause": "load",
             "severity": "critical",
             "count": 5,
             "incident_id": incident_id,
@@ -136,7 +136,7 @@ class TelemetryActionGapTests(TestCase):
                     state_hash="seen",
                     severity="warn",
                     max_rung=ActionRung.STATUSLINE,
-                    summary="swap pressure",
+                    summary="load pressure",
                 ),
                 action=ActionRung.STATUSLINE,
             )
@@ -159,12 +159,12 @@ class TelemetryActionGapTests(TestCase):
 
     def test_resolved_action_covers_old_spans_but_not_new_spans(self) -> None:
         now = timezone.now()
-        original_key = "pressure_incident::swap"
+        original_key = "pressure_incident::load"
         incident_id = hashlib.sha256(original_key.encode()).hexdigest()[:16]
         old = {
             "epoch": int((now - timedelta(minutes=8)).timestamp()),
             "kind": "pressure_incident",
-            "cause": "swap",
+            "cause": "load",
             "severity": "critical",
             "count": 1,
             "incident_id": incident_id,
@@ -177,7 +177,7 @@ class TelemetryActionGapTests(TestCase):
                 state_hash="seen",
                 severity="warn",
                 max_rung=ActionRung.STATUSLINE,
-                summary="swap pressure",
+                summary="load pressure",
             ),
             action=ActionRung.STATUSLINE,
             now=now - timedelta(minutes=7),

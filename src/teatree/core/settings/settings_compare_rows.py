@@ -94,8 +94,6 @@ class CompareRow:
     sync_note: str = ""
     redacted: bool = False
     category: str = ""
-    equals_shipped_default: bool = False
-    env_shadowed: bool = False
     #: Which tier THIS box resolved the key from — the cell's tooltip, and what the env-pin
     #: refusal is keyed on. Empty for a seed row and for a key this box's code does not declare.
     source: str = ""
@@ -151,9 +149,32 @@ class CompareRow:
         return KIND_RANK[self.kind]
 
     @property
+    def local_cell(self) -> Cell | None:
+        return next((cell for cell in self.cells if cell.local), None)
+
+    @property
+    def import_source(self) -> Cell | None:
+        """The cell an import into this box carries — the first OTHER instance holding an opinion."""
+        return next((cell for cell in self.held if not cell.local), self.held[0] if self.held else None)
+
+    @property
     def candidate(self) -> Json:
-        """The value an import would carry — the first instance that holds an opinion at all."""
-        return self.held[0].value if self.held else None
+        source = self.import_source
+        return source.value if source else None
+
+    @property
+    def equals_shipped_default(self) -> bool:
+        """Whether the imported value equals this box's own shipped default, which the import skips."""
+        source = self.import_source
+        if source is None:
+            return False
+        target = self.local_cell or self.cells[0]
+        return target.default_recorded and canonical_json(source.value) == canonical_json(target.default_value)
+
+    @property
+    def env_shadowed(self) -> bool:
+        """Whether THIS box reads the key from a ``T3_*`` variable — a peer's pin shadows nothing here."""
+        return self.source == ENV_SOURCE
 
     @property
     def outcome(self) -> Outcome:
@@ -187,7 +208,7 @@ class CompareRow:
         if self.surface == SEED:
             # A seed field has no env tier and no confirm gate; what it can have is a
             # dedicated editor holding an invariant a raw write would skip.
-            local = next((cell for cell in self.cells if cell.local), None)
+            local = self.local_cell
             return seed_write_refusal(
                 self.scope,
                 self.entry,
@@ -206,14 +227,15 @@ class CompareRow:
 
     @property
     def local_edit(self) -> SettingCell | None:
-        return next((self._edit_cell(cell) for cell in self.cells if cell.local), None)
+        local = self.local_cell
+        return self._edit_cell(local) if local else None
 
     @property
     def revert_url(self) -> str:
         edit = self.local_edit
         if edit is None:
             return ""
-        local = next((cell for cell in self.cells if cell.local), None)
+        local = self.local_cell
         if self.surface == SETTING and local is not None and not local.present:
             return settings_restore_url(self.title, self.scope)
         return edit.post_url
@@ -221,20 +243,13 @@ class CompareRow:
     def _apply_url(self, peer: Cell) -> str:
         if peer.local or not peer.present or not peer.known or not self.writable:
             return ""
-        local = next((cell for cell in self.cells if cell.local), None)
+        local = self.local_cell
         if local is None or not local.known or peer.opinion == local.opinion:
             return ""
         edit = self._edit_cell(local)
         if edit is None:
             return ""
-        equals_default = local.default_recorded and canonical_json(peer.value) == canonical_json(local.default_value)
-        candidate = replace(
-            self,
-            cells=(peer,),
-            equals_shipped_default=equals_default,
-            env_shadowed=self.source == ENV_SOURCE,
-        )
-        disposition = classify(candidate).disposition
+        disposition = classify(replace(self, cells=(local, peer))).disposition
         if disposition is Disposition.CLEAR:
             return settings_restore_url(self.title, self.scope) if local.present else ""
         return edit.post_url if disposition is Disposition.IMPORT else ""

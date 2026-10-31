@@ -63,26 +63,14 @@ esac
 DRAIN_TIMEOUT=$((10#$DRAIN_TIMEOUT))
 
 # One convergence at a time, shared with deploy.sh.
-DEPLOY_LOCK_DIR=""
-DEPLOY_LOCK_MAX_AGE_MINUTES=$(((DRAIN_TIMEOUT + 3600) / 60))
-DEPLOY_LOCK_MAX_RECLAIMS=5
-if command -v flock >/dev/null 2>&1; then
-    exec 9>>"$DEPLOY_LOCK"
-    if ! flock -n 9; then
-        echo "roll: another deploy holds $DEPLOY_LOCK — retry once it finishes." >&2
-        exit 75
-    fi
-else
-    locked=0
-    acquire_deploy_lock_dir roll || locked=$?
-    case "$locked" in
-    0) ;;
-    1)
-        echo "roll: another deploy (pid $DEPLOY_LOCK_HOLDER) holds $DEPLOY_LOCK_DIR — retry once it finishes." >&2
-        exit 75
-        ;;
-    *) exit 1 ;;
-    esac
+if ! command -v flock >/dev/null 2>&1; then
+    echo "roll: flock (util-linux) is required for the single-convergence lock — install it and re-run." >&2
+    exit 1
+fi
+exec 9>>"$DEPLOY_LOCK"
+if ! flock -n 9; then
+    echo "roll: another deploy holds $DEPLOY_LOCK — retry once it finishes." >&2
+    exit 75
 fi
 SCRATCH="$(mktemp -d)"
 # The same "<pid> <heartbeat> <deadline>" record deploy.sh keeps, so the watchdog and the doctor
@@ -94,15 +82,12 @@ write_deploy_record "$$" "$ROLL_DEADLINE" "$ROLL_STARTED"
     exec 9>&-
     while sleep "$RECORD_REFRESH_SECONDS" && kill -0 "$$" 2>/dev/null; do
         beat_deploy_record "$$" "$ROLL_DEADLINE" || true
-        # A live roll's mkdir lock never ages into a reclaim.
-        [ -z "$DEPLOY_LOCK_DIR" ] || touch "$DEPLOY_LOCK_DIR" 2>/dev/null || true
     done
 ) </dev/null >/dev/null 2>&1 &
 REFRESHER=$!
 release() {
     kill "$REFRESHER" 2>/dev/null || true
     : >"$DEPLOY_LOCK" 2>/dev/null || true
-    _release_deploy_lock
     rm -rf "$SCRATCH"
 }
 trap release EXIT
@@ -118,8 +103,6 @@ install -d "$TEATREE_HOST_HOME/.local/share/teatree" "$TEATREE_HOST_HOME/.local/
     "$TEATREE_HOST_HOME/workspace/t3-workspaces" "$TEATREE_HOST_HOME/.local/share/uv/python" \
     "$TEATREE_HOST_HOME/.local/bin"
 export TEATREE_UID="${TEATREE_UID:-$(id -u)}"
-# Unset, a container refuses /host-proc: under Docker Desktop it is the VM's table, not this host's.
-export TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
 [ -z "${TEATREE_SOURCE_MOUNT:-$LEGACY_SOURCE_MOUNT}" ] || export TEATREE_SOURCE_MOUNT="${TEATREE_SOURCE_MOUNT:-$LEGACY_SOURCE_MOUNT}"
 if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
     TEATREE_DOCKER_SOCKET_GID=0
@@ -166,7 +149,7 @@ LEGACY_CLONE_DIR="$CONTAINER_HOME/teatree"
 export TEATREE_LEGACY_CLONE_DIR="${TEATREE_LEGACY_CLONE_DIR:-$LEGACY_CLONE_DIR}"
 
 ENV_FLAGS=()
-for var in TEATREE_DEPLOY_CHECKOUT TEATREE_HOST_HOME TEATREE_HOST_OS TEATREE_UID TEATREE_SOURCE_MOUNT TEATREE_DOCKER_SOCKET_GID \
+for var in TEATREE_DEPLOY_CHECKOUT TEATREE_HOST_HOME TEATREE_UID TEATREE_SOURCE_MOUNT TEATREE_DOCKER_SOCKET_GID \
     TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT GITLAB_TOKEN NOTION_TOKEN TEATREE_HOST_TMP TEATREE_DISK_TMPDIR \
     TEATREE_LEGACY_CLONE_DIR TEATREE_WATCHDOG_DEPLOY_LOCK TEATREE_COMPOSE_PROJECT TEATREE_PROMOTED_TAG TEATREE_ADMIN_PORT TEATREE_WEBHOOK_PORT TEATREE_IMAGE_REPOSITORY; do
     [ -z "${!var:-}" ] || ENV_FLAGS+=(-e "$var")

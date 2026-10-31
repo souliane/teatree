@@ -110,3 +110,12 @@ class TestRedirectingTheCacheRootCannotDisableTheGate:
             returned = pinned.install()
 
         assert returned.read_bytes() == _REAL_BODY
+
+
+def test_a_non_linux_platform_has_no_pinned_release(tmp_path: Path) -> None:
+    pinned = PinnedGitleaks(GITLEAKS_VERSION, tmp_path / "cache")
+
+    with patch.object(gitleaks.platform, "system", return_value="FreeBSD"), pytest.raises(SystemExit) as refusal:
+        _ = pinned.platform_slug
+
+    assert "no pinned gitleaks release" in str(refusal.value)

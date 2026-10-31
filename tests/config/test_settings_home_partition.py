@@ -59,10 +59,6 @@ def test_autoload_is_db_home() -> None:
     assert SETTING_HOMES["autoload"] is SettingHome.DB
 
 
-def test_speak_is_db_home() -> None:
-    assert SETTING_HOMES["speak"] is SettingHome.DB
-
-
 def test_mr_reminder_is_db_home() -> None:
     assert SETTING_HOMES["mr_reminder"] is SettingHome.DB
 

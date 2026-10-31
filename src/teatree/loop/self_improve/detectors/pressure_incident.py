@@ -22,7 +22,6 @@ _ACTION = {
     "5h-quota": "Defer optional model calls until the short window resets.",
     "accounts-exhausted": "Check the account fleet and credential health before retrying.",
     "weekly-pace": "Reduce intake and inspect the last six hours of token yield.",
-    "swap": "Inspect host swap and stop optional heavy work until swap falls below resume.",
     "yield-collapse": "Inspect failed task outcomes and repair the common failure before admitting more work.",
 }
 _QUOTA_CAUSES = frozenset({"accounts-exhausted", "weekly-quota", "5h-quota", "weekly-pace"})

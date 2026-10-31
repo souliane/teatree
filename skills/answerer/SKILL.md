@@ -1,7 +1,7 @@
 ---
 name: answerer
 description: Draft a reply to an inbound question, DM the user for approval, post on confirmation. Use when the loop routes a `question` intent to phase `answering`, or when asked to answer a Slack/GitLab thread on the user's behalf.
-compatibility: macOS/Linux, git, chat/issue-tracker integration (Slack, GitLab, GitHub).
+compatibility: Linux, git, chat/issue-tracker integration (Slack, GitLab, GitHub).
 requires:
   - workspace
   - rules
@@ -115,12 +115,12 @@ recipes (Slack thread fetch, GitLab/GitHub MR/issue comment thread).
   thread, so a deictic reply ("where is the URL?", "is it ready?") resolves
   against what it actually answers.
 - Note any prior answer already posted in the thread — do not duplicate it.
-- **Never download or transcribe the bot's OWN audio attachment.** The
-  Slack-TTS feature attaches a synthesised `speech.m4a` to the bot's own DM
-  messages — a spoken copy of text already present in the same message.
-  Re-transcribing it is pure token waste for zero new information. The Slack
-  read surface strips it for you (`strip_self_audio_attachments`); if you
-  ever see a `speech.m4a` on a bot-authored message, skip it. Audio on a
+- **Never download or transcribe the bot's OWN audio attachment.** A
+  historical bot-authored `speech.m4a` is a spoken copy of text already
+  present in the same message. Re-transcribing it is pure token waste for zero
+  new information. The Slack read surface strips it for you
+  (`strip_self_audio_attachments`); if you ever see a `speech.m4a` on a
+  bot-authored message, skip it. Audio on a
   message authored by the **user** (a voice note) is genuine new content —
   transcribe that.
 - If the question needs information you cannot find (a decision only the

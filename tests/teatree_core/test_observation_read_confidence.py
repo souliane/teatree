@@ -27,7 +27,7 @@ def test_admission_schema_is_a_separate_module_with_compatible_validator_reexpor
 def _row() -> dict:
     return {
         "epoch": int(NOW.timestamp()),
-        "cause": "swap",
+        "cause": "load",
         "pressure": 0.91,
         "band": "shed",
         "admit": False,

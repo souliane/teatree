@@ -11,14 +11,11 @@ So this module observes two facts that are true NOW:
 
 * the database's directory is the control-DB volume, not a host bind mount — a file
     with no host path cannot be opened by a host process at all; and
-* which processes hold a READ-WRITE descriptor on it, read from ``/proc`` where it
-    exists and from ``lsof`` where it does not, so the answer is available on both
-    sides of the boundary.
+* which processes hold a READ-WRITE descriptor on it, read from ``/proc``.
 """
 
 import os
 import re
-import shutil
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,25 +23,13 @@ from pathlib import Path
 from teatree.docker.workflow import is_running_in_container
 from teatree.paths import control_db_dir
 from teatree.utils.mount_points import mount_entry_for, read_mount_entries
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 _PROC = Path("/proc")
 _O_ACCMODE = 0o3
 _O_RDONLY = 0o0
-_LSOF_TIMEOUT_SECONDS = 10
-
-#: `lsof`'s access column: `u` is read+write, `w` write-only, `r` read-only.
-_LSOF_WRITABLE_MODES = frozenset({"u", "w"})
-
-#: Filesystems Docker Desktop serves a host directory over. A control DB sitting on
-#: one of these is still on the host's disk, whatever its path says.
-_HOST_SHARED_FSTYPES = frozenset({"virtiofs", "fuse.grpcfuse", "osxfs", "9p", "fakeowner"})
 _LOCAL_FSTYPES = frozenset({"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "tmpfs", "overlay"})
 
 _FDINFO_FLAGS = re.compile(r"^flags:\s*(\d+)$", re.MULTILINE)
-
-#: Seam over `shutil.which`, so a test can force the lsof branch on a host without lsof.
-_which = shutil.which
 
 
 class DescriptorTableUnavailableError(RuntimeError):
@@ -97,13 +82,8 @@ class ControlDbWriteDomain:
 
     @property
     def on_host_filesystem(self) -> bool:
-        """True when the database is somewhere a host process can name or reach.
-
-        Two independent ways it can be: living outside the control-DB directory
-        entirely (the pre-move layout, a bind-mounted data dir), or living at the
-        right path on a filesystem the shared-folder layer serves from the host.
-        """
-        return not self.in_control_dir or self._fstype() in _HOST_SHARED_FSTYPES
+        """True when the database lives outside the control-DB directory (the pre-move, bind-mounted layout)."""
+        return not self.in_control_dir
 
     @property
     def wal_eligible(self) -> tuple[bool, str]:
@@ -139,11 +119,7 @@ class ControlDbWriteDomain:
         return [] if self.containerized else self.read_write_holders()
 
     def _fstype(self) -> str | None:
-        """The filesystem type carrying the DB's directory, when readable.
-
-        ``/proc/self/mountinfo`` is Linux-only, which is the right scope: the check
-        exists to catch a Docker-Desktop shared folder mounted INSIDE a container.
-        """
+        """The filesystem type carrying the DB's directory, when readable."""
         entries = read_mount_entries()
         if entries is None:
             return None
@@ -166,8 +142,10 @@ def read_write_holders_across(paths: Sequence[Path]) -> list[tuple[Path, FdHolde
     targets = {str(path): path for path in paths}
     if not targets:
         return []
-    found = _proc_holders(targets) if _PROC.is_dir() else _lsof_holders(targets)
-    writers = {(str(path), holder.pid): (path, holder) for path, holder in found if holder.writable}
+    if not _PROC.is_dir():
+        msg = "no /proc on this host — no descriptor view is available"
+        raise DescriptorTableUnavailableError(msg)
+    writers = {(str(path), holder.pid): (path, holder) for path, holder in _proc_holders(targets) if holder.writable}
     return [writers[key] for key in sorted(writers)]
 
 
@@ -199,42 +177,3 @@ def _command(proc_dir: Path) -> str:
         return (proc_dir / "comm").read_text(encoding="utf-8").strip()
     except OSError:
         return "?"
-
-
-def _lsof_holders(targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]]:
-    """Parse one ``lsof -F pcan`` over every target — the only descriptor view a non-Linux host offers.
-
-    ``lsof`` exits 1 when nothing holds the files, which is an ANSWER (no holders),
-    not a failure — hence the widened *expected_codes*. The ``n`` (name) field
-    arrives AFTER the ``a`` (access) field of the same record, so a record is only
-    complete when its name arrives; that is what lets one invocation cover many files.
-
-    An absent binary and a failed invocation are the opposite of that: neither is an
-    answer, so both raise rather than yield nothing.
-    """
-    lsof = _which("lsof")
-    if lsof is None:
-        msg = "no /proc on this host and no lsof on PATH — no descriptor view is available"
-        raise DescriptorTableUnavailableError(msg)
-    try:
-        result = run_allowed_to_fail(
-            [lsof, "-F", "pcan", "--", *sorted(targets)],
-            expected_codes=None,
-            timeout=_LSOF_TIMEOUT_SECONDS,
-        )
-    except (OSError, CommandFailedError) as error:
-        msg = f"lsof could not be run: {error.__class__.__name__}: {error}"
-        raise DescriptorTableUnavailableError(msg) from error
-    pid, command, writable = 0, "?", False
-    for line in result.stdout.splitlines():
-        tag, value = line[:1], line[1:]
-        if tag == "p" and value.isdigit():
-            pid, command = int(value), "?"
-        elif tag == "c":
-            command = value
-        elif tag == "a":
-            writable = value.strip() in _LSOF_WRITABLE_MODES
-        elif tag == "n" and pid:
-            target = targets.get(value)
-            if target is not None:
-                yield target, FdHolder(pid, command, writable)

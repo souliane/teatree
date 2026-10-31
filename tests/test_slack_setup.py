@@ -79,19 +79,9 @@ class TestBuildManifest:
         for required in ("chat:write", "im:write", "im:history", "reactions:read", "reactions:write"):
             assert required in scopes
 
-    def test_bot_scopes_grant_files_write_for_speak_audio(self) -> None:
-        """The bot token must hold ``files:write`` for the ``[teatree.speak] slack`` attach.
-
-        ``SlackBotBackend.post_audio_dm`` attaches the synthesised ``.m4a``
-        to the user's own DM, which ``_route_token`` sends under the **bot**
-        token. Without ``files:write`` in the manifest a reinstall never
-        grants the scope, ``files.getUploadURLExternal`` returns
-        ``missing_scope``, and ``slack = true`` can never attach the
-        audio — the exact gap the speak docstrings tell the user a
-        ``t3 setup slack-bot`` reinstall would close.
-        """
-        manifest = build_manifest(overlay_name="acme")
-        assert "files:write" in manifest["oauth_config"]["scopes"]["bot"]
+    @pytest.mark.parametrize("profile", ["full", "dm_only"])
+    def test_no_bot_scope_profile_requests_files_write(self, profile: str) -> None:
+        assert "files:write" not in manifest_bot_scopes(profile)
 
     def test_subscribed_to_app_mention_and_dm(self) -> None:
         manifest = build_manifest(overlay_name="acme")
@@ -149,7 +139,6 @@ class TestDmOnlyManifest:
         assert set(manifest_bot_scopes("dm_only")) == {
             "channels:manage",
             "chat:write",
-            "files:write",
             "im:history",
             "im:read",
             "im:write",

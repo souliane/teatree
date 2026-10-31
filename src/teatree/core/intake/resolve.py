@@ -143,8 +143,7 @@ def match_worktree_by_path(path: str) -> Worktree | None:
 
     First tries an exact DB-level JSON lookup, then falls back to a prefix
     match for when the user is in a subdirectory of the worktree.
-    Tries both the original and symlink-resolved path to handle macOS
-    ``/var`` → ``/private/var`` differences.
+    Tries both the original and symlink-resolved path.
     """
     exact = _match_exact_path(path)
     if exact is not None:
@@ -398,8 +397,7 @@ def tickets_owning_workspace_dir(workspace_dir: Path) -> list[Ticket]:
     Stored ``worktree_path`` values are written unresolved (provision uses
     ``config.worktree_root()`` verbatim) while callers pass a ``.resolve()``-d
     dir, so comparison goes through ``_candidate_paths`` — the same
-    symlink-variant set ``match_worktree_by_path`` uses (macOS ``/tmp`` →
-    ``/private/tmp``). This is the single source of truth for workspace-dir →
+    symlink-variant set ``match_worktree_by_path`` uses. This is the single source of truth for workspace-dir →
     ticket attribution, routed through by both the auto-register attribution
     chain and the ``workspace`` command resolver.
     """

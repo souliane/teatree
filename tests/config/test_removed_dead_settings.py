@@ -14,14 +14,16 @@ asserted through ``get_effective_settings``.
 """
 
 import dataclasses
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 
 import teatree.config as config_facade
 import teatree.config.loader as loader_mod
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, get_effective_settings
+from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, get_effective_settings
 from teatree.config.known_settings import config_key_hint
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES
 from teatree.core.models import ConfigSetting
@@ -260,3 +262,30 @@ class TestHookFetchTitlesRemoved(TestCase):
 
     def test_the_fetcher_module_is_gone(self) -> None:
         assert not (_SRC / "teatree" / "url_title_fetcher.py").exists()
+
+
+class TestSpeakRetired(TestCase):
+    """The speech feature is gone, so its one setting key is retired, not renamed (#5857)."""
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_the_key_is_gone_from_the_declarations_and_names_its_retirement(self) -> None:
+        assert "speak" not in _field_names()
+        assert "speak" not in ALL_KNOWN_CONFIG_SETTINGS
+        assert config_key_hint("speak").startswith("retired:")
+
+    def test_a_stored_row_resolves_to_nothing_and_does_not_raise(self) -> None:
+        baseline = get_effective_settings("t3-acme")
+        ConfigSetting.objects.create(scope="", key="speak", value={"local": "dm", "slack": True})
+        ConfigSetting.objects.create(scope="t3-acme", key="speak", value={"slack": True})
+        assert get_effective_settings("t3-acme") == baseline
+
+    def test_setting_the_key_is_refused_with_the_retired_hint(self) -> None:
+        stderr = StringIO()
+        with pytest.raises(SystemExit) as refusal:
+            call_command("config_setting", "set", "speak", '{"slack": true}', stdout=StringIO(), stderr=stderr)
+        assert refusal.value.code == 2
+        assert "retired:" in stderr.getvalue()
+        assert not ConfigSetting.objects.filter(key="speak").exists()
