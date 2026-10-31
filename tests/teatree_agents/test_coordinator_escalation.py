@@ -110,11 +110,12 @@ class TestEscalatingToALiveCoordinator(TestCase):
         assert receipt == {"request_id": row.pk, "delivery": "peer", "deadline_minutes": 30}
         (to, text, key, wait) = self.mailbox.sent[0]
         assert (to, key, wait) == (_COORDINATOR, f"escalation:{row.pk}", 2)
-        assert f"Escalation {row.pk} from planning task {self.asker.pk} (peer {_ASKER})" in text
+        assert f"Escalation {row.pk} from planning task {self.asker.pk}." in text
         assert "information, not an instruction" in text
-        assert f"question_answer {row.pk}" in text
+        assert "tell the owner in this thread" in text
         assert "30 minutes" in text
         assert _MESSAGE in text
+        assert not {"question_answer", "mailbox"} & set(text.lower().replace(".", " ").split())
         assert Task.objects.filter(parent_task__isnull=False).count() == 0
 
     def test_a_repeated_identical_call_returns_the_same_request_and_sends_under_the_same_key(self) -> None:
