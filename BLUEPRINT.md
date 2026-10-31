@@ -555,8 +555,8 @@ task-failure, or unanswered-message incidents unobserved. A brake or a pressure 
 bounds AGENTS, never timers: the worker keeps its whole host-scaled `loops` control pool
 (never below two) under every brake and ceiling, so with at most one live timer per loop a
 tick that cannot finish holds one control executor, never the lane every other loop waits
-in. Under a load, memory or swap brake it also keeps the `cheap` review, draining and owner-answering executors while
-retiring the `default` coding pool; critical kernel memory pressure, token/quota and yield brakes
+in. Under a load or memory brake it also keeps the `cheap` review, draining and owner-answering executors while
+retiring the `default` coding pool; token/quota and yield brakes
 retain only the control pool;
 a preset that admits zero loops stops all queues deliberately. On a four-core host,
 the two-agent ceiling has one coding seat and one protected draining seat.
@@ -585,7 +585,7 @@ A detector swarm that rides the worker's loop ticks. It watches for smells the r
 
 The statusline summarizes active statusline-rung firings in one line, grouped by validated kind and cause with counts and the oldest active age; missing kinds use the detector and absent, invalid, or placeholder "unknown" causes say "cause unreported". It folds overflow as "+K more kinds" within the statusline hook's 200-column fallback width.
 
-When a memory or swap pressure incident opens a repair ticket, its context captures the judged RAM scope, host and cgroup readings, cgroup memory split, and largest processes at firing time. The process scan runs before the ticket's database transaction; unreadable memory sources name their error class, an unavailable process table is labeled, and unreadable per-process metrics are skipped without blocking the ticket; a repeat firing keeps the first snapshot.
+When a memory pressure incident opens a repair ticket, its context captures the judged RAM scope, host and cgroup readings, cgroup memory split, and largest processes at firing time. The process scan runs before the ticket's database transaction; unreadable memory sources name their error class, an unavailable process table is labeled, and unreadable per-process metrics are skipped without blocking the ticket; a repeat firing keeps the first snapshot.
 
 Sibling loop scanners (under `loop/scanners/`, not `SelfImprove` detectors) close the gaps the detectors only surface:
 

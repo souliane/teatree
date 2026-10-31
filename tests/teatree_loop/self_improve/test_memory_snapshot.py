@@ -235,13 +235,13 @@ class MemorySnapshotTicketTests(TestCase):
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
         assert "Worker attribution: unreadable (JSONDecodeError)" in context
 
-    def test_swap_gets_snapshot_but_load_keeps_three_lines(self) -> None:
+    def test_memory_gets_snapshot_but_load_keeps_three_lines(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
-            swap = run_action_ladder(report("swap"))
+            memory = run_action_ladder(report("memory"))
             load = run_action_ladder(report("load"))
-            assert swap is not None
+            assert memory is not None
             assert load is not None
-            assert "Box memory snapshot" in Ticket.objects.get(pk=swap.firing.ticket_id).context
+            assert "Box memory snapshot" in Ticket.objects.get(pk=memory.firing.ticket_id).context
             assert len(Ticket.objects.get(pk=load.firing.ticket_id).context.splitlines()) == 3
 
     def test_second_firing_keeps_first_snapshot(self) -> None:
@@ -287,8 +287,9 @@ class MemorySnapshotTicketTests(TestCase):
             assert first is not None
             context = Ticket.objects.get(pk=first.firing.ticket_id).context
             assert "memory.stat: unreadable (IsADirectoryError)" in context
+            Ticket.objects.filter(pk=first.firing.ticket_id).update(state=Ticket.State.IGNORED)
             with patch.object(memory_snapshot, "host_proc_root", return_value=(None, "unavailable")):
-                second = run_action_ladder(report("swap"))
+                second = run_action_ladder(report("memory", state_hash="second"))
             assert second is not None
             assert "scan unavailable" in Ticket.objects.get(pk=second.firing.ticket_id).context
 
@@ -419,7 +420,8 @@ class MemorySnapshotTicketTests(TestCase):
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
             worker_file.write_text(record)
-            stale = run_action_ladder(report("swap"))
+            Ticket.objects.filter(pk=result.firing.ticket_id).update(state=Ticket.State.IGNORED)
+            stale = run_action_ladder(report("memory", state_hash="second"))
             assert stale is not None
             stale_context = Ticket.objects.get(pk=stale.firing.ticket_id).context
         assert process_rows(context)["pid=11"].endswith(" detached")

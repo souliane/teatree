@@ -250,14 +250,10 @@ class TestHaltEquivalence:
         ("causes", "expected"),
         [
             ([("load", 1.1), ("memory", 1.5)], "memory"),
-            ([("load", 1.1), ("swap", 1.8)], "swap"),
-            ([("memory", 1.5), ("swap", 1.8)], "swap"),
             ([("load", 1.5), ("memory", 1.1)], "load"),
-            ([("load", 1.5), ("memory", 1.5), ("swap", 1.5)], "load"),
-            ([("memory", 1.5), ("swap", 1.5)], "memory"),
+            ([("load", 1.5), ("memory", 1.5)], "load"),
             ([("5h-quota", 1.0), ("memory", 2.0)], "5h-quota"),
-            ([("metered-spend", 1.0), ("swap", 2.0)], "metered-spend"),
-            ([("memory-pressure", 1.0), ("load", 2.0)], "memory-pressure"),
+            ([("metered-spend", 1.0), ("load", 2.0)], "metered-spend"),
         ],
     )
     def test_halted_cause_ranking(self, causes: list[tuple[str, float]], expected: str) -> None:
