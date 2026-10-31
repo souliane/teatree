@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
-from collections.abc import Iterator
-from contextlib import ExitStack
+from collections.abc import Callable, Generator, Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,9 +15,10 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 
-from teatree.agents import codex_app_server_options, codex_read_only_server
+from teatree.agents import codex_app_server_options, codex_read_only_executor, codex_read_only_server, harness_registry
 from teatree.agents.codex_app_server import CodexAppServerSession, _thread_params, codex_app_server_spec
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
+from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES, ExecutorDocker, read_only_executor_refusal
 from teatree.agents.codex_read_only_verdict import CLONE_ROOT
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
@@ -23,13 +26,14 @@ from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessFallbackError,
     HarnessFallbackKind,
+    NoAvailableHarnessError,
     select_harness,
 )
-from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, sdk_disallowed_tools_for_phase
 from teatree.core.models import Session, Task
 from teatree.core.models.config_setting import ConfigSetting
 from tests.factories import planned_ticket
-from tests.teatree_agents._executor_fakes import FIXTURES, FakeExecutor, attested
+from tests.teatree_agents._executor_fakes import FIXTURES, FakeExecutor, attested, probe_fixture
 from tests.teatree_agents._route_fakes import write_codex_login
 
 _WRITE_PHASES = ("coding", "testing", "e2e", "debugging")
@@ -150,6 +154,69 @@ def test_open_reprobes_before_spawning(fake: FakeExecutor, phase: str) -> None:
 
     assert (refused.value.kind, refused.value.side_effects_started) == (HarnessFallbackKind.ACCESS, False)
     assert _app_server_execs(fake) == []
+
+
+def _assert_selection_refuses_a_writable_mount(fake: FakeExecutor, phase: str) -> None:
+    fake.probe["writes"][CLONE_ROOT] = "OK"
+    fake.install()
+
+    with pytest.raises(NoAvailableHarnessError) as refused:
+        select_harness(["codex_app_server"], HarnessBuildContext(phase=phase))
+
+    (rejection,) = refused.value.rejected
+    assert f"phase {phase!r} bars write tools" in rejection.reason
+    assert f"{CLONE_ROOT} accepted a write" in rejection.reason
+    assert _app_server_execs(fake) == []
+
+
+@pytest.mark.usefixtures("worker")
+@pytest.mark.parametrize("phase", sorted(EXECUTOR_PHASES))
+def test_a_writable_mount_refuses_selection_of_the_real_codex_spec(fake: FakeExecutor, phase: str) -> None:
+    assert phase not in CODEX_WORKER_EXECUTION_PHASES
+    assert select_harness(["codex_app_server"], HarnessBuildContext(phase=phase)).spec.name == "codex_app_server"
+
+    _assert_selection_refuses_a_writable_mount(fake, phase)
+
+
+@contextmanager
+def _real_spec_hook(hook: Callable[[HarnessBuildContext], str | None]) -> Generator[None]:
+    mutated = replace(codex_app_server_spec(), read_only_executor_refusal=hook)
+    with patch.dict(harness_registry._REGISTRY, {"codex_app_server": mutated}):
+        yield
+
+
+@contextmanager
+def _hook_reading_a_declared_env_flag() -> Generator[None]:
+    def hook(context: HarnessBuildContext) -> str | None:
+        return None if os.environ.get("T3_READ_ONLY_EXECUTOR") else read_only_executor_refusal(context)
+
+    with patch.dict(os.environ, {"T3_READ_ONLY_EXECUTOR": "1"}), _real_spec_hook(hook):
+        yield
+
+
+def _probe_stub_that_always_passes(*args: object, **kwargs: object) -> object:
+    return {**probe_fixture("pass"), "roots": {}}
+
+
+_NAMED_MUTANTS: dict[str, Callable[[], AbstractContextManager[object]]] = {
+    "probe-removed": lambda: patch.object(ExecutorDocker, "probe", _probe_stub_that_always_passes),
+    "verdict-ignored": lambda: patch.object(codex_read_only_executor, "evaluate", lambda *args, **kwargs: None),
+    "declared-env-flag": _hook_reading_a_declared_env_flag,
+    "bar-skipped": lambda: patch.object(harness_registry, "phase_bars_write_tools", lambda phase: False),
+    "hook-always-none": lambda: _real_spec_hook(lambda context: None),
+}
+
+
+@pytest.mark.usefixtures("worker")
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+@pytest.mark.parametrize("mutant", _NAMED_MUTANTS.values(), ids=list(_NAMED_MUTANTS))
+def test_each_named_mutant_turns_the_writable_mount_refusal_red(
+    fake: FakeExecutor, mutant: Callable[[], AbstractContextManager[object]], phase: str
+) -> None:
+    assert phase in EXECUTOR_PHASES
+
+    with mutant(), pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+        _assert_selection_refuses_a_writable_mount(fake, phase)
 
 
 def test_local_session_refuses_attested_options(

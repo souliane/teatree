@@ -16,6 +16,7 @@ from django.utils import timezone
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import codex_app_server_options, codex_read_only_server, harness_registry
+from teatree.agents.codex_read_only_verdict import CLONE_ROOT
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
@@ -154,6 +155,18 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         (thread_start,) = self.fake.thread_starts
         assert thread_start["sandbox"] == "danger-full-access"
         assert self.fake.keeper_alive
+
+    def test_a_writable_mount_refuses_planning_before_anything_runs(self) -> None:
+        self.fake.probe["writes"][CLONE_ROOT] = "OK"
+        self.fake.install()
+
+        attempt = self._run("codex_app_server")
+
+        assert attempt.exit_code != 0
+        assert f"{CLONE_ROOT} accepted a write" in attempt.error
+        assert not PlanArtifact.objects.filter(ticket=attempt.task.ticket, plan_text=_PLAN["plan_text"]).exists()
+        assert self.fake.thread_starts == []
+        assert not [call for call in self.fake.calls if "setsid" in call]
 
     def test_a_refused_read_only_brief_records_failure_and_parks_without_spending(self) -> None:
         self._register_claude()
