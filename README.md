@@ -456,7 +456,7 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Slack ticket thread control
 
-An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. `pause` parks the running task with its conversation; messages sent while parked queue into its next prompt, and `resume` releases that same task. A leading `#task-id` selects among several tasks on the ticket. Once no task remains, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
+An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. `pause` parks the running task with its conversation; messages sent while parked queue into its next prompt, and `resume` releases that same task. A leading `#task-id` selects among several tasks on the ticket. Once no task remains, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry. The answer cycle must run inside the worker process: a child of the worker is refused every live verb (`permission_denied`), so its messages stay pending and start no second task. Accepted directions reach the task's handoff as `operator_inputs`.
 
 ### Live agent mailbox
 
@@ -480,7 +480,7 @@ remains in the recipient's inbox, including after a current-turn push. With
 With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
 A new key sends a second copy; at most four sends per peer wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
-with the message. An idle `claude_sdk` peer can take one new turn during its
+with the message. An idle peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) can take one new turn during its
 60-second idle window; a parked task cannot be woken. Delivery is live-only:
 there is no database queue or parked-task delivery across hosts. A socket left by a worker that
 exited is removed before the 32-worker limit is applied. Peer listing skips an
@@ -502,7 +502,7 @@ t3 teatree live list                          # every live session on this host'
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
 t3 teatree live pause 1234                    # interrupts and parks this task for resume
-t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
+t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts a new turn on an idle session (active)
 t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```
 
@@ -514,9 +514,9 @@ task. Acceptance is not obedience: the model decides what to do with the input.
 Resending the same `--command-id` with the same text returns the first receipt
 instead of delivering twice. The command pins the located session's attempt and generation; `--attempt` and `--generation` can name an earlier expected session, which the worker rejects as `stale_command`. Sessions run by `claude_sdk`, `pydantic_ai` and `codex_app_server` are steerable. A pydantic_ai receipt confirms admission into its next request, even if the provider later fails that request. Codex admits input only on a matching App Server `turn/steer` answer; a timeout or turn-end race is `unknown_delivery`. Nothing survives a worker restart.
 
-After a clean result, a `claude_sdk` session remains idle for up to 60 seconds
+After a clean result, a `claude_sdk`, `pydantic_ai` or `codex_app_server` session remains idle for up to 60 seconds
 while the worker renews its task and checkout leases. `follow-up` starts one new
-turn and returns `accepted_new_turn` (exit 0) once the SDK accepts its prompt;
+turn and returns `accepted_new_turn` (exit 0) once the session accepts its prompt;
 `not_idle` exits 3. A repeated command id and text returns its first receipt.
 Each request carries the selected session's attempt and worker generation; a stale
 request is rejected before delivery. New-turn admission renews the task claim and checkout.
