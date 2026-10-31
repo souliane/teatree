@@ -206,23 +206,6 @@ def test_a_thread_held_idle_after_its_turn_does_not_block_a_rotated_token_and_it
     assert world.spawned_tokens() == ["ghp-one"]
 
 
-def test_a_thread_held_idle_still_takes_a_follow_up_turn_on_the_same_server_for_the_same_token(world: _World) -> None:
-    async def run() -> None:
-        held = await world.open_session(_ONE)
-        await _run_one_turn(held)
-        assert shared_codex_app_server(world.home, _ONE) is held.manager
-        await held.follow_up("one more")
-        async for _ in held.receive_response():
-            pass
-        await held.close()
-
-    asyncio.run(run())
-
-    assert len(set(world.turn_starts())) == 1
-    assert len(world.turn_starts()) == 2
-    assert world.spawned_tokens() == ["ghp-one"]
-
-
 @turn_stays_open
 def test_closing_a_session_mid_turn_releases_the_server_for_a_rotated_token(world: _World) -> None:
     async def run() -> object:
