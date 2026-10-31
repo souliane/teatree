@@ -886,10 +886,21 @@ key requires an explicit `RETIRED` or `RENAMED` entry in that manifest.
 
 `effective_default` is the resolver's one no-override answer. The generated TOML is
 never read back as a resolution tier. `cold_defaults.py` retains only the cold-safe
-flattening primitive used by TOML interchange. The generated file is about 34 KB;
-its deployed live-system parse cost remains to be measured. A second runtime default source
-would add drift risk without a demonstrated cold-path saving, so Stage 2 runtime parsing
-is deferred until a measured reader needs it.
+flattening primitive used by TOML interchange. Readers take their fallback from the declared
+field default, and the statusline shell reads its two defaults from the generated
+`statusline defaults` block; `tests/teatree_config/test_declared_default_literals.py` fails when
+a module names a declared key and also holds an integer of 20 or more equal to its default.
+
+**A hand-authored `defaults.toml` as the default tier (Stage 2) is declined.** A new setting
+costs one declaration edit plus the generated rewrite: adding one `UserSettings` field and
+running `scripts/hooks/generate_defaults_toml.py --write` rewrote exactly `defaults.toml` and
+`declared_keys.txt`, one line each. Parsing is not the obstacle: `tomllib.loads` on the
+35,655-byte file has a median of 2.7-2.9 ms (`python3 -I`, 4 repeats of 50 runs, host load
+average 17) and 3.1-13.8 ms on the deployed box ([#4994](https://github.com/souliane/teatree/issues/4994)).
+Hand-authoring the file would turn the one edit into two and add a second runtime default
+source. Reopen only when a measured hook reader needs a packaged default; the design then
+covers the unset, computed, per-overlay, personal and secret keys, a hook-latency control, the
+missing-file posture, the four overlay-seed behaviours and a schema gate.
 The subprocess control in `tests/config/test_cold_defaults.py` still pins that this
 interchange helper imports neither pydantic nor Django.
 
@@ -1133,6 +1144,12 @@ Every entry in the `peer_instances` registry appears as an import-required row. 
 disabled because every dashboard API requires a signed-in staff session. No peer credential or
 credential route is configured for comparison. The operator signs in to each peer, downloads its
 snapshot, then imports the file here or through `t3 settings compare --snapshot`.
+
+Each row's `if imported: X` label names what applying the first OTHER instance's value to THIS
+box does, and Use here acts on that same classification: a peer at its shipped default is a
+`clear` of this box's row, any other differing peer value an `import`, and only this box's own
+`T3_*` pin makes a row `shadowed`. With several peers the label follows the first that holds a
+value; each peer's own button stays exact.
 
 * **Loaded from a saved snapshot file** (`core.settings.settings_files`). The page's one POST carries
     snapshot documents — picked files (`snapshot_files`, several at a time) or JSON pasted into
