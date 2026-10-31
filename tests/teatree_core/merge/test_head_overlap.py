@@ -1,7 +1,9 @@
 """Pairwise overlap of one repo's open PR heads, driven over real git objects."""
 
+import string
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -60,6 +62,25 @@ class TestPairOverlaps:
         assert [(p.verdict, p.conflict_paths, p.shared_paths) for p in found] == [
             (OverlapVerdict.SHARED, (), ("shared.txt",))
         ]
+
+    def test_a_head_the_clone_does_not_hold_is_unreadable_not_clear(self, three_heads) -> None:
+        repo, shas = three_heads
+        missing = OpenHead(pr_id=14, sha="0123456789abcdef" * 2 + string.octdigits)
+        heads = (*(OpenHead(pr_id=NUMBERS[key], sha=sha) for key, sha in shas.items()), missing)
+
+        verdicts = {(p.older.pr_id, p.newer.pr_id): p.verdict for p in pair_overlaps(heads, repo_dir=str(repo))}
+
+        assert [verdicts[older, 14] for older in (11, 12, 13)] == [OverlapVerdict.UNREADABLE] * 3
+        assert verdicts[11, 12] is OverlapVerdict.ORDER
+
+    def test_a_missing_head_of_one_ticket_still_folds(self, three_heads) -> None:
+        repo, shas = three_heads
+        heads = (
+            OpenHead(pr_id=11, sha=shas["a"], ticket_id=7),
+            OpenHead(pr_id=14, sha="0123456789abcdef" * 2 + string.octdigits, ticket_id=7),
+        )
+
+        assert [p.verdict for p in pair_overlaps(heads, repo_dir=str(repo))] == [OverlapVerdict.FOLD]
 
     def test_heads_of_one_ticket_fold(self, three_heads) -> None:
         repo, shas = three_heads
@@ -160,6 +181,37 @@ class TestOverlapRefusal(TestCase):
 
         assert refusal is not None
         assert "could not be read" in refusal
+
+    def test_a_pr_whose_head_the_clone_cannot_read_is_refused_naming_the_older_pr(self) -> None:
+        repo, shas = self.repo, self.shas
+        host = forge_for(shas)
+        host.prs.append({"number": 14, "head": {"sha": "0123456789abcdef" * 2 + string.octdigits}, "body": ""})
+
+        refusal = overlap_refusal(ref=self._ref(14), ticket=None, host=host, repo_dir=str(repo))
+
+        assert refusal is not None
+        assert f"{_SLUG}#11" in refusal
+        assert "could not be compared" in refusal
+
+    def test_the_older_pr_still_merges_when_a_newer_head_is_unreadable(self) -> None:
+        repo, shas = self.repo, self.shas
+        host = forge_for(shas)
+        host.prs.append({"number": 14, "head": {"sha": "0123456789abcdef" * 2 + string.octdigits}, "body": ""})
+
+        assert overlap_refusal(ref=self._ref(11), ticket=None, host=host, repo_dir=str(repo)) is None
+
+    def test_other_open_prs_and_no_local_clone_refuses(self) -> None:
+        with patch("teatree.core.merge.head_overlap.matching_clone", return_value=None):
+            refusal = overlap_refusal(ref=self._ref(12), ticket=None, host=forge_for(self.shas))
+
+        assert refusal is not None
+        assert "no local clone" in refusal
+
+    def test_a_lone_open_pr_needs_no_clone(self) -> None:
+        host = RecordingForge([{"number": 12, "head": {"sha": self.shas["b"]}, "body": ""}])
+
+        with patch("teatree.core.merge.head_overlap.matching_clone", return_value=None):
+            assert overlap_refusal(ref=self._ref(12), ticket=None, host=host) is None
 
     def test_a_member_of_an_open_carrier_is_refused_naming_the_carrier(self) -> None:
         repo, shas = self.repo, self.shas

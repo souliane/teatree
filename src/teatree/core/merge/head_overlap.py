@@ -24,6 +24,7 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 _FORGE_READ_FAILURES = (BackendResolutionError, LookupError, OSError, RuntimeError, ValueError, TimeoutExpired)
 _OPEN_STATE = "open"
+_MIN_HEADS_TO_COMPARE = 2
 
 
 class OpenHeadsUnreadableError(RuntimeError):
@@ -35,6 +36,7 @@ class OverlapVerdict(StrEnum):
     FREEZE = "freeze"
     ORDER = "order"
     SHARED = "shared"
+    UNREADABLE = "unreadable"
 
 
 class OpenPrLister(Protocol):
@@ -110,33 +112,22 @@ def _git(repo_dir: str, *args: str) -> tuple[int, list[str]]:
     return result.returncode, result.stdout.split()
 
 
-def _changed_paths(repo_dir: str, base: str, sha: str) -> frozenset[str]:
+def _changed_paths(repo_dir: str, base: str, sha: str) -> frozenset[str] | None:
     code, paths = _git(repo_dir, "diff", "--name-only", base, sha)
-    return frozenset(paths) if code == 0 else frozenset()
+    return frozenset(paths) if code == 0 else None
 
 
-def _shared_paths(repo_dir: str, older_sha: str, newer_sha: str) -> tuple[str, ...]:
+def _shared_paths(repo_dir: str, older_sha: str, newer_sha: str) -> tuple[str, ...] | None:
     code, bases = _git(repo_dir, "merge-base", older_sha, newer_sha)
     if code != 0 or not bases:
-        return ()
-    shared = _changed_paths(repo_dir, bases[0], older_sha) & _changed_paths(repo_dir, bases[0], newer_sha)
-    return tuple(sorted(shared))
-
-
-def _verdict(
-    older: OpenHead,
-    newer: OpenHead,
-    *,
-    carried: frozenset[int],
-    conflict_paths: tuple[str, ...],
-    shared_paths: tuple[str, ...],
-) -> OverlapVerdict | None:
-    if older.pr_id in newer.carries or newer.pr_id in older.carries:
-        return OverlapVerdict.FOLD
-    if not (conflict_paths or shared_paths):
         return None
-    if older.ticket_id is not None and older.ticket_id == newer.ticket_id:
-        return OverlapVerdict.FOLD
+    older, newer = _changed_paths(repo_dir, bases[0], older_sha), _changed_paths(repo_dir, bases[0], newer_sha)
+    return None if older is None or newer is None else tuple(sorted(older & newer))
+
+
+def _ordering_verdict(
+    older: OpenHead, newer: OpenHead, *, carried: frozenset[int], conflict_paths: tuple[str, ...]
+) -> OverlapVerdict:
     if not conflict_paths:
         return OverlapVerdict.SHARED
     if {older.pr_id, newer.pr_id} & carried:
@@ -144,16 +135,39 @@ def _verdict(
     return OverlapVerdict.ORDER
 
 
+def _verdict(
+    older: OpenHead,
+    newer: OpenHead,
+    *,
+    carried: frozenset[int],
+    conflict_paths: tuple[str, ...] | None,
+    shared_paths: tuple[str, ...] | None,
+) -> OverlapVerdict | None:
+    if older.pr_id in newer.carries or newer.pr_id in older.carries:
+        return OverlapVerdict.FOLD
+    same_ticket = older.ticket_id is not None and older.ticket_id == newer.ticket_id
+    if conflict_paths is None or shared_paths is None:
+        return OverlapVerdict.FOLD if same_ticket else OverlapVerdict.UNREADABLE
+    if not (conflict_paths or shared_paths):
+        return None
+    if same_ticket:
+        return OverlapVerdict.FOLD
+    return _ordering_verdict(older, newer, carried=carried, conflict_paths=conflict_paths)
+
+
 def pair_overlaps(heads: tuple[OpenHead, ...], *, repo_dir: str) -> tuple[PairOverlap, ...]:
-    """Every overlapping pair among *heads*, older PR number first; pairs that touch nothing in common are omitted."""
+    """Every overlapping pair among *heads*, older PR number first; pairs that touch nothing in common are omitted.
+
+    A pair git cannot compare (a head missing from *repo_dir*) is reported ``UNREADABLE``, never as no overlap.
+    """
     carried = frozenset().union(*(head.carries for head in heads))
     found = []
     for older, newer in itertools.combinations(sorted(heads, key=lambda head: head.pr_id), 2):
-        conflict_paths = predict_merge_conflicts(repo_dir, newer.sha, older.sha) or ()
+        conflict_paths = predict_merge_conflicts(repo_dir, newer.sha, older.sha)
         shared_paths = _shared_paths(repo_dir, older.sha, newer.sha)
         verdict = _verdict(older, newer, carried=carried, conflict_paths=conflict_paths, shared_paths=shared_paths)
         if verdict is not None:
-            found.append(PairOverlap(older, newer, verdict, tuple(conflict_paths), shared_paths))
+            found.append(PairOverlap(older, newer, verdict, conflict_paths or (), shared_paths or ()))
     return tuple(found)
 
 
@@ -164,7 +178,7 @@ def overlap_refusal(
     host: OpenPrLister | None = None,
     repo_dir: str | None = None,
 ) -> str | None:
-    """Why *ref* must wait, else ``None``: a carrier-frozen member, an unreadable list, or an older conflict."""
+    """Why *ref* must wait, else ``None``: a frozen member, an unreadable list or comparison, or an older conflict."""
     if ticket is not None and (carrier_url := frozen_by_carrier(ticket)) is not None:
         return f"{ref.slug}#{ref.pr_id} belongs to the merge round of carrier {carrier_url}, which is still open"
     try:
@@ -175,12 +189,32 @@ def overlap_refusal(
         )
     clone = repo_dir or (str(path) if (path := matching_clone(ref.slug)) else "")
     if not clone:
-        return None
+        return _no_clone_refusal(ref.slug, heads)
     for pair in pair_overlaps(heads, repo_dir=clone):
-        if pair.verdict is OverlapVerdict.ORDER and pair.newer.pr_id == ref.pr_id:
-            paths = ", ".join(pair.conflict_paths)
-            return (
-                f"{ref.slug}#{ref.pr_id} conflicts with the older open {ref.slug}#{pair.older.pr_id} on {paths}; "
-                f"merge #{pair.older.pr_id} first"
-            )
+        if pair.newer.pr_id == ref.pr_id and (refusal := _pair_refusal(ref, pair, clone)):
+            return refusal
+    return None
+
+
+def _no_clone_refusal(slug: str, heads: tuple[OpenHead, ...]) -> str | None:
+    if len(heads) < _MIN_HEADS_TO_COMPARE:
+        return None
+    return (
+        f"{slug} has {len(heads)} open PRs but no local clone to compare their heads in; "
+        f"an uncomparable overlap cannot be ruled out"
+    )
+
+
+def _pair_refusal(ref: PrRef, pair: PairOverlap, clone: str) -> str | None:
+    older = f"{ref.slug}#{pair.older.pr_id}"
+    if pair.verdict is OverlapVerdict.UNREADABLE:
+        return (
+            f"{ref.slug}#{ref.pr_id} could not be compared with the older open {older} "
+            f"(a head is missing from {clone}; fetch it); an unreadable comparison cannot rule out an overlap"
+        )
+    if pair.verdict is OverlapVerdict.ORDER:
+        paths = ", ".join(pair.conflict_paths)
+        return (
+            f"{ref.slug}#{ref.pr_id} conflicts with the older open {older} on {paths}; merge #{pair.older.pr_id} first"
+        )
     return None
