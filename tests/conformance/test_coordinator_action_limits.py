@@ -25,7 +25,9 @@ from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDeci
 from teatree.core.models import Session, Task, ThreadBinding, Ticket
 from teatree.utils.url_slug import slack_conversation_anchor
 
-_COORDINATING_SKILL = Path(__file__).resolve().parents[2] / "skills" / "coordinating" / "SKILL.md"
+_SKILLS = Path(__file__).resolve().parents[2] / "skills"
+_COORDINATING_SKILL = _SKILLS / "coordinating" / "SKILL.md"
+_ANSWERER_SKILL = _SKILLS / "answerer" / "SKILL.md"
 _APPROVED_KINDS = {"bind_thread", "queue_task", "settle_card", "message_peer"}
 _WORK_URL = "https://github.com/souliane/teatree/issues/4084"
 _NONCE = "nonce-7f3a91c2"
@@ -38,8 +40,10 @@ def _duty_headings() -> set[str]:
 def _gaps(
     specs: Mapping[CoordinatorActionKind, object] = ACTION_SPECS,
     processors: Mapping[CoordinatorActionKind, Callable[..., str]] = _PROCESSORS,
+    answerer_skill: str | None = None,
 ) -> list[str]:
     headings = _duty_headings()
+    skill = _ANSWERER_SKILL.read_text(encoding="utf-8") if answerer_skill is None else answerer_skill
     gaps = [f"{kind}: no limit row" for kind in CoordinatorActionKind if kind not in specs]
     gaps += [f"{kind}: no processor" for kind in CoordinatorActionKind if kind not in processors]
     gaps += [
@@ -48,6 +52,7 @@ def _gaps(
         if spec.duty not in headings
     ]
     gaps += [f"{kind}: no brief wording" for kind, spec in ACTION_SPECS.items() if not spec.guide.strip()]
+    gaps += [f"{kind}: not named in the answerer skill" for kind in CoordinatorActionKind if f"`{kind}`" not in skill]
     return gaps
 
 
@@ -77,6 +82,11 @@ class TestTheTableHoldsExactlyTheFourApprovedKinds(TestCase):
 
         with mock.patch.dict(ACTION_SPECS, {kind: replace(ACTION_SPECS[kind], duty="Not a section")}):
             assert f"{kind}: no duty row naming a coordinating-skill section" in _gaps()
+
+    def test_a_kind_the_answerer_skill_does_not_name_is_reported(self) -> None:
+        skill = _ANSWERER_SKILL.read_text(encoding="utf-8").replace("`message_peer`", "message peer")
+
+        assert f"{CoordinatorActionKind.MESSAGE_PEER}: not named in the answerer skill" in _gaps(answerer_skill=skill)
 
     def test_a_kind_with_no_brief_wording_is_reported(self) -> None:
         kind = CoordinatorActionKind.BIND_THREAD
