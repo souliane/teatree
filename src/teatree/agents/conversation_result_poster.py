@@ -1,8 +1,6 @@
-"""Post a conversation's planning result once into its bound Slack thread.
+"""A planning task on a conversation advances no ticket, so its plan reaches the requester only through this post.
 
-A conversation row is bookkeeping, so completing its planning task advances no ticket and
-nothing else tells the requester the plan exists. The text is built here from the returned
-plan alone: never the thread, never the ticket's description.
+The text is built from the returned plan alone, never from the thread or the ticket description.
 """
 
 import logging
