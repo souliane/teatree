@@ -1,8 +1,10 @@
 """Behaviour tests for IncomingEventsScanner (#669, #654)."""
 
 import os
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -10,7 +12,9 @@ from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Directive, IncomingEvent, IntentClassification, ReplyDispatch
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 from teatree.core.overlay import OverlayBase, OverlayReview
+from teatree.loop.scanners.event_handlers import HandlingOutcome
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
+from tests._incoming_event_handlers import issues_handler, pending_review_event, registered, registry_of, review_handler
 
 
 def _event(*, source: str, body: str, key: str, **payload_extras: object) -> IncomingEvent:
@@ -645,3 +649,111 @@ class TestDirectiveEventIsUnrouteable(TestCase):
         event.refresh_from_db()
         assert event.processed_at is not None
         assert Directive.objects.count() == 0
+
+
+class TestHandledRows(TestCase):
+    def setUp(self) -> None:
+        self.handled: list[IncomingEvent] = []
+        self.outcome = HandlingOutcome.PROCESSED
+
+    def run_handler(self, event: IncomingEvent) -> HandlingOutcome:
+        self.handled.append(event)
+        return self.outcome
+
+    def scan(self, registry: AbstractContextManager | None = None) -> list:
+        with (
+            registered() if registry is None else registry,
+            patch("teatree.loop.scanners.incoming_events.classify_event") as classify,
+            patch("teatree.loop.scanners.incoming_events.route_event") as route,
+        ):
+            signals = IncomingEventsScanner(runner=self.run_handler).scan()
+        self.classified = classify.call_count + route.call_count
+        return signals
+
+    def test_a_row_with_a_registered_handler_goes_to_the_runner_and_never_to_classify_or_route(self) -> None:
+        event = pending_review_event()
+
+        assert self.scan() == []
+
+        assert [row.pk for row in self.handled] == [event.pk]
+        assert self.classified == 0
+
+    def test_a_row_without_a_handler_keeps_the_classify_and_route_path(self) -> None:
+        _event(source=IncomingEvent.Source.CI, body="pipeline green", key="ci:plain")
+
+        with (
+            registered(),
+            patch("teatree.loop.scanners.incoming_events.classify_event") as classify,
+            patch("teatree.loop.scanners.incoming_events.route_event") as route,
+        ):
+            route.return_value.kind = "drop"
+            IncomingEventsScanner(runner=self.run_handler).scan()
+
+        assert self.handled == []
+        classify.assert_called_once()
+
+    def test_a_dead_lettered_outcome_surfaces_as_a_signal(self) -> None:
+        pending_review_event()
+        self.outcome = HandlingOutcome.DEAD_LETTERED
+
+        assert [signal.kind for signal in self.scan()] == ["incoming_event.dead_letter"]
+
+    def test_a_row_the_runner_defers_stays_pending_and_is_not_marked_processed(self) -> None:
+        event = pending_review_event()
+        self.outcome = HandlingOutcome.DEFERRED
+
+        assert self.scan() == []
+
+        event.refresh_from_db()
+        assert (event.processed_at, event.attempts) == (None, 0)
+
+    def test_deferred_rows_of_one_key_do_not_hold_back_a_newer_row_of_another(self) -> None:
+        deferred = [pending_review_event(f"github:d-{number}") for number in range(25)]
+        newer = _event(source=IncomingEvent.Source.CI, body="pipeline green", key="ci:newer")
+        self.outcome = HandlingOutcome.DEFERRED
+
+        self.scan()
+
+        newer.refresh_from_db()
+        assert newer.processed_at is not None
+        assert self.classified > 0
+        assert [row.pk for row in self.handled] == [row.pk for row in deferred[:5]]
+
+    def test_a_key_with_no_handler_is_not_capped_by_the_per_key_budget(self) -> None:
+        rows = [_event(source=IncomingEvent.Source.CI, body="green", key=f"ci:many-{number}") for number in range(8)]
+
+        self.scan()
+
+        assert IncomingEvent.objects.filter(pk__in=[row.pk for row in rows], processed_at__isnull=False).count() == 8
+
+    def test_an_empty_registry_leaves_every_row_of_one_key_uncapped(self) -> None:
+        rows = [pending_review_event(f"github:same-{number}") for number in range(8)]
+
+        self.scan(registry_of())
+
+        assert IncomingEvent.objects.filter(pk__in=[row.pk for row in rows], processed_at__isnull=False).count() == 8
+
+    def test_the_budget_is_per_event_name_so_deferred_rows_of_one_do_not_hold_back_another_of_the_source(self) -> None:
+        deferred = [pending_review_event(f"github:r-{number}") for number in range(7)]
+        issue = pending_review_event("github:issue-1", event_name="issues", action="opened")
+        self.outcome = HandlingOutcome.DEFERRED
+
+        self.scan(registry_of(review_handler(), issues_handler()))
+
+        assert [row.pk for row in self.handled] == [*(row.pk for row in deferred[:5]), issue.pk]
+
+    def test_an_event_name_with_no_handler_is_not_capped_even_when_its_source_has_one(self) -> None:
+        rows = [pending_review_event(f"github:ping-{number}", event_name="ping", action="") for number in range(8)]
+
+        self.scan()
+
+        assert IncomingEvent.objects.filter(pk__in=[row.pk for row in rows], processed_at__isnull=False).count() == 8
+
+    def test_a_handled_row_with_no_runner_wired_fails_loudly_without_spending_an_attempt(self) -> None:
+        event = pending_review_event()
+
+        with registered(), pytest.raises(RuntimeError, match="no runner"):
+            IncomingEventsScanner().scan()
+
+        event.refresh_from_db()
+        assert (event.processed_at, event.attempts) == (None, 0)

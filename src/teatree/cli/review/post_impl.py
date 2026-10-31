@@ -374,7 +374,7 @@ def delete_issue_note_impl(
 
 
 def approve_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
-    """The pre-gate-passed publish body of :meth:`ReviewService.approve` (post-review-precondition)."""
+    """The GitLab publish body of an operator approval, run after its consent and review-before-approve checks."""
     api = service._get_api()
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
     if status in _HTTP_OK_CODES:
@@ -417,7 +417,7 @@ def _self_approval_hint(api: "GitLabAPI", encoded: str, mr: int, status: int) ->
 
 
 def unapprove_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
-    """The pre-gate-passed publish body of :meth:`ReviewService.unapprove`."""
+    """The GitLab publish body of an operator unapproval, run after its consent check."""
     api = service._get_api()
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
     if status in _HTTP_OK_CODES:

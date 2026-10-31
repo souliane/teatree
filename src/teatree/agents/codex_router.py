@@ -2,22 +2,19 @@
 
 import asyncio
 import json
-import os
-import signal
 from collections.abc import Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from teatree.agents.codex_app_server_env import router_process_env
 from teatree.forge_credentials import CODEX_ROUTER_ENV
+from teatree.utils.process_group import spawn_group_leader, stop_process_group
 
 _TEATREE_ROOT = Path(__file__).resolve().parents[3]
 _RUN_HOOK = _TEATREE_ROOT / "hooks" / "scripts" / "run-hook.sh"
 _ROUTER = _TEATREE_ROOT / "hooks" / "scripts" / "hook_router.py"
 _TIMEOUT_SECONDS = 30
-_CLOSE_PIPES_SECONDS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,17 +35,19 @@ async def run_router(
     process: asyncio.subprocess.Process | None = None
     finished = False
     try:
-        process = await asyncio.create_subprocess_exec(
-            str(_RUN_HOOK),
-            str(_ROUTER),
-            "--event",
-            event,
-            cwd=cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**router_process_env(dispatch_env), CODEX_ROUTER_ENV: "1"},
-            start_new_session=True,
+        process = await spawn_group_leader(
+            asyncio.create_subprocess_exec(
+                str(_RUN_HOOK),
+                str(_ROUTER),
+                "--event",
+                event,
+                cwd=cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**router_process_env(dispatch_env), CODEX_ROUTER_ENV: "1"},
+                start_new_session=True,
+            )
         )
         stdout, stderr = await asyncio.wait_for(
             process.communicate(json.dumps({**payload, "hook_event_name": event, "cwd": cwd}).encode()),
@@ -60,16 +59,5 @@ async def run_router(
         return None
     finally:
         if process is not None and not finished:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            await process.wait()
-            await _close_pipes(process)
+            await stop_process_group(process)
     return RouterRun(returncode, stdout, stderr)
-
-
-async def _close_pipes(process: asyncio.subprocess.Process) -> None:
-    """Read the killed group's pipes to EOF so asyncio closes the transport before the loop can end."""
-    streams = [stream for stream in (process.stdout, process.stderr) if stream is not None]
-    with suppress(TimeoutError, OSError):
-        await asyncio.wait_for(asyncio.gather(*(stream.read() for stream in streams)), timeout=_CLOSE_PIPES_SECONDS)
-    await asyncio.sleep(0)

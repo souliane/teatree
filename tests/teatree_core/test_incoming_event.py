@@ -14,6 +14,7 @@ from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_inbound import HANDLING_LEASE
 from teatree.core.models import IncomingEvent
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 
@@ -273,3 +274,33 @@ class TestIncomingEventReliability(TestCase):
 
         assert dead_pks == [poison.pk]
         assert alive.pk not in dead_pks
+
+
+class TestClaimForHandling(TestCase):
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        self.event = IncomingEvent.objects.create(source="github", idempotency_key="github:claim")
+
+    def claim(self, at: timedelta = timedelta()) -> bool:
+        return IncomingEvent.objects.claim_for_handling(self.event.pk, self.now + at)
+
+    def test_only_one_of_two_claims_wins_until_the_lease_runs_out(self) -> None:
+        assert self.claim() is True
+        assert self.claim() is False
+        assert self.claim(HANDLING_LEASE - timedelta(seconds=1)) is False
+        assert self.claim(HANDLING_LEASE) is True
+
+    def test_a_claim_waits_out_a_failure_backoff(self) -> None:
+        self.event.record_failure("boom", now=self.now)
+
+        assert self.claim() is False
+        assert self.claim(timedelta(hours=1)) is True
+
+    def test_a_processed_or_dead_lettered_row_cannot_be_claimed(self) -> None:
+        self.event.mark_processed()
+        assert self.claim() is False
+
+        self.event.processed_at = None
+        self.event.dead_lettered_at = self.now
+        self.event.save(update_fields=["processed_at", "dead_lettered_at"])
+        assert self.claim() is False

@@ -120,9 +120,10 @@ def _host_backend(
 
     *remote* scopes the credential to the repo being acted
     on rather than answering with one token everywhere — the AUTHORING credential
-    specifically, which is the one the forge then bars from approving. The review/
-    approve surface deliberately reads the overlay-wide OWNER credential instead
-    (:func:`teatree.cli.review.forge_target.read_token`).
+    specifically, which is the one the forge then bars from approving. The review-note
+    surface deliberately reads the overlay-wide OWNER credential instead
+    (:func:`teatree.cli.review.forge_target.read_token`); approvals read no stored
+    token and act through the consenting operator's own grant.
 
     The scoping is resolved from the REPO across every registered overlay
     (:func:`teatree.core.authoring_credential.gitlab_token_for_remote`), not from

@@ -10,13 +10,16 @@ created from inside this container at all, which is the very reason the refusal 
 that group is constructed directly and the reader is stubbed. Everything else is real.
 """
 
+import asyncio
 import contextlib
 import os
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import unittest
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +29,8 @@ import django.test
 from typer.testing import CliRunner
 
 from teatree import request_cache
+from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.cli import app
 from teatree.cli.reap_orphan_groups import refusal_for
 from teatree.core.cleanup.orphan_process_groups import GroupMember, OrphanGroup, OrphanSurvey
@@ -134,6 +139,20 @@ def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Generato
         holder.stdout.close()
 
 
+@contextmanager
+def left_behind_by_the_bash_tool(directory: Path, *, child: str) -> Generator[int]:
+    """The group a finished ``Bash`` call leaves: its background *child*, whose session leader has exited."""
+    bash = build_shell_toolset(LaneBToolConfig(fs_root=directory)).tools["Bash"].function
+    returned = asyncio.run(bash(f"echo $$ > leader; {child} >/dev/null 2>&1 &"))
+    assert returned == "exit=0\n"
+    pgid = int((directory / "leader").read_text())
+    try:
+        yield pgid
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+
+
 def _reap_now(*args: str):
     ConfigSetting.objects.set_value("orphan_group_min_age_hours", 0)
     request_cache.invalidate()
@@ -212,6 +231,28 @@ class TestReapsARealLeaderlessGroup(django.test.TestCase):
 
         assert "could not verify" in result.output
         assert "reclaimed" not in result.output
+
+
+@unittest.skipUnless(sys.platform == "linux", "reads this venue's own /proc")
+class TestAGroupTheBashToolLeavesBehind(django.test.TestCase):
+    def setUp(self) -> None:
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_a_burning_child_of_a_finished_call_is_reported_and_reclaimed_like_any_leaderless_group(self) -> None:
+        with left_behind_by_the_bash_tool(self.directory, child=f"sh -c {shlex.quote(_BURN_SH)}") as pgid:
+            dry_run = _reap_now("--pgid", str(pgid))
+            applied = _reap_now("--pgid", str(pgid), "--apply")
+
+            assert f"WOULD REAP  pgid {pgid}" in dry_run.output
+            assert "reclaimed" in applied.output
+            assert _wait_for_group_death(pgid) is True
+
+    def test_an_idle_child_of_a_finished_call_is_left_alone(self) -> None:
+        with left_behind_by_the_bash_tool(self.directory, child="sleep 30") as pgid:
+            result = _reap_now("--pgid", str(pgid), "--apply")
+
+            assert "No leaderless process group" in result.output
+            assert _group_is_alive(pgid) is True
 
 
 class TestRefusesWhatItMustNotSignal(django.test.TestCase):

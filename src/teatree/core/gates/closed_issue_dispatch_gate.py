@@ -131,8 +131,8 @@ def _refusal(ticket: "Ticket", canonical_phase: str, closed_reason: str) -> str:
     return (
         f"{ISSUE_CLOSED_PREFIX}refusing to dispatch {SUBAGENT_BY_IMPLEMENTING_PHASE[canonical_phase]} for ticket "
         f"{ticket.pk} ({canonical_phase}) — its issue {ticket.issue_url} is CLOSED{said} on the forge, so "
-        f"implementing it would deliver work somebody already decided against. Nothing here is lost: the next "
-        f"disposition scan auto-ignores the ticket. To act now, reopen the issue if the close was wrong, or "
+        f"implementing it would deliver work somebody already decided against. Nothing here is lost: the board "
+        f"reconcile retires the ticket on its next pass. To act now, reopen the issue if the close was wrong, or "
         f"record the decision with `t3 <overlay> ticket transition {ticket.pk} ignore` (reversible with "
         f"`unignore`). Salvage any work already in the worktree with `t3 <overlay> workspace salvage` first."
     )

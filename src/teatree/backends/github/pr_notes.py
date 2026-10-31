@@ -75,3 +75,7 @@ class GitHubPrNotes:
         }
         data = _gh_api_post(f"repos/{repo}/pulls/{pr_iid}/reviews", payload, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def approve(self, *, repo: str, pr_iid: int) -> RawAPIDict:
+        data = _gh_api_post(f"repos/{repo}/pulls/{pr_iid}/reviews", {"event": "APPROVE"}, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}

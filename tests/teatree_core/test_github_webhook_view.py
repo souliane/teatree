@@ -15,17 +15,21 @@ from unittest.mock import patch
 import pytest
 from django.db import OperationalError, connection
 from django.http import HttpResponse
+from django.tasks import TaskResultStatus
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
 
 from teatree import webhook_settings
 from teatree.core.models import IncomingEvent, Task
 from teatree.core.views import _webhook_secrets, github_webhook
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
+from teatree.loops import incoming_event_wake
 from teatree.utils import secrets
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._file_backed_db import file_backed_default_database
+from tests._incoming_event_handlers import TASKS_SETTING, registered
 
 PREFIX = "teatree/github-webhook"
 SECRET_A = "test-secret-alpha"
@@ -276,6 +280,74 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
 
                 assert self.deliver(_payload(**fields), headers=headers).status_code == 200
         assert IncomingEvent.objects.count() == len(cases)
+
+
+def _review(*, submitted_at: str | None = None, action: str = "submitted") -> bytes:
+    stamp = submitted_at or timezone.now().isoformat()
+    return _payload(
+        action=action,
+        repository={"id": 101, "full_name": "acme/widgets"},
+        review={"state": "approved", "submitted_at": stamp},
+    )
+
+
+REVIEW_HEADERS = {"X-GitHub-Event": "pull_request_review", "X-GitHub-Delivery": "rev-1"}
+
+
+@override_settings(TASKS=TASKS_SETTING)
+class TestDeliveryWithARegisteredHandler(GitHubWebhookTestCase):
+    @staticmethod
+    def wakes() -> list[DBTaskResult]:
+        path = incoming_event_wake.wake_incoming_event.module_path
+        return list(DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY))
+
+    def deliver_review(self, body: bytes | None = None, **headers: str) -> HttpResponse:
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.deliver(body or _review(), headers=REVIEW_HEADERS | headers)
+
+    def test_row_is_stored_unsettled_with_its_payload_and_one_wake_follows(self) -> None:
+        with registered():
+            assert self.deliver_review().status_code == 200
+
+        row = IncomingEvent.objects.get()
+        assert row.processed_at is None
+        assert row.payload_json["review"]["state"] == "approved"
+        assert [wake.args_kwargs["kwargs"] for wake in self.wakes()] == [{"event_pk": row.pk}]
+
+    def test_redelivery_stores_nothing_new_and_wakes_nothing_more(self) -> None:
+        with registered():
+            statuses = [self.deliver_review().status_code for _ in range(2)]
+
+        assert statuses == [200, 200]
+        assert IncomingEvent.objects.count() == 1
+        assert len(self.wakes()) == 1
+
+    def test_event_with_no_handler_stays_settled_trimmed_and_unwoken(self) -> None:
+        with registered():
+            assert self.deliver_review(_review(action="dismissed")).status_code == 200
+
+        row = IncomingEvent.objects.get()
+        assert row.processed_at is not None
+        assert (row.body, row.payload_json) == ("", {})
+        assert not self.wakes()
+
+    def test_delivery_older_than_the_replay_window_is_identity_only_and_never_woken(self) -> None:
+        stale = (timezone.now() - timedelta(days=8)).isoformat()
+        with registered():
+            assert self.deliver_review(_review(submitted_at=stale)).status_code == 200
+
+        row = IncomingEvent.objects.get()
+        assert row.processed_at is not None
+        assert (row.body, row.payload_json) == ("", {})
+        assert not self.wakes()
+
+    def test_delivery_inside_the_replay_window_is_handled(self) -> None:
+        recent = (timezone.now() - timedelta(days=1)).isoformat()
+        with registered():
+            assert self.deliver_review(_review(submitted_at=recent)).status_code == 200
+
+        assert IncomingEvent.objects.get().processed_at is None
+        assert len(self.wakes()) == 1
 
 
 class TestMalformedRequest(GitHubWebhookTestCase):

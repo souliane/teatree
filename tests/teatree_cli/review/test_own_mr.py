@@ -242,20 +242,6 @@ class TestOtherOnBehalfSurfacesStillRefusedOnOwnMr:
         self.api = _AuthoredStubAPI(author=_OWNER)
         self.service = _service(self.api)
 
-    def test_approve_on_own_mr_is_still_blocked(self) -> None:
-        msg, code = self.service.approve(_REPO, _MR)
-
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        assert self.api.published == []
-
-    def test_unapprove_on_own_mr_is_still_blocked(self) -> None:
-        msg, code = self.service.unapprove(_REPO, _MR)
-
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        assert self.api.published == []
-
     def test_publish_draft_notes_on_own_mr_is_still_blocked(self) -> None:
         msg, code = self.service.publish_draft_notes(_REPO, _MR)
 
