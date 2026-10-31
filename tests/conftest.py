@@ -165,7 +165,7 @@ def readable_ship_tree() -> Iterator[None]:
         patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
         patch(
             "teatree.core.management.commands._ship.gates.require_current_branch",
-            return_value={"auto_merged": False, "post_merge_sha": None, "error": None, "hint": None},
+            return_value={"error": None, "hint": None},
         ),
     ):
         yield
@@ -968,7 +968,10 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     control_db_dir = tmp_path / "isolated-control-db"
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
-    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "isolated-data")
+    isolated_data_dir = tmp_path / "isolated-data"
+    monkeypatch.setattr("teatree.paths.DATA_DIR", isolated_data_dir)
+    # The singleton binds DATA_DIR at import, so without this the worker-lock probe reads the host's real lock.
+    monkeypatch.setattr("teatree.utils.singleton.DATA_DIR", isolated_data_dir)
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)

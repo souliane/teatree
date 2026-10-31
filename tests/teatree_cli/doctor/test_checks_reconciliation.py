@@ -20,10 +20,12 @@ from teatree.cli.doctor import checks_external_outcomes as external
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
 from teatree.core.factory.external_outcomes import DEFAULT_EXTERNAL_WINDOW_DAYS, Forge
+from teatree.core.modelkit.review_contract import CRITIC_REMEDY
 from teatree.core.models import (
     NOOP_OVER_COMPLETED_MARKER,
     AutoReviewDispatch,
     CodexReviewMarker,
+    CriticDispatch,
     DeferredQuestion,
     EvalRunRecord,
     ExternalOutcomeSnapshot,
@@ -691,6 +693,7 @@ class TestReviewDispatchSaturation(TestCase):
         assert finding.is_alarm
         assert f"{self.SLUG}#3920" in finding.message
         assert "no recorded attempt" in finding.message
+        assert "critic-record" not in finding.message
 
     def test_saturation_names_each_recorded_failure_cause(self) -> None:
         reasons = {
@@ -777,6 +780,19 @@ class TestReviewDispatchSaturation(TestCase):
 
         assert finding.is_alarm
         assert f"codex:{self.SLUG}#1254" in finding.message
+
+    def test_saturated_critic_names_the_same_available_remedy_as_merge_gate(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        claim = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=self.HEAD, contract="review")
+        assert claim is not None
+        CriticDispatch.objects.filter(pk=claim.pk).update(
+            attempts=MAX_DISPATCH_ATTEMPTS, deadline=timezone.now() - dt.timedelta(minutes=1)
+        )
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert CRITIC_REMEDY in finding.message
 
     def test_the_check_is_registered_in_the_ledger(self) -> None:
         assert recon._check_review_dispatch_saturation in recon.CHECKS

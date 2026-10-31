@@ -188,13 +188,10 @@ class TicketExtra(TicketRepoExtra, total=False):
     tracker_404: bool
     more_prs_coming: bool
     e2e_recipe: "E2ERecipeSerialized"
-    # #940 branch-currency gate state: post-merge SHA the cold reviewer
-    # must attest, and a durable refusal entry when the ship-time
-    # defense-in-depth re-check rejects the push.
+    # Durable refusal when the ship-time branch-currency check rejects the push.
     # Stacked-delivery override keyed by canonical owner/repo slug. The string
     # shape is retained only for tickets written before repo scoping.
     target_branch: dict[str, str] | str
-    branch_currency_post_merge_sha: str
     ship_branch_currency_blocker: "BranchCurrencyBlocker"
     last_approval_sha: str
     # #88 DoD gate escape hatch: an explicit operator override recording WHY
@@ -220,6 +217,7 @@ class TicketExtra(TicketRepoExtra, total=False):
     anti_vacuity_attestation: "AntiVacuityAttestation"
     anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
+    review_carried_heads: dict[str, str]
     rubric_grades_recorded: bool
     rubric_waivers: list[dict[str, str | int]]
     # Owner waivers of one LLM merge-critic item, keyed by item slug; read by ``unmet_items``.

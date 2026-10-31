@@ -1002,8 +1002,8 @@ code path still honors the invariant — then add the matching anti-vacuous test
 
 `t3 eval skill-command-validity` is a Layer-1 (deterministic, model-free, no `claude`
 run) **test** — a sibling of pinned-regressions. It
-grades the repo's prose *docs* themselves: every backticked `t3 …` command a
-doc in `DOC_GLOBS` cites — `skills/<name>/SKILL.md` and its nested `*.md`
+grades the repo's prose *docs* themselves: every backticked or fenced-block `t3 …`
+command a doc in `DOC_GLOBS` cites — `skills/<name>/SKILL.md` and its nested `*.md`
 references, the `agents/*.md` role briefs, `BLUEPRINT.md`, and the `docs/` tree
 minus `docs/generated/` (rendered FROM the registry, so checking it is circular)
 — must resolve against the LIVE CLI registry. A doc that cites a `t3` command

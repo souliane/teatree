@@ -5,17 +5,46 @@ caps) — this is one cohesive concern: deciding the sweep's skip reason from th
 CI state of the forge *pr* was read from.
 """
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import CodeHostQuery
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
-from teatree.loop.scanners.pr_sweep_decision import classify_sweep_ci
-from teatree.loop.scanners.pr_sweep_types import GITLAB_PIPELINE_CHECK_NAME
+from teatree.loop.scanners.pr_sweep_decision import classify_sweep_ci, red_required_at_stale_base, with_ci_context
+from teatree.loop.scanners.pr_sweep_types import (
+    GITLAB_PIPELINE_CHECK_NAME,
+    UV_AUDIT_CHECK_NAME,
+    MergeAttempt,
+    PrSummary,
+    skip_attempt,
+)
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
-    from teatree.loop.scanners.pr_sweep_types import PrSummary
+    from teatree.loop.scanners.pr_sweep_ports import PrApiClient
+
+logger = logging.getLogger(__name__)
+_STALE_BASE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
+
+
+def main_uv_audit_red(api: "PrApiClient", *, slug: str) -> bool:
+    try:
+        return api.main_check_failed(slug=slug, check_name=UV_AUDIT_CHECK_NAME)
+    except Exception:
+        logger.exception("pr_sweep failed to fetch main uv-audit status for %s", slug)
+        return False
+
+
+def ci_block_attempt(
+    pr: PrSummary, *, reason: str, failing: set[str], remedy: Callable[[PrSummary], MergeAttempt]
+) -> MergeAttempt:
+    """A red check on a stale base is unknown until a branch update reruns it."""
+    if reason not in _STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
+        failing, behind_main=pr.behind_main, conflicted=pr.is_conflicted
+    ):
+        return with_ci_context(skip_attempt(pr, reason=reason), pr=pr, failing=failing)
+    return with_ci_context(remedy(pr), pr=pr, failing=failing)
 
 
 def ci_gate_verdict(pr: "PrSummary", *, main_uv_audit_red: Callable[[], bool]) -> tuple[str | None, bool, set[str]]:

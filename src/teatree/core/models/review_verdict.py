@@ -509,6 +509,13 @@ class ReviewVerdict(models.Model):
             for disposition in ReviewHoldDisposition.objects.filter(hold=self).select_related("clearing_verdict"):
                 clearing = disposition.clearing_verdict.carry_forward(reviewed_sha=reviewed_sha)
                 disposition.carry_forward(hold=carried, clearing_verdict=clearing)
+            ticket = self.ticket or (
+                Ticket.objects.filter(pull_requests__repo__iexact=self.slug, pull_requests__iid=str(self.pr_id))
+                .order_by("-pull_requests__pk")
+                .first()
+            )
+            if ticket is not None:
+                ticket.merge_extra(merge_into_dicts={"review_carried_heads": {carried.reviewed_sha: self.reviewed_sha}})
             return carried
 
     @property

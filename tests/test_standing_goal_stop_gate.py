@@ -191,7 +191,7 @@ class TestDefensiveHelpers(_GateTest):
         def _raise(*_a: object, **_k: object) -> None:
             raise OSError
 
-        with patch.object(gate.Path, "write_text", _raise):
+        with patch.object(Path, "write_text", _raise):
             gate._save_check_cache({"ts": 0.0, "results": {}})  # must not raise
 
     def test_check_cache_non_dict_is_empty(self) -> None:

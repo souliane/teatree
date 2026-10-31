@@ -41,6 +41,7 @@ class _FakeSweepScanner:
     """Stand-in for the per-overlay ``PrSweepScanner`` the trigger builds."""
 
     merged: bool = True
+    waiting: bool = False
     calls: list[tuple[str, int]] = field(default_factory=list)
 
     def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt:
@@ -48,14 +49,14 @@ class _FakeSweepScanner:
         return MergeAttempt(
             slug=slug,
             pr_id=pr_id,
-            decision="merged" if self.merged else "flag_no_review",
+            decision="waiting_on_critic" if self.waiting else ("merged" if self.merged else "flag_no_review"),
             merged=self.merged,
             merged_sha="b" * 40 if self.merged else "",
             reason="solo_overlay_no_clear" if self.merged else "solo_overlay_no_review",
         )
 
 
-def _record(*, verdict: str = "merge_safe") -> dict[str, object]:
+def _record(*, verdict: str = "merge_safe", stdout: StringIO | None = None) -> dict[str, object]:
     return cast(
         "dict[str, object]",
         call_command(
@@ -68,11 +69,22 @@ def _record(*, verdict: str = "merge_safe") -> dict[str, object]:
             reviewer_identity="cold-reviewer-agent",
             gh_verify_result="green",
             blast_class="logic",
+            stderr=stdout,
         ),
     )
 
 
 class TestRecordTriggersSweep(TestCase):
+    def test_live_critic_prints_waiting_instead_of_blocked(self) -> None:
+        scanner = _FakeSweepScanner(merged=False, waiting=True)
+        output = StringIO()
+        with patch(f"{_SWEEP_MOD}._sweep_scanner_for_overlay", return_value=scanner):
+            result = _record(stdout=output)
+
+        assert result["recorded"] is True
+        assert f"pr_sweep waiting for critic {_SLUG}#{_PR_ID}" in output.getvalue()
+        assert "pr_sweep blocked" not in output.getvalue()
+
     def test_merge_safe_verdict_triggers_an_on_demand_sweep_merge(self) -> None:
         scanner = _FakeSweepScanner(merged=True)
         with patch(f"{_SWEEP_MOD}._sweep_scanner_for_overlay", return_value=scanner):

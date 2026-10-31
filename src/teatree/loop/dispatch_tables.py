@@ -227,6 +227,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # will decline again next pass, so it needs an operator decision rather than
     # another silent log line.
     "pr_sweep.blocked": "action_needed",
+    "pr_sweep.waiting_on_critic": "in_flight",
     # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
     # duplicate-scope drift the factory was blind to until a human asked. Each
     # finding needs an operator decision (salvage/push/dedup), and an errored

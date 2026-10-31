@@ -7,6 +7,7 @@ import pytest
 from django.test import TestCase
 
 import teatree.core.merge.uncleared_merge as uncleared_mod
+from teatree.core.gates.merge_quality_gate import MergeAwaitingCriticError
 from teatree.core.merge import MergePreconditionError
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models import MergeAudit
@@ -27,6 +28,11 @@ def _refuse(*, ref: PrRef, expected_head_oid: str, query: CodeHostQuery | None =
 
 def _merge(*, ref: PrRef, expected_head_oid: str, query: CodeHostQuery | None = None) -> str:
     return "merged0sha"
+
+
+def _await_critic(*, ref: PrRef, expected_head_oid: str, query: CodeHostQuery | None = None) -> str:
+    message = "critic running"
+    raise MergeAwaitingCriticError(message)
 
 
 def _gh_merge() -> BoundMergeResult:
@@ -68,6 +74,12 @@ class TestAuditBoundMerge(TestCase):
 
 
 class TestGhBoundMerge:
+    def test_active_critic_is_preserved_as_waiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(uncleared_mod, "execute_bound_merge", _await_critic)
+        result = _gh_merge()
+        assert result.waiting is True
+        assert result.refusal == "critic running"
+
     def test_refusal_carries_the_precondition_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(uncleared_mod, "execute_bound_merge", _refuse)
 
@@ -84,6 +96,12 @@ class TestGhBoundMerge:
 
 
 class TestGlabBoundMerge:
+    def test_active_critic_is_preserved_as_waiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(uncleared_mod, "execute_bound_merge", _await_critic)
+        result = _glab_merge()
+        assert result.waiting is True
+        assert result.refusal == "critic running"
+
     def test_refusal_carries_the_precondition_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(uncleared_mod, "execute_bound_merge", _refuse)
 

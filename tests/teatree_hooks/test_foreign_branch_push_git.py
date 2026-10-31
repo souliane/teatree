@@ -220,7 +220,7 @@ def test_non_github_credential_refusal_keeps_general_gate_refusal(
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     for key in (*FORGE_TOKEN_ENV_KEYS, "GIT_ASKPASS", "SSH_ASKPASS"):
         monkeypatch.delenv(key, raising=False)
-    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False)
 
     assert remote_branch_oid(str(work), "origin", "main").credential_refused
     plain = _branch_refusal(spec, "main", _ForgeRun())
@@ -260,7 +260,7 @@ def test_venue_fault_requires_a_github_remote(
 ) -> None:
     work, _, _ = git_scene
     failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
-    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False)
     monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
     for key in FORGE_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -287,7 +287,7 @@ def test_routed_ls_remote_credential_refusal_names_venue_fault(
     _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
     monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
     monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
-    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False)
     failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
 
     with patch("hooks.scripts.foreign_branch_push_gate.remote_branch_oid", return_value=failed):
@@ -305,7 +305,7 @@ def test_routed_forge_login_credential_refusal_names_venue_fault(
     _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
     monkeypatch.setenv(CODEX_ROUTER_ENV, "1")
     monkeypatch.setenv("GH_TOKEN", "sentinel-task-token")
-    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False)
     found = GitProbe(ok=True, out=oid)
     refused = ForgeProbe(stdout=None, unresolved="gh exit 4: HTTP 401", credential_refused=True)
 
@@ -328,7 +328,7 @@ def test_unrouted_ls_remote_credential_refusal_keeps_general_refusal(
     work, _, _ = git_scene
     _git(work, "remote", "set-url", "origin", "https://github.com/example/repo.git")
     monkeypatch.delenv(CODEX_ROUTER_ENV, raising=False)
-    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False, unpinnable="")
+    spec = PushSpec(str(work), "origin", ("main",), force=False, destructive=False)
     failed = GitProbe(ok=False, out="", code=128, err="HTTP 401", credential_refused=True)
 
     with patch("hooks.scripts.foreign_branch_push_gate.remote_branch_oid", return_value=failed):

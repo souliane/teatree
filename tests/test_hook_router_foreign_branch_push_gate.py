@@ -1694,9 +1694,7 @@ class TestANumericBranchOperandSurvivesARedirect:
 
 
 def _push_spec(refspec: str, *, force: bool) -> gate.PushSpec:
-    return gate.PushSpec(
-        work_dir="/repo", remote="origin", refspecs=(refspec,), force=force, destructive=force, unpinnable=""
-    )
+    return gate.PushSpec(work_dir="/repo", remote="origin", refspecs=(refspec,), force=force, destructive=force)
 
 
 class TestEagerEvaluationCannotLoseAnEstablishedDenial:
@@ -2765,6 +2763,22 @@ class TestAnAbbreviatedFlagIsReadTheWayItsSetPoints:
         with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
             route = _deny_route("git push origin theirs", work)
         assert route == "_fail_open_or_deny"
+
+
+class TestAPushSpecKeepsTwoIndependentUnpinnableFacts:
+    def test_a_branchless_flag_names_no_repo_fault_but_leaves_the_push_unpinnable(self, work: Path) -> None:
+        spec = gate.push_specs("git push --all origin", str(work)).specs[0]
+        assert spec.repo_unpinnable == ""
+        assert spec.unpinnable != ""
+
+    def test_an_unresolvable_repo_is_the_reason_when_both_facts_hold(self, work: Path) -> None:
+        spec = gate.push_specs('git -C "$(pwd)" push --all origin', str(work)).specs[0]
+        assert spec.repo_unpinnable != ""
+        assert spec.unpinnable == spec.repo_unpinnable
+
+    def test_a_named_branch_in_a_known_repo_is_pinnable(self, work: Path) -> None:
+        spec = gate.push_specs("git push origin main", str(work)).specs[0]
+        assert spec.unpinnable == ""
 
 
 class TestDeletingAColleaguesBranchHasNoEscapeEither:

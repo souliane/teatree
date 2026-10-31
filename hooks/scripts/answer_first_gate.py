@@ -19,13 +19,12 @@ Never-lockout: ``stop_hook_active`` short-circuits the re-fire, the per-call
 error allows the stop — a Stop hook must never crash turn-end.
 """
 
-import contextlib
 import json
 import re
 import sys
-from pathlib import Path
 
 from hooks.scripts.gate_escape import escape_allows
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Alias both identities so the live hook's bare import and a test's
 # ``hooks.scripts.answer_first_gate`` import resolve ONE module object.
@@ -120,19 +119,11 @@ def handle_answer_first_gate(data: dict) -> bool | None:
     on the last user message and the final assistant turn. Otherwise returns
     ``None`` so the session may end normally. Fail-safe-to-silent on any error.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run(data)
+        with teatree_src_on_path():
+            return _run(data)
     except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _run(data: dict) -> bool | None:

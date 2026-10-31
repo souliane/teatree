@@ -11,6 +11,7 @@ only the touched safety modules otherwise; and the registry stays narrow (a
 guard against the "add the whole codebase" drift the design warns about).
 """
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,17 @@ class TestReachabilityLedger:
     def test_every_module_resolves_to_a_real_file(self, modules: tuple[str, ...]) -> None:
         for module in modules:
             assert (_REPO_ROOT / module).is_file(), f"declared high-value module {module!r} resolves to no file on tree"
+
+    def test_every_module_defines_a_function_mutmut_can_mutate(self, modules: tuple[str, ...]) -> None:
+        shims = [
+            module
+            for module in modules
+            if not any(
+                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                for node in ast.walk(ast.parse((_REPO_ROOT / module).read_text(encoding="utf-8")))
+            )
+        ]
+        assert not shims, f"registry modules with no function body yield zero mutants and red any diff: {shims}"
 
 
 class TestScopeModules:

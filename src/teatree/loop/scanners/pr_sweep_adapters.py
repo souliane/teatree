@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.backends.github.pr_reads import approval_count
+from teatree.core.gates.merge_quality_gate import MergeAwaitingCriticError
 from teatree.core.merge.uncleared_merge import merge_without_clear
 from teatree.core.review.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
@@ -360,6 +361,8 @@ class GhPrApiClient:
 
         try:
             merged_sha = merge_without_clear(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
+        except MergeAwaitingCriticError as exc:
+            return BoundMergeResult(merged=False, refusal=str(exc), waiting=True)
         except MergePreconditionError as exc:
             return BoundMergeResult(merged=False, refusal=str(exc))
         return BoundMergeResult(merged=True, merged_sha=merged_sha)

@@ -385,9 +385,9 @@ The sweep runs **daily** as a registered `Loop` row (`backlog_sweep`), so it is
 versioned, exportable, and disableable exactly like every other loop:
 
 ```bash
-t3 loops list                        # the sweep appears here with its cadence
-t3 loops enable backlog_sweep        # the row IS the switch
-t3 loops disable backlog_sweep
+t3 loops list                                                  # the sweep appears here with its cadence
+t3 loop override backlog_sweep on --reason "daily sweep"       # the row IS the switch
+t3 loop override backlog_sweep off --reason "pause the sweep"  # `clear` hands it back to the preset
 ```
 
 The row plus the active preset are the single switch, and the row seeds

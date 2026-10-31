@@ -132,8 +132,8 @@ def _run_precheck_ship_gates(
 
     Grouped so ``_run_ship_gates`` stays within the return-count gate and the
     cheap gates run as one fail-fast block before the expensive diff-rendering
-    gates. Order: branch-currency (#940, first so the rest see the post-merge
-    tree), the phase/shipping gate (#694), the PR-budget gate (north-star PR-2),
+    gates. Order: branch-currency (#940, first so a predicted target conflict
+    refuses before the rest), the phase/shipping gate (#694), the PR-budget gate (north-star PR-2),
     then the debt-delta gate (north-star PR-3) — the last two both cheap, so a
     ticket over its open-PR budget or introducing net-new tech debt fails before
     any push creates an orphan remote branch.

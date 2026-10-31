@@ -505,9 +505,8 @@ class _RetentionSettings:
     # itself. Empty (the default) keeps the historical behaviour — the repo's
     # own default branch. Set it when a whole line of work stacks onto ONE
     # long-lived integration branch instead of ``main``: every PR then targets
-    # that branch, and ``run_branch_currency_gate`` merges it into each
-    # worktree before shipping, so a merge into the integration branch
-    # propagates to the branches still in flight. The repo-keyed
+    # that branch, and ``run_branch_currency_gate`` predicts conflicts
+    # before shipping without changing the reviewed head. The repo-keyed
     # ``Ticket.extra['target_branch'][repo_slug]`` override still wins, and a
     # branch that IS the configured target falls back to the repo default so
     # the integration branch itself never targets itself.
