@@ -224,8 +224,7 @@ done
 
 # Bounded wait. `timeout` bounds the read INSIDE the container, but a wedged daemon can
 # hang `docker exec` itself, and a probe that hangs is a probe nobody runs. Polling on
-# `kill -0` is the portable ceiling for that: macOS and Linux alike, needing no host
-# `timeout` (which macOS does not ship) and no uname branch.
+# `kill -0` is the ceiling for that, needing no host `timeout`.
 host_deadline=$((deadline_whole + 15))
 ticks=0
 max_ticks=$((host_deadline * 5))

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+from tests._deploy_no_flock import path_without_flock
 from tests._deploy_space import install_build_space_stub
 from tests._planted_git_config import plant_exec_config
 
@@ -351,33 +352,12 @@ def test_a_drain_grace_that_is_not_whole_seconds_is_refused(tmp_path: Path) -> N
     assert not (tmp_path / "roll.env").exists()
 
 
-def _without_flock(tmp_path: Path) -> str:
-    """Every executable on this PATH except flock, as a host that ships none (macOS) sees it."""
-    shelf = tmp_path / "no-flock-bin"
-    shelf.mkdir()
-    for directory in os.environ["PATH"].split(os.pathsep):
-        folder = Path(directory)
-        if not folder.is_dir():
-            continue
-        for tool in folder.iterdir():
-            if tool.name != "flock" and not (shelf / tool.name).exists() and os.access(tool, os.X_OK):
-                (shelf / tool.name).symlink_to(tool)
-    return str(shelf)
+def test_a_host_without_flock_refuses_instead_of_rolling_unlocked(tmp_path: Path) -> None:
+    result = _roll(tmp_path, _fork(tmp_path), PATH=f"{tmp_path / 'bin'}{os.pathsep}{path_without_flock(tmp_path)}")
 
-
-def test_a_lock_a_dead_roll_left_behind_is_reclaimed(tmp_path: Path) -> None:
-    fork = _fork(tmp_path)
-    finished = subprocess.Popen([shutil.which("true") or "/usr/bin/true"])
-    finished.wait()
-    lock_dir = tmp_path / "deploy.lock.d"
-    lock_dir.mkdir()
-    (lock_dir / "pid").write_text(f"{finished.pid}\n", encoding="utf-8")
-
-    result = _roll(tmp_path, fork, PATH=f"{tmp_path / 'bin'}{os.pathsep}{_without_flock(tmp_path)}")
-
-    assert result.returncode == 0, result.stderr
-    assert f"reclaiming {lock_dir} from dead pid {finished.pid}" in result.stderr
-    assert not lock_dir.exists()
+    assert result.returncode == 1
+    assert "flock" in result.stderr
+    assert not (tmp_path / "roll.env").exists()
 
 
 def test_a_checkout_at_the_tree_the_image_bakes_is_refused(tmp_path: Path) -> None:

@@ -76,10 +76,9 @@ fi
 
 # The host home whose tree carries the compose bind-mount SOURCES (see
 # docker-compose.yml's `volumes:`). On the box this is the deploy user's home,
-# `/home/teatree` — identical to the compose default and to what deploy.sh
-# exports — so the box is unaffected. On an operator laptop it is `/Users/<name>`,
-# which is what makes the stack mountable there at all: dockerd refuses a source
-# path that does not exist on the host ("mounts denied: … is not shared").
+# the container's own home — identical to the compose default and to what deploy.sh exports.
+# Another Linux user's home is what makes the stack mountable there at all: dockerd
+# refuses a source path that does not exist on the host ("mounts denied: … is not shared").
 export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
 
 # PATH IDENTITY for the worktree tree, added only when the host home differs from the
@@ -126,19 +125,14 @@ export TEATREE_DEPLOY_CHECKOUT="${TEATREE_DEPLOY_CHECKOUT:-$REPO_ROOT}"
 # 0660 root-owned, so without a matching group the mount grants nothing. Needed in
 # this wrapper too: with the stack down it starts a one-off worker itself.
 #
-# NOT always a `stat` of the host socket. On Linux the daemon shares the host
-# kernel, so the host's socket IS the container's and its gid transfers (on Debian
-# and Ubuntu the `docker` group, not 0). Under Docker Desktop the socket is served
-# from the product's own Linux VM where it is root:root — gid 0 — while the
-# host-side node is an ordinary user-owned file whose gid (`staff`) means nothing
-# inside the container, so reading the host there would export a group the
-# container does not have and leave provisioning as broken as no group at all.
+# The daemon shares the host kernel, so the host's socket IS the container's and its
+# gid transfers (on Debian and Ubuntu the `docker` group, not 0).
 #
 # Socket-group resolution stays inline in t3 and deploy.sh; their shared test pins them in sync.
 # The helper owns Compose project and image topology. An operator-set socket GID wins.
 if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
     TEATREE_DOCKER_SOCKET_GID=0
-    if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
+    if [ -S /var/run/docker.sock ]; then
         TEATREE_DOCKER_SOCKET_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
     fi
 fi
@@ -270,8 +264,7 @@ fi
 #
 # Both sides of every comparison are PHYSICAL. `pwd -P` already resolves the cwd,
 # so a logical `$TEATREE_HOST_HOME` prefix would never match it on a host whose
-# home traverses a symlink (`/home` -> `/usr/home`, an NFS-mounted home, macOS's
-# `/tmp` -> `/private/tmp`): the cwd would silently fall through untranslated and
+# home traverses a symlink (`/home` -> `/usr/home`, an NFS-mounted home): the cwd would silently fall through untranslated and
 # the command would resolve from the image WORKDIR again — the exact failure this
 # block exists to remove, reappearing only on some hosts. `-P` on a path that is
 # already physical is a no-op, so the common case is unchanged.
@@ -504,7 +497,7 @@ dispatch_route() {
 # file for locking. A probe that briefly ACQUIRED the lock would make a deploy
 # starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
 # that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
-# (macOS, an unreadable /proc/locks, no lock file), which keeps the stopped-stack
+# (an unreadable /proc/locks, no lock file), which keeps the stopped-stack
 # path below rather than inventing an update that may not be running.
 deploy_lock_held() {
     local fields maj min ino
@@ -532,7 +525,7 @@ deploy_lock_held() {
 # wrapper asks four times on a normal invocation (`SERVICE_CONTAINER` below, then
 # `first_running_service` at the browser, forward and dispatch hops). `docker compose`
 # is a plugin binary that re-reads and re-interpolates the 36 KB compose file on every
-# call before it ever reaches the daemon — MEASURED at ~4s each on Docker Desktop, so
+# call before it ever reaches the daemon — MEASURED at ~4s each, so
 # route resolution alone cost ~16s of every `t3` call. A plain `docker ps` label query
 # answers all of it in one ~100ms daemon round trip: the project label scopes it to
 # this stack, and the service + oneoff labels come back in the same row, so the
@@ -598,9 +591,6 @@ warn_source_mount_drift() {
     [ -n "$mounted" ] || return 0
     running_type="${mounted%% *}"
     running_source="${mounted#* }"
-    # Docker Desktop reports some bind sources under `/host_mnt`; comparing raw would
-    # flag every mount on a Mac and make the warning worthless.
-    running_source="${running_source#/host_mnt}"
     if [ "$running_type" = bind ]; then
         resolved="$(cd "$running_source" 2>/dev/null && pwd -P)" || resolved="$running_source"
         [ "$resolved" = "$TEATREE_SOURCE_MOUNT" ] && return 0
@@ -736,40 +726,12 @@ SECRET_READ_DEADLINE_SECONDS="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"
 # `glab` returns for a missing entry.
 DEADLINE_TIMEOUT_RC=124
 
-# Run "$@" under a wall-clock deadline, portably. `timeout(1)` is GNU coreutils and is
-# ABSENT on macOS — which is exactly where this wrapper runs on an operator laptop, so
-# a bare `timeout` would be "command not found" on the host that needs the bound most.
-# The fallback races the read against a killer subshell. stdout passes through
-# untouched so a caller still captures the value; only the WAITING is bounded.
+# Run "$@" under a wall-clock deadline. stdout passes through untouched so a caller
+# still captures the value; only the WAITING is bounded (rc 124 on a deadline).
 run_with_deadline() {
-    local seconds="$1" pid killer rc=0
+    local seconds="$1" rc=0
     shift
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "$seconds" "$@" || rc=$?
-        return "$rc"
-    fi
-    set -m
-    "$@" &
-    pid=$!
-    set +m
-    (
-        deadline_waited=0
-        while [ "$deadline_waited" -lt "$seconds" ]; do
-            kill -0 "$pid" 2>/dev/null || exit 0
-            sleep 1
-            deadline_waited=$((deadline_waited + 1))
-        done
-        kill -TERM -- "-$pid" 2>/dev/null
-    ) >/dev/null 2>&1 &
-    killer=$!
-    wait "$pid" 2>/dev/null || rc=$?
-    kill -TERM "$killer" 2>/dev/null || true
-    wait "$killer" 2>/dev/null || true
-    # A TERM'd child reports 128+SIGTERM; normalise onto the timeout code so a caller
-    # branches on the deadline identically under both implementations.
-    if [ "$rc" -eq 143 ]; then
-        rc="$DEADLINE_TIMEOUT_RC"
-    fi
+    timeout "$seconds" "$@" || rc=$?
     return "$rc"
 }
 
@@ -887,7 +849,7 @@ for ENV_NAME in "${FORWARD_ENV_NAMES[@]}"; do
     fi
 done
 # `set -u` treats an empty array's plain expansion as an unbound-variable error on
-# bash 3.2 (the macOS default), so every use below takes the empty-safe form.
+# older bash, so every use below takes the empty-safe form.
 
 # THE TWO VERBS WHOSE DELIVERABLE IS A PAGE IN THE OPERATOR'S BROWSER. Everything else
 # the containerized CLI can finish by itself; these two cannot. The image carries no
@@ -934,9 +896,7 @@ wants_host_browser() {
 
 open_host_browser() {
     local url="$1"
-    if command -v open >/dev/null 2>&1; then
-        open "$url"
-    elif command -v xdg-open >/dev/null 2>&1; then
+    if command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$url"
     else
         echo "deploy/t3: no browser opener on this host — open $url yourself." >&2

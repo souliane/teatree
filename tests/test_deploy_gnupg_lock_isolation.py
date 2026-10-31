@@ -408,7 +408,7 @@ class TestOnASharingTransportNoContainerProcessTouchesTheHostKeybox:
     def test_the_seeded_home_is_a_copy_that_shares_no_keybox_with_the_host(self, tmp_path: Path) -> None:
         host, runtime = tmp_path / "host", tmp_path / "run"
         self._host_gnupg(host)
-        resolved = Path(self._seed(tmp_path, host, runtime, "fakeowner"))
+        resolved = Path(self._seed(tmp_path, host, runtime, "virtiofs"))
 
         assert resolved == runtime / "gnupg"
         assert not resolved.is_symlink(), "a symlink here puts the container back on the host keybox"
@@ -420,7 +420,7 @@ class TestOnASharingTransportNoContainerProcessTouchesTheHostKeybox:
         # — and it must be left ALONE on the host, where the process holding it is alive.
         host, runtime = tmp_path / "host", tmp_path / "run"
         self._host_gnupg(host)
-        resolved = Path(self._seed(tmp_path, host, runtime, "fakeowner"))
+        resolved = Path(self._seed(tmp_path, host, runtime, "virtiofs"))
 
         assert not (resolved / "public-keys.d" / "pubring.db.lock").exists()
         assert (host / "public-keys.d" / "pubring.db.lock").read_text(encoding="utf-8") == "78571\n"
@@ -430,7 +430,7 @@ class TestOnASharingTransportNoContainerProcessTouchesTheHostKeybox:
         # one container-local home. Before the fix this returned the host path.
         host, runtime = tmp_path / "host", tmp_path / "run"
         self._host_gnupg(host)
-        assert Path(self._seed(tmp_path, host, runtime, "fakeowner")) != host
+        assert Path(self._seed(tmp_path, host, runtime, "virtiofs")) != host
 
     def test_a_socket_capable_host_keeps_the_deliberate_in_place_sharing(self, tmp_path: Path) -> None:
         # The deployment box, where sharing is the POINT: one home means one gpg-agent,

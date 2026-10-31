@@ -5,10 +5,9 @@
 # restart: always, no depends_on) so a FULL stack outage — the init crash-loop
 # that froze the factory for 7h, where the worker WAS the monitor and died with
 # the alerting — is detected and repaired by something the Docker daemon keeps
-# alive independently. The daemon is the only supervisor present on BOTH Linux
-# and macOS, so this replaces the Linux-only systemd timer (#3289) with a
-# cross-platform mechanism. With `--loop` the container drives its own cadence;
-# the default single pass is on-demand/test-friendly. Each pass:
+# alive independently. This replaces the systemd timer (#3289). With `--loop` the
+# container drives its own cadence; the default single pass is on-demand/test-friendly.
+# Each pass:
 #
 #   1. `docker compose -p teatree up -d --no-recreate` — restart anything that
 #      went down. Gated on init state: a completed one-shot init (exited 0) is
@@ -552,7 +551,7 @@ _deploy_sensitive_token() {
 # file for locking. A probe that briefly ACQUIRED the lock would make a deploy
 # starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
 # that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
-# (lock invisible from this container, /proc/locks unreadable, macOS host); the
+# (lock invisible from this container, /proc/locks unreadable); the
 # caller then falls back to the recreation signal, so a probe that cannot run fails
 # toward alerting rather than toward silence.
 deploy_lock_held() {

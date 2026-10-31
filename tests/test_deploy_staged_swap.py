@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._deploy_no_flock import path_without_flock
 from tests._deploy_space import install_build_space_stub
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -653,7 +654,7 @@ class TestInFlightWorkSurvivesTheSwap:
     def test_the_admin_probe_runs_where_admin_listens_not_on_the_host_loopback(
         self, checkout: Path, tmp_path: Path
     ) -> None:
-        """Docker Desktop's host network is its VM, so the host loopback never reaches admin (#307)."""
+        """The admin listens on the container's loopback, so the host loopback never reaches it (#307)."""
         proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", STUB_HOST_CURL_EXIT="7")
 
         stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
@@ -995,6 +996,15 @@ def _beat_every_second(checkout: Path) -> None:
     script.write_text(
         body.replace("\nDEPLOY_HEARTBEAT_INTERVAL=60\n", "\nDEPLOY_HEARTBEAT_INTERVAL=1\n"), encoding="utf-8"
     )
+
+
+class TestTheSingleConvergenceLockNeedsFlock:
+    def test_a_host_without_flock_fails_loud_and_converges_nothing(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, PATH=f"{tmp_path / 'bin'}{os.pathsep}{path_without_flock(tmp_path)}")
+
+        assert proc.returncode == 1
+        assert "flock" in proc.stderr
+        assert not any(call.startswith("compose") for call in calls)
 
 
 class TestTheHostHookEnvFollowsTheConvergedCheckout:

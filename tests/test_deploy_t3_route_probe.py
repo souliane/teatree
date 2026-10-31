@@ -180,47 +180,6 @@ def test_a_wedged_store_is_bounded_rather_than_waited_on_forever() -> None:
     assert result.stdout.strip() == "124", result.stderr
 
 
-def test_the_deadline_holds_without_gnu_timeout() -> None:
-    """MacOS ships no `timeout(1)`, and that is exactly where this wrapper runs.
-
-    A bound implemented only as `timeout …` would be "command not found" on the
-    operator laptop that needs it most, so the portable fallback carries the same
-    contract — including passing the read's stdout through untouched.
-    """
-    result = _run_bash(
-        CRED_PREAMBLE,
-        """
-        PATH=/usr/bin:/bin
-        rc=0
-        run_with_deadline 1 sleep 30 || rc=$?
-        echo "timeout_rc=$rc"
-        echo "value=$(run_with_deadline 5 printf ok)"
-    """,
-    )
-    assert "timeout_rc=124" in result.stdout, result.stderr
-    assert "value=ok" in result.stdout, result.stderr
-
-
-def test_fallback_deadline_terminates_a_reader_child(tmp_path: Path) -> None:
-    marker = tmp_path / "late-child"
-    result = _run_bash(
-        CRED_PREAMBLE,
-        """
-        command() {
-            if [ "${1:-}" = -v ] && [ "${2:-}" = timeout ]; then return 1; fi
-            builtin command "$@"
-        }
-        rc=0
-        run_with_deadline 1 sh -c '(sleep 2; printf leaked > "$CHILD_MARKER") & wait' || rc=$?
-        sleep 2
-        echo "$rc"
-        """,
-        env={"CHILD_MARKER": str(marker)},
-    )
-    assert result.stdout.strip() == "124", result.stderr
-    assert not marker.exists()
-
-
 def test_a_genuine_absence_stays_distinct_from_a_wedge() -> None:
     """rc=1 means "no such entry" and must continue without a host token."""
     result = _run_bash(

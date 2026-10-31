@@ -81,43 +81,29 @@ compose_executor() {
 # convergence at a time; a second invocation exits cleanly, since the holder always
 # fast-forwards to the latest main and GitHub re-fires for any later push.
 DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
-DEPLOY_LOCK_DIR=""
-# What makes the mkdir lock self-healing where no pid check can be: a RECYCLED pid
-# reads alive forever, and a winner killed between its `mkdir` and its pid write
-# leaves a lock no pid names. Derived from the one hold that varies — the drain —
-# plus an hour for the build, the swap and the admin wait, so it can never expire a
-# live convergence.
+# The longest a convergence can run, which is the deadline its in-progress record carries:
+# the one hold that varies — the drain — plus an hour for the build, the swap and the admin wait.
 DEPLOY_LOCK_MAX_AGE_MINUTES=$(((${TEATREE_DRAIN_TIMEOUT:-600} + 3600) / 60))
-DEPLOY_LOCK_MAX_RECLAIMS=5
 
-if command -v flock >/dev/null 2>&1; then
-    # Append, never truncate: `>` would wipe the winner's in-progress record below from an
-    # invocation that goes on to lose the race.
-    exec 9>>"$DEPLOY_LOCK"
-    if ! flock -n 9; then
-        echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
-        exit 0
-    fi
-else
-    # macOS ships no flock, and `! flock` cannot tell "held" from "missing": a 127 read as
-    # a held lock, so every deploy on this host exited 0 having converged nothing.
-    locked=0
-    acquire_deploy_lock_dir deploy || locked=$?
-    case "$locked" in
-    0) ;;
-    1)
-        echo "deploy: another convergence (pid $DEPLOY_LOCK_HOLDER) already holds $DEPLOY_LOCK_DIR — exiting (it converges to latest main)." >&2
-        exit 0
-        ;;
-    *) exit 1 ;;
-    esac
+# `! flock` cannot tell "held" from "missing": a 127 read as a held lock, so a host without
+# flock exited 0 having converged nothing.
+if ! command -v flock >/dev/null 2>&1; then
+    echo "deploy: flock (util-linux) is required for the single-convergence lock — install it and re-run." >&2
+    exit 1
+fi
+# Append, never truncate: `>` would wipe the winner's in-progress record below from an
+# invocation that goes on to lose the race.
+exec 9>>"$DEPLOY_LOCK"
+if ! flock -n 9; then
+    echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
+    exit 0
 fi
 
 # The convergence's own in-progress record (#4339): "<pid> <heartbeat> <deadline>". /proc/locks
 # is filtered by pid namespace, so the flock above is invisible from the watchdog CONTAINER;
 # this record is what crosses that boundary, and a crash loop cannot write it. Readers judge
 # it by the heartbeat's age, so a legal long drain stays live and a killed deploy goes stale
-# within three beats. The deadline is the lock's own reclaim age. Cleared on exit.
+# within three beats. The deadline is the longest a convergence can run. Cleared on exit.
 DEPLOY_HEARTBEAT_INTERVAL=60
 DEPLOY_STARTED=$(date -u +%s)
 DEPLOY_DEADLINE=$((DEPLOY_STARTED + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
@@ -181,7 +167,6 @@ _clear_quiescing_if_stranded() {
         compose exec -T teatree-worker \
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
     fi
-    _release_deploy_lock
     return 0
 }
 # A worker this run stopped and never replaced is started again, so a failed convergence leaves
@@ -260,11 +245,11 @@ live_worker_cpus() {
     echo "$live"
 }
 
-# Seconds since the epoch for a Docker RFC 3339 UTC stamp, on GNU and BSD date alike.
+# Seconds since the epoch for a Docker RFC 3339 UTC stamp.
 _utc_epoch() {
     local stamp="${1%%.*}"
     stamp="${stamp%Z}"
-    date -u -d "$stamp" +%s 2>/dev/null || TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$stamp" +%s 2>/dev/null
+    date -u -d "$stamp" +%s 2>/dev/null
 }
 
 worker_crash_looping() {
@@ -303,7 +288,7 @@ fi
 # "docker is down" and the run died on `sudo systemctl` with docker serving all along.
 if ! docker info >/dev/null 2>&1; then
     if ! command -v systemctl >/dev/null 2>&1; then
-        echo "deploy: docker is installed but not serving, and this host has no systemd to start it — start docker (Docker Desktop, colima, …) and re-run." >&2
+        echo "deploy: docker is installed but not serving, and this host has no systemd to start it — start docker and re-run." >&2
         exit 1
     fi
     if ! sudo -n true 2>/dev/null; then
@@ -459,18 +444,13 @@ fi
 # provision` (docker build) and `worktree start` (compose up); the socket is mode
 # 0660 root-owned, so without a matching group the mount grants nothing.
 #
-# NOT always a `stat` of the host socket. On Linux — the box — the daemon shares
-# the host kernel, so the host's socket IS the container's and its gid transfers
-# (on Debian and Ubuntu the `docker` group, not 0). Under Docker Desktop the
-# socket is served from the product's own Linux VM where it is root:root — gid 0 —
-# while the host-side node is an ordinary user-owned file whose gid means nothing
-# inside the container, so reading the host there would export a group the
-# container does not have. Duplicated verbatim in deploy/t3, which is copied and
-# run standalone; tests/test_deploy_docker_socket_access.py pins them in sync.
-# An operator-set value always wins.
+# The daemon shares the host kernel, so the host's socket IS the container's and its
+# gid transfers (on Debian and Ubuntu the `docker` group, not 0). Duplicated verbatim in
+# deploy/t3, which is copied and run standalone; tests/test_deploy_docker_socket_access.py
+# pins them in sync. An operator-set value always wins.
 if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
     TEATREE_DOCKER_SOCKET_GID=0
-    if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
+    if [ -S /var/run/docker.sock ]; then
         TEATREE_DOCKER_SOCKET_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
     fi
 fi
@@ -594,8 +574,7 @@ RESUME_TIMEOUT="${TEATREE_RESUME_TIMEOUT:-300}"
 LOG_ARCHIVE_DIR="${TEATREE_DEPLOY_LOG_ARCHIVE_DIR:-$HOME/.local/share/teatree/deploy-logs}"
 LOG_ARCHIVE_KEEP="${TEATREE_DEPLOY_LOG_ARCHIVE_KEEP:-200}"
 
-# Probed inside the admin container: under Docker Desktop `network_mode: host` is the
-# VM's network, so the host's own loopback never reaches the dashboard (#307).
+# Probed inside the admin container, where the dashboard actually listens (#307).
 admin_answers() {
     compose exec -T teatree-admin curl -fsS -o /dev/null --max-time 5 "$ADMIN_PROBE_URL" >/dev/null 2>&1
 }
