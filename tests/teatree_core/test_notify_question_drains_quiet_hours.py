@@ -1,4 +1,4 @@
-"""First owner cards send immediately; recurring question messages respect the owner's quiet hours (#4990).
+"""Between 22:00 and 08:00 only a card that blocks a merge is sent; every other question message waits (#4990, #5096).
 
 The owner's zone is the active schedule's, else Europe/Paris — never ``settings.TIME_ZONE`` (UTC), which would
 hold the window two hours off.
@@ -14,7 +14,7 @@ import pytest
 from django.test import TestCase, override_settings
 
 from teatree.core import notify as notify_module
-from teatree.core.models import ConfigSetting, DeferredQuestion, ModeSchedule
+from teatree.core.models import ConfigSetting, DeferredQuestion, ModeSchedule, PullRequest, Session, Ticket
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
     drain_unmirrored_deferred_questions,
@@ -62,6 +62,16 @@ def _mirrored(moment: dt.datetime) -> DeferredQuestion:
     return row
 
 
+def _first_card(question: str, *, live_pr: bool) -> DeferredQuestion:
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.CODED)
+    if live_pr:
+        PullRequest.objects.create(
+            ticket=ticket, url=f"https://github.com/acme/repo/pull/{ticket.pk}", repo="acme/repo", iid=str(ticket.pk)
+        )
+    session = Session.objects.create(ticket=ticket, agent_id="coding")
+    return DeferredQuestion.record(question, task_session=session, **OWNER_DECISION)
+
+
 def _every_send(moment: dt.datetime) -> list[Callable[[MagicMock], object]]:
     return [
         lambda backend: drain_unmirrored_deferred_questions(user_id="U0DEMOOWNER", backend=backend),
@@ -71,8 +81,9 @@ def _every_send(moment: dt.datetime) -> list[Callable[[MagicMock], object]]:
 
 
 class _QuietHours(TestCase):
-    def _assert_only_new_card_is_sent_at(self, moment: dt.datetime) -> None:
-        DeferredQuestion.record("Can I archive the logs?", **OWNER_DECISION)
+    def _assert_the_night_sends_only_the_card_that_blocks_a_merge(self, moment: dt.datetime) -> None:
+        held = _first_card("Can I archive the logs?", live_pr=False)
+        urgent = _first_card("Can I ship the fix?", live_pr=True)
         _mirrored(moment)
         for index, send in enumerate(_every_send(moment)):
             backend = _backend()
@@ -80,15 +91,31 @@ class _QuietHours(TestCase):
                 send(backend)
             if index == 0:
                 backend.post_message.assert_called_once()
+                assert "ship the fix" in backend.post_message.call_args.kwargs["text"]
             else:
                 backend.post_message.assert_not_called()
+        held.refresh_from_db()
+        assert held.is_pending
+        assert not held.slack_ts
+        urgent.refresh_from_db()
+        assert urgent.slack_ts
 
     def _assert_the_first_post_goes_out_at(self, moment: dt.datetime) -> None:
-        row = DeferredQuestion.record("Can I archive the logs?", **OWNER_DECISION)
+        row = _first_card("Can I archive the logs?", live_pr=False)
         backend = _backend()
         with _at(moment), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
             drain_unmirrored_deferred_questions(user_id="U0DEMOOWNER", backend=backend)
         backend.post_message.assert_called_once()
+        row.refresh_from_db()
+        assert row.slack_ts
+
+    def _assert_a_card_held_at_night_goes_out_at_eight(self, day: str) -> None:
+        row = _first_card("Can I archive the logs?", live_pr=False)
+        for moment, posts in ((_paris(day, 3, 0), 0), (_paris(day, 7, 59), 0), (_paris(day, 8, 0), 1)):
+            backend = _backend()
+            with _at(moment), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+                drain_unmirrored_deferred_questions(user_id="U0DEMOOWNER", backend=backend)
+            assert backend.post_message.call_count == posts, moment
         row.refresh_from_db()
         assert row.slack_ts
 
@@ -97,12 +124,18 @@ class TestWithTheScheduleInParis(_QuietHours):
     def setUp(self) -> None:
         _paris_schedule()
 
-    def test_only_new_cards_are_sent_at_23_30_or_07_59_paris_time(self) -> None:
+    def test_only_a_card_that_blocks_a_merge_is_sent_between_22_00_and_08_00_paris_time(self) -> None:
         for day in _DAYS:
             for hour, minute in ((23, 30), (7, 59), (22, 0), (3, 0)):
                 with self.subTest(day=day, at=f"{hour}:{minute:02d}"):
                     DeferredQuestion.objects.all().delete()
-                    self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
+                    self._assert_the_night_sends_only_the_card_that_blocks_a_merge(_paris(day, hour, minute))
+
+    def test_a_card_held_at_night_goes_out_in_the_first_drain_at_08_00_paris_time(self) -> None:
+        for day in _DAYS:
+            with self.subTest(day=day):
+                DeferredQuestion.objects.all().delete()
+                self._assert_a_card_held_at_night_goes_out_at_eight(day)
 
     def test_the_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:
@@ -119,12 +152,12 @@ class TestWithTheScheduleInParis(_QuietHours):
 
 @override_settings(TIME_ZONE="UTC")
 class TestWithNoScheduleTheWindowIsStillParis(_QuietHours):
-    def test_only_new_cards_are_sent_at_23_30_or_07_59_paris_time(self) -> None:
+    def test_only_a_card_that_blocks_a_merge_is_sent_between_22_00_and_08_00_paris_time(self) -> None:
         for day in _DAYS:
             for hour, minute in ((23, 30), (7, 59)):
                 with self.subTest(day=day, at=f"{hour}:{minute:02d}"):
                     DeferredQuestion.objects.all().delete()
-                    self._assert_only_new_card_is_sent_at(_paris(day, hour, minute))
+                    self._assert_the_night_sends_only_the_card_that_blocks_a_merge(_paris(day, hour, minute))
 
     def test_the_first_post_goes_out_at_08_00_paris_time(self) -> None:
         for day in _DAYS:

@@ -36,8 +36,7 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
             )
         backend = _backend()
 
-        with patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=True):
-            delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+        delivered, total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
 
         assert (delivered, total) == (7, 7)
         assert backend.post_message.call_count == 7
