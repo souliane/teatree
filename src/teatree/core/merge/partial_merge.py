@@ -21,7 +21,7 @@ from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.models import MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
-from teatree.core.publishing.live_text import CLOSE_KEYWORD_RE
+from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import repo_namespaced_key
 

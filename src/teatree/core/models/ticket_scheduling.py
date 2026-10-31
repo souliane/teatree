@@ -1,5 +1,6 @@
 import logging
-from typing import TYPE_CHECKING, NamedTuple, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Final, NamedTuple, cast
 
 from django.apps import apps
 from django.db import transaction
@@ -9,7 +10,6 @@ from django_fsm import TransitionNotAllowed, can_proceed
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.reread_first import reread_first_reason
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.carrier_freeze import refuse_frozen_mint
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
@@ -27,6 +27,25 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+REREAD_FIRST_CLAUSE: Final[str] = (
+    "Re-read first: this task was minted from a hold, so the branch and the issue may have moved since. "
+    "Read the branch's current HEAD and the issue's latest text before acting. "
+    "If the branch already holds the fix, make no new commit: return fix_record.already_fixed "
+    "with verified_head (the HEAD you read) and evidence (the passing test or diff that proves it)."
+)
+
+_HOLD_EXTRA_KEYS: Final[tuple[str, ...]] = ("shipping_hold",)
+
+
+def reread_first_reason(reason: str, extra: Mapping[str, object] | None) -> str:
+    """*reason* with the re-read-first clause appended when the ticket's *extra* records a hold."""
+    if not extra or REREAD_FIRST_CLAUSE in reason:
+        return reason
+    if not any(key in extra for key in _HOLD_EXTRA_KEYS):
+        return reason
+    return f"{reason}\n{REREAD_FIRST_CLAUSE}"
+
 
 #: ``Ticket.extra`` key carrying the phase and reason a producer asked for across the planning rung.
 PLANNING_HANDOFF_KEY = "planning_handoff"

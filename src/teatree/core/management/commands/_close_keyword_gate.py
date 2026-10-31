@@ -13,7 +13,7 @@ unaffected. It scans both the proposed MR description and every commit body
 on the branch, and raises ``SystemExit`` with the offending line + suggested
 rewrite when an auto-close keyword is found.
 
-Detection uses ``teatree.core.publishing.live_text.CLOSE_KEYWORD_RE`` — the single
+Detection uses ``teatree.core.publishing.close_keyword.CLOSE_KEYWORD_RE`` — the single
 source of truth shared with ``sanitize_close_keywords`` so the gate and the
 auto-rewrite stay in lockstep, including the colon form GitLab auto-closes
 (#1090).
@@ -21,7 +21,7 @@ auto-rewrite stay in lockstep, including the colon form GitLab auto-closes
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.publishing.live_text import CLOSE_KEYWORD_RE
+from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

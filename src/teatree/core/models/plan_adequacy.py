@@ -15,9 +15,9 @@ passes.
 """
 
 import string
+from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from teatree.core.models.criterion_kind import render_criterion
 from teatree.core.models.mechanism_sketch import MechanismSketch, is_core_seam_chokepoint
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 
@@ -36,6 +36,20 @@ REQUIRED_ADEQUACY_SECTIONS: tuple[str, ...] = (
 #: The section that is also a PRODUCER: its content becomes the ticket's ``core.Rubric``
 #: criteria, so the plan is the single home for the acceptance-criteria list.
 ACCEPTANCE_CRITERIA_SECTION: str = "acceptance_criteria"
+
+
+class CriterionKind(StrEnum):
+    BEHAVIOUR = "behaviour"
+    PROCESS = "process"
+
+
+def render_criterion(text: str, kind: str) -> str:
+    try:
+        return f"[{CriterionKind(kind).value}] {text.strip()}"
+    except ValueError:
+        msg = f"unknown criterion kind {kind!r}: use one of {', '.join(member.value for member in CriterionKind)}"
+        raise ValueError(msg) from None
+
 
 # The extra section a DIRECTIVE-linked ticket's plan must also declare (north-star
 # PR-5): the generic-shape decision, structured so ``mechanism_conforms`` checks it

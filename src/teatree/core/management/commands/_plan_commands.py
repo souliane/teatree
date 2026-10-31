@@ -12,11 +12,12 @@ CLI surface is unchanged. The pure validate/record/advance logic lives in
 """
 
 import json
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.management.commands._plan_gate_commands import (
     AmendError,
     PlanAdvanceError,
@@ -297,6 +298,7 @@ class PlanCommands(TyperCommand):
         ],
         kind: Annotated[str, typer.Option("--kind", help="behaviour or process.")],
         by: Annotated[str, typer.Option(help="Who is amending (audit trail).")] = "operator",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the result as JSON on stdout.")] = False,
     ) -> PlanResult:
         """Append one typed acceptance criterion to the ticket's recorded plan.
 
@@ -311,10 +313,20 @@ class PlanCommands(TyperCommand):
             self.stderr.write(f"  plan-amend refused: {exc.message}")
             raise SystemExit(1) from exc
         if artifact is None:
-            self.stdout.write(f"  criterion already declared for ticket {ticket.pk}; nothing added")
-            return PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
-        self.stdout.write(f"  criterion added for ticket {ticket.pk} (artifact {artifact.pk})")
-        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+            result = PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
+            human = f"  criterion already declared for ticket {ticket.pk}; nothing added\n"
+        else:
+            result = PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+            human = f"  criterion added for ticket {ticket.pk} (artifact {artifact.pk})\n"
+        self.print_result = False
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
+        return result
 
     @staticmethod
     def _parse_adequacy_json(adequacy_json: str) -> dict | None:

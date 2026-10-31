@@ -6,12 +6,18 @@ from django.apps import apps
 
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.repo_expansion import TicketRepoExtra
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest
     from teatree.core.models.ticket import Ticket
 
 FROZEN_PHASES = frozenset({"coding", "debugging"})
+
+
+class TicketCarrierExtra(TicketRepoExtra, total=False):
+    carries: list[str]
+    carried_by: str
 
 
 def frozen_by_carrier(ticket: "Ticket") -> str | None:

@@ -1,7 +1,7 @@
 import logging
 from typing import TYPE_CHECKING, TypedDict
 
-from teatree.core.models.carrier_extra import TicketCarrierExtra
+from teatree.core.models.carrier_freeze import TicketCarrierExtra
 from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.extra_key_warning import warn_stripped_extra_keys

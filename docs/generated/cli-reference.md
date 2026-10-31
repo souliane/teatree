@@ -13218,6 +13218,7 @@ Usage: t3 teatree ticket plan-amend [OPTIONS] TICKET_ID
 │ *  --kind                 TEXT  behaviour or process. [required]             │
 │    --by                   TEXT  Who is amending (audit trail).               │
 │                                 [default: operator]                          │
+│    --json                       Emit the result as JSON on stdout.           │
 │    --help                       Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

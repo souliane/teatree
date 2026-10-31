@@ -194,7 +194,7 @@ class PullRequestQuerySet(models.QuerySet):
         A landed merge is the authoritative moment a PR becomes merged — the
         open-PR-only scanner that used to be the sole caller of :meth:`PullRequest.mark_merged`
         can never observe a PR that merged between two of its ticks. Called from
-        :func:`teatree.core.merge.pr_landed.record_pr_landed`, the merge chokepoint
+        :func:`teatree.core.merge.post_hook.record_pr_landed`, the merge chokepoint
         every route crosses, so the keystone's own post-hook call finds the rows already
         settled and marks zero (#3984).
         """

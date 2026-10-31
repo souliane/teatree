@@ -94,7 +94,7 @@ A PR **no ticket owns** and a **rubric-less ticket** owe no grades at all — by
 
 ## Typed criteria at creation
 
-A criterion's `text` column holds `[behaviour] <text>` or `[process] <text>` (no schema change). `core/intake/acceptance_criteria.py` owns the Acceptance-heading regex (shared with `core/intake/umbrella.py`), `acceptance_rows` (the bullets under that heading), `classify_row` (`process` for CI/lint/docs/review rows, otherwise `behaviour`) and `render_criterion`. A plan's `acceptance_criteria` content accepts a legacy plain string or `{text, kind}`; `PlanArtifact.record` refuses any other kind.
+A criterion's `text` column holds `[behaviour] <text>` or `[process] <text>` (no schema change). `core/intake/acceptance_criteria.py` owns the Acceptance-heading regex (shared with `core/intake/umbrella.py`), `acceptance_rows` (the bullets under that heading), and `classify_row` (`process` for CI/lint/docs/review rows, otherwise `behaviour`); `CriterionKind` and `render_criterion` live in `core/models/plan_adequacy`. A plan's `acceptance_criteria` content accepts a legacy plain string or `{text, kind}`; `PlanArtifact.record` refuses any other kind.
 
 `ensure-pr` calls `seed_rubric_notice` (`core/intake/rubric_from_issue.py`) once per PR creation: a ticket with no `PlanArtifact` gets one typed criterion per Acceptance bullet through `Rubric.add_criteria`. A missing section, an empty section, an unfalsifiable set or an unreadable issue is logged and appended to the PR body as `Rubric not seeded: <reason>.`
 

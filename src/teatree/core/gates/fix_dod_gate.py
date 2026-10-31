@@ -19,7 +19,7 @@ Scope
 
 Satisfying artifact
     A ``ticket.extra['fix_record']`` mapping with every required field of
-    :class:`~teatree.core.models.types.FixRecord` non-empty: ``root_cause`` (the
+    :class:`~teatree.core.models.fix_record_types.FixRecord` non-empty: ``root_cause`` (the
     deepest cause, not the symptom), ``evidence`` (why that is the cause),
     ``regression_test`` (a regression/conformance test reference, RED-first when
     forced repro is on),

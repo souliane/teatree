@@ -2,7 +2,7 @@
 
 import re
 
-from teatree.core.models.criterion_kind import CriterionKind, render_criterion
+from teatree.core.models.plan_adequacy import CriterionKind, render_criterion
 
 __all__ = ["ACCEPTANCE_HEADING", "CriterionKind", "acceptance_rows", "classify_row", "render_criterion"]
 

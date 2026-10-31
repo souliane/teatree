@@ -40,8 +40,7 @@ from teatree.core.merge.head_overlap import overlap_refusal
 from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
-from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
-from teatree.core.merge.pr_landed import record_pr_landed
+from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance, record_pr_landed
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
@@ -366,7 +365,7 @@ def execute_bound_merge(
     ``assert_merge_preconditions``, which the keystone runs first).
 
     Every path out of this function that returns a merged SHA records the landing on
-    the ``PullRequest`` ledger (:func:`~teatree.core.merge.pr_landed.record_pr_landed`) — the same chokepoint
+    the ``PullRequest`` ledger (:func:`~teatree.core.merge.post_hook.record_pr_landed`) — the same chokepoint
     argument the gates above rest on, applied to the one post-merge fact that was
     written only by the keystone before (#3984).
     """

@@ -17,7 +17,7 @@ from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
-from teatree.core.publishing.live_text import CLOSE_KEYWORD_RE
+from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch

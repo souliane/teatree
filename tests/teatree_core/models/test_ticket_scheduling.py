@@ -16,7 +16,10 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.ticket_scheduling import REREAD_FIRST_CLAUSE
 from tests.factories import planned_ticket
+
+_HOLD = {"reason": "worktree dirty", "skipped": "shipping", "held_at": "2026-10-31", "checked_at": "2026-10-31"}
 
 
 class TestScheduleHeadlessCollapsesDuplicates(TestCase):
@@ -161,3 +164,26 @@ class TestConsumingAPhaseTaskEndsItsSession(TestCase):
         orphan_session.refresh_from_db()
         assert orphan.status == Task.Status.COMPLETED
         assert orphan_session.ended_at is not None
+
+
+class TestHoldMintedTaskRereadsFirst(TestCase):
+    """A task minted from a hold re-reads the branch and the issue before it acts."""
+
+    def test_a_task_minted_from_a_shipping_hold_carries_the_clause(self) -> None:
+        ticket = planned_ticket(
+            role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, extra={"shipping_hold": _HOLD}
+        )
+
+        task = ticket.schedule_implementing("debugging", reason="Auto-scheduled fix")
+
+        assert task.execution_reason.startswith("Auto-scheduled fix")
+        assert REREAD_FIRST_CLAUSE in task.execution_reason
+        assert "already_fixed" in task.execution_reason
+        assert "verified_head" in task.execution_reason
+
+    def test_a_task_minted_without_a_hold_is_unchanged(self) -> None:
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+
+        task = ticket.schedule_implementing("debugging", reason="Auto-scheduled fix")
+
+        assert task.execution_reason == "Auto-scheduled fix"

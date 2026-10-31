@@ -6,15 +6,9 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from teatree.core.gates.privacy_gate import BUILTIN_QUOTE_PATTERN_NAMES, format_refusal, scan_outbound_text
+from teatree.core.publishing.close_keyword import CLOSE_KEYWORD_RE
 from teatree.hooks import quote_scanner
 from teatree.hooks.ai_signature_scan import scan_text, summary
-
-# The colon form matches GitLab's ``Closes: #N``; ``Closes : #N`` (space before the colon) does not auto-close there.
-CLOSE_KEYWORD_RE = re.compile(
-    r"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+)"
-    r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
-    re.IGNORECASE,
-)
 
 _ISSUE_URL_RE = re.compile(r"^https?://[^/]+/(?P<slug>.+?)/(?:-/)?(?:issues|work_items)/(?P<number>\d+)", re.IGNORECASE)
 

@@ -217,6 +217,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits settled tickets with an open issue, PR link wording and unreadable rows; read-only",
     ),
     Capability(
+        "teatree ticket plan-amend",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits {ticket_id, artifact_id, state}; an unknown kind or a plan-less ticket exits 1",
+    ),
+    Capability(
         "teatree ticket unsettle",
         json_output=True,
         exit_codes=("0", "1"),

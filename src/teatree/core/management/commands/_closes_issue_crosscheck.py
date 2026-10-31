@@ -19,7 +19,7 @@ non-blocking) when the issue is open but its title shares no token with the
 branch name — a weak "probably the wrong issue" signal.
 
 Detection uses the same close-keyword verb set as
-``teatree.core.publishing.live_text.CLOSE_KEYWORD_RE`` (the auto-close single source
+``teatree.core.publishing.close_keyword.CLOSE_KEYWORD_RE`` (the auto-close single source
 of truth, #1090), narrowed to the *bare* ``#N`` form — full-URL references
 already name their target repo, so they carry no task-id collision hazard.
 Unverifiable inputs (no code host, an unparsable ticket URL, a git failure)

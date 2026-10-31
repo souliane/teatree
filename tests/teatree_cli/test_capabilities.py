@@ -113,6 +113,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket sweep-begin": ticket.Command.sweep_begin,
         "teatree ticket sweep-finish": ticket.Command.sweep_finish,
         "teatree ticket sweep-trend": ticket.Command.sweep_trend,
+        "teatree ticket plan-amend": ticket.Command.plan_amend,
         "teatree review record": review.Command.record,
         "teatree review hand-merge": review.Command.hand_merge,
         "teatree review record-evidence": review.Command.record_evidence,

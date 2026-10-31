@@ -80,4 +80,4 @@ def test_the_close_keyword_pattern_is_defined_in_exactly_one_core_module() -> No
         for path in _CORE.rglob("*.py")
         if re.search(r"^CLOSE_KEYWORD_RE\s*=", path.read_text(encoding="utf-8"), re.MULTILINE)
     ]
-    assert definitions == ["publishing/live_text.py"]
+    assert definitions == ["publishing/close_keyword.py"]
