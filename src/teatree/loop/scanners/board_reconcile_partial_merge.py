@@ -82,16 +82,8 @@ def settlement_block(ticket: Ticket, *, reason: str, dry_run: bool) -> BoardTran
     )
 
 
-def settled_remainder_transitions(
-    *, overlay: str, dry_run: bool, probe_budget: int, already_moved: frozenset[int]
-) -> tuple[list[BoardTransition], int]:
-    """Rule G — author tickets at ``merged`` or ``retro_recorded`` whose open issue the last merge left items on.
-
-    ``delivered`` is excluded: it passed the rubric gate. Every inspected ticket is stamped
-    with ``settled_checked_at`` first, so the batch rotates through the whole backlog instead of
-    re-reading the same head of it each run.
-    """
-    candidates = without_voided(
+def _settled_candidates(overlay: str, already_moved: frozenset[int] = frozenset()) -> list[Ticket]:
+    return without_voided(
         scoped(
             Ticket.objects.filter(
                 state__in=Ticket.merged_states() - {Ticket.State.DELIVERED},
@@ -104,7 +96,23 @@ def settled_remainder_transitions(
             overlay,
         )
     )
-    inspected = candidates[: max(min(probe_budget, SETTLED_INSPECTION_CAP), 0)]
+
+
+def settled_probe_reservation(overlay: str, remaining: int) -> int:
+    """Probes held back for rule G before E and F split the rest: a quarter, at most one batch, only what it can use."""
+    return min(SETTLED_INSPECTION_CAP, max(remaining, 0) // 4, len(_settled_candidates(overlay)))
+
+
+def settled_remainder_transitions(
+    *, overlay: str, dry_run: bool, probe_budget: int, already_moved: frozenset[int]
+) -> tuple[list[BoardTransition], int]:
+    """Rule G — author tickets at ``merged`` or ``retro_recorded`` whose open issue the last merge left items on.
+
+    ``delivered`` is excluded: it passed the rubric gate. Every inspected ticket is stamped
+    with ``settled_checked_at`` first, so the batch rotates through the whole backlog instead of
+    re-reading the same head of it each run.
+    """
+    inspected = _settled_candidates(overlay, already_moved)[: max(min(probe_budget, SETTLED_INSPECTION_CAP), 0)]
     return collect(inspected, lambda ticket: _unsettle(ticket, dry_run=dry_run)), len(inspected)
 
 

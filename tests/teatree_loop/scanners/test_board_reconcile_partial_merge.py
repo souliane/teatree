@@ -15,6 +15,8 @@ from teatree.backends.github import client as github_client
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import MergeClear, Task, Ticket
 from teatree.loop.scanners import board_reconcile
+from teatree.loop.scanners import board_reconcile_issue_close as issue_close
+from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_partial_merge import SETTLED_INSPECTION_CAP, settled_remainder_transitions
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
@@ -225,6 +227,32 @@ class TestRuleGUnsettlesTheBacklog(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
+
+    def test_rule_g_still_gets_probes_when_rules_e_and_f_candidates_exceed_the_budget(self) -> None:
+        """Rules E and F run first and each has more candidates than the budget; neither may eat rule G's share."""
+        for n in range(10):
+            Ticket.objects.create(
+                overlay="t3-teatree",
+                state=Ticket.State.DELIVERED,
+                issue_url=f"https://github.com/souliane/teatree/issues/60{n}",
+            )
+            Ticket.objects.create(
+                overlay="t3-teatree",
+                state=Ticket.State.PLAN_RECORDED,
+                issue_url=f"https://forge.invalid/org/repo/-/issues/61{n}",
+            )
+        ticket = _ticket(4242, 859, Ticket.State.MERGED)
+
+        with (
+            _forge({"859": _LEAVES_SECOND_OUT}),
+            patch.object(issue_reopen, "_reopened_issue_urls", side_effect=lambda tickets: (set(), len(tickets))),
+            patch.object(issue_close, "_closed_issue_verdicts", side_effect=lambda tickets: ({}, len(tickets))),
+        ):
+            report = reconcile_board(probe_budget=10)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert [row.action for row in report.applied if row.ticket_id == ticket.pk] == [BoardAction.HELD_FOR_REMAINDER]
 
     def test_one_run_inspects_a_bounded_batch_and_the_next_run_starts_with_the_unchecked(self) -> None:
         total = SETTLED_INSPECTION_CAP + 5

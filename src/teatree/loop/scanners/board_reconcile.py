@@ -93,6 +93,7 @@ from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_trans
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
 from teatree.loop.scanners.board_reconcile_partial_merge import (
     ReadBudget,
+    settled_probe_reservation,
     settled_remainder_transitions,
     settlement_block,
 )
@@ -232,15 +233,16 @@ def _forge_truth_transitions(
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run, reads=reads))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     remaining = probe_budget - len(states)
-    reserved_for_f = min(max(remaining // 2, 0), _rule_f_candidate_count(overlay))
+    reserved_for_g = settled_probe_reservation(overlay, remaining)
+    reserved_for_f = min(max((remaining - reserved_for_g) // 2, 0), _rule_f_candidate_count(overlay))
     reopened, reopen_probes = reopened_issue_transitions(
-        overlay=overlay, dry_run=dry_run, probe_budget=remaining - reserved_for_f
+        overlay=overlay, dry_run=dry_run, probe_budget=remaining - reserved_for_g - reserved_for_f
     )
     transitions.extend(reopened)
     closed, close_probes = closed_issue_transitions(
         overlay=overlay,
         dry_run=dry_run,
-        probe_budget=remaining - reopen_probes,
+        probe_budget=remaining - reserved_for_g - reopen_probes,
         already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
     )
     transitions.extend(closed)
