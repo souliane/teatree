@@ -44,12 +44,8 @@ from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.models.pending_pull_request import settles_obligation
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
-from teatree.core.runners.ship import (
-    overlay_pr_labels,
-    pr_reviewers_for_remote,
-    sanitize_close_keywords,
-    should_close_ticket,
-)
+from teatree.core.runners.close_disposition import record_more_prs_coming, should_close_ticket
+from teatree.core.runners.ship import overlay_pr_labels, pr_reviewers_for_remote, sanitize_close_keywords
 from teatree.core.send_proxy import forge_from_url
 from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
@@ -237,18 +233,13 @@ def _ticket_for_branch(branch_name: str, repo_path: str = ".") -> "Ticket | None
 
 
 def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> dict | None:
-    """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
+    """Return the owning ticket's ``extra`` for an orphan-branch PR, with ``more_prs_coming`` derived and recorded.
 
-    Resolving the ``extra`` via the branch's ``Worktree`` row lets
-    ``should_close_ticket`` honor an explicit ``more_prs_coming`` opt-out
-    even on this fallback. A genuinely orphan branch (no row) yields
-    ``None`` — ``should_close_ticket`` then applies the close-on-merge
-    default driven solely by the overlay setting.
+    A genuinely orphan branch (no row) yields ``None`` — ``should_close_ticket`` then applies the
+    close-on-merge default driven solely by the overlay setting.
     """
     ticket = _ticket_for_branch(branch_name, repo_path)
-    if ticket is None:
-        return None
-    return ticket.extra if isinstance(ticket.extra, dict) else None
+    return None if ticket is None else dict(record_more_prs_coming(ticket))
 
 
 def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, str]:

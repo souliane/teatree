@@ -13,6 +13,7 @@ from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.factory_admission import payload_labels, resolve_umbrella_labels
 from teatree.core.intake.umbrella import umbrella_reason
 from teatree.core.issue_writes.issue_candidate_selection import description_of
+from teatree.core.models.rubric import Rubric
 from teatree.core.overlay_loader import get_overlay_for_ticket
 
 if TYPE_CHECKING:
@@ -34,6 +35,14 @@ class IssueUnreadableError(RuntimeError):
 
 def plain(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[*_`]", "", text)).strip().casefold()
+
+
+def stated_texts(ticket: "Ticket") -> list[str]:
+    """The criterion texts the ticket's rubric states, plus the criteria its owner waived."""
+    rubric = Rubric.objects.active_for_ticket(ticket)
+    criteria = list(rubric.criteria.values_list("text", flat=True)) if rubric is not None else []
+    waivers = (type(ticket).objects.values_list("extra", flat=True).get(pk=ticket.pk) or {}).get("rubric_waivers") or []
+    return [*criteria, *(str(waiver["text"]) for waiver in waivers if waiver.get("text"))]
 
 
 def holds_on_issue(ticket: "Ticket") -> bool:

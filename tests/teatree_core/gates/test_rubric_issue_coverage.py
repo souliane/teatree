@@ -5,9 +5,7 @@ issue. Only the forge boundary (the issue read) is stubbed; the rubric rows, the
 both merge callers are real.
 """
 
-import contextlib
-from collections.abc import Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -18,6 +16,7 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.models import Rubric, Ticket
 from teatree.core.models.rubric_waiver import waive_criterion
+from tests._issue_read import issue_read
 from tests.factories import MergeClearFactory, PullRequestFactory, waive_rubric
 
 _SHA = "a" * 40
@@ -32,29 +31,6 @@ _ISSUE_BODY = (
 _ISSUE = {"state": "open", "body": _ISSUE_BODY}
 
 
-class _Provider:
-    def __init__(self, host: MagicMock) -> None:
-        self.host = host
-
-    def get_code_host_for_url(self, overlay: object, issue_url: str) -> MagicMock:
-        _ = (overlay, issue_url)
-        return self.host
-
-
-@contextlib.contextmanager
-def _issue_read(payload: dict[str, str] | Exception) -> Generator[MagicMock]:
-    host = MagicMock()
-    if isinstance(payload, Exception):
-        host.get_issue.side_effect = payload
-    else:
-        host.get_issue.return_value = payload
-    with (
-        patch("teatree.core.issue_coverage.get_backend_provider", return_value=_Provider(host)),
-        patch("teatree.core.issue_coverage.get_overlay_for_ticket", return_value=object()),
-    ):
-        yield host
-
-
 def _graded_ticket(*criteria: str, state: str = Ticket.State.REVIEW_REQUESTED) -> Ticket:
     ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=_ISSUE_URL, state=state)
     rubric = Rubric.populate(ticket, list(criteria))
@@ -67,7 +43,7 @@ class TestMergeNeedsAnyIssueItemCovered(TestCase):
     def test_each_item_without_a_criterion_is_named_including_one_under_a_later_acceptance_heading(self) -> None:
         ticket = _graded_ticket(f"{_REGRESSION}, and it fails on main")
 
-        with _issue_read(_ISSUE), pytest.raises(RubricNotSatisfiedError) as refusal:
+        with issue_read(_ISSUE), pytest.raises(RubricNotSatisfiedError) as refusal:
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
         assert _REPORT in str(refusal.value)
@@ -79,26 +55,26 @@ class TestMergeNeedsAnyIssueItemCovered(TestCase):
         stated = Rubric.objects.active_for_ticket(ticket).criteria.get(text=_NO_SETTING)
         waive_criterion(ticket, text_hash=stated.text_hash, waived_by="owner", reason="staged for the next change")
 
-        with _issue_read(_ISSUE):
+        with issue_read(_ISSUE):
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
     def test_an_issue_the_forge_cannot_read_refuses_the_merge(self) -> None:
         ticket = _graded_ticket(_REGRESSION, _REPORT, _NO_SETTING)
 
-        with _issue_read(RuntimeError("forge down")), pytest.raises(RubricNotSatisfiedError, match="cannot be read"):
+        with issue_read(RuntimeError("forge down")), pytest.raises(RubricNotSatisfiedError, match="cannot be read"):
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
     def test_a_closed_issue_has_no_items_left_to_cover(self) -> None:
         ticket = _graded_ticket(_REGRESSION)
 
-        with _issue_read({**_ISSUE, "state": "closed"}):
+        with issue_read({**_ISSUE, "state": "closed"}):
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
     def test_the_audited_plan_bypass_waives_the_coverage(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", issue_url=_ISSUE_URL)
         waive_rubric(ticket)
 
-        with _issue_read(_ISSUE) as host:
+        with issue_read(_ISSUE) as host:
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
         host.get_issue.assert_not_called()
@@ -109,7 +85,7 @@ class TestMergeNeedsAnyIssueItemCovered(TestCase):
             status="pass", grader_identity="cold-reviewer", reviewed_sha=_SHA, rationale=_CITATION
         )
 
-        with _issue_read(_ISSUE) as host:
+        with issue_read(_ISSUE) as host:
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
         host.get_issue.assert_not_called()
@@ -117,7 +93,7 @@ class TestMergeNeedsAnyIssueItemCovered(TestCase):
     def test_delivery_stays_database_only(self) -> None:
         ticket = _graded_ticket(_REGRESSION, state=Ticket.State.RETRO_RECORDED)
 
-        with _issue_read(_ISSUE) as host:
+        with issue_read(_ISSUE) as host:
             check_rubric_verified(ticket)
 
         host.get_issue.assert_not_called()
@@ -128,7 +104,7 @@ class TestBothMergeCallersRefuse(TestCase):
         ticket = _graded_ticket(_REGRESSION)
         clear = MergeClearFactory(ticket=ticket)
 
-        with _issue_read(_ISSUE), pytest.raises(MergePreconditionError, match=_REPORT):
+        with issue_read(_ISSUE), pytest.raises(MergePreconditionError, match=_REPORT):
             _assert_rubric_satisfied(clear, _SHA)
 
     def test_the_pr_identity_caller_refuses_an_uncovered_item(self) -> None:
@@ -136,7 +112,7 @@ class TestBothMergeCallersRefuse(TestCase):
         PullRequestFactory(ticket=ticket, repo="souliane/teatree", iid="4242")
 
         with (
-            _issue_read(_ISSUE),
+            issue_read(_ISSUE),
             patch("teatree.core.merge.ticket_gates.anti_vacuity_gate.check_anti_vacuity_attestation"),
             pytest.raises(MergePreconditionError, match=_REPORT),
         ):

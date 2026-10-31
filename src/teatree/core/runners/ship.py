@@ -20,6 +20,7 @@ from teatree.core.merge.pr_url_record import record_pr_url, record_unverified_pr
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.runners.close_disposition import record_more_prs_coming, should_close_ticket
 from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
 from teatree.core.runners.ship_pr_adoption import SHIP_HINT_KEYS, adopt_recorded_pr_url
 from teatree.core.send_proxy import forge_from_url
@@ -71,25 +72,6 @@ def get_overlay_publish_gates(overlay_name: str = "") -> list[str]:
     the ambient single-overlay default.
     """
     return list(get_effective_settings(overlay_name or None).ban_close_trailers_on_namespaces)
-
-
-def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
-    """Resolve the close-on-merge disposition from the pre-computed ``extra['more_prs_coming']`` flag.
-
-    Close-on-merge is the default: a merged PR keeps its ``Closes/Fixes #N``
-    keywords when the overlay's auto-close setting is enabled. This reads the
-    single ``extra['more_prs_coming']`` boolean and suppresses the close when
-    it is set — the caller is what detects a declared partial PR or a still-open
-    umbrella issue and records the flag; a partial PR never closes its umbrella issue.
-
-    Returns ``True`` when the ``Closes/Fixes #N`` keywords must be kept so the
-    platform auto-closes the issue on merge; ``False`` when they must be
-    rewritten to ``Relates to`` (setting disabled, or ``more_prs_coming`` set).
-    """
-    if not setting_enabled:
-        return False
-    more_prs_coming = bool(extra and extra.get("more_prs_coming"))
-    return not more_prs_coming
 
 
 class PrTitleInputs(NamedTuple):
@@ -581,7 +563,7 @@ class ShipExecutor(RunnerBase):
             PrTitleInputs(branch=branch, subject=subject, body=body or "", title_override=title_override),
         )
         close_ticket = should_close_ticket(
-            extra,
+            record_more_prs_coming(ticket),
             setting_enabled=overlay.config.mr_close_ticket,
         )
         # Build the description's FIRST LINE from the (sanitized) title, not the

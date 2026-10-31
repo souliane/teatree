@@ -17,13 +17,8 @@ from typing import TypedDict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import append_recorded_visual_qa, ensure_standard_body
-from teatree.core.runners.ship import (
-    PrTitleInputs,
-    overlay_pr_labels,
-    resolve_pr_title,
-    sanitize_close_keywords,
-    should_close_ticket,
-)
+from teatree.core.runners.close_disposition import more_prs_coming_for, should_close_ticket
+from teatree.core.runners.ship import PrTitleInputs, overlay_pr_labels, resolve_pr_title, sanitize_close_keywords
 from teatree.utils import git
 
 
@@ -71,7 +66,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
         PrTitleInputs(branch=worktree.branch or "", subject=subject, body=body or "", title_override=title),
     )
     close_ticket = should_close_ticket(
-        ticket.extra or {},
+        {**(ticket.extra or {}), "more_prs_coming": more_prs_coming_for(ticket)},
         setting_enabled=overlay.config.mr_close_ticket,
     )
     sanitized_title = sanitize_close_keywords(resolved, close_ticket=close_ticket)

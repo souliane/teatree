@@ -4,15 +4,16 @@ Split out of ``test_pr_command`` alongside the ``_pr_preview`` module split:
 test files mirror the production module path.
 """
 
-from typing import TypedDict
+from typing import ClassVar, TypedDict
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands._pr_preview import ship_preview, validate_pr_metadata
-from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayMetadata
+from teatree.core.models import Rubric, Ticket, Worktree
+from teatree.core.overlay import OverlayConfig, OverlayMetadata
+from tests._issue_read import issue_read
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -147,6 +148,50 @@ class TestShipPreviewTitleDescriptionInvariant(TestCase):
             _, title, description = ship_preview(ticket, ticket.worktrees.first())
         # Title and first line are both the *sanitized* string -> still equal.
         assert self._first_line(description) == title
+
+
+class _AutoCloseOverlay(CommandOverlay):
+    config = OverlayConfig(mr_close_ticket=True)
+
+
+class TestShipPreviewShowsTheKeywordTheShipWillSend(TestCase):
+    """Preview and ship derive ``more_prs_coming`` from the rubric alike; the preview persists nothing."""
+
+    _ISSUE: ClassVar = {"state": "open", "body": "## Acceptance\n- The first thing works\n- The second thing works\n"}
+
+    def _preview(self, *criteria: str) -> tuple[Ticket, str]:
+        ticket = Ticket.objects.create(
+            overlay="test", state=Ticket.State.SELF_REVIEWED, issue_url="https://github.com/souliane/teatree/issues/119"
+        )
+        Rubric.populate(ticket, list(criteria))
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        with (
+            issue_read(self._ISSUE),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": _AutoCloseOverlay()}),
+            patch.object(
+                _pr_preview.git, "last_commit_message", return_value=("feat: add X (proj#119)", "Closes #119")
+            ),
+        ):
+            _, _, description = ship_preview(ticket, ticket.worktrees.first())
+        ticket.refresh_from_db()
+        return ticket, description
+
+    def test_a_covered_issue_previews_the_closing_keyword(self) -> None:
+        _, description = self._preview("The first thing works", "The second thing works")
+
+        assert "Closes #119" in description
+
+    def test_an_uncovered_item_previews_relates_to_and_persists_nothing(self) -> None:
+        ticket, description = self._preview("The first thing works")
+
+        assert "Relates to #119" in description
+        assert "more_prs_coming" not in ticket.extra
 
 
 class TestShipPreviewUsesOverlayGeneratedTitle(TestCase):

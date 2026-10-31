@@ -44,7 +44,7 @@ import logging
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from teatree.core.issue_coverage import holds_on_issue, read_ticket_issue, uncovered
+from teatree.core.issue_coverage import holds_on_issue, read_ticket_issue, stated_texts, uncovered
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.honesty_escalation import HonestyEscalation
@@ -97,7 +97,7 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     return Rubric.objects.active_for_ticket(ticket)
 
 
-def _plan_is_bypassed(ticket: "Ticket") -> bool:
+def plan_is_bypassed(ticket: "Ticket") -> bool:
     """Whether the ticket's LATEST plan is the human-authorized bypass."""
     latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
     return latest is not None and is_plan_bypass_shaped(latest.adequacy)
@@ -110,7 +110,7 @@ def _refusal_reason(ticket: "Ticket", head_sha: str | None) -> str:
     whose head has long since moved). A bypassed plan waives the missing rubric and
     every rung except a recorded FAIL.
     """
-    waived = _plan_is_bypassed(ticket)
+    waived = plan_is_bypassed(ticket)
     rubric = latest_rubric(ticket)
     if rubric is None:
         return "" if waived else _NO_RUBRIC_REASON
@@ -119,18 +119,14 @@ def _refusal_reason(ticket: "Ticket", head_sha: str | None) -> str:
 
 def _uncovered_reason(ticket: "Ticket") -> str:
     """Why an acceptance item of the ticket's issue has no rubric criterion or owner waiver, or ``""``."""
-    if not holds_on_issue(ticket) or _plan_is_bypassed(ticket):
+    if not holds_on_issue(ticket) or plan_is_bypassed(ticket):
         return ""
     try:
         items = read_ticket_issue(ticket).items_for(ticket)
     except Exception:
         logger.warning("rubric gate: could not read %s", ticket.issue_url, exc_info=True)
         return f"the issue {ticket.issue_url} cannot be read, so its acceptance items cannot be checked"
-    rubric = latest_rubric(ticket)
-    stated = list(rubric.criteria.values_list("text", flat=True)) if rubric is not None else []
-    waivers = (type(ticket).objects.values_list("extra", flat=True).get(pk=ticket.pk) or {}).get("rubric_waivers") or []
-    stated += [str(waiver["text"]) for waiver in waivers if waiver.get("text")]
-    if not (missing := uncovered(items, stated)):
+    if not (missing := uncovered(items, stated_texts(ticket))):
         return ""
     listing = "; ".join(f'"{item}"' for item in missing)
     return (
