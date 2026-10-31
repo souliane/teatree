@@ -12,7 +12,12 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.review.audit import ReviewArtifactNotVerifiedError
-from teatree.cli.review.operator_approval import OperatorApprover, claim_publish_audit, publish_operator_approval
+from teatree.cli.review.operator_approval import (
+    OperatorApprover,
+    claim_publish_audit,
+    identity_refusal,
+    publish_operator_approval,
+)
 from teatree.cli.review.service import ReviewService
 from teatree.core.modelkit.gate_verdict import ReadOutcome
 from teatree.core.models import (
@@ -391,6 +396,16 @@ class TestOperatorApproval(TestCase):
         assert api.posts == 0
         approval.refresh_from_db()
         assert approval.consumed_at is None
+
+    def test_identity_refusal_only_equates_forge_identities_of_one_operator(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE")
+        OperatorIdentity.objects.create(user=self.alice, platform="slack", handle="U-ALICE-2")
+        OperatorIdentity.objects.create(user=self.alice, platform="gitlab", handle="alice-alt", external_id="3")
+        slack_pair = OperatorApprover("slack:U-ALICE", "slack:U-ALICE")
+        forge_pair = OperatorApprover("slack:U-ALICE", "gitlab:alice")
+
+        assert identity_refusal(slack_pair, "slack:U-ALICE-2")
+        assert identity_refusal(forge_pair, "gitlab:alice-alt") == ""
 
     def test_grant_with_another_forge_identity_refuses_and_preserves_consent(self) -> None:
         self._grant(self.alice, "alice-access")

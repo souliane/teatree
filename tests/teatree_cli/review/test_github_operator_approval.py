@@ -1,4 +1,3 @@
-import json
 import os
 from datetime import timedelta
 from unittest.mock import patch
@@ -17,57 +16,10 @@ from teatree.cli.review.operator_approval import OperatorApprover
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, OperatorGrant, OperatorIdentity, Ticket
 from teatree.core.models.operator_grant import OperatorGrantTokens
 from teatree.utils.sealing import MasterKey
+from tests.teatree_cli.review._fake_github import FakeGitHub
 from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 _PR = "org/repo!7"
-
-
-class FakeGitHub:
-    """The forge HTTP boundary: records every request and answers like api.github.com."""
-
-    def __init__(
-        self, login: str = "alice", *, post_status: int = 200, recorded_state: str = "APPROVED", user_status: int = 200
-    ) -> None:
-        self.login = login
-        self.user_status = user_status
-        self.post_status = post_status
-        self.recorded_state = recorded_state
-        self.requests: list[tuple[str, str, dict[str, str], object]] = []
-        self.reviews: list[dict[str, object]] = []
-
-    def request(
-        self, method: str, url: str, *, headers: dict[str, str], payload: object = None, timeout: float | None = None
-    ) -> httpx.Response:
-        _ = timeout
-        self.requests.append((method, url, headers, payload))
-        request = httpx.Request(method, url)
-        path = httpx.URL(url).path
-        if method == "POST" and path.endswith("/pulls/7/reviews"):
-            if self.post_status != httpx.codes.OK:
-                return httpx.Response(
-                    self.post_status, json={"message": "Can not approve your own pull request"}, request=request
-                )
-            self.reviews.append({"user": {"login": self.login}, "state": self.recorded_state})
-            return httpx.Response(200, json={"id": 1, "state": self.recorded_state}, request=request)
-        if path.endswith("/pulls/7/reviews"):
-            return httpx.Response(200, json=self.reviews, request=request)
-        if path == "/user":
-            if self.user_status != httpx.codes.OK:
-                return httpx.Response(self.user_status, json={"message": "Bad credentials"}, request=request)
-            return httpx.Response(200, json={"login": self.login}, request=request)
-        return httpx.Response(200, json={"requested_reviewers": []}, request=request)
-
-    @property
-    def review_posts(self) -> list[dict[str, object]]:
-        return [
-            json.loads(str(payload))
-            for method, url, _headers, payload in self.requests
-            if method == "POST" and url.endswith("/pulls/7/reviews")
-        ]
-
-    @property
-    def bearer_tokens(self) -> set[str]:
-        return {headers["Authorization"] for _method, _url, headers, _payload in self.requests}
 
 
 class TestGitHubOperatorApproval(TestCase):
@@ -149,6 +101,30 @@ class TestGitHubOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is not None
         assert OnBehalfAudit.objects.get(approval=approval).approver_id == "slack:U-ALICE"
+
+    def test_grants_other_linked_github_identity_is_accepted_for_the_same_operator(self) -> None:
+        OperatorIdentity.objects.create(user=self.alice, platform="github", handle="alice-alt", external_id="3")
+        self._grant()
+        approval = OnBehalfApproval.record(_PR, "approve", "github:alice")
+        forge = FakeGitHub(login="alice-alt")
+
+        result = self._invoke(forge)
+
+        assert result.exit_code == 0, result.output
+        approval.refresh_from_db()
+        assert approval.consumed_at is not None
+
+    def test_login_held_by_another_operator_is_refused_even_when_both_are_github_identities(self) -> None:
+        bob = get_user_model().objects.create_superuser(username="bob", email="", password=None)
+        OperatorIdentity.objects.create(user=bob, platform="github", handle="bob", external_id="2")
+        self._grant()
+        approval = OnBehalfApproval.record(_PR, "approve", "github:alice")
+        forge = FakeGitHub(login="bob")
+
+        result = self._invoke(forge)
+
+        self._assert_refused_untouched(result, forge, approval)
+        assert "identity does not match requester github:alice" in result.output
 
     def _assert_refused_untouched(self, result: Result, forge: FakeGitHub, approval: OnBehalfApproval) -> None:
         assert result.exit_code == 1, result.output
