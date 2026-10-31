@@ -15,7 +15,7 @@ from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 logger = logging.getLogger(__name__)
 
 SUMMARY_LIMIT = 700
-BUILD_HINT = "To have this built, reply in this thread and say so; I will file it as a tracked ticket."
+BUILD_HINT = "To have this built, reply in this thread and ask."
 
 
 def post_conversation_plan(task: Task, result: AgentResultBlob, *, phase: str) -> None:
