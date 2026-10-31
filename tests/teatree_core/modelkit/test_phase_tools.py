@@ -21,10 +21,10 @@ class TestPeerMailboxGrant:
         phases = MAILBOX_PHASES
         assert {phase for phase in KNOWN_PHASES if "agent_mailbox_send" in mcp_write_tools_for_phase(phase)} == phases
         for phase in phases:
-            assert PEER_MAILBOX_TOOLS <= mcp_write_tools_for_phase(phase)
+            assert mcp_write_tools_for_phase(phase) >= PEER_MAILBOX_TOOLS
             assert MCP_WRITE not in tools_for_phase(phase)
-        assert PEER_MAILBOX_TOOLS <= mcp_write_tools_for_phase("plan")
-        assert PEER_MAILBOX_TOOLS <= mcp_write_tools_for_phase("review")
+        assert mcp_write_tools_for_phase("plan") >= PEER_MAILBOX_TOOLS
+        assert mcp_write_tools_for_phase("review") >= PEER_MAILBOX_TOOLS
         assert mcp_write_tools_for_phase("requesting_review") == frozenset({"review_request_post"})
         assert all(not mcp_write_tools_for_phase(phase) for phase in KNOWN_PHASES - phases - {"requesting_review"})
 
