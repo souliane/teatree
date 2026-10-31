@@ -15,6 +15,7 @@ from teatree.core.management.commands import ticket as ticket_mod
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models import PullRequest, Task, Ticket, Worktree
+from teatree.core.models.ticket_scheduling import REREAD_FIRST_CLAUSE
 from tests.teatree_core._self_review_helpers import HELD_FINDINGS, HELD_SHA, author_ticket, completed_self_review
 
 
@@ -61,6 +62,15 @@ class TestReworkHoldRequeuesTheFindings(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.CODED
         assert Task.objects.filter(ticket=ticket, phase="testing", parent_task=rework).exists()
+
+    def test_the_rework_re_reads_the_branch_and_the_issue_before_acting(self) -> None:
+        ticket, _held, _shipping = _parked_past_a_hold()
+
+        _rework_hold(ticket)
+
+        [rework] = Task.objects.filter(ticket=ticket, phase="coding")
+        assert rework.execution_reason.count(REREAD_FIRST_CLAUSE) == 1
+        assert rework.execution_reason.startswith("Self-review HOLD at")
 
     def test_a_second_run_returns_the_same_rework(self) -> None:
         ticket, _held, _shipping = _parked_past_a_hold()

@@ -348,6 +348,13 @@ class TestMergesThatStillReachMerged(TestCase):
 
     def test_a_later_closing_pull_request_merges_the_held_ticket(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url="https://github.com/souliane/teatree/pull/860",
+            repo="souliane/teatree",
+            iid="860",
+        )
         _merge(ticket, _STATUS_TABLE)
 
         assert _merge(ticket, "Closes #4242\n", pr_id=860) == Ticket.State.MERGED

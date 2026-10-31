@@ -16,7 +16,7 @@ from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_no_e
 from teatree.agents.fix_record_recorder import fix_record_refusal, record_returned_fix_record
 from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
-from teatree.core.models.types import FIX_RECORD_FIELDS, fix_record_missing_fields
+from teatree.core.models.fix_record_types import FIX_RECORD_FIELDS, fix_record_missing_fields
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_confirmed_merge_for_test, record_executed_repro_for_test
 

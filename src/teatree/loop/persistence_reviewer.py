@@ -23,7 +23,7 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import ReviewDeclined, schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_tables import ActionPayload
-from teatree.loop.persistence import _owning_overlay, _reconcile_existing_overlay
+from teatree.loop.persistence_overlay import owning_overlay, reconcile_existing_overlay
 from teatree.loop.persistence_phase_task import open_task_in_phase
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -55,12 +55,12 @@ def handle_reviewer(action: DispatchAction) -> Task | None:
     ticket, created = Ticket.objects.get_or_create(
         issue_url=pr_url,
         defaults={
-            "overlay": _owning_overlay(pr_url, scan_tag),
+            "overlay": owning_overlay(pr_url, scan_tag),
             "role": Ticket.Role.REVIEWER,
             "extra": {"reviewed_sha": head_sha} if head_sha else {},
         },
     )
-    _reconcile_existing_overlay(ticket, created=created)
+    reconcile_existing_overlay(ticket, created=created)
     if ticket.role != Ticket.Role.REVIEWER:
         logger.debug(
             "Ticket %s exists with role=%s, not promoting to reviewer for PR %s",

@@ -52,7 +52,7 @@ PARITY_LANE_ROSTER: dict[str, str] = {
     "_HANDLER_TARGET_PHASES": "tests/conformance/test_registry_parity.py",
     # un-mergeable-condition ↔ scheduled-remedy parity: a ledger kind with no remedy
     # is a KeyError on the dispatch path.
-    "_FIX_REASON_BY_KIND": "tests/teatree_loop/test_persistence_zone_handlers.py",
+    "FIX_REASON_BY_KIND": "tests/teatree_loop/test_persistence_zone_handlers.py",
     # phase write allowance ↔ the MCP server's registered write tools.
     "_MCP_WRITE_TOOLS_BY_PHASE": "tests/teatree_mcp/test_server.py",
     # fan-out panel parity (keys ⊆ SUBAGENT_BY_PHASE) — the #2229 conformance lane.

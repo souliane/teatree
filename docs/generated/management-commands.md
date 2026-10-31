@@ -445,6 +445,16 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 Persist declared Notion pass-key routes without replacing database overrides.
 
+## `publish`
+
+``t3 <overlay> publish`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `comment` | Post BODY_FILE as a comment on a PR or issue, scanned before and after the write |
+| `pr-body` | Replace a PR body with the scanned, read-back text of BODY_FILE |
+| `issue-body` | Replace an issue body with the scanned, read-back text of BODY_FILE |
+
 ## `questions`
 
 ``t3 teatree questions`` group root.
@@ -525,6 +535,7 @@ Group root — forces sub-commands to be addressed by name.
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
 | `findings` | Print the recorded findings for *mr_url* — the surface a HOLD is acted on through |
 | `apply-reviewer-policy` | Put the overlay's configured reviewers on this repo's open bot-authored MRs |
+| `hand-merge` | Record the verdict a reviewer returned as prose, refusing before any write |
 | `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
 | `publish-findings` | Post a recorded verdict's findings to its PR, so the author sees them where the work is |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
@@ -681,6 +692,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
+| `plan-amend` | Append one typed acceptance criterion to the ticket's recorded plan |
 | `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
 | `merge-item-waive` | Request an owner button answer for one LLM merge item |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |

@@ -217,6 +217,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits settled tickets with an open issue, PR link wording and unreadable rows; read-only",
     ),
     Capability(
+        "teatree ticket plan-amend",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits {ticket_id, artifact_id, state}; an unknown kind or a plan-less ticket exits 1",
+    ),
+    Capability(
         "teatree ticket unsettle",
         json_output=True,
         exit_codes=("0", "1"),
@@ -295,6 +301,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0", "1"),
         note="--json emits the recorded verdict plus whether its findings reached the PR (#4476)",
+    ),
+    Capability(
+        "teatree review hand-merge",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note='--json emits the recorded verdict; a refusal emits {"error": ...} on stdout and exits 1',
     ),
     Capability(
         "teatree review record-evidence",

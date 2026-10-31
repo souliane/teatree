@@ -15,7 +15,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import PrMessage
 from teatree.core.gates.merge_message_gate import scanned_merge_message
 from teatree.core.merge import MergePreconditionError, execute_bound_merge, merge_ticket_pr
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import MergeClear, PullRequest, Ticket
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import CLEAN_PR_BODY, CLEAN_PR_TITLE
@@ -158,6 +158,38 @@ class TestUnreadablePrivateTermListFailsClosed(TestCase):
         ):
             _bound_merge(stub)
         assert stub.merge_requests() == []
+
+
+class TestClosingKeywordAtMerge(TestCase):
+    def _own_issue(self, number: int = 4242) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.REVIEW_REQUESTED,
+            issue_url=f"https://github.com/souliane/teatree/issues/{number}",
+        )
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url="https://github.com/souliane/teatree/pull/859",
+            repo="souliane/teatree",
+            iid="859",
+        )
+
+    def test_a_foreign_closing_keyword_is_refused_before_the_merge_request(self) -> None:
+        stub = _MessageStub(body="Tidies the widget.\n\nCloses #31")
+        with pytest.raises(MergePreconditionError, match="closing keyword"):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
+    def test_a_closing_keyword_for_another_issue_is_refused_when_the_ticket_has_its_own(self) -> None:
+        self._own_issue()
+        with pytest.raises(MergePreconditionError, match="closing keyword"):
+            scanned_merge_message(_REF, PrMessage(title="Tidy the widget", body="Closes #31"))
+
+    def test_the_pull_requests_own_ticket_issue_may_be_closed(self) -> None:
+        self._own_issue()
+        message = PrMessage(title="Tidy the widget", body="Closes #4242")
+        assert scanned_merge_message(_REF, message) == message
 
 
 class TestKeystonePublishesOnlyTheScannedMessage(TestCase):

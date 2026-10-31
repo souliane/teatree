@@ -32,7 +32,8 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.ticket_evidence import recorded_anti_vacuity_attestation
-from teatree.core.review.nit_publish import carry_nit_publication, critic_nits, pr_url_for_nits, review_nits
+from teatree.core.review.nit_lane import review_nits
+from teatree.core.review.nit_publish import carry_nit_publication, critic_nits, pr_url_for_nits
 
 if TYPE_CHECKING:
     from datetime import datetime

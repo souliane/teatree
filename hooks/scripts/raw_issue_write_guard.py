@@ -7,10 +7,10 @@ command's facade answers — description or comment, our ticket or a colleague's
 scrubbed or not — which is precisely how a requirement lands in a comment no lane
 will ever read.
 
-Narrow by construction: it denies an INVOCATION of the NOTE verb and nothing else.
-A read (``issue view`` / ``list``), a create, a body edit (the sweep's own fold
-path runs ``gh issue edit --body-file``), a label-only relabel, a different surface
-(``pr comment``, ``mr note``), and a read-only tool that merely QUOTES the spelling
+Narrow by construction: it denies an INVOCATION of the NOTE verb and of a body edit
+(``gh pr edit`` / ``gh issue edit`` with a body flag, which ``t3 <overlay> publish`` replaces) and
+nothing else. A read (``issue view`` / ``list``), a create, a label-only relabel, a different
+surface (``pr comment``, ``mr note``), and a read-only tool that merely QUOTES the spelling
 all pass — so the gate cannot wedge a session doing unrelated work, which is why it
 sits on the never-lockout allowlist as a narrow targeted-command gate.
 

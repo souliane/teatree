@@ -17,6 +17,7 @@ from teatree.agents._runner_env import with_routed_github_token
 from teatree.agents.codex_app_server_env import codex_process_env
 from teatree.cli.push import push
 from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.forge_push_verdict import PUSH_EXIT_CODES, PushFailure
 from teatree.core.overlays.forge_credential_provider import build_and_register
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV, register_forge_credential_provider
@@ -154,6 +155,8 @@ class TestCodexRunPush:
             patch.dict(os.environ, child, clear=True),
             patch("teatree.core.forge_push.run_bounded_group", network.push),
             patch("teatree.core.forge_push.run_with_status", side_effect=network.read),
+            patch("teatree.core.push.pr_head_check.github_open_pr_head", return_value=None),
+            patch("teatree.core.push.pr_head_check.find_open_pr_for_branch", return_value=PrProbe.none()),
         ):
             store_read = read_pass(_GITHUB_KEY)
             result = CliRunner().invoke(_app, ["--repo", str(clone)])

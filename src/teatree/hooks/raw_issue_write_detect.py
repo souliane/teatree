@@ -13,12 +13,11 @@ comment nothing would ever read. The sibling :mod:`raw_review_post_detect` alrea
 denies the REST spelling (``gh api .../issues/<n>/notes -X POST``); this leaf is
 the CLI half, and it is scoped to the SAME surface: the note.
 
-Deliberately NOT the create / body-edit / close verbs. Those have no complete
-sanctioned CLI replacement yet — ``create_or_extend`` needs a judged backlog a bare
-CLI cannot supply, the sweep's own fold path edits a host body with
-``gh issue edit --body-file``, and a label-only ``--add-label`` edit is not a body
-write at all. Denying them would wedge documented workflows with nowhere to go,
-which is a worse failure than the bypass it would close.
+Also a body edit: ``gh pr edit`` / ``gh issue edit`` with ``--body``, ``-b``, ``--body-file`` or ``-F``
+rewrites a published body with no scan before the write and none of what is live after it, so the
+denial points at ``t3 <overlay> publish``. Deliberately NOT the create / close verbs, nor an edit
+without a body flag (a label, assignee, title or base change). Those have no complete sanctioned
+CLI replacement yet — ``create_or_extend`` needs a judged backlog a bare CLI cannot supply.
 
 An invocation, never a mention: the traversal is the shared
 :mod:`teatree.hooks.forge_subcommand` leaf, so a ``grep "gh issue comment"`` whose
@@ -51,6 +50,9 @@ from teatree.hooks.forge_subcommand import basename, forge_program_argvs
 _FORGES: frozenset[str] = frozenset({"gh", "glab"})
 #: ``issue`` and glab's ``issues`` alias (gh has none, so the plural is inert there).
 _ISSUE_SUBCOMMANDS: frozenset[str] = frozenset({"issue", "issues"})
+_BODY_EDIT_SUBCOMMANDS: frozenset[str] = frozenset({"issue", "pr"})
+#: ``--body`` / ``-b`` / ``--body-file`` / ``-F`` of ``gh pr edit`` / ``gh issue edit``, glued value included.
+_BODY_FLAG_RE = re.compile(r"^(?:--body(?:-file)?(?:=|$)|-[bF])")
 
 #: A parameter, arithmetic or command substitution: the word the shell runs is not the word written.
 _EXPANSION_RE = re.compile(r"[$`]")
@@ -62,6 +64,15 @@ _REDIRECT_RE = re.compile(r"(?:\d+|&)?(?:<<<|<<-?|<>|>>|>&|<&|>\||>|<)")
 #: The note verb on each forge (GitHub calls it ``comment``, GitLab ``note``),
 #: unioned because a verb the other forge does not own is inert.
 _NOTE_VERBS: frozenset[str] = frozenset({"comment", "note"})
+
+BODY_EDIT_DENY_REASON = (
+    "BLOCKED: a raw `gh pr edit` / `gh issue edit` with a body flag rewrites a body the forge "
+    "publishes with no scan before the write and none of what is live after it. Use "
+    "`t3 <overlay> publish pr-body|issue-body <url> --body-file <path>` (add `--closes <ref>` "
+    "when the text must close that issue): it scans the text, writes it through the send-proxy, "
+    "reads it back and rescans it, and exits 1 on any closing keyword, AI signature or leak. "
+    "Label, assignee, title and base edits without a body flag are unaffected."
+)
 
 DENY_REASON = (
     "BLOCKED: a raw `gh issue comment` / `glab issue note` bypasses the issue-hygiene "
@@ -105,12 +116,19 @@ def _note_deny_reason(words: list[str]) -> str | None:
     index, subcommand = _positional(words, 1)
     if _EXPANSION_RE.search(subcommand):
         return undeterminable_reason(words[0], subcommand)
-    if subcommand not in _ISSUE_SUBCOMMANDS:
+    if subcommand not in _ISSUE_SUBCOMMANDS | _BODY_EDIT_SUBCOMMANDS:
         return None
-    _, verb = _positional(words, index + 1)
-    if _EXPANSION_RE.search(verb):
-        return undeterminable_reason(words[0], verb)
-    return DENY_REASON if verb in _NOTE_VERBS else None
+    verb_index, verb = _positional(words, index + 1)
+    if subcommand in _ISSUE_SUBCOMMANDS:
+        if _EXPANSION_RE.search(verb):
+            return undeterminable_reason(words[0], verb)
+        if verb in _NOTE_VERBS:
+            return DENY_REASON
+    return BODY_EDIT_DENY_REASON if verb == "edit" and _has_body_flag(words[verb_index + 1 :]) else None
+
+
+def _has_body_flag(words: list[str]) -> bool:
+    return any(_BODY_FLAG_RE.match(word) for word in words)
 
 
 def _positional(words: list[str], index: int) -> tuple[int, str]:
@@ -140,6 +158,7 @@ def _option_name(word: str) -> str:
 
 
 __all__ = [
+    "BODY_EDIT_DENY_REASON",
     "DENY_REASON",
     "is_raw_issue_write",
     "raw_issue_write_deny_reason",

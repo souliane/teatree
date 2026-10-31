@@ -6,10 +6,13 @@ test-strategy claims) fails ``is_adequate`` — the named root cause of the 26-b
 integration campaign made structurally impossible at the manifest level.
 """
 
+import pytest
+
 from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import (
     REQUIRED_ADEQUACY_SECTIONS,
     all_negated_adequacy,
+    declared_acceptance_criteria,
     declared_seam_paths,
     is_adequate,
     is_plan_bypass_shaped,
@@ -309,3 +312,24 @@ class TestNeverLockoutEscapes:
 
     def test_a_normal_directive_manifest_is_not_bypass_shaped(self) -> None:
         assert is_plan_bypass_shaped(_directive_manifest(_conforming_section())) is False
+
+
+class TestDeclaredAcceptanceCriteria:
+    @staticmethod
+    def _manifest(content: object) -> dict:
+        return {"acceptance_criteria": {"content": content}}
+
+    def test_a_legacy_plain_string_is_kept_verbatim(self) -> None:
+        assert declared_acceptance_criteria(self._manifest(["a plan records"])) == ("a plan records",)
+
+    def test_a_typed_criterion_renders_its_kind_into_the_text(self) -> None:
+        typed = {"text": "the command refuses", "kind": "behaviour"}
+        assert declared_acceptance_criteria(self._manifest([typed, "legacy"])) == (
+            "[behaviour] the command refuses",
+            "legacy",
+        )
+
+    @pytest.mark.parametrize("kind", ["vibes", "", None])
+    def test_an_unknown_kind_is_refused(self, kind: object) -> None:
+        with pytest.raises(ValueError, match="kind"):
+            declared_acceptance_criteria(self._manifest([{"text": "the command refuses", "kind": kind}]))

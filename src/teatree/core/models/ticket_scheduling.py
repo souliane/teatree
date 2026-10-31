@@ -1,5 +1,6 @@
 import logging
-from typing import TYPE_CHECKING, NamedTuple, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Final, NamedTuple, cast
 
 from django.apps import apps
 from django.db import transaction
@@ -10,6 +11,7 @@ from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
+from teatree.core.models.carrier_freeze import refuse_frozen_mint
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
@@ -25,6 +27,28 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+REREAD_FIRST_CLAUSE: Final[str] = (
+    "Re-read first: this task was minted from a hold, so the branch and the issue may have moved since. "
+    "Read the branch's current HEAD and the issue's latest text before acting. "
+    "If the branch already holds the fix, make no new commit: return fix_record.already_fixed "
+    "with verified_head (the HEAD you read) and evidence (the passing test or diff that proves it)."
+)
+
+_HOLD_EXTRA_KEYS: Final[tuple[str, ...]] = ("shipping_hold",)
+
+
+def with_reread_first(reason: str) -> str:
+    """*reason* with the re-read-first clause appended once; every producer of a hold-minted task calls it."""
+    return reason if REREAD_FIRST_CLAUSE in reason else f"{reason}\n{REREAD_FIRST_CLAUSE}"
+
+
+def reread_first_reason(reason: str, extra: Mapping[str, object] | None) -> str:
+    """*reason* with the re-read-first clause appended when the ticket's *extra* records a hold."""
+    if extra and any(key in extra for key in _HOLD_EXTRA_KEYS):
+        return with_reread_first(reason)
+    return reason
+
 
 #: ``Ticket.extra`` key carrying the phase and reason a producer asked for across the planning rung.
 PLANNING_HANDOFF_KEY = "planning_handoff"
@@ -192,7 +216,9 @@ class TicketSchedulingModel(TicketFacet):
 
         No ``plan_currency`` gate: a corrective re-entry, like :meth:`schedule_implementing`'s.
         """
-        return self._schedule_phase_task("coding", review.rework_reason(), review_task, require_author=True)
+        return self._schedule_phase_task(
+            "coding", with_reread_first(review.rework_reason()), review_task, require_author=True
+        )
 
     def requeue_self_review_rework(self: "Ticket", review: "SelfReview", *, dry_run: bool = False) -> SelfReviewRework:
         """Supersede the ticket's active tasks and re-queue *review*'s rework, or return the one in flight.
@@ -266,6 +292,8 @@ class TicketSchedulingModel(TicketFacet):
             msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
             raise InvalidTransitionError(msg)
         refuse_unplanned_mint(self, phase=phase)
+        refuse_frozen_mint(self, phase=phase)
+        reason = reread_first_reason(reason, self.extra)
         if gate is not None:
             get_gate(gate)(self)
         with transaction.atomic():

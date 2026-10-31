@@ -29,7 +29,8 @@ from teatree.core.management.commands._ensure_pr import (
     defer_unpushed_pr,
 )
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.models import PendingPullRequest, PullRequest, Rubric, Ticket, Worktree
+from teatree.core.models import PendingPullRequest, PullRequest, Rubric, RubricCriterion, Ticket, Worktree
+from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from teatree.types import RawAPIDict
@@ -604,3 +605,86 @@ class TestAnUnresolvableBotCredentialRefusesLoudly(TestCase):
         error = self._result(identity=AuthoringIdentity.DISTINCT).get("error", "")
 
         assert error == "no code host configured"
+
+
+class IssueReadingHost(AssignableHost):
+    def __init__(self, issue: RawAPIDict | Exception) -> None:
+        self.issue = issue
+        self.issue_reads: list[str] = []
+        self.specs: list[PullRequestSpec] = []
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        self.issue_reads.append(issue_url)
+        if isinstance(self.issue, Exception):
+            raise self.issue
+        return self.issue
+
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+        self.specs.append(spec)
+        return super().create_pr(spec)
+
+
+ACCEPTANCE_ISSUE = {
+    "body": "## Acceptance\n\n- `t3 publish` rejects a closing keyword\n- CI and the module-health ratchet are green\n"
+}
+
+
+class TestEnsurePrSeedsTheRubricFromTheIssue(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _create(self, host: IssueReadingHost, *, planned: bool = False) -> dict:
+        repo = _orphan_repo(self._tmp_path)
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/5870")
+        if planned:
+            PlanArtifact.objects.create(ticket=self.ticket, plan_text="real plan", recorded_by="op")
+        Worktree.objects.create(
+            ticket=self.ticket,
+            overlay="test",
+            repo_path=repo.name,
+            branch=ORPHAN_BRANCH,
+            extra={"worktree_path": str(repo)},
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: host)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            return dict(create_or_defer_pr(str(repo), ORPHAN_BRANCH))
+
+    def _criteria(self) -> list[str]:
+        rows = RubricCriterion.objects.filter(rubric__ticket=self.ticket).order_by("ordinal")
+        return list(rows.values_list("text", flat=True))
+
+    def test_a_planless_ticket_gets_one_typed_criterion_per_bullet(self) -> None:
+        host = IssueReadingHost(ACCEPTANCE_ISSUE)
+
+        assert self._create(host).get("url") == AssignableHost.URL
+
+        assert self._criteria() == [
+            "[behaviour] `t3 publish` rejects a closing keyword",
+            "[process] CI and the module-health ratchet are green",
+        ]
+
+    def test_a_ticket_with_a_plan_does_not_re_read_the_issue(self) -> None:
+        host = IssueReadingHost(ACCEPTANCE_ISSUE)
+
+        self._create(host, planned=True)
+
+        assert host.issue_reads == []
+        assert self._criteria() == []
+
+    def test_an_issue_without_an_acceptance_section_is_reported_in_the_body(self) -> None:
+        host = IssueReadingHost({"body": "## Summary\n\n- just a bullet\n"})
+
+        assert self._create(host).get("url") == AssignableHost.URL
+
+        assert self._criteria() == []
+        assert "Rubric not seeded: the issue has no Acceptance section." in host.specs[0].description
+
+    def test_an_unreadable_issue_is_reported_never_an_empty_success(self) -> None:
+        host = IssueReadingHost(CommandFailedError(["gh", "api"], 1, "", "boom"))
+
+        assert self._create(host).get("url") == AssignableHost.URL
+
+        assert self._criteria() == []
+        assert "Rubric not seeded: the issue could not be read." in host.specs[0].description

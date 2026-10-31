@@ -30,7 +30,7 @@ from teatree.core.merge.last_merged_pr import LastMergedPr
 from teatree.core.models import MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE
+from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import repo_namespaced_key
 
@@ -94,7 +94,7 @@ def _links_ticket(pattern: re.Pattern[str], body: str, ticket: Ticket) -> bool:
 
 
 def _link_of(body: str, ticket: Ticket) -> PrLink:
-    if _links_ticket(CLOSE_KEYWORD_RE, body, ticket):
+    if _links_ticket(CLOSING_REFERENCE_RE, body, ticket):
         return PrLink.CLOSING
     return PrLink.NON_CLOSING if _links_ticket(_ISSUE_MENTION, body, ticket) else PrLink.NONE
 

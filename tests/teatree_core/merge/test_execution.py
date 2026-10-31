@@ -12,18 +12,21 @@ the old one. A gate that had been left comparing ``== "failed"`` would let a for
 nobody could read merge a PR — strictly worse than the mis-wording being fixed.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.merge import execution
+from teatree.core.merge.authorization import MergePrecheck
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import assert_ci_not_failed
 from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
 from teatree.utils.pr_ref import PrRef
+from tests.teatree_core.merge.overlap_helpers import RecordingForge, forge_for, make_three_heads
 
 _SHA = "a" * 40
 _SLUG = "souliane/teatree"
@@ -311,3 +314,62 @@ class TestUnreadableForgeStillRefuses(TestCase):
             pytest.raises(MergePreconditionError, match="are failed"),
         ):
             assert_ci_not_failed(self._query())
+
+
+class _QueryOnForge:
+    """A stand-in :class:`CodeHostQuery` whose backend is a recording fake forge."""
+
+    def __init__(self, ref: PrRef, backend: RecordingForge) -> None:
+        self.ref = ref
+        self.backend = backend
+
+    @staticmethod
+    def required_checks_status() -> str:
+        return "green"
+
+
+@pytest.mark.real_open_heads
+class TestMergeRefusesTheNewerOverlappingPr(TestCase):
+    """Two open PRs editing the same lines merge in PR-number order: the newer one waits."""
+
+    @pytest.fixture(autouse=True)
+    def _clone(self, tmp_path: Path) -> None:
+        self.clone, self.shas = make_three_heads(tmp_path)
+        self.executed: list[object] = []
+
+    def _merge(self, pr_id: int, forge: RecordingForge) -> execution.MergeOutcome:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        clear = _clear(ticket, slug=_SLUG, pr_id=pr_id)
+        with (
+            patch.object(execution, "assert_merge_provenance_trusted"),
+            patch.object(execution, "resolve_pr_repo_slug", return_value=_SLUG),
+            patch.object(execution, "resolve_host_kind", return_value="github"),
+            patch.object(execution, "_reconcile_slug_against_reviewed_sha", return_value=_SLUG),
+            patch.object(execution, "assert_merge_preconditions", return_value=MergePrecheck(verified_sha=_SHA)),
+            patch.object(CodeHostQuery, "for_ref", side_effect=lambda ref: _QueryOnForge(ref, forge)),
+            patch.object(execution, "execute_bound_merge", side_effect=lambda **kw: self.executed.append(kw) or _SHA),
+            patch.object(execution, "record_merge_and_advance", return_value="merged"),
+            patch("teatree.core.merge.head_overlap.matching_clone", return_value=self.clone),
+        ):
+            return execution.merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+    def test_the_newer_pr_is_refused_naming_the_older_and_nothing_is_merged(self) -> None:
+        forge = forge_for(self.shas)
+
+        with pytest.raises(MergePreconditionError, match=rf"{_SLUG}#11"):
+            self._merge(12, forge)
+
+        assert forge.list_calls == [(_SLUG, "open")]
+        assert self.executed == []
+
+    def test_the_older_pr_merges(self) -> None:
+        outcome = self._merge(11, forge_for(self.shas))
+
+        assert outcome.pr_id == 11
+        assert len(self.executed) == 1
+
+    def test_an_unreadable_head_list_refuses_the_merge(self) -> None:
+        with pytest.raises(MergePreconditionError, match="could not be read"):
+            self._merge(11, RecordingForge([], unreadable=True))
+
+        assert self.executed == []

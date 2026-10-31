@@ -34,3 +34,19 @@ def head_sha(pr: RawAPIDict) -> str:
         if isinstance(nested, str):
             return nested
     return ""
+
+
+def base_sha(pr: RawAPIDict) -> str:
+    """The PR's base commit SHA across forge shapes, or ``""`` when the hit carries none.
+
+    The enriched GitHub hit carries it top-level as ``base_sha``; a GitHub REST PR nests it under
+    ``base.sha`` and a GitLab MR detail under ``diff_refs.base_sha``.
+    """
+    sha = pr.get("base_sha")
+    if isinstance(sha, str):
+        return sha
+    for key, field in (("base", "sha"), ("diff_refs", "base_sha")):
+        nested = pr.get(key)
+        if isinstance(nested, dict) and isinstance(found := cast("RawAPIDict", nested).get(field), str):
+            return found
+    return ""
