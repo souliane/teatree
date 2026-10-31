@@ -3,6 +3,7 @@
 import os
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -10,7 +11,9 @@ from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Directive, IncomingEvent, IntentClassification, ReplyDispatch
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 from teatree.core.overlay import OverlayBase, OverlayReview
+from teatree.loop.scanners.event_handlers import HandlingOutcome
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
+from tests._incoming_event_handlers import pending_review_event, registered
 
 
 def _event(*, source: str, body: str, key: str, **payload_extras: object) -> IncomingEvent:
@@ -645,3 +648,69 @@ class TestDirectiveEventIsUnrouteable(TestCase):
         event.refresh_from_db()
         assert event.processed_at is not None
         assert Directive.objects.count() == 0
+
+
+class TestHandledRows(TestCase):
+    def setUp(self) -> None:
+        self.handled: list[IncomingEvent] = []
+        self.outcome = HandlingOutcome.PROCESSED
+
+    def run_handler(self, event: IncomingEvent) -> HandlingOutcome:
+        self.handled.append(event)
+        return self.outcome
+
+    def scan(self) -> list:
+        with (
+            registered(),
+            patch("teatree.loop.scanners.incoming_events.classify_event") as classify,
+            patch("teatree.loop.scanners.incoming_events.route_event") as route,
+        ):
+            signals = IncomingEventsScanner(runner=self.run_handler).scan()
+        self.classified = classify.call_count + route.call_count
+        return signals
+
+    def test_a_row_with_a_registered_handler_goes_to_the_runner_and_never_to_classify_or_route(self) -> None:
+        event = pending_review_event()
+
+        assert self.scan() == []
+
+        assert [row.pk for row in self.handled] == [event.pk]
+        assert self.classified == 0
+
+    def test_a_row_without_a_handler_keeps_the_classify_and_route_path(self) -> None:
+        _event(source=IncomingEvent.Source.CI, body="pipeline green", key="ci:plain")
+
+        with (
+            registered(),
+            patch("teatree.loop.scanners.incoming_events.classify_event") as classify,
+            patch("teatree.loop.scanners.incoming_events.route_event") as route,
+        ):
+            route.return_value.kind = "drop"
+            IncomingEventsScanner(runner=self.run_handler).scan()
+
+        assert self.handled == []
+        classify.assert_called_once()
+
+    def test_a_dead_lettered_outcome_surfaces_as_a_signal(self) -> None:
+        pending_review_event()
+        self.outcome = HandlingOutcome.DEAD_LETTERED
+
+        assert [signal.kind for signal in self.scan()] == ["incoming_event.dead_letter"]
+
+    def test_a_row_the_runner_defers_stays_pending_and_is_not_marked_processed(self) -> None:
+        event = pending_review_event()
+        self.outcome = HandlingOutcome.DEFERRED
+
+        assert self.scan() == []
+
+        event.refresh_from_db()
+        assert (event.processed_at, event.attempts) == (None, 0)
+
+    def test_a_handled_row_with_no_runner_wired_fails_loudly_without_spending_an_attempt(self) -> None:
+        event = pending_review_event()
+
+        with registered(), pytest.raises(RuntimeError, match="no runner"):
+            IncomingEventsScanner().scan()
+
+        event.refresh_from_db()
+        assert (event.processed_at, event.attempts) == (None, 0)

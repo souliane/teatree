@@ -49,3 +49,20 @@ def test_listener_installs_no_admin_dash_or_staticfiles() -> None:
 
     assert surfaces <= set(loaded["base"]["INSTALLED_APPS"])
     assert not surfaces.intersection(loaded["listener"]["INSTALLED_APPS"])
+
+
+def test_listener_process_wires_the_ingest_dispatch_so_a_handled_event_wakes() -> None:
+    probe = (
+        "import django; django.setup(); "
+        "from teatree.core.views._webhook_persistence import _INGEST; "
+        "print(type(_INGEST.dispatch).__name__)"
+    )
+    env = {key: value for key, value in os.environ.items() if key != "T3_DEBUG"}
+    env["DJANGO_SETTINGS_MODULE"] = "teatree.webhook_settings"
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe], check=False, capture_output=True, text=True, env=env, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "RegistryIngestDispatch"

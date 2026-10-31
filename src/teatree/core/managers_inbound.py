@@ -13,7 +13,9 @@ from django.utils import timezone
 
 from teatree.utils.forge import FORGES
 
-__all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
+__all__ = ["HANDLING_LEASE", "IncomingEventQuerySet", "ReplyDispatchQuerySet"]
+
+HANDLING_LEASE = timedelta(seconds=120)
 
 #: Neither drained nor poisoned — the in-flight boundary both the drain and the
 #: pruner key on, so they can never disagree about what is still owed.
@@ -54,6 +56,10 @@ class IncomingEventQuerySet(models.QuerySet):
         """
         moment = now or timezone.now()
         return self.filter(_UNSETTLED).filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment))
+
+    def claim_for_handling(self, pk: int, now: datetime) -> bool:
+        # One conditional UPDATE: the control DB is SQLite, which has no row locks to select_for_update.
+        return self.unprocessed(now).filter(pk=pk).update(next_retry_at=now + HANDLING_LEASE) == 1
 
     def prunable(self, cutoff: datetime) -> models.QuerySet:
         # Settled events before *cutoff*, safe to delete (#3693). Excludes the _UNSETTLED
