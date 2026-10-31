@@ -6,6 +6,7 @@ from teatree.core.backend_protocols import (
     CodeHostBackend,
     DraftState,
     ForgeMergeResult,
+    IssueCloseReason,
     IssueResolutionSpec,
     MessagingBackend,
     PipelineRead,
@@ -245,8 +246,8 @@ class _FakeCodeHost:
         _ = repo
         return []
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> dict[str, object]:
-        _ = (issue_url, comment)
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> dict[str, object]:
+        _ = (issue_url, reason, comment)
         return {}
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:

@@ -52,7 +52,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.backend_protocols import CodeHostBackend, IssueCloseReason, IssueResolutionSpec
+from teatree.core.issue_writes.closing import CloseOutcome, IssueClose, completion_refusal
 from teatree.core.issue_writes.issue_candidate_selection import OpenCandidates, closest_open_candidates, open_candidates
 from teatree.core.issue_writes.issue_candidate_selection import description_of as _description_of
 from teatree.core.issue_writes.issue_candidate_selection import issue_url_of as _issue_url_of
@@ -273,24 +274,14 @@ def remove_description_section(*, host: CodeHostBackend, issue_url: str, removal
     )
 
 
-@dataclass(frozen=True)
-class CloseOutcome:
-    """What a close attempt did."""
-
-    kind: Literal["closed", "external_refused"]
-    issue_url: str
-    digest: str = ""
-
-
 def close_with_rationale(
     *,
     host: CodeHostBackend,
     issue_url: str,
-    rationale: str,
+    close: IssueClose,
     sweep_run_id: str = "",
-    action: str = "issue_close_rationale",
 ) -> CloseOutcome:
-    """Record *why* in the DESCRIPTION, then close with no comment (#162 Rules 2 and 3).
+    """Record *why* in the DESCRIPTION, then close with *reason* and no comment (#162 Rules 2 and 3).
 
     ``close_issue(comment=...)`` is a hidden comment seam: the reason a ticket was
     retired is exactly the kind of text a later reader needs, and a comment is where
@@ -304,17 +295,27 @@ def close_with_rationale(
 
     Rule 5 applies: the guard runs inside the append, so a ticket someone else filed
     is neither annotated nor closed — it comes back as ``external_refused``.
+
+    A ``completed`` close claims the work was done, so it is refused before anything is
+    written unless a delivered ticket or a merged closing pull request covers the issue, and
+    a forge that records another reason than the one asked for is reported, not trusted.
     """
+    reason = close.reason
+    if reason is IssueCloseReason.COMPLETED and (refusal := completion_refusal(host, issue_url)):
+        raise IssueWriteConflictError(refusal)
     try:
         outcome = append_description_section(
             host=host,
             issue_url=issue_url,
-            section=DescriptionSection(heading="Closed", body=rationale, action=action),
+            section=DescriptionSection(heading="Closed", body=close.rationale, action=close.action),
             sweep_run_id=sweep_run_id,
         )
     except ExternalIssueRefusedError:
         return CloseOutcome(kind="external_refused", issue_url=issue_url)
-    _raise_on_transport_error(host.close_issue(issue_url=issue_url))
+    landed = _raise_on_transport_error(host.close_issue(issue_url=issue_url, reason=reason)).get("state_reason")
+    if landed and landed != reason.value:
+        msg = f"{issue_url} was closed, but the forge recorded {landed!r} instead of {reason.value!r}"
+        raise IssueWriteConflictError(msg)
     return CloseOutcome(kind="closed", issue_url=issue_url, digest=outcome.digest)
 
 
@@ -570,6 +571,7 @@ __all__ = [
     "CreateOutcome",
     "DescriptionRemoval",
     "DescriptionSection",
+    "IssueClose",
     "IssueDraft",
     "IssueWriteConflictError",
     "NoteOutcome",

@@ -96,6 +96,18 @@ class IssueReopenState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class IssueCloseReason(StrEnum):
+    """Why an issue is closed — the forge's own two reasons, and no others.
+
+    ``COMPLETED`` claims the work was done, so the close facade refuses it unless a delivered
+    ticket or a merged closing pull request covers the issue. A GitLab issue has no close
+    reason; its host accepts and ignores the value.
+    """
+
+    COMPLETED = "completed"
+    NOT_PLANNED = "not_planned"
+
+
 class IssueOpenState(StrEnum):
     """Whether the forge reports an ISSUE as open or closed, per its own payload.
 
@@ -518,7 +530,9 @@ class CodeHostBackend(Protocol):
 
     def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
+    def close_issue(
+        self, *, issue_url: str, reason: IssueCloseReason, comment: str = ""
+    ) -> RawAPIDict: ...  # pragma: no branch
 
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
 

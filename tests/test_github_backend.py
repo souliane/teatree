@@ -23,6 +23,7 @@ from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
+from teatree.core.backend_protocols import IssueCloseReason
 from teatree.utils.forge_http import CONNECT_TIMEOUT_SECONDS
 from teatree.utils.throttled_log import reset_throttle
 
@@ -829,17 +830,17 @@ class TestGitHubCodeHost:
         argv = mock_run.call_args_list[0].args
         assert "--paginate" in argv
 
-    def test_close_issue_patches_state_closed(self) -> None:
+    def test_close_issue_patches_state_closed_with_the_reason_it_was_given(self) -> None:
         url = "https://github.com/org/repo/issues/9"
-        with patch.object(github_mod, "_gh_api_patch", return_value={"state": "closed"}) as mock_patch:
-            host = GitHubCodeHost(token="tok")
-            result = host.close_issue(issue_url=url)
-        assert result == {"state": "closed"}
-        mock_patch.assert_called_once_with(
-            "repos/org/repo/issues/9",
-            {"state": "closed", "state_reason": "not_planned"},
-            token="tok",
-        )
+        for reason in IssueCloseReason:
+            with patch.object(github_mod, "_gh_api_patch", return_value={"state": "closed"}) as mock_patch:
+                result = GitHubCodeHost(token="tok").close_issue(issue_url=url, reason=reason)
+            assert result == {"state": "closed"}
+            mock_patch.assert_called_once_with(
+                "repos/org/repo/issues/9",
+                {"state": "closed", "state_reason": reason.value},
+                token="tok",
+            )
 
     def test_close_issue_posts_audit_comment_first(self) -> None:
         url = "https://github.com/org/repo/issues/9"
@@ -847,13 +848,15 @@ class TestGitHubCodeHost:
             patch.object(github_mod, "_gh_api_post", return_value={"id": 1}) as mock_post,
             patch.object(github_mod, "_gh_api_patch", return_value={"state": "closed"}),
         ):
-            GitHubCodeHost().close_issue(issue_url=url, comment="dead")
+            GitHubCodeHost().close_issue(issue_url=url, reason=IssueCloseReason.NOT_PLANNED, comment="dead")
         assert mock_post.call_args[0][0] == "repos/org/repo/issues/9/comments"
         assert mock_post.call_args[0][1] == {"body": "dead"}
 
     def test_close_issue_rejects_non_issue_url(self) -> None:
         with patch.object(github_mod, "_gh_api_patch") as mock_patch:
-            result = GitHubCodeHost().close_issue(issue_url="https://example.com/not/an/issue")
+            result = GitHubCodeHost().close_issue(
+                issue_url="https://example.com/not/an/issue", reason=IssueCloseReason.NOT_PLANNED
+            )
         assert "error" in result
         mock_patch.assert_not_called()
 

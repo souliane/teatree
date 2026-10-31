@@ -23,7 +23,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import NEEDS_TRIAGE_LABEL, SendAudit
+from teatree.core.backend_protocols import IssueCloseReason
+from teatree.core.models import NEEDS_TRIAGE_LABEL, SendAudit, Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.loop.mechanical import close_dead_issue
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
@@ -50,6 +51,7 @@ _BOT = "teatree-bot"
 @dataclass
 class _Host:
     closed: list[tuple[str, str]] = field(default_factory=list)
+    reasons: list[IssueCloseReason] = field(default_factory=list)
     result: RawAPIDict = field(default_factory=dict)
     raise_on_close: bool = False
     issue_states: dict[str, str] = field(default_factory=dict)
@@ -76,11 +78,12 @@ class _Host:
             self.bodies[issue_url] = body
         return {"web_url": issue_url}
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> RawAPIDict:
         if self.raise_on_close:
             msg = "network down"
             raise RuntimeError(msg)
         self.closed.append((issue_url, comment))
+        self.reasons.append(reason)
         return self.result
 
     def repo_for_issue_url(self, issue_url: str) -> str:
@@ -111,7 +114,33 @@ def _patched(host: _Host | None, *, is_public: bool = False) -> ExitStack:
     return stack
 
 
+def _deliver(url: str) -> None:
+    Ticket.objects.create(overlay="acme", issue_url=url, state=Ticket.State.DELIVERED)
+
+
 class CloseDeadIssueTests(TestCase):
+    def setUp(self) -> None:
+        _deliver(_URL)
+
+    def test_each_reason_is_closed_with_the_forge_reason_it_means(self) -> None:
+        for reason, expected in (
+            ("already_shipped", IssueCloseReason.COMPLETED),
+            ("exact_duplicate", IssueCloseReason.NOT_PLANNED),
+            ("obsolete", IssueCloseReason.NOT_PLANNED),
+        ):
+            host = _Host()
+            with _patched(host):
+                close_dead_issue({"url": _URL, "reason": reason, "duplicate_of": _SURVIVOR})
+            assert host.reasons == [expected]
+
+    def test_an_already_shipped_issue_with_nothing_delivered_behind_it_stays_open(self) -> None:
+        Ticket.objects.filter(issue_url=_URL).delete()
+        host = _Host()
+        with _patched(host):
+            close_dead_issue({"url": _URL, "reason": "already_shipped"})
+        assert host.closed == []
+        assert host.bodies == {}
+
     def test_the_rationale_lands_in_the_description_and_the_close_carries_no_comment(self) -> None:
         host = _Host()
         with _patched(host):
@@ -200,6 +229,9 @@ class CloseDeadIssueTests(TestCase):
 class CloseDeadIssueRoutesThroughSeamTests(TestCase):
     """The close comment routes through the scanned forge-write seam (CC-2)."""
 
+    def setUp(self) -> None:
+        _deliver(_URL)
+
     def test_a_clean_rationale_writes_a_send_audit_row_under_the_handler_action(self) -> None:
         host = _Host()
         with (
@@ -265,8 +297,8 @@ class _Tracker:
     def get_issue(self, issue_url: str) -> RawAPIDict:
         return self._issue(issue_url)
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
-        _ = comment
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> RawAPIDict:
+        _ = (reason, comment)
         if issue_url in self.open_urls:
             self.open_urls.remove(issue_url)
         return {}

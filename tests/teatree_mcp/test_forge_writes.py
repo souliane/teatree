@@ -20,13 +20,17 @@ from unittest.mock import patch
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
-from teatree.core.models import SendAudit
+from teatree.core.backend_protocols import IssueCloseReason
+from teatree.core.models import SendAudit, Ticket
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
 from tests._send_gate import TEST_TERM_REGISTRY_JSON, allow_forge_repos
 from tests.teatree_mcp._call_tool_result import structured as _structured
+
+_CLOSE_URL = "https://github.com/acme/widgets/issues/7"
 
 
 class _ServiceOverlay:
@@ -57,9 +61,9 @@ class _FakeForge:
         self.calls.append(("post_issue_comment", {"issue_url": issue_url, "body": body}))
         return {"id": 11}
 
-    def close_issue(self, *, issue_url: str, comment: str = "") -> dict[str, Any]:
-        self.calls.append(("close_issue", {"issue_url": issue_url, "comment": comment}))
-        return {"state": "closed"}
+    def close_issue(self, *, issue_url: str, reason: IssueCloseReason, comment: str = "") -> dict[str, Any]:
+        self.calls.append(("close_issue", {"issue_url": issue_url, "reason": reason.value, "comment": comment}))
+        return {"state": "closed", "state_reason": reason.value}
 
     def update_issue(self, *, issue_url: str, body: str) -> dict[str, Any]:
         self.calls.append(("update_issue", {"issue_url": issue_url, "body": body}))
@@ -193,8 +197,7 @@ class TestForgeIssueWriteTools(TestCase):
         fake = _FakeForge()
         with _forge_env(fake):
             result = _call(
-                "github_issue_close",
-                {"issue_url": "https://github.com/acme/widgets/issues/7", "rationale": "fixed in main"},
+                "github_issue_close", {"issue_url": _CLOSE_URL, "rationale": "fixed in main", "reason": "not_planned"}
             )
 
         assert result["outcome"] == "closed"
@@ -202,8 +205,30 @@ class TestForgeIssueWriteTools(TestCase):
         assert "fixed in main" in fake.description
         assert fake.calls[1] == (
             "close_issue",
-            {"issue_url": "https://github.com/acme/widgets/issues/7", "comment": ""},
+            {"issue_url": _CLOSE_URL, "reason": "not_planned", "comment": ""},
         )
+
+    def test_issue_close_takes_only_completed_or_not_planned_and_always_a_reason(self) -> None:
+        for arguments in ({"reason": "wontfix"}, {"reason": ""}, {}):
+            fake = _FakeForge()
+            with _forge_env(fake), pytest.raises(ToolError):
+                _call("github_issue_close", {"issue_url": _CLOSE_URL, "rationale": "done", **arguments})
+            assert fake.calls == []
+
+    def test_a_completed_close_with_nothing_delivered_is_a_tool_error_and_writes_nothing(self) -> None:
+        fake = _FakeForge()
+        with _forge_env(fake), pytest.raises(ToolError, match="completed"):
+            _call("github_issue_close", {"issue_url": _CLOSE_URL, "rationale": "done", "reason": "completed"})
+        assert fake.calls == []
+
+    def test_a_completed_close_behind_a_delivered_ticket_closes_as_completed(self) -> None:
+        Ticket.objects.create(overlay="acme", issue_url=_CLOSE_URL, state=Ticket.State.DELIVERED)
+        fake = _FakeForge()
+        with _forge_env(fake):
+            result = _call("github_issue_close", {"issue_url": _CLOSE_URL, "rationale": "done", "reason": "completed"})
+
+        assert result["outcome"] == "closed"
+        assert fake.calls[1][1]["reason"] == "completed"
 
     def test_issue_close_refuses_an_externally_authored_issue(self) -> None:
         """Rule 5: a colleague's ticket is neither annotated nor closed — reported, not raised."""
@@ -211,8 +236,7 @@ class TestForgeIssueWriteTools(TestCase):
         fake.author = "someone.else"
         with _forge_env(fake):
             result = _call(
-                "github_issue_close",
-                {"issue_url": "https://github.com/acme/widgets/issues/7", "rationale": "fixed in main"},
+                "github_issue_close", {"issue_url": _CLOSE_URL, "rationale": "fixed", "reason": "not_planned"}
             )
         assert result["outcome"] == "external_refused"
         assert fake.calls == []

@@ -78,6 +78,12 @@ class IssueDispositionAlreadyShippedTests(TestCase):
         assert [s.kind for s in signals] == [CLOSE_CANDIDATE_KIND]
         assert signals[0].payload == {"url": self.URL, "reason": "already_shipped", "overlay": "acme"}
 
+    def test_a_ticket_that_merged_without_being_delivered_yields_no_candidate(self) -> None:
+        for state in (Ticket.State.MERGED, Ticket.State.RETRO_RECORDED):
+            Ticket.objects.filter(issue_url=self.URL).delete()
+            Ticket.objects.create(issue_url=self.URL, state=state)
+            assert self._scanner(_Host(issues=[_issue(self.URL)])).scan() == []
+
     def test_live_in_flight_ticket_yields_no_candidate(self) -> None:
         """Anti-vacuity (a): a live ticket on the URL FALSIFIES already-shipped."""
         Ticket.objects.create(issue_url=self.URL, state=Ticket.State.WORK_STARTED)
