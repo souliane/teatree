@@ -33,6 +33,18 @@ class TestGatherWaiting:
 
         assert [entry.row_id for entry in gather_owner_waiting()] == [owner.pk]
 
+    def test_owner_list_excludes_an_internal_row_even_when_it_carries_an_owner_card(self) -> None:
+        card = owner_card()
+        DeferredQuestion.objects.create(
+            question="Internal repair with a card?",
+            audience=DeferredQuestion.Audience.INTERNAL,
+            evidence=card.to_evidence(),
+            options_json=card.options_json(),
+        )
+        owner = DeferredQuestion.record("May I change the design?", card=card)
+
+        assert [entry.row_id for entry in gather_owner_waiting()] == [owner.pk]
+
     def test_owner_list_excludes_legacy_scope_and_marks_a_held_pr_owner_only(self) -> None:
         legacy = DeferredQuestion.objects.create(
             question="Which product scope?",
