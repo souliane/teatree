@@ -512,18 +512,18 @@ def cadence_seconds() -> int:
     first the ``T3_LOOP_CADENCE`` env var (the bespoke direct read), then
     ``get_effective_settings().loop_cadence_seconds`` which covers the
     per-overlay ``ConfigSetting`` overlay-scope row, then the global-scope
-    row, then the ``UserSettings`` default of 720.
+    row, then the declared ``loop_cadence_seconds`` default.
 
-    Any ``T3_LOOP_CADENCE`` parse failure falls back to 720. The result is
-    clamped to a 60s minimum so a misconfigured tiny value cannot busy-loop
-    the tick.
+    Any ``T3_LOOP_CADENCE`` parse failure falls back to that declared default.
+    The result is clamped to a 60s minimum so a misconfigured tiny value
+    cannot busy-loop the tick.
     """
     raw = os.environ.get("T3_LOOP_CADENCE")
     if raw is not None and raw.strip():
         try:
             return max(60, int(raw.strip()))
         except ValueError:
-            return 720
+            return max(60, UserSettings().loop_cadence_seconds)
     return max(60, get_effective_settings().loop_cadence_seconds)
 
 

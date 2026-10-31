@@ -2,7 +2,7 @@ import logging
 import time
 from pathlib import Path
 
-from teatree.config import get_effective_settings
+from teatree.config import UserSettings, get_effective_settings
 from teatree.core import hook_quarantine, prek_hook
 from teatree.core.gates.git_hooks_preflight import probe_git_hooks
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
@@ -25,24 +25,20 @@ from teatree.utils.env import patched_environ
 
 logger = logging.getLogger(__name__)
 
-# Matches ``UserSettings.provision_slow_threshold_seconds``'s dataclass
-# default — the fallback when the setting is absent/unreadable, mirroring
-# ``provision_timebox.resolve_step_timeout_seconds``'s defensive coercion.
-_DEFAULT_SLOW_THRESHOLD_SECONDS = 600
-
 
 def _resolve_slow_threshold_seconds() -> int:
     """The configured slow-provision alert threshold (seconds), defensively coerced.
 
     A non-numeric or unreadable setting (e.g. an under-specified settings
-    mock in a caller's test) degrades to the default rather than crashing the
-    provision — the alert is a best-effort nicety, never a correctness gate.
+    mock in a caller's test) degrades to the declared default rather than
+    crashing the provision — the alert is a best-effort nicety, never a
+    correctness gate.
     """
-    value = getattr(get_effective_settings(), "provision_slow_threshold_seconds", _DEFAULT_SLOW_THRESHOLD_SECONDS)
+    declared = UserSettings().provision_slow_threshold_seconds
     try:
-        return int(value)
+        return int(getattr(get_effective_settings(), "provision_slow_threshold_seconds", declared))
     except (TypeError, ValueError):
-        return _DEFAULT_SLOW_THRESHOLD_SECONDS
+        return declared
 
 
 def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> bool:

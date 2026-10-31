@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+from teatree.config import UserSettings
 from teatree.core.provision.provision_report import ProvisionReport, StepReporter, StepResult
 from teatree.utils.run import run_allowed_to_fail
 from teatree.utils.thread_db import close_thread_db_connections
@@ -53,15 +54,6 @@ def _optional_timebox() -> ModuleType | None:
             raise
         return None
     return timebox
-
-
-# Fallback hard ceiling (seconds) for the degraded plain-subprocess path, which
-# runs only when ``provision_timebox`` is ABSENT and so cannot consult its
-# configurable ``resolve_step_timeout_seconds()``. Matches that module's
-# ``DEFAULT_STEP_TIMEOUT_SECONDS`` so a ``timeout=None`` step still aborts on a
-# ceiling instead of hanging forever — the "never hang" invariant the time-box
-# exists for (souliane/teatree#2220) holds on the degraded path too.
-_PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS = 1800
 
 
 def run_step(
@@ -130,10 +122,10 @@ def _plain_subprocess_step(
     error, a missing binary a ``"command not found"`` error, and a non-zero exit
     a captured failure — so every ``run_step`` consumer classifies the result
     identically whether or not the enhancement is present. A ``None`` timeout
-    resolves to :data:`_PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS` (never an unbounded
+    resolves to the declared ``provision_step_timeout_seconds`` (never an unbounded
     ``subprocess.run``) so the "never hang" invariant holds on this path too.
     """
-    ceiling = timeout if timeout is not None else _PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS
+    ceiling = timeout if timeout is not None else UserSettings().provision_step_timeout_seconds
     start = time.monotonic()
     try:
         proc = run_allowed_to_fail(cmd, cwd=cwd, expected_codes=None, timeout=ceiling)
