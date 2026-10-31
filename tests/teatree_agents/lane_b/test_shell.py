@@ -1,6 +1,10 @@
+import asyncio
 import os
 import shutil
+import signal
 import subprocess
+import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -18,10 +22,16 @@ from teatree.agents.lane_b.shell import (
     _resolve_shell,
     build_shell_toolset,
 )
+from tests._process_liveness import is_gone_within, written_pids
+
+
+def _bash(config):
+    return build_shell_toolset(config).tools["Bash"].function
 
 
 def _shell(config):
-    return build_shell_toolset(config).tools["Bash"].function
+    bash = _bash(config)
+    return lambda command: asyncio.run(bash(command))
 
 
 _GIT = shutil.which("git") or "git"
@@ -171,6 +181,55 @@ class TestShellTool:
         # On any dev/CI host at least one POSIX shell is installed, so which() resolves
         # an absolute path; the bare-name fallback only fires when neither is present.
         assert Path(resolved).is_absolute()
+
+
+class TestAStoppedCommandDiesWithEverythingItStarted:
+    _FORKING = "echo $$ > leader; (sleep 1; touch finished) & echo $! > child; wait"
+
+    @staticmethod
+    def _assert_group_stopped(directory: Path, pids: list[int]) -> None:
+        try:
+            assert all(is_gone_within(pid, seconds=0.8) for pid in pids)
+            time.sleep(1.2)
+            assert not (directory / "finished").exists()
+        finally:
+            for pid in pids:
+                with suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+
+    def test_a_cancelled_command_is_killed_and_the_cancellation_propagates(self, tmp_path: Path) -> None:
+        async def run() -> list[int]:
+            call = asyncio.create_task(_bash(LaneBToolConfig(fs_root=tmp_path))(self._FORKING))
+            pids = await written_pids(tmp_path, "leader", "child")
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            return pids
+
+        self._assert_group_stopped(tmp_path, asyncio.run(run()))
+
+    def test_a_timed_out_command_is_killed_and_the_model_gets_the_retryable_error(self, tmp_path: Path) -> None:
+        async def run() -> list[int]:
+            call = asyncio.create_task(
+                _bash(LaneBToolConfig(fs_root=tmp_path, shell_timeout_seconds=0.4))(self._FORKING)
+            )
+            with pytest.raises(ShellTimeoutError, match=r"timed out after 0\.4s"):
+                await call
+            return await written_pids(tmp_path, "leader", "child")
+
+        self._assert_group_stopped(tmp_path, asyncio.run(run()))
+
+
+class TestTheReportReadsLikeText:
+    @pytest.mark.parametrize(
+        ("printed", "reported"),
+        [("a\\r\\nb\\rc", "exit=0\na\nb\nc"), ("\\377", "exit=0\n\N{REPLACEMENT CHARACTER}")],
+        ids=["carriage-returns-become-newlines", "a-non-utf8-byte-is-replaced"],
+    )
+    def test_the_report_reads_like_text_whatever_the_command_printed(
+        self, tmp_path: Path, printed: str, reported: str
+    ) -> None:
+        assert _shell(LaneBToolConfig(fs_root=tmp_path))(f"printf '{printed}'") == reported
 
 
 class TestOversizedOutputIsCapped:

@@ -1,10 +1,15 @@
 import asyncio
+import json
+import os
+import signal
+from contextlib import suppress
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from django.test import TestCase
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -16,6 +21,7 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
+from tests._process_liveness import is_gone_within, written_pids
 from tests.factories import planned_ticket
 
 
@@ -315,3 +321,48 @@ def test_a_stale_command_never_reaches_a_pydantic_session(stale_field: str) -> N
             assert facts["pending_inputs"] == 0
 
     asyncio.run(run())
+
+
+def test_pausing_a_session_ends_the_command_its_tool_call_left_running(tmp_path: Path) -> None:
+    command = "echo $$ > leader; (sleep 1; touch finished) & echo $! > child; wait"
+
+    async def run() -> list[ModelMessage]:
+        requests = 0
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> object:
+            nonlocal requests
+            requests += 1
+            await asyncio.sleep(0)
+            if requests <= 2:
+                bash = {"command": "echo earlier" if requests == 1 else command}
+                yield {0: DeltaToolCall(name="Bash", json_args=json.dumps(bash), tool_call_id=f"c{requests}")}
+            else:
+                yield "done"
+
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=stream_fn), phase="coding")
+        async with harness.open(ClaudeAgentOptions(cwd=str(tmp_path))) as session:
+            assert isinstance(session, SteerablePydanticAiSession)
+            await session.query("go")
+            turn = asyncio.create_task(_collect(session))
+            leader, child = await written_pids(tmp_path, "leader", "child")
+            try:
+                await session.interrupt()
+                await turn
+                assert is_gone_within(leader, seconds=0.8)
+                assert is_gone_within(child, seconds=0.8)
+                await asyncio.sleep(1.2)
+            finally:
+                for pid in (leader, child):
+                    with suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+            return session.history
+
+    history = asyncio.run(run())
+
+    assert not (tmp_path / "finished").exists()
+    assert any(
+        isinstance(part, ToolReturnPart) and "earlier" in str(part.content)
+        for message in history
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+    )

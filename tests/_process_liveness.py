@@ -8,6 +8,7 @@ reads a process the code under test DID kill as still alive. On a host, init rea
 it at once and both probes agree.
 """
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -30,6 +31,20 @@ def is_gone_within(pid: int, *, seconds: float) -> bool:
             return False
         time.sleep(0.05)
     return True
+
+
+def _written_pids(files: list[Path], *, seconds: float) -> list[int]:
+    deadline = time.monotonic() + seconds
+    while not all(file.exists() and file.read_text(encoding="utf-8").strip() for file in files):
+        if time.monotonic() >= deadline:
+            raise TimeoutError
+        time.sleep(0.02)
+    return [int(file.read_text(encoding="utf-8")) for file in files]
+
+
+async def written_pids(directory: Path, *names: str, seconds: float = 3) -> list[int]:
+    """The pids a command wrote to *names* under *directory*, awaited in a thread so the event loop keeps running."""
+    return await asyncio.to_thread(_written_pids, [directory / name for name in names], seconds=seconds)
 
 
 def _is_zombie(pid: int) -> bool:

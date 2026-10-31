@@ -50,12 +50,22 @@ def _run_codex(
     )
 
 
-def test_codex_live_flag_stops_before_executable_or_login_probe() -> None:
+def test_the_interactive_flag_alone_stops_before_executable_or_login_probe() -> None:
     case = LiveAttendedCodexTests(methodName="test_real_codex_exchanges_nonces_with_a_worker_peer")
     with (
-        patch.dict(os.environ, {"T3_LIVE_INTERACTIVE": "0"}),
+        patch.dict(os.environ, {"T3_LIVE_INTERACTIVE": "1", "T3_LIVE_CODEX_ATTENDED": "0"}),
         patch.object(shutil, "which", side_effect=AssertionError("Codex probed without the live flag")),
-        pytest.raises(SkipTest, match="T3_LIVE_INTERACTIVE=1"),
+        pytest.raises(SkipTest, match="T3_LIVE_CODEX_ATTENDED=1"),
+    ):
+        case.test_real_codex_exchanges_nonces_with_a_worker_peer()
+
+
+def test_the_attended_flag_alone_reaches_the_executable_probe() -> None:
+    case = LiveAttendedCodexTests(methodName="test_real_codex_exchanges_nonces_with_a_worker_peer")
+    with (
+        patch.dict(os.environ, {"T3_LIVE_INTERACTIVE": "0", "T3_LIVE_CODEX_ATTENDED": "1"}),
+        patch.object(shutil, "which", return_value=None),
+        pytest.raises(SkipTest, match="Codex executable or login is unavailable"),
     ):
         case.test_real_codex_exchanges_nonces_with_a_worker_peer()
 
@@ -64,8 +74,8 @@ def test_codex_live_flag_stops_before_executable_or_login_probe() -> None:
 @pytest.mark.timeout(360)
 class LiveAttendedCodexTests(TestCase):
     def test_real_codex_exchanges_nonces_with_a_worker_peer(self) -> None:
-        if os.environ.get("T3_LIVE_INTERACTIVE") != "1":
-            self.skipTest("set T3_LIVE_INTERACTIVE=1 for the attended Codex proof")
+        if os.environ.get("T3_LIVE_CODEX_ATTENDED") != "1":
+            self.skipTest("set T3_LIVE_CODEX_ATTENDED=1 for the attended Codex proof")
         executable = shutil.which("codex")
         auth = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
         if executable is None or not auth.is_file():
