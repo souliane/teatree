@@ -75,7 +75,10 @@ def _head_sha(raw: Mapping[str, object], *, host: OpenPrLister, repo: str, pr_id
 
 
 def read_open_heads(repo: str, *, host: OpenPrLister) -> tuple[OpenHead, ...]:
-    """Every open head of *repo* from ONE forge list call; raises :class:`OpenHeadsUnreadableError` when unreadable."""
+    """Every open head of *repo* from one forge list call plus a live-head read per entry it names no head for.
+
+    Raises :class:`OpenHeadsUnreadableError` when the list or any head is unreadable.
+    """
     try:
         listed = host.list_prs(repo=repo, state=_OPEN_STATE)
     except _FORGE_READ_FAILURES as exc:

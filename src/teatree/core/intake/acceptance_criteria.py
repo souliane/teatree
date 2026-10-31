@@ -19,7 +19,7 @@ _ANY_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]", re.MULTILINE)
 _BULLET = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?(?P<text>\S.*?)[ \t]*$")
 _PROCESS_ROW = re.compile(
     r"\b(?:ci|lint|ruff|tach|prek|coverage|module-health|verify-gates|docs?|documentation|blueprint|"
-    r"changelog|review(?:ed)?|approved|merged|squash(?:ed)?|commits?)\b",
+    r"changelog|reviewed|approved|merged|squash(?:ed)?|committed)\b",
     re.IGNORECASE,
 )
 

@@ -1,13 +1,11 @@
 """publish_text: scan, write, read back, rescan; a text that is not provably clean live exits non-zero."""
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.publishing.publish import PublishKind, PublishRefusedError, PublishRequest, publish_text
 from tests._send_gate import allow_github_repos
 from tests.teatree_core.publishing._recording_host import RecordingHost
-
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
 
 _PR = "https://github.com/souliane/teatree/pull/5870"
 _ISSUE = "https://github.com/souliane/teatree/issues/12"
@@ -24,7 +22,7 @@ def _request(text: str, kind: PublishKind = PublishKind.PR_BODY, *, closes: tupl
     return PublishRequest(kind=kind, target=_PR if kind is PublishKind.PR_BODY else _ISSUE, text=text, closes=closes)
 
 
-class TestProposedTextIsScannedBeforeAnyWrite:
+class TestProposedTextIsScannedBeforeAnyWrite(TestCase):
     def test_a_closing_keyword_is_refused_with_zero_writes(self) -> None:
         host = RecordingHost()
         with pytest.raises(PublishRefusedError, match="closing keyword"):
@@ -58,7 +56,7 @@ class TestProposedTextIsScannedBeforeAnyWrite:
         assert host.writes == []
 
 
-class TestLiveTextIsReadBackAndRescanned:
+class TestLiveTextIsReadBackAndRescanned(TestCase):
     def test_a_forge_that_appends_a_banned_trailer_is_refused(self) -> None:
         host = RecordingHost(appended=f"\n\n{_FOOTER}")
         with pytest.raises(PublishRefusedError, match="AI-signature"):
@@ -87,7 +85,7 @@ class TestLiveTextIsReadBackAndRescanned:
         assert [kind for kind, _, _ in host.writes] == [PublishKind.COMMENT, PublishKind.ISSUE_BODY]
 
 
-class TestAnUnlistedDestinationIsRefused:
+class TestAnUnlistedDestinationIsRefused(TestCase):
     def test_a_repo_off_the_send_proxy_allowlist_gets_zero_writes(self) -> None:
         allow_github_repos("someone/else")
         host = RecordingHost()

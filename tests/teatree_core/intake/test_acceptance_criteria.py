@@ -56,6 +56,9 @@ def test_the_acceptance_heading_matches_alternative_spellings() -> None:
         ("uv run tach check and the module-health ratchet are green", CriterionKind.PROCESS),
         ("docs and BLUEPRINT are updated in the same change", CriterionKind.PROCESS),
         ("CI is green", CriterionKind.PROCESS),
+        ("review hand-merge records one verdict and refuses a stale order", CriterionKind.BEHAVIOUR),
+        ("the commit message names the ticket the command was run for", CriterionKind.BEHAVIOUR),
+        ("the change is committed and reviewed", CriterionKind.PROCESS),
     ],
 )
 def test_a_row_is_typed_behaviour_or_process(row: str, kind: CriterionKind) -> None:
