@@ -300,7 +300,9 @@ def amend_plan(*, ticket: Ticket, criterion: str, kind: str, by: str) -> "PlanAr
     """Append one typed acceptance criterion to the ticket's plan, or ``None`` when it is already declared.
 
     The prior manifest is carried forward untouched, so every earlier criterion keeps its text and
-    its grade; the new plan is bound to the live origin/main head.
+    its grade; the new plan is bound to the live origin/main head only when no commit touching a
+    declared seam came in since the plan (or that cannot be read): a moved seam needs
+    ``plan-reaffirm`` and its per-commit dispositions, never an amend.
     """
     latest = _latest_plan(ticket)
     if latest is None:
@@ -316,6 +318,16 @@ def amend_plan(*, ticket: Ticket, criterion: str, kind: str, by: str) -> "PlanAr
     live_head = fetch_target_head(repo, _resolve_base_branch(repo)) if repo else ""
     if not is_valid_base_sha(live_head):
         msg = f"cannot amend ticket {ticket.pk}: its checkout does not resolve a live origin/main head"
+        raise AmendError(msg)
+    seam_commits = commits_between_touching_paths(
+        repo, latest.base_sha, live_head, declared_seam_paths(latest.adequacy)
+    )
+    if seam_commits is None or seam_commits:
+        msg = (
+            f"cannot amend ticket {ticket.pk}: commits touching a declared seam may have landed since the plan's base "
+            f"{latest.base_sha[:12]} (or the range cannot be read); run `ticket plan-reaffirm` with a disposition "
+            f"per commit first"
+        )
         raise AmendError(msg)
     section = latest.adequacy.get("acceptance_criteria") or {}
     declared = section.get("content") or []

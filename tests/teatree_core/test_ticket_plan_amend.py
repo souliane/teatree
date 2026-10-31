@@ -39,11 +39,11 @@ class TestPlanAmend(TestCase):
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp = tmp_path
 
-    def _ticket_with_graded_plan(self) -> Ticket:
+    def _ticket_with_graded_plan(self, *, advanced_path: str = "src/other.py", planned_base: str = "") -> Ticket:
         bare = _make_remote(self._tmp)
         clone = _clone(self._tmp, bare)
-        old_base = _git(clone, "rev-parse", "HEAD")
-        _advance_remote(self._tmp, bare, path="src/other.py")
+        old_base = planned_base or _git(clone, "rev-parse", "HEAD")
+        _advance_remote(self._tmp, bare, path=advanced_path)
         self.live_head = _git(bare, "rev-parse", "main")
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         Worktree.objects.create(ticket=ticket, repo_path=str(clone), branch="f", extra={"worktree_path": str(clone)})
@@ -77,6 +77,30 @@ class TestPlanAmend(TestCase):
         latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
         assert latest is not None
         assert latest.base_sha == self.live_head
+
+    def test_a_seam_change_since_the_plan_refuses_and_points_at_reaffirm(self) -> None:
+        ticket = self._ticket_with_graded_plan(advanced_path="src/seam.py")
+        stderr = StringIO()
+
+        with pytest.raises(SystemExit):
+            call_command(
+                "ticket", "plan-amend", str(ticket.pk), "--add-criterion", _NEW, "--kind", "behaviour", stderr=stderr
+            )
+
+        assert "plan-reaffirm" in stderr.getvalue()
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
+
+    def test_a_plan_base_the_checkout_cannot_resolve_refuses_rather_than_rebinding(self) -> None:
+        ticket = self._ticket_with_graded_plan(planned_base="f" * 40)
+        stderr = StringIO()
+
+        with pytest.raises(SystemExit):
+            call_command(
+                "ticket", "plan-amend", str(ticket.pk), "--add-criterion", _NEW, "--kind", "behaviour", stderr=stderr
+            )
+
+        assert "plan-reaffirm" in stderr.getvalue()
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
 
     def test_a_second_identical_run_adds_nothing(self) -> None:
         ticket = self._ticket_with_graded_plan()
