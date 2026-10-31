@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from teatree.core.gates.issue_coverage import IssueRead
 from teatree.core.merge.ci_rollup import CodeHostQuery
-from teatree.core.merge.last_merged_pr import last_merged_pr
+from teatree.core.merge.last_merged_pr import LastMergedPr, last_merged_pr
 from teatree.core.merge.partial_merge import MergedPrReading
 from teatree.core.models import Ticket
 
@@ -48,7 +48,10 @@ class SettledTicketInspection:
 
 
 def inspect_settled_ticket(ticket: Ticket) -> SettledTicketInspection:
-    latest = last_merged_pr(ticket)
+    return read_settled_pr(ticket, last_merged_pr(ticket))
+
+
+def read_settled_pr(ticket: Ticket, latest: LastMergedPr | None) -> SettledTicketInspection:
     if latest is None:
         return SettledTicketInspection(reason="last merged pull request unknown")
     pr, ref = latest

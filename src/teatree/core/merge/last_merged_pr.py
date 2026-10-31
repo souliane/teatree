@@ -4,8 +4,10 @@ from teatree.core.models import MergeAudit, PullRequest, Ticket
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
+type LastMergedPr = tuple[PullRequest, PrRef]
 
-def last_merged_pr(ticket: Ticket) -> tuple[PullRequest, PrRef] | None:
+
+def last_merged_pr(ticket: Ticket) -> LastMergedPr | None:
     rows = [
         (row, ref)
         for row in PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED)

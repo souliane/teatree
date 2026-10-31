@@ -5,7 +5,9 @@ GitHub client's issue read. The FSM, the planning tasks and the rotation stamp a
 """
 
 import contextlib
+import threading
 from collections.abc import Callable, Generator
+from time import monotonic
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -19,7 +21,9 @@ from teatree.loop.scanners import board_reconcile_issue_close as issue_close
 from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_partial_merge import SETTLED_INSPECTION_CAP, settled_remainder_transitions
+from teatree.loop.scanners.board_reconcile_reads import APPLY_MARGIN_SECONDS
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
+from teatree.loop.scanners.scan_deadline import scanner_deadline
 from tests.teatree_core.merge.partial_merge_helpers import merged_ticket, pr_bodies
 
 _FIRST = "The first thing works"
@@ -27,6 +31,7 @@ _SECOND = "The second thing works"
 _ISSUE = {"state": "open", "body": f"## Acceptance\n- {_FIRST}\n- {_SECOND}\n"}
 _LEAVES_SECOND_OUT = f"Part of #4242\n\nDelivered:\n- {_FIRST}\n"
 _DELIVERS_BOTH = f"Part of #4242\n\nDelivered:\n- {_FIRST}\n- {_SECOND}\n"
+_TWO_LEAVING_THE_SECOND_OUT = {"859": _LEAVES_SECOND_OUT, "860": _LEAVES_SECOND_OUT.replace("4242", "4243")}
 
 
 def _ticket(issue: int, pr: int, state: str) -> Ticket:
@@ -42,6 +47,17 @@ def _rule_g(*, dry_run: bool = False) -> list[BoardTransition]:
         overlay="", dry_run=dry_run, probe_budget=150, already_moved=frozenset()
     )
     return transitions
+
+
+def _answers_only_while_the_other_read_is_in_flight() -> Callable[[str], dict[str, str]]:
+    """An issue read that returns only once a second read is in flight, so a serial caller never gets its answer."""
+    both_in_flight = threading.Barrier(2, timeout=5)
+
+    def issue(_url: str) -> dict[str, str]:
+        both_in_flight.wait()
+        return _ISSUE
+
+    return issue
 
 
 def _planning(ticket: Ticket) -> list[Task]:
@@ -131,6 +147,25 @@ class TestRuleAHoldsOnTheIssue(TestCase):
         gh_runner.assert_not_called()
         get_issue.assert_not_called()
 
+    def test_the_merged_pull_request_reads_overlap(self) -> None:
+        tickets = [_ticket(4242, 859, Ticket.State.REVIEW_REQUESTED), _ticket(4243, 860, Ticket.State.REVIEW_REQUESTED)]
+
+        with _forge(_TWO_LEAVING_THE_SECOND_OUT, issue=_answers_only_while_the_other_read_is_in_flight()):
+            report = reconcile_board()
+
+        assert {row.ticket_id for row in report.applied} == {ticket.pk for ticket in tickets}
+        assert {Ticket.objects.get(pk=ticket.pk).state for ticket in tickets} == {Ticket.State.WORK_STARTED}
+
+    def test_a_deadline_too_near_to_apply_leaves_the_merge_unread_and_the_ticket_where_it_is(self) -> None:
+        ticket = _ticket(4242, 859, Ticket.State.REVIEW_REQUESTED)
+
+        with _forge({"859": _LEAVES_SECOND_OUT}), scanner_deadline(monotonic() + APPLY_MARGIN_SECONDS - 1):
+            report = reconcile_board()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert (report.transitions, report.probes) == ((), 0)
+
     def test_each_issue_linked_judgement_spends_one_probe_of_the_budget(self) -> None:
         first = _ticket(4242, 859, Ticket.State.REVIEW_REQUESTED)
         second = _ticket(4243, 860, Ticket.State.REVIEW_REQUESTED)
@@ -198,6 +233,22 @@ class TestRuleGUnsettlesTheBacklog(TestCase):
         }
         assert transitions == []
 
+    def test_a_settled_ticket_with_no_merged_pull_request_on_record_is_not_inspected_and_costs_no_probe(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.MERGED,
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+        )
+
+        with _forge({}):
+            transitions, probes = settled_remainder_transitions(
+                overlay="", dry_run=False, probe_budget=150, already_moved=frozenset()
+            )
+
+        ticket.refresh_from_db()
+        assert (transitions, probes) == ([], 0)
+        assert "settled_checked_at" not in ticket.extra
+
     def test_a_settled_ticket_the_forge_cannot_read_is_a_refused_row_and_stays_settled(self) -> None:
         ticket = _ticket(4242, 859, Ticket.State.MERGED)
 
@@ -253,6 +304,27 @@ class TestRuleGUnsettlesTheBacklog(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
         assert [row.action for row in report.applied if row.ticket_id == ticket.pk] == [BoardAction.HELD_FOR_REMAINDER]
+
+    def test_the_settled_reads_overlap(self) -> None:
+        tickets = [_ticket(4242, 859, Ticket.State.MERGED), _ticket(4243, 860, Ticket.State.MERGED)]
+
+        with _forge(_TWO_LEAVING_THE_SECOND_OUT, issue=_answers_only_while_the_other_read_is_in_flight()):
+            transitions = _rule_g()
+
+        assert {row.ticket_id for row in transitions if row.applied} == {ticket.pk for ticket in tickets}
+
+    def test_a_deadline_too_near_to_apply_leaves_the_settled_ticket_unjudged_unstamped_and_unspent(self) -> None:
+        ticket = _ticket(4242, 859, Ticket.State.MERGED)
+
+        with _forge({"859": _LEAVES_SECOND_OUT}), scanner_deadline(monotonic() + APPLY_MARGIN_SECONDS - 1):
+            transitions, probes = settled_remainder_transitions(
+                overlay="", dry_run=False, probe_budget=150, already_moved=frozenset()
+            )
+
+        ticket.refresh_from_db()
+        assert (transitions, probes) == ([], 0)
+        assert ticket.state == Ticket.State.MERGED
+        assert "settled_checked_at" not in ticket.extra
 
     def test_one_run_inspects_a_bounded_batch_and_the_next_run_starts_with_the_unchecked(self) -> None:
         total = SETTLED_INSPECTION_CAP + 5

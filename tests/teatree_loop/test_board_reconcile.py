@@ -26,7 +26,7 @@ from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.loop.scanners import board_reconcile
 from teatree.loop.scanners.board_reconcile import reconcile_board
-from teatree.loop.scanners.board_reconcile_partial_merge import ReadBudget
+from teatree.loop.scanners.board_reconcile_partial_merge import MergeReads
 from teatree.loop.scanners.board_reconcile_report import BoardAction
 from tests.teatree_loop._board_reconcile_overlays import overlays_registered, rule_f_inert
 
@@ -284,7 +284,7 @@ class TestMergedPrRowRule(TestCase):
 
         real = board_reconcile._advance_to_merged
 
-        def _boom(ticket: Ticket, *, reason: str, dry_run: bool, reads: ReadBudget) -> object:
+        def _boom(ticket: Ticket, *, reason: str, dry_run: bool, reads: MergeReads) -> object:
             if ticket.pk == bad.pk:
                 msg = "boom"
                 raise RuntimeError(msg)

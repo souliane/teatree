@@ -26,7 +26,7 @@ from teatree.core.gates.issue_coverage import (
 )
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.host_kind import resolve_host_kind
-from teatree.core.merge.last_merged_pr import last_merged_pr
+from teatree.core.merge.last_merged_pr import LastMergedPr
 from teatree.core.models import MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
@@ -218,11 +218,8 @@ def read_merged_pr(clear: MergeClear, repo_slug: str) -> MergedPrReading:
     return MergedPrReading.read(query, ticket) if query else MergedPrReading(unreadable="code host unresolvable")
 
 
-def read_last_merged_pr(ticket: Ticket) -> tuple[MergedPrReading, str]:
-    """The reading of a ticket's last merged pull request, with its URL for the audit line."""
-    if not holds_on_issue(ticket):
-        return MergedPrReading(), ""
-    latest = last_merged_pr(ticket)
+def read_merged_pr_at(ticket: Ticket, latest: LastMergedPr | None) -> tuple[MergedPrReading, str]:
+    """The reading of the *latest* merged pull request a caller looked up, with its URL for the audit line."""
     if latest is None:
         return MergedPrReading(unreadable="last merged pull request unknown"), ""
     pr, ref = latest

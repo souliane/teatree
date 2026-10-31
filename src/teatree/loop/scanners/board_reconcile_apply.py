@@ -46,28 +46,31 @@ def _held_by_void(ticket: "Ticket", voided: "VoidedRefs", *, restored: set[int])
     return ticket.pk in restored and all(pr_ref(url) in voided for url in live.values_list("url", flat=True))
 
 
-def collect(
-    tickets: "Iterable[Ticket]",
-    reconcile_one: "Callable[[Ticket], BoardTransition | None]",
-) -> list[BoardTransition]:
-    """Apply *reconcile_one* per ticket, isolating each row from the others.
+def judged[R](tickets: "Iterable[Ticket]", judge: "Callable[[Ticket], R]") -> "list[tuple[Ticket, R]]":
+    """Each ticket paired with what *judge* made of it, isolating each row from the others.
 
-    A gate refusal (the ``merge_evidence`` fail-closed path) and an unexpected
-    per-row error are both logged and skipped — one poison ticket must never abort a
-    whole-table sweep.
+    A gate refusal (the ``merge_evidence`` fail-closed path) and an unexpected per-row error are
+    both logged and leave the ticket out — one poison ticket must never abort a whole-table sweep.
     """
-    transitions: list[BoardTransition] = []
+    verdicts: list[tuple[Ticket, R]] = []
     for ticket in tickets:
         try:
-            transition = reconcile_one(ticket)
+            verdict = judge(ticket)
         except InvalidTransitionError as exc:
             logger.debug("Board reconcile skipped ticket %s — gate refused: %s", ticket.pk, exc)
         except Exception:
             logger.exception("Board reconcile skipped ticket %s after an unexpected error", ticket.pk)
         else:
-            if transition is not None:
-                transitions.append(transition)
-    return transitions
+            verdicts.append((ticket, verdict))
+    return verdicts
+
+
+def collect(
+    tickets: "Iterable[Ticket]",
+    reconcile_one: "Callable[[Ticket], BoardTransition | None]",
+) -> list[BoardTransition]:
+    """Apply *reconcile_one* per ticket, isolating each row from the others."""
+    return [transition for _, transition in judged(tickets, reconcile_one) if transition is not None]
 
 
 def planned(ticket: "Ticket", to_state: str, action: BoardAction, reason: str) -> BoardTransition:

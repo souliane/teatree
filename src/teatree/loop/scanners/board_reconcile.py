@@ -53,8 +53,9 @@ Rule G — a SETTLED author ticket (merged, retro_recorded) whose own ISSUE is s
 Rules A and B settle a ticket from a merged pull request, so for an issue-linked ticket they
 first ask what the merge keystone asks (``partial_merge.blocks_settlement``): a merge that
 leaves an item out holds the ticket, and one the forge cannot answer for is reported as
-refused. That read costs one forge call, so it spends the run's probe budget and the
-network-free per-tick render pass leaves such a ticket for the next full run.
+refused. That read costs one forge call, taken with the others on the shared read pool before
+rule A applies anything, so it spends the run's probe budget and the network-free per-tick render
+pass leaves such a ticket for the next full run. Rule G reads through the same pool.
 
 Every rule is idempotent by construction: each candidate queryset excludes the state
 its rule targets, so a second consecutive run finds nothing. Forge reads are
@@ -90,11 +91,11 @@ from teatree.core.gates.issue_coverage import holds_on_issue
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
+from teatree.loop.scanners.board_reconcile_apply import collect, judged, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
 from teatree.loop.scanners.board_reconcile_partial_merge import (
-    ReadBudget,
+    MergeReads,
     settled_probe_reservation,
     settled_remainder_transitions,
     settlement_block,
@@ -158,7 +159,7 @@ def reconcile_board(
     is what the per-tick render pass wants (an issue-linked ticket waits for a full run);
     the cadenced scanner and the CLI run the full set.
     """
-    reads = ReadBudget(probe_budget if probe_forge else 0)
+    reads = MergeReads(probe_budget if probe_forge else 0)
     transitions = list(_merged_pr_row_transitions(overlay=overlay, dry_run=dry_run, reads=reads))
     probes = reads.used
     if probe_forge:
@@ -170,7 +171,7 @@ def reconcile_board(
     return BoardReconcileReport(transitions=tuple(transitions), probes=probes, dry_run=dry_run)
 
 
-def _merged_pr_row_transitions(*, overlay: str, dry_run: bool, reads: ReadBudget) -> list[BoardTransition]:
+def _merged_pr_row_transitions(*, overlay: str, dry_run: bool, reads: MergeReads) -> list[BoardTransition]:
     """Rule A — every ticket with a MERGED ``PullRequest`` row not yet at its own terminal.
 
     Both target states are excluded, one per role branch: ``MERGED`` for the author
@@ -194,18 +195,15 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool, reads: ReadBudget
         ),
         overlay,
     ).distinct()
+    tickets = [ticket for ticket, reopened in judged(candidates, all_merges_reopened_over) if not reopened]
+    reads.read(tickets)
     return collect(
-        candidates,
-        lambda ticket: (
-            None
-            if all_merges_reopened_over(ticket)
-            else _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run, reads=reads)
-        ),
+        tickets, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run, reads=reads)
     )
 
 
 def _forge_truth_transitions(
-    *, overlay: str, dry_run: bool, probe_budget: int, reads: ReadBudget
+    *, overlay: str, dry_run: bool, probe_budget: int, reads: MergeReads
 ) -> tuple[list[BoardTransition], int]:
     """Rules B/C, E, F, G and D, in that order — the live forge reads, bounded by *probe_budget*.
 
@@ -300,7 +298,7 @@ def _from_pr_state(
     states: dict[str, PrOpenState],
     *,
     dry_run: bool,
-    reads: ReadBudget,
+    reads: MergeReads,
 ) -> BoardTransition | None:
     """Rules B and C — act only on a DEFINITE forge verdict.
 
@@ -322,7 +320,7 @@ def _is_reviewer(ticket: "Ticket") -> bool:
     return ticket.role == Ticket.Role.REVIEWER
 
 
-def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool, reads: ReadBudget) -> BoardTransition | None:
+def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool, reads: MergeReads) -> BoardTransition | None:
     """Route a merged-PR signal by ROLE — the author merged it; the reviewer only read it.
 
     A reviewer ticket tracks teatree's review of SOMEONE ELSE's PR, so landing it on
@@ -404,16 +402,16 @@ def _issue_done_urls(tickets: "list[Ticket]") -> set[str]:
     return {ticket.issue_url for ticket, done in read_per_overlay(tickets, issue_is_done) if done}
 
 
-def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool, reads: ReadBudget) -> BoardTransition | None:
+def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool, reads: MergeReads) -> BoardTransition | None:
     """Drive one ticket to MERGED, or report the intent under *dry_run*."""
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     if ticket.state == Ticket.State.MERGED or not can_proceed(ticket.reconcile_merged):
         return None
     if holds_on_issue(ticket):
-        if not reads.take():
+        if (read := reads.reading_of(ticket)) is None:
             return None
-        if (blocked := settlement_block(ticket, reason=reason, dry_run=dry_run)) is not None:
+        if (blocked := settlement_block(ticket, read, reason=reason, dry_run=dry_run)) is not None:
             return blocked
     from_state = ticket.state
     if dry_run:

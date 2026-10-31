@@ -5,17 +5,30 @@ keystone asks — :func:`~teatree.core.merge.partial_merge.blocks_settlement` �
 Rule G is the backstop for what already settled: it re-reads the last merged pull request of a
 settled ticket whose issue is open and sends the ticket back to planning when that merge left an
 item out, a bounded batch per run, least recently checked first.
+
+Every forge read of these rules goes through ``board_reconcile_reads`` — concurrent, and stopped
+before the scan deadline — while the database lookups stay on the calling thread.
 """
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
+from django_fsm import can_proceed
 
-from teatree.core.models import Ticket
+from teatree.core.gates.issue_coverage import holds_on_issue
+from teatree.core.models import PullRequest, Ticket
 from teatree.loop.scanners.board_reconcile_apply import collect, scoped, without_voided
+from teatree.loop.scanners.board_reconcile_reads import read_concurrently
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
+
+if TYPE_CHECKING:
+    from teatree.core.merge.last_merged_pr import LastMergedPr
+    from teatree.core.merge.partial_merge import MergedPrReading
+    from teatree.core.merge.partial_merge_report import SettledTicketInspection
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +37,33 @@ SETTLED_INSPECTION_CAP = 20
 
 
 @dataclass(slots=True)
-class ReadBudget:
-    """The forge reads a board run may still spend on judging a merge, one per ticket."""
+class MergeReads:
+    """The merged pull requests rules A and B judge, read together before either applies a verdict.
+
+    One read per ticket, charged to the run's probe budget once it completed: a read the scan
+    deadline stopped leaves its ticket for the next run.
+    """
 
     left: int
     used: int = 0
+    readings: "dict[int, tuple[MergedPrReading, str]]" = field(default_factory=dict)
 
-    def take(self) -> bool:
-        if self.left <= 0:
-            return False
-        self.left -= 1
-        self.used += 1
-        return True
+    def read(self, tickets: Iterable[Ticket]) -> None:
+        from teatree.core.merge.partial_merge import read_merged_pr_at  # noqa: PLC0415 — deferred: off the tick import
+
+        wanted = [
+            ticket
+            for ticket in tickets
+            if holds_on_issue(ticket) and ticket.state != Ticket.State.MERGED and can_proceed(ticket.reconcile_merged)
+        ][: max(self.left, 0)]
+        latest = _last_merged_prs(wanted)
+        for ticket, reading in read_concurrently(wanted, lambda ticket: read_merged_pr_at(ticket, latest[ticket.pk])):
+            self.readings[ticket.pk] = reading
+            self.left -= 1
+            self.used += 1
+
+    def reading_of(self, ticket: Ticket) -> "tuple[MergedPrReading, str] | None":
+        return self.readings.get(ticket.pk)
 
 
 def _refused(ticket: Ticket, *, from_state: str, reason: str, error: str) -> BoardTransition:
@@ -63,14 +91,13 @@ def _held(ticket: Ticket, *, from_state: str, to_state: str, reason: str, applie
     )
 
 
-def settlement_block(ticket: Ticket, *, reason: str, dry_run: bool) -> BoardTransition | None:
+def settlement_block(
+    ticket: Ticket, read: "tuple[MergedPrReading, str]", *, reason: str, dry_run: bool
+) -> BoardTransition | None:
     """The row for a ticket the merge must not settle, or ``None`` when it may move to ``merged``."""
-    from teatree.core.merge.partial_merge import (  # noqa: PLC0415 — deferred: off the tick import
-        blocks_settlement,
-        read_last_merged_pr,
-    )
+    from teatree.core.merge.partial_merge import blocks_settlement  # noqa: PLC0415 — deferred: off the tick import
 
-    reading, merged_pr = read_last_merged_pr(ticket)
+    reading, merged_pr = read
     from_state = ticket.state
     if not blocks_settlement(ticket, reading, merged_pr=merged_pr or ticket.issue_url, dry_run=dry_run):
         return None
@@ -89,6 +116,7 @@ def _settled_candidates(overlay: str, already_moved: frozenset[int] = frozenset(
     return without_voided(
         scoped(
             Ticket.objects.filter(
+                Exists(PullRequest.objects.filter(ticket=OuterRef("pk"), state=PullRequest.State.MERGED)),
                 state__in=Ticket.merged_states() - {Ticket.State.DELIVERED},
                 role=Ticket.Role.AUTHOR,
                 remote_missing=False,
@@ -106,20 +134,32 @@ def settled_probe_reservation(overlay: str, remaining: int) -> int:
     return min(SETTLED_INSPECTION_CAP, max(remaining, 0) // 4, len(_settled_candidates(overlay)))
 
 
+def _last_merged_prs(tickets: Iterable[Ticket]) -> dict[int, "LastMergedPr | None"]:
+    from teatree.core.merge.last_merged_pr import last_merged_pr  # noqa: PLC0415 — deferred: off the tick import
+
+    return {ticket.pk: last_merged_pr(ticket) for ticket in tickets}
+
+
 def settled_remainder_transitions(
     *, overlay: str, dry_run: bool, probe_budget: int, already_moved: frozenset[int]
 ) -> tuple[list[BoardTransition], int]:
     """Rule G — author tickets at ``merged`` or ``retro_recorded`` whose open issue the last merge left items on.
 
-    ``delivered`` is excluded: it passed the rubric gate. Every inspected ticket is stamped
-    with ``settled_checked_at`` first, so the batch rotates through the whole backlog instead of
-    re-reading the same head of it each run.
+    ``delivered`` is excluded: it passed the rubric gate. Every ticket whose read completed is
+    stamped with ``settled_checked_at`` first, so the batch rotates through the whole backlog
+    instead of re-reading the same head of it each run; one the scan deadline stopped is neither
+    judged, stamped nor counted.
     """
-    inspected = _settled_candidates(overlay, already_moved)[: max(min(probe_budget, SETTLED_INSPECTION_CAP), 0)]
-    return collect(inspected, lambda ticket: _unsettle(ticket, dry_run=dry_run)), len(inspected)
+    from teatree.core.merge.partial_merge_report import read_settled_pr  # noqa: PLC0415 — deferred: off the tick import
+
+    batch = _settled_candidates(overlay, already_moved)[: max(min(probe_budget, SETTLED_INSPECTION_CAP), 0)]
+    latest = _last_merged_prs(batch)
+    inspections = dict(read_concurrently(batch, lambda ticket: read_settled_pr(ticket, latest[ticket.pk])))
+    transitions = collect(inspections, lambda ticket: _unsettle(ticket, inspections[ticket], dry_run=dry_run))
+    return transitions, len(inspections)
 
 
-def _unsettle(ticket: Ticket, *, dry_run: bool) -> BoardTransition | None:
+def _unsettle(ticket: Ticket, inspection: "SettledTicketInspection", *, dry_run: bool) -> BoardTransition | None:
     from teatree.core.merge.partial_merge_reconcile import (  # noqa: PLC0415 — deferred: off the tick import
         unsettle_ticket,
     )
@@ -127,7 +167,7 @@ def _unsettle(ticket: Ticket, *, dry_run: bool) -> BoardTransition | None:
     reason = "settled with the issue open"
     if not dry_run:
         ticket.merge_extra(set_keys={"settled_checked_at": timezone.now().isoformat()})
-    result = unsettle_ticket(int(ticket.pk), reason="", dry_run=dry_run)
+    result = unsettle_ticket(int(ticket.pk), reason="", dry_run=dry_run, inspection=inspection)
     if result.get("unreadable"):
         return _refused(ticket, from_state=ticket.state, reason=reason, error=result["error"])
     if "error" in result:

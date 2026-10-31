@@ -9,7 +9,12 @@ from teatree.core.merge.partial_merge import (
     hold_for_remainder,
     preview_remainder_hold,
 )
-from teatree.core.merge.partial_merge_report import InspectionOutcome, PartialMergeMatch, inspect_settled_ticket
+from teatree.core.merge.partial_merge_report import (
+    InspectionOutcome,
+    PartialMergeMatch,
+    SettledTicketInspection,
+    inspect_settled_ticket,
+)
 from teatree.core.models import Ticket
 
 
@@ -48,11 +53,13 @@ def _remainder(match: PartialMergeMatch, reason: str) -> tuple[list[str], str]:
     return remainder, ""
 
 
-def unsettle_ticket(ticket_id: int, *, reason: str, dry_run: bool) -> UnsettleResult:
+def unsettle_ticket(
+    ticket_id: int, *, reason: str, dry_run: bool, inspection: SettledTicketInspection | None = None
+) -> UnsettleResult:
     ticket, refusal = _candidate(ticket_id)
     if ticket is None:
         return {"error": refusal}
-    inspection = inspect_settled_ticket(ticket)
+    inspection = inspection or inspect_settled_ticket(ticket)
     match = inspection.match
     if match is None or inspection.issue is None:
         reason_text = inspection.reason or "ticket inspection failed"
