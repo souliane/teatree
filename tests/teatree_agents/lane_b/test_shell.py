@@ -220,6 +220,20 @@ class TestAStoppedCommandDiesWithEverythingItStarted:
         self._assert_group_stopped(tmp_path, asyncio.run(run()))
 
 
+class TestTheCommandNeverReadsTheHostsInput:
+    def test_a_command_reading_stdin_sees_its_end_even_when_the_host_holds_a_pipe_open(self, tmp_path: Path) -> None:
+        reader, writer = os.pipe()
+        saved = os.dup(0)
+        os.dup2(reader, 0)
+        try:
+            out = _shell(LaneBToolConfig(fs_root=tmp_path, shell_timeout_seconds=3))("cat; echo eof")
+        finally:
+            os.dup2(saved, 0)
+            for descriptor in (reader, writer, saved):
+                os.close(descriptor)
+        assert out == "exit=0\neof\n"
+
+
 class TestTheReportReadsLikeText:
     @pytest.mark.parametrize(
         ("printed", "reported"),

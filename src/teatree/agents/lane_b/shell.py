@@ -125,8 +125,11 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     The command runs with ``cwd`` pinned to the worktree root (or the process cwd
     when the task has none), under *config*'s pinned child env, as the leader of its
     own session. A timeout, or the model run being cancelled (a live ``pause``),
-    kills that whole group before it propagates, so no command outlives the call
-    that started it. A denylist hit raises :class:`ShellDeniedError`; a timeout raises
+    kills that whole group before it propagates, without waiting for pipes a descendant
+    outside the group still holds. Two things survive that: a background child left by a
+    command that returns normally (a leaderless group that ``t3 tool reap-orphan-groups``
+    reclaims once it is old and burning) and a descendant that left the session
+    (``setsid``). A denylist hit raises :class:`ShellDeniedError`; a timeout raises
     :class:`ShellTimeoutError` — both ``ToolInputError`` — so the gate wrapper
     (:class:`~teatree.agents.lane_b.gating.HardDenyToolset`) turns either into a
     retryable ``ModelRetry`` instead of crashing the run. The command is passed
