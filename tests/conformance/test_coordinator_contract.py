@@ -29,21 +29,22 @@ _CONFLATIONS: dict[str, tuple[str, ...]] = {
     "Coordinator": ("code, never an agent", "attended"),
 }
 
-
+_TRIGGERS_LEAD = "**Coordinator triggers.**"
 _TRIGGER_STATUS: Mapping[str, str] = {
     "owner message": "built",
     "agent message": "built",
     "factory event": "later",
     "schedule": "later",
 }
-_TRIGGERS_LEAD = "**Coordinator triggers.**"
-_NO_SLACK_SOURCES = (_ROOT / "src/teatree/core/answering", _ROOT / "src/teatree/core/modelkit/coordinator_action.py")
-_RETIRED_PHRASE = re.compile(r"attended\s+coordinator", flags=re.IGNORECASE)
+
 _DUTY_MAP_LEAD = "**Coordinator duty map.**"
 _OPEN_POINTS_LEAD = "**Open points.**"
 _OPEN_POINTS = frozenset({"O1", "O2", "O3", "O4", "O5", "O6"})
 _ATTENDED_ONLY = "attended-only"
 _NOT_APPLICABLE = "n/a"
+
+_NO_SLACK_SOURCES = (_ROOT / "src/teatree/core/answering", _ROOT / "src/teatree/core/modelkit/coordinator_action.py")
+_RETIRED_PHRASE = re.compile(r"attended\s+coordinator", flags=re.IGNORECASE)
 
 
 def section_one(blueprint: str) -> str:
