@@ -26,6 +26,7 @@ from teatree.core.modelkit.coordinator_action import (
     action_refusal,
     card_refusal,
 )
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, owner_decision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, Task, ThreadBinding, Ticket
 from teatree.core.models.task_enqueue import enqueue_phase_task
@@ -179,6 +180,9 @@ def _message_peer(context: ActionContext, arguments: Mapping[str, object]) -> st
     request = None if on_conversation else answerable_request(ticket.pk)
     if request is None and not on_conversation:
         message = "the task's ticket is not a conversation"
+        raise ActionRefusedError(message)
+    if request is not None and owner_decision(request.evidence["escalation"]["kind"]) in OWNER_KEPT_DECISIONS:
+        message = "a request about a decision only the owner can make stays open for the owner"
         raise ActionRefusedError(message)
     named, text = arguments.get("ticket"), arguments.get("text")
     if not isinstance(named, str) or not named:

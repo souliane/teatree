@@ -11,11 +11,11 @@ from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.coordinator_actions import AUDIT_KEY, PeerReceipt, run_coordinator_actions
 from teatree.core.answering.escalation import (
     ESCALATION_DEADLINE,
-    INTERNAL_KIND,
     open_request,
     record_request,
     settle_expired_escalations,
 )
+from teatree.core.modelkit.escalation_kinds import INTERNAL_KIND
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
 from teatree.core.models import DeferredQuestion, Session, Task, ThreadBinding, Ticket
 from teatree.types import RawAPIDict
@@ -688,6 +688,57 @@ class TestMessagePeerReachesAnAgentOnABoundTicketThroughTheMailbox(TestCase):
 
         assert self.messenger.calls == []
         assert receipts == ["Could not run message_peer: message_peer takes no channel."]
+
+
+class TestAReplyNeverClosesARequestAboutAnOwnerLimit(TestCase):
+    def setUp(self) -> None:
+        self.work = Ticket.objects.create(overlay="t3-teatree", issue_url=_WORK_URL, short_description="Fix rounding")
+        self.asker = TaskFactory.create(
+            ticket=self.work,
+            session=SessionFactory.create(ticket=self.work, agent_id="planning"),
+            phase="planning",
+            status=Task.Status.CLAIMED,
+        )
+        self.coordinator = TaskFactory.create(
+            ticket=self.work, session=SessionFactory.create(ticket=self.work, agent_id="answering"), phase="answering"
+        )
+        self.messenger = _Messenger()
+
+    def _reply(self, kind: str) -> list[str]:
+        request = {"kind": "message_peer", "ticket": _WORK_URL, "text": f"Go ahead with {kind}."}
+        return run_coordinator_actions(self.coordinator, [request], messenger=self.messenger)
+
+    def test_a_reply_to_a_request_about_each_kept_limit_is_refused_and_the_deadline_still_raises_the_card(self) -> None:
+        for kind in sorted(OWNER_KEPT_DECISIONS):
+            with self.subTest(kind=kind):
+                row = record_request(self.asker, kind=kind, message=f"May I go ahead with {kind}")
+                cards_before = DeferredQuestion.owner_pending().count()
+
+                receipts = self._reply(kind)
+
+                refusal = "a request about a decision only the owner can make stays open for the owner"
+                assert receipts == [f"Could not run message_peer: {refusal}."]
+                assert self.messenger.calls == []
+                assert getattr(open_request(self.work.pk), "pk", None) == row.pk
+                DeferredQuestion.objects.filter(pk=row.pk).update(
+                    created_at=timezone.now() - ESCALATION_DEADLINE - timedelta(minutes=1)
+                )
+
+                assert settle_expired_escalations() == 1
+
+                assert DeferredQuestion.owner_pending().count() == cards_before + 1
+                self.asker.refresh_from_db()
+                assert self.asker.status == Task.Status.CLAIMED
+
+    def test_a_request_about_any_other_kind_is_still_answered_and_closed(self) -> None:
+        for kind in (INTERNAL_KIND, OwnerDecision.ARCHITECTURE.value):
+            with self.subTest(kind=kind):
+                record_request(self.asker, kind=kind, message=f"Which order for {kind}")
+
+                receipts = self._reply(kind)
+
+                assert receipts == [f"Answered the open request from the agent working on <{_WORK_URL}|#4084>."]
+                assert open_request(self.work.pk) is None
 
 
 class TestMessagePeerAnswersAnEscalationOnTheAskersOwnTicket(TestCase):
