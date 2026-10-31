@@ -18,6 +18,7 @@ from teatree.core.models import DeferredQuestion, Directive, IncomingEvent
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.core.models.provenance import Provenance
+from teatree.core.owner_dm_sweep import run_sweep
 from teatree.loops.directive_loop.ratify import (
     RatificationVerdict,
     ask_ratification,
@@ -183,6 +184,57 @@ class TestPayloadVisibleRatification(TestCase):
 
 
 class TestTryAdmit(TestCase):
+    def test_the_hourly_sweep_keeps_every_directives_ratify_question_open(self) -> None:
+        directives = [_interpreted_directive() for _ in range(3)]
+        for directive in directives:
+            ask_ratification(directive)
+
+        assert run_sweep().resolved == 0
+
+        for directive in directives:
+            directive.refresh_from_db()
+            assert try_admit(directive) == "pending"
+            assert directive.state == Directive.State.RATIFY_PENDING
+
+    def test_dismissed_ratification_rejects_without_admitting(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        DeferredQuestion.consume(question.pk, dismissed_reason="unanswered after repeated owner notices")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "rejected"
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.REJECTED
+        assert "unanswered" in directive.decision_reason
+
+    def test_a_dismissal_by_the_age_ceiling_rejects(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        question.mark_stale("unanswered through 3 escalations", resolver_id="age_ceiling")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "rejected"
+        assert directive.state == Directive.State.REJECTED
+
+    def test_a_card_the_sweep_retired_as_a_duplicate_is_asked_again_not_rejected(self) -> None:
+        directives = [_interpreted_directive() for _ in range(2)]
+        for directive in directives:
+            question = ask_ratification(directive)
+            evidence = {key: value for key, value in question.evidence.items() if key != "subject"}
+            DeferredQuestion.objects.filter(pk=question.pk).update(evidence=evidence)
+
+        assert run_sweep().resolved == 1
+
+        results = []
+        for directive in directives:
+            directive.refresh_from_db()
+            results.append(try_admit(directive))
+        assert results == ["pending", "reasked"]
+        assert {directive.state for directive in directives} == {Directive.State.RATIFY_PENDING}
+        assert run_sweep().resolved == 0
+        second = directives[1]
+        assert second.ratify_question is not None
+        assert second.ratify_question.dismissed_at is None
+        assert second.ratify_question.evidence["subject"] == f"directive:{second.pk}"
+
     def test_pending_while_the_question_is_unanswered(self) -> None:
         directive = _interpreted_directive()
         ask_ratification(directive)

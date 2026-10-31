@@ -18,6 +18,7 @@ question) as the same primitive.
 """
 
 import logging
+from collections.abc import Collection, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
@@ -200,6 +201,7 @@ class DeferredQuestion(models.Model):
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
         card: QuestionCard | None = None,
+        private_context: Mapping[str, object] | None = None,
     ) -> "DeferredQuestion":
         """Record a guarded question; matching action cards alone may use reserved action markers."""
         clean_question = question.strip()
@@ -242,7 +244,10 @@ class DeferredQuestion(models.Model):
                 parked_task=parked_task,
                 task_session=task_session,
                 audience=cls.Audience.INTERNAL if card is None else cls.Audience.OWNER_QUESTION,
-                evidence={} if card is None else card.to_evidence(),
+                evidence={
+                    **({} if card is None else card.to_evidence()),
+                    **({"private_context": private_context} if private_context else {}),
+                },
             )
             transaction.on_commit(
                 partial(
@@ -485,6 +490,11 @@ class DeferredQuestion(models.Model):
     @classmethod
     def internal_pending(cls) -> models.QuerySet["DeferredQuestion"]:
         return cls.pending().filter(audience=cls.Audience.INTERNAL)
+
+    @classmethod
+    def answered_in_slack(cls, chosen: Collection[str]) -> models.QuerySet["DeferredQuestion"]:
+        """Rows the owner answered in Slack with one of *chosen*: the only reply a card's decision reads."""
+        return cls.objects.filter(answered_at__isnull=False, resolved_via=cls.ResolvedVia.SLACK, answer_text__in=chosen)
 
     @classmethod
     def consume(

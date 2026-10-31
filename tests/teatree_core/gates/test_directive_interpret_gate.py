@@ -14,6 +14,7 @@ from teatree.core.gates.directive_interpret_gate import (
     validate_setting_key,
 )
 from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch, Session, Task, Ticket
+from teatree.core.owner_dm_sweep import run_sweep
 from tests._owner_channel import assert_a_plain_card
 from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
@@ -139,6 +140,15 @@ class TestRecordClarifications(TestCase):
         assert question.evidence["decision"] == "architecture"
         text = assert_a_plain_card(question, f"#{directive.pk}", "directive_clarify")
         assert f"> {directive.raw_text}" in text
+
+    def test_the_hourly_sweep_keeps_every_directives_clarifying_question_open(self) -> None:
+        envelope = {"directive_interpretation": {"clarifying_questions": ["Does the cap apply per repo?"]}}
+        for _ in range(2):
+            _directive, task = _dispatched_directive()
+            assert record_returned_directive_interpretation(task, envelope) == ""
+
+        assert run_sweep().resolved == 0
+        assert DeferredQuestion.owner_pending().count() == 2
 
     def test_a_directive_text_with_internal_names_is_left_off_the_card(self) -> None:
         directive = Directive.objects.capture("cap max_open_prs at 2 (#42)", source=Directive.Source.CLI)

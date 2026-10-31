@@ -50,6 +50,7 @@ t3 directive capture "<verbatim directive text>" [--scope <overlay>]
 - Only the owner ratifies: a Slack DM reply, or `t3 teatree questions answer <id> approve` from the owner's terminal or interactive session. An answer through the `mcp__teatree__question_answer` tool, or from a headless agent, is recorded as agent-given and re-asked.
 - Nothing implements before that approval — `Directive.admit` is structurally
   human-gated (it raises without an answered ratify question an owner channel gave).
+- A clarification question that is dismissed, or a ratify question the owner dismisses or the age ceiling retires unanswered, ends that directive; a ratify question another automated sweep closed is asked again. An ignored mechanism ticket ends its implementation attempt.
 
 If the directive loop is dark (its `Loop` row disabled — visible as a `SKIP` from `t3 directive tick`), still capture (the explicit path
 is always live) and add ONE line: the ratify question will not arrive until the loop
