@@ -190,6 +190,8 @@ class TicketExtra(TicketRepoExtra, total=False):
     retro_scheduled: bool
     tracker_404: bool
     more_prs_coming: bool
+    # True while ``more_prs_coming`` was raised by the rubric derivation, not set by hand.
+    more_prs_coming_derived: bool
     e2e_recipe: "E2ERecipeSerialized"
     # Durable refusal when the ship-time branch-currency check rejects the push.
     # Stacked-delivery override keyed by canonical owner/repo slug. The string

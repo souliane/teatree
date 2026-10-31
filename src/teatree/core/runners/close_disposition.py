@@ -1,9 +1,11 @@
 """Whether a pull request keeps its closing keyword: the ticket's rubric decides, not a default.
 
 A pull request that covers the whole issue keeps ``Closes #N``; one that leaves an acceptance item
-without a rubric criterion or owner waiver says ``Relates to #N``, and so does one whose issue cannot be
-read. The answer is written to ``Ticket.extra['more_prs_coming']`` where the ship, the preview and the
-orphan-branch path all read it.
+without a rubric criterion or owner waiver says ``Relates to #N``, and so does one on an umbrella issue,
+one whose issue cannot be read and one the ticket declares partial by hand. The answer is written to
+``Ticket.extra['more_prs_coming']`` where the ship, the preview and the orphan-branch path all read it;
+``more_prs_coming_derived`` marks a flag the derivation raised, so it drops once the rubric covers the
+issue while a hand-set one stays.
 """
 
 import logging
@@ -27,11 +29,16 @@ def should_close_ticket(extra: TicketExtra | None, *, setting_enabled: bool) -> 
     return not bool(extra and extra.get("more_prs_coming"))
 
 
-def more_prs_coming_for(ticket: Ticket) -> bool:
-    if not holds_on_issue(ticket) or plan_is_bypassed(ticket):
+def _declared_by_hand(ticket: Ticket) -> bool:
+    extra = ticket.extra or {}
+    return bool(extra.get("more_prs_coming")) and not extra.get("more_prs_coming_derived")
+
+
+def _derived_from_issue(ticket: Ticket) -> bool:
+    if not holds_on_issue(ticket):
         return False
     try:
-        items = read_ticket_issue(ticket).items_for(ticket)
+        issue = read_ticket_issue(ticket)
     except Exception:
         logger.warning(
             "close disposition: could not read %s; assuming more pull requests are coming",
@@ -39,11 +46,19 @@ def more_prs_coming_for(ticket: Ticket) -> bool:
             exc_info=True,
         )
         return True
-    return bool(uncovered(items, stated_texts(ticket)))
+    if issue.umbrella(ticket):
+        return True
+    return not plan_is_bypassed(ticket) and bool(uncovered(issue.items_for(ticket), stated_texts(ticket)))
+
+
+def more_prs_coming_for(ticket: Ticket) -> bool:
+    return _declared_by_hand(ticket) or _derived_from_issue(ticket)
 
 
 def record_more_prs_coming(ticket: Ticket) -> TicketExtra:
-    """Persist the derived flag and return the ticket's extra as the ship reads it."""
-    flag = more_prs_coming_for(ticket)
-    ticket.merge_extra(set_keys={"more_prs_coming": flag})
-    return TicketExtra(**{**(ticket.extra or {}), "more_prs_coming": flag})
+    """Persist the effective flag and return the ticket's extra as the ship reads it."""
+    declared = _declared_by_hand(ticket)
+    flag = declared or _derived_from_issue(ticket)
+    raised = {"more_prs_coming": flag, "more_prs_coming_derived": flag and not declared}
+    ticket.merge_extra(set_keys=TicketExtra(**raised))
+    return TicketExtra(**{**(ticket.extra or {}), **raised})

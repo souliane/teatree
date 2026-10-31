@@ -1270,13 +1270,30 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
         assert "Closes #873" in description
         assert "Relates to #873" not in description
 
-    def test_a_stale_flag_does_not_survive_the_derivation(self) -> None:
+    def test_a_flag_set_by_hand_keeps_the_relates_keyword(self) -> None:
         ticket = self._ticket_with_extra({"more_prs_coming": True}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read(_ITEMS_ISSUE):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        ticket.refresh_from_db()
+        assert "Relates to #873" in description
+        assert ticket.extra["more_prs_coming"] is True
+
+    def test_a_flag_an_earlier_derivation_raised_does_not_survive_a_covering_rubric(self) -> None:
+        ticket = self._ticket_with_extra(
+            {"more_prs_coming": True, "more_prs_coming_derived": True}, _FIRST_ITEM, _SECOND_ITEM
+        )
         with issue_read(_ITEMS_ISSUE):
             description = self._capture_pr_description(ticket, setting_enabled=True)
         ticket.refresh_from_db()
         assert "Closes #873" in description
         assert ticket.extra["more_prs_coming"] is False
+
+    def test_an_umbrella_issue_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({}, _FIRST_ITEM, _SECOND_ITEM)
+        with issue_read({"state": "open", "body": "- [ ] #11\n- [ ] #12\n"}):
+            description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
 
     def test_an_uncovered_item_rewrites_to_relates_and_records_the_flag(self) -> None:
         ticket = self._ticket_with_extra({}, _FIRST_ITEM)

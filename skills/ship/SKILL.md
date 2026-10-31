@@ -314,7 +314,7 @@ If `t3 <overlay> pr create` errors, **fix the error** (create the missing sessio
 
 The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by default** (overlay `mr_close_ticket = True`). Before relying on that, re-read the linked issue end-to-end and **enumerate every acceptance criterion, phase, or deliverable it names**. For each one, mark it ✅ shipped, ⚠️ partial, or ❌ not started, and paste the matrix into the PR body. Auto-close is correct only when every row is ✅. Otherwise (a partial, or an umbrella with remaining tracked scope):
 
-- Leave the uncovered rows without a rubric criterion: `pr create` then derives `more_prs_coming` and writes `Relates-to #N`, so the issue stays open.
+- Leave the uncovered rows without a rubric criterion (or set `more_prs_coming` by hand): `pr create` writes `Relates-to #N` (always on an umbrella); the issue stays open.
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 

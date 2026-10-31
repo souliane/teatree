@@ -17,6 +17,7 @@ _ISSUE_URL = "https://github.com/souliane/teatree/issues/873"
 _FIRST = "The first thing works"
 _SECOND = "The second thing works"
 _ISSUE = {"state": "open", "body": f"## Acceptance\n- {_FIRST}\n- {_SECOND}\n"}
+_UMBRELLA = {"state": "open", "body": "- [ ] #11\n- [ ] #12\n"}
 
 
 def _ticket(*criteria: str, issue_url: str = _ISSUE_URL, extra: dict | None = None) -> Ticket:
@@ -71,17 +72,49 @@ class TestMorePrsComingIsDerivedFromTheRubric(TestCase):
         ticket = _ticket()
         waive_rubric(ticket)
 
-        with issue_read(_ISSUE) as host:
+        with issue_read(_ISSUE):
             assert more_prs_coming_for(ticket) is False
 
-        host.get_issue.assert_not_called()
+    def test_an_umbrella_issue_always_has_more_prs_coming(self) -> None:
+        with issue_read(_UMBRELLA):
+            assert more_prs_coming_for(_ticket(_FIRST)) is True
 
-    def test_recording_replaces_a_stale_flag_with_the_derived_value_and_returns_the_extra(self) -> None:
+    def test_an_umbrella_issue_has_more_prs_coming_under_the_plan_bypass_too(self) -> None:
+        ticket = _ticket()
+        waive_rubric(ticket)
+
+        with issue_read(_UMBRELLA):
+            assert more_prs_coming_for(ticket) is True
+
+    def test_a_hand_declared_flag_survives_a_rubric_that_covers_every_item(self) -> None:
         ticket = _ticket(_FIRST, _SECOND, extra={"more_prs_coming": True})
 
         with issue_read(_ISSUE):
             extra = record_more_prs_coming(ticket)
 
         ticket.refresh_from_db()
+        assert extra["more_prs_coming"] is True
+        assert ticket.extra["more_prs_coming"] is True
+
+    def test_a_flag_the_derivation_raised_drops_once_the_rubric_covers_every_item(self) -> None:
+        ticket = _ticket(_FIRST)
+        with issue_read(_ISSUE):
+            assert record_more_prs_coming(ticket)["more_prs_coming"] is True
+
+        Rubric.populate(ticket, [_FIRST, _SECOND])
+        with issue_read(_ISSUE):
+            extra = record_more_prs_coming(ticket)
+
+        ticket.refresh_from_db()
         assert extra["more_prs_coming"] is False
         assert ticket.extra["more_prs_coming"] is False
+
+    def test_recording_persists_the_derived_flag_and_returns_the_extra(self) -> None:
+        ticket = _ticket(_FIRST)
+
+        with issue_read(_ISSUE):
+            extra = record_more_prs_coming(ticket)
+
+        ticket.refresh_from_db()
+        assert extra["more_prs_coming"] is True
+        assert ticket.extra["more_prs_coming"] is True

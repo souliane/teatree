@@ -84,7 +84,7 @@ class TestTicketExtraForBranch(TestCase):
         new = Ticket.objects.create(overlay="test", issue_url="https://x/2", extra={})
         Worktree.objects.create(ticket=old, overlay="test", repo_path="souliane/teatree", branch="shared")
         Worktree.objects.create(ticket=new, overlay="test", repo_path="souliane/teatree", branch="shared")
-        assert _ticket_extra_for_branch("shared") == {"more_prs_coming": False}
+        assert _ticket_extra_for_branch("shared") == {"more_prs_coming": False, "more_prs_coming_derived": False}
 
     def test_another_repos_row_on_the_branch_owns_nothing(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", extra={"more_prs_coming": True})
