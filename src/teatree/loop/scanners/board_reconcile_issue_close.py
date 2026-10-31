@@ -59,7 +59,7 @@ def closed_issue_transitions(
     resurrected it. One rule per row per run.
     """
     from teatree.core.models import Task, ThreadBinding, Ticket  # noqa: PLC0415 — ORM import needs the app registry
-    from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT  # noqa: PLC0415 — deferred
+    from teatree.core.models.conversation_ticket import CONVERSATION_QUIET_LIMIT  # noqa: PLC0415 — off the cold tick
 
     since = timezone.now() - CONVERSATION_QUIET_LIMIT
     candidates = without_voided(

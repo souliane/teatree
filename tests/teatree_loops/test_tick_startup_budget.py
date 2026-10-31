@@ -9,9 +9,8 @@ import pytest
 _FORBIDDEN = ("claude_agent_sdk", "mcp", "openai", "pydantic_ai", "litellm", "anthropic")
 # Within 3% of the 1992-module cold path measured in the review venue.
 _MAX_TICK_IMPORT_MODULES = 2052
-# The tick has no use for these: each is imported where it is called, so the budget above is not spent on them.
+# Modules this branch adds that the tick has no use for; each is imported where it is called.
 _OFF_THE_TICK = (
-    "teatree.agents.result_schema",
     "teatree.agents.result_schema_answering",
     "teatree.core.modelkit.coordinator_action",
     "teatree.core.models.conversation_ticket",
