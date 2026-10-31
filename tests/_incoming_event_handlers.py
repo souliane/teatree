@@ -29,18 +29,29 @@ def raises(event: IncomingEvent) -> list[ScanSignal]:
     raise RuntimeError(msg)
 
 
-def registered(handle: Handle = starts_ticket, *, loop: str = STUB_LOOP) -> AbstractContextManager[HandlerRegistry]:
+def registry_of(*handlers: EventHandler) -> AbstractContextManager[HandlerRegistry]:
     registry = HandlerRegistry()
-    registry.register(
-        EventHandler(
-            source="github",
-            event_name="pull_request_review",
-            actions=frozenset({"submitted"}),
-            loop=loop,
-            handle=handle,
-        )
-    )
+    for handler in handlers:
+        registry.register(handler)
     return patch.object(event_handlers, "HANDLERS", registry)
+
+
+def review_handler(handle: Handle = starts_ticket, *, loop: str = STUB_LOOP) -> EventHandler:
+    return EventHandler(
+        source="github",
+        event_name="pull_request_review",
+        actions=frozenset({"submitted"}),
+        loop=loop,
+        handle=handle,
+    )
+
+
+def issues_handler(handle: Handle = starts_ticket, *, loop: str = STUB_LOOP) -> EventHandler:
+    return EventHandler(source="github", event_name="issues", loop=loop, handle=handle)
+
+
+def registered(handle: Handle = starts_ticket, *, loop: str = STUB_LOOP) -> AbstractContextManager[HandlerRegistry]:
+    return registry_of(review_handler(handle, loop=loop))
 
 
 def loop_row(name: str = STUB_LOOP) -> Loop:
