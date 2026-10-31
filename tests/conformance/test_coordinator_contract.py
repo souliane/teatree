@@ -3,12 +3,16 @@
 Each check is a function over text, so a planted fault proves the check can fail before the real tree is trusted.
 """
 
+import ast
 import re
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
+import pytest
+
 from teatree.core.modelkit.coordinator_action import ACTION_SPECS, CoordinatorActionKind
+from tests.quality._anchor_prose import tracked_files
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BLUEPRINT = (_ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
@@ -33,6 +37,8 @@ _TRIGGER_STATUS: Mapping[str, str] = {
     "schedule": "later",
 }
 _TRIGGERS_LEAD = "**Coordinator triggers.**"
+_NO_SLACK_SOURCES = (_ROOT / "src/teatree/core/answering", _ROOT / "src/teatree/core/modelkit/coordinator_action.py")
+_RETIRED_PHRASE = re.compile(r"attended\s+coordinator", flags=re.IGNORECASE)
 _DUTY_MAP_LEAD = "**Coordinator duty map.**"
 _OPEN_POINTS_LEAD = "**Open points.**"
 _OPEN_POINTS = frozenset({"O1", "O2", "O3", "O4", "O5", "O6"})
@@ -87,6 +93,35 @@ def trigger_problems(blueprint: str) -> list[str]:
         if phrase not in paragraph
     ]
     return problems
+
+
+def names_a_module(dotted: str) -> bool:
+    path = _ROOT / "src" / Path(*dotted.split("."))
+    return path.with_suffix(".py").is_file() or (path / "__init__.py").is_file()
+
+
+def imported_modules(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if not isinstance(node, ast.ImportFrom):
+        return []
+    base = node.module or ""
+    submodules = [f"{base}.{alias.name}".strip(".") for alias in node.names]
+    return [base, *(name for name in submodules if not node.module or names_a_module(name))]
+
+
+def slack_imports(sources: Mapping[str, str]) -> list[str]:
+    return [
+        f"{name}: imports {module}"
+        for name, source in sources.items()
+        for node in ast.walk(ast.parse(source))
+        for module in imported_modules(node)
+        if "slack" in module.lower()
+    ]
+
+
+def retired_phrase_hits(files: Mapping[str, str]) -> list[str]:
+    return [name for name, text in files.items() if _RETIRED_PHRASE.search(text)]
 
 
 def second_level_headings(markdown: str) -> list[str]:
@@ -274,3 +309,44 @@ class TestEverySkillSectionHasAPlaceInTheDutyMap:
         )
 
         assert "'Drain stranded work': a coordinating duty is never attended-only" in real_duty_map_problems(wrong)
+
+
+class TestTheCoordinatorCoreNamesNoSlackModule:
+    def test_no_module_under_answering_or_the_action_table_imports_a_slack_module(self) -> None:
+        paths = [*sorted(_NO_SLACK_SOURCES[0].rglob("*.py")), _NO_SLACK_SOURCES[1]]
+        sources = {path.relative_to(_ROOT).as_posix(): path.read_text(encoding="utf-8") for path in paths}
+
+        assert len(sources) > 3
+        assert slack_imports(sources) == []
+
+    @pytest.mark.parametrize(
+        ("statement", "module"),
+        [
+            ("import teatree.slack_mrkdwn", "teatree.slack_mrkdwn"),
+            ("from teatree.backends.slack.client import post", "teatree.backends.slack.client"),
+            ("from teatree.backends import slack", "teatree.backends.slack"),
+            ("from . import slack_helpers", "slack_helpers"),
+            ("from .slack_answer import run", "slack_answer"),
+        ],
+    )
+    def test_a_planted_slack_import_is_reported(self, statement: str, module: str) -> None:
+        assert slack_imports({"planted.py": statement}) == [f"planted.py: imports {module}"]
+
+    def test_a_function_that_only_mentions_slack_is_not_a_slack_module(self) -> None:
+        assert slack_imports({"ok.py": "from teatree.utils.url_slug import is_slack_conversation_anchor"}) == []
+
+
+class TestTheAttendedSeatIsNeverCalledACoordinator:
+    def test_no_tracked_file_spells_the_retired_phrase(self) -> None:
+        files = {
+            path.relative_to(_ROOT).as_posix(): path.read_text(encoding="utf-8", errors="ignore")
+            for path in tracked_files(repo_root=_ROOT)
+        }
+
+        assert len(files) > 1000
+        assert retired_phrase_hits(files) == []
+
+    def test_a_planted_phrase_is_reported_across_case_and_a_line_break(self) -> None:
+        planted = {"a.md": "An Attended\ncoordinator can cite", "b.md": "an attended session, a coordinator"}
+
+        assert retired_phrase_hits(planted) == ["a.md"]
