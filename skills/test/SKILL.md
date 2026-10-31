@@ -32,6 +32,8 @@ When adding a new test, default to an integration or E2E test — not a unit tes
 
 **Unit tests** are reserved for pure logic: parsers, formatters, branch-name / slug builders, regex validators, anything with no I/O. A unit test for glue code that's already covered by an integration test is duplicate coverage — delete it.
 
+**Verify in the checkout where the bug lives.** A regression that only reproduces in a primary checkout (not a worktree, which isolates its data directory and database) is verified in one; a green run in a worktree proves nothing about it.
+
 The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule and the review gate. `t3:review` enforces it per-PR (§ "New-Test Shape Check"). When rebalancing existing tests, the coverage gate must not drop.
 
 ## Workflows

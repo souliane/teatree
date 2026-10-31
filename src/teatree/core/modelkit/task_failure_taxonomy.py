@@ -347,7 +347,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
-    (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
+    (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:", "sweep_unpinned:")),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
     (FailureKind.REVIEW_UNRECORDABLE, (REVIEW_UNRECORDABLE_PREFIX,)),

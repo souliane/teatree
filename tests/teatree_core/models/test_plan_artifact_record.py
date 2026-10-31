@@ -252,3 +252,32 @@ class TestBaselineValidationUnchanged(TestCase):
     def test_blank_author_still_refused(self) -> None:
         with pytest.raises(ValueError, match="recorded_by is required"):
             PlanArtifact.record(ticket=_ticket(), plan_text="plan", recorded_by="  ")
+
+
+class TestCriterionKindAtRecording(TestCase):
+    def _adequacy(self, *criteria: object) -> dict:
+        return {**_full_adequacy(), "acceptance_criteria": {"content": list(criteria)}}
+
+    def test_an_unknown_kind_is_refused_before_any_row_is_written(self) -> None:
+        ticket = _ticket()
+        with pytest.raises(ValueError, match="kind"):
+            PlanArtifact.record(
+                ticket=ticket,
+                plan_text="real plan",
+                recorded_by="op",
+                base_sha=_FORTY_HEX,
+                adequacy=self._adequacy({"text": "it refuses", "kind": "vibes"}),
+            )
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == 0
+
+    def test_typed_and_legacy_criteria_record_into_the_text_column(self) -> None:
+        ticket = _ticket()
+        PlanArtifact.record(
+            ticket=ticket,
+            plan_text="real plan",
+            recorded_by="op",
+            base_sha=_FORTY_HEX,
+            adequacy=self._adequacy({"text": "it refuses", "kind": "behaviour"}, "legacy plain string"),
+        )
+        texts = set(RubricCriterion.objects.filter(rubric__ticket=ticket).values_list("text", flat=True))
+        assert {"[behaviour] it refuses", "legacy plain string"} <= texts

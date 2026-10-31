@@ -9,6 +9,7 @@ a string the caller turns into a failed task.
 """
 
 import dataclasses
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
@@ -63,8 +64,8 @@ from teatree.core.models.reviewer_identity import (
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
-from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
-from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.nit_lane import NitLaneError, nit_comment_error, review_nits
+from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits
 from teatree.core.review.review_plan import plan_for_task
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
@@ -207,7 +208,9 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     return (
         ("" if unverified else rubric_coverage_error(rubric, grades, returned=returned, carried=carried))
         or merge_safe_over_fail_error(rubric, envelope, grades)
-        or _nit_comment_error(envelope, ticket or task.ticket, target.head_sha)
+        or nit_comment_error(
+            envelope.get("findings"), pr_url_of=partial(pr_url_for_nits, ticket or task.ticket, target.head_sha)
+        )
         or _record_verdict_and_grades(
             task,
             result,
@@ -401,17 +404,6 @@ def _nit_pr_url(ticket: "Ticket", head_sha: str) -> str:
         message = "review NIT has no attributable pull request URL"
         raise NitLaneError(message)
     return pr_url
-
-
-def _nit_comment_error(envelope: ReviewVerdictEnvelope, ticket: "Ticket", head_sha: str) -> str:
-    raw = envelope.get("findings")
-    findings = [Finding.from_dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
-    points = review_nits(findings)
-    try:
-        validate_nit_comments(points, pr_url=pr_url_for_nits(ticket, head_sha) if points else "")
-    except NitLaneError as exc:
-        return f"review verdict recording refused: {exc}"
-    return ""
 
 
 def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None", outcome: str) -> str:

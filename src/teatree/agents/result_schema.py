@@ -31,8 +31,14 @@ from teatree.agents.result_schema_review import (
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.fix_record_types import (
+    FIX_RECORD_FIELDS,
+    FixRecord,
+    already_fixed_claim,
+    fix_record_required_fields,
+)
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, fix_record_required_fields
+from teatree.core.models.types import PlanAdequacy
 
 
 class FileChange(TypedDict, total=False):
@@ -401,10 +407,22 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "(#4520). Required on a kind=fix ticket — the DoD gate refuses DELIVERED without "
                 "one — and ignored on any other. Omit the key entirely rather than returning a "
                 "partial object: a partial record is refused, an absent one is a no-op. "
-                "observed_red is required when the forced-repro gate is on."
+                "observed_red is required when the forced-repro gate is on. A branch that already holds "
+                "the fix ends with no commit by returning already_fixed alone: verified_head (the HEAD "
+                "you read) and evidence (the passing test or diff that proves it)."
             ),
-            "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
-            "required": list(fix_record_required_fields(red_required=False)),
+            "properties": {
+                **{field: {"type": "string"} for field in FIX_RECORD_FIELDS},
+                "already_fixed": {
+                    "type": "object",
+                    "properties": {"verified_head": {"type": "string"}, "evidence": {"type": "string"}},
+                    "required": ["verified_head", "evidence"],
+                },
+            },
+            "anyOf": [
+                {"required": list(fix_record_required_fields(red_required=False))},
+                {"required": ["already_fixed"]},
+            ],
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
@@ -568,6 +586,8 @@ def check_evidence(result: AgentResultBlob, phase: str) -> str:
     if not accepted:
         return ""
     if any(_field_carries_evidence(result, field) for field in accepted):
+        return ""
+    if "files_modified" in accepted and all(already_fixed_claim(result.get("fix_record"))):
         return ""
     joined = " | ".join(accepted)
     return (

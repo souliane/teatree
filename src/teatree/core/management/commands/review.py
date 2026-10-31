@@ -30,7 +30,7 @@ from django_typer.management import command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.management.commands import _review_impl
+from teatree.core.management.commands import _review_hand_merge, _review_impl
 from teatree.core.management.commands._review_impl import (
     FindingsResult,
     PublishFindingsResult,
@@ -179,6 +179,33 @@ class Command(ReviewerPolicyCommands, MachineOutputCommand, RefusalExitTyperComm
             ),
         )
         self._emit(result, human, json_output=json_output)
+        return result
+
+    @command(name="hand-merge")
+    def hand_merge(
+        self,
+        pr_id: int,
+        slug: Annotated[str, typer.Argument(help="repo slug owner/repo (e.g. acme/widgets), NEVER a branch name")],
+        *,
+        envelope_file: Annotated[
+            str, typer.Option("--envelope-file", help="File holding the reviewer's raw reply with its review_verdict.")
+        ] = "",
+        order_text: Annotated[
+            str, typer.Option("--order-text", help="The owner's order; a sha or PR it cites must be the live one.")
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the result as JSON on stdout.")] = False,
+    ) -> RecordResult | _review_hand_merge.HandMergeRefusal:
+        """Record the verdict a reviewer returned as prose, refusing before any write.
+
+        Checks the envelope, NIT comments, head and order text first; a moved head or a stale order refuses.
+        """
+        result, human = _review_hand_merge.hand_merge(
+            self,
+            _review_hand_merge.HandMergeRequest(
+                pr_id=pr_id, slug=slug, envelope_file=envelope_file, order_text=order_text
+            ),
+        )
+        self._emit(result, human, json_output=json_output or "error" in result)
         return result
 
     @command(name="record-evidence")

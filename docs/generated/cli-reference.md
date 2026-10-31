@@ -283,6 +283,10 @@ Usage: t3 push [OPTIONS]
  4 gate-refused, 5 non-fast-forward, 6 not-on-remote (and 6 for a
  remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
 
+ After the remote read-back, the open PR's head is compared with the pushed
+ sha: a PR head that lags exits 6 naming both shas, a head that cannot be
+ read exits 7, and a branch with no open PR passes with a note.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                    PATH  Repository to push (default: where t3 was    │
 │                                 invoked).                                    │
@@ -3561,6 +3565,10 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
 │ review-evidence                                                              │
+│ rule-clauses         Refuse a RULES.md diff that drops, rewords or moves a   │
+│                      clause no ``Rule-clause-removed:`` trailer names.       │
+│ revert-sweep         Revert each hunk of in-scope code and record the hunks  │
+│                      no test pins.                                           │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -4176,6 +4184,40 @@ Usage: t3 tool review-evidence [OPTIONS]
 │    --base              TEXT  Target branch ref for the changed set.          │
 │                              [default: origin/main]                          │
 │    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool rule-clauses`
+
+```
+Usage: t3 tool rule-clauses [OPTIONS]
+
+ Refuse a RULES.md diff that drops, rewords or moves a clause no
+ ``Rule-clause-removed:`` trailer names.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repository to read. [default: .]                         │
+│ --base        TEXT  Ref the branch is compared against.                      │
+│                     [default: origin/main]                                   │
+│ --head        TEXT  Ref carrying the edited rules. [default: HEAD]           │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool revert-sweep`
+
+```
+Usage: t3 tool revert-sweep [OPTIONS]
+
+ Revert each hunk of in-scope code and record the hunks no test pins.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha          TEXT  Full committed head SHA to sweep. [required]  │
+│    --base                TEXT  Target branch ref for the changed set.        │
+│                                [default: origin/main]                        │
+│    --test-command        TEXT  Pytest command to run per hunk (default: repo │
+│                                runner).                                      │
+│    --help                      Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7700,6 +7742,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
 │ honesty         Situational honesty-critical escalation (#2263).             │
+│ publish         Write a PR body, issue body or comment: scan, write, read    │
+│                 back, rescan.                                                │
 │ memory          Cold-tier memory recall (#2746).                             │
 │ learnings       Durable per-repo knowledge store, DB-placed (#2892).         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -11681,6 +11725,8 @@ Usage: t3 teatree tasks list [OPTIONS]
 │                                    [default: no-session]                     │
 │ --json                             Emit the task rows as JSON on stdout      │
 │                                    instead of the human table.               │
+│ --branch                     TEXT  Show only this branch's claimed and       │
+│                                    pending tasks.                            │
 │ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -12900,6 +12946,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              PLAN_RECORDED.                                  │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
+│ plan-amend                   Append one typed acceptance criterion to the    │
+│                              recorded plan at the live origin/main head.     │
 │ e2e-bypass                   Record a single-use user bypass of the          │
 │                              mandatory-E2E gate (#1967).                     │
 │ integration-review-override  Record the audited escape hatch for the         │
@@ -13142,6 +13190,33 @@ Usage: t3 teatree ticket plan-reaffirm [OPTIONS] TICKET_ID
 │                                 manifest forward for a STALE-base rebind.    │
 │    --by                   TEXT  Who is reaffirming (audit trail).            │
 │                                 [default: operator]                          │
+│    --help                       Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket plan-amend`
+
+```
+Usage: t3 teatree ticket plan-amend [OPTIONS] TICKET_ID
+
+ Append one typed acceptance criterion to the ticket's recorded plan.
+
+ Earlier criteria keep their text and grade.
+
+ The plan is re-recorded at the live origin/main head; a repeat run adds
+ nothing.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --add-criterion        TEXT  The acceptance criterion to append to the    │
+│                                 recorded plan.                               │
+│                                 [required]                                   │
+│ *  --kind                 TEXT  behaviour or process. [required]             │
+│    --by                   TEXT  Who is amending (audit trail).               │
+│                                 [default: operator]                          │
+│    --json                       Emit the result as JSON on stdout.           │
 │    --help                       Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -14112,6 +14187,8 @@ Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ record                 Persist a cold-review verdict for a PR at an exact    │
 │                        reviewed SHA.                                         │
+│ hand-merge             Record a verdict a reviewer returned as prose,        │
+│                        refusing before any write.                            │
 │ record-evidence        Record a review-evidence artifact for a ticket.       │
 │ status                 Report whether an MR is safe to approve at its        │
 │                        current head (read-only).                             │
@@ -14187,6 +14264,32 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │ --json                                Emit the record result as JSON on      │
 │                                       stdout.                                │
 │ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review hand-merge`
+
+```
+Usage: t3 teatree review hand-merge [OPTIONS] PR_ID SLUG
+
+ Record the verdict a reviewer returned as prose, refusing before any write.
+
+ Checks the envelope, NIT comments, head and order text first; a moved head or
+ a stale order refuses.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     repo slug owner/repo (e.g. acme/widgets), NEVER a   │
+│                          branch name                                         │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --envelope-file        TEXT  File holding the reviewer's raw reply with its  │
+│                              review_verdict.                                 │
+│ --order-text           TEXT  The owner's order; a sha or PR it cites must be │
+│                              the live one.                                   │
+│ --json                       Emit the result as JSON on stdout.              │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -15606,6 +15709,81 @@ Usage: t3 teatree honesty escalate [OPTIONS]
 │ --task           INTEGER  Optional task id to scope the escalation to.       │
 │ --session        TEXT     Session id (defaults to the active session).       │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree publish`
+
+```
+Usage: t3 teatree publish [OPTIONS] COMMAND [ARGS]...
+
+ Write a PR body, issue body or comment: scan, write, read back, rescan.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ pr-body     Replace a PR body with the scanned, read-back text of            │
+│             --body-file.                                                     │
+│ issue-body  Replace an issue body with the scanned, read-back text of        │
+│             --body-file.                                                     │
+│ comment     Post --body-file as a PR or issue comment, scanned before and    │
+│             after the write.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish pr-body`
+
+```
+Usage: t3 teatree publish pr-body [OPTIONS] TARGET
+
+ Replace a PR body with the scanned, read-back text of BODY_FILE.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish issue-body`
+
+```
+Usage: t3 teatree publish issue-body [OPTIONS] TARGET
+
+ Replace an issue body with the scanned, read-back text of BODY_FILE.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree publish comment`
+
+```
+Usage: t3 teatree publish comment [OPTIONS] TARGET
+
+ Post BODY_FILE as a comment on a PR or issue, scanned before and after the
+ write.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  The PR or issue URL to write. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file        PATH  File holding the text to publish. [required]     │
+│    --closes           TEXT  A ref the text may close (#N, slug#N or an issue │
+│                             URL); repeatable.                                │
+│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -68,7 +68,6 @@ MATRIX: tuple[tuple[str, str, bool, str], ...] = (
     ("P1-gh-close", "gh issue close 12", False, ""),
     ("P1-glab-create", "glab issue create -t t", False, ""),
     ("P1-glab-update", "glab issue update 3 -l x", False, ""),
-    ("P1-fold", "gh issue edit $N --body-file merged.md", False, ""),
     ("P2-pr", "gh pr $V 12", False, ""),
     ("P2-mr", "glab mr $V 3", False, ""),
     ("P2-view", "gh issue view $N", False, ""),
@@ -247,6 +246,35 @@ MATRIX: tuple[tuple[str, str, bool, str], ...] = (
 )
 
 
+#: A raw body edit of a PR or issue, ``(id, command)``: each is refused and its reason names ``publish``.
+BODY_EDITS: tuple[tuple[str, str], ...] = (
+    ("pr-body", "gh pr edit 12 --body x"),
+    ("pr-body-short", "gh pr edit 12 -b x"),
+    ("pr-body-file", "gh pr edit 12 --body-file f.md"),
+    ("pr-body-file-short", "gh pr edit 12 -F f.md"),
+    ("pr-body-glued", "gh pr edit 12 --body=x"),
+    ("pr-repo-first", "gh -R o/r pr edit 12 --body x"),
+    ("pr-repo-after", 'gh pr edit 12 --repo "$R" --body-file f.md'),
+    ("issue-body", "gh issue edit 12 --body x"),
+    ("issue-body-file", "gh issue edit $N --body-file merged.md"),
+    ("issue-body-short-file", "gh issue edit 12 -F merged.md"),
+    ("issue-body-after-label", "gh issue edit 12 --add-label x --body y"),
+    ("substituted", 'x=$(gh pr edit 12 --body "$B")'),
+)
+
+#: Edits that touch no body: they must stay allowed.
+NON_BODY_EDITS: tuple[tuple[str, str], ...] = (
+    ("pr-label", "gh pr edit 12 --add-label x"),
+    ("pr-base", "gh pr edit 12 --base main"),
+    ("pr-title", "gh pr edit 12 --title t"),
+    ("issue-label", "gh issue edit 12 --add-label x"),
+    ("issue-assignee", "gh issue edit 12 --add-assignee me"),
+    ("pr-view-body", "gh pr view 12 --json body"),
+    ("pr-create-body", "gh pr create --title t --body-file f.md"),
+    ("mention", 'grep -rn "gh pr edit 12 --body" docs/'),
+)
+
+
 def _detector(command: str) -> str | None:
     return guard.issue_write_deny_reason(command)
 
@@ -293,6 +321,25 @@ class TestTheMatrix:
     def test_exactly_the_note_verbs_are_refused(self, path: str, program: str, verb: str) -> None:
         refused = PATHS[path](f"{program} -R o/r issue {verb} 12") is not None
         assert refused is (verb in {"comment", "note"})
+
+
+class TestTheBodyEditIsDenied:
+    """A raw ``gh pr edit`` / ``gh issue edit`` with a body flag is the unscanned body write ``publish`` replaces."""
+
+    @pytest.mark.parametrize("command", [pytest.param(row[1], id=row[0]) for row in BODY_EDITS])
+    def test_a_body_edit_is_refused_and_names_publish(self, command: str) -> None:
+        reason = raw_issue_write_deny_reason(command) or ""
+        assert reason.startswith("BLOCKED:")
+        assert "publish pr-body" in reason
+        assert is_raw_issue_write(command)
+
+    @pytest.mark.parametrize("command", [pytest.param(row[1], id=row[0]) for row in NON_BODY_EDITS])
+    def test_an_edit_that_touches_no_body_passes(self, command: str) -> None:
+        assert raw_issue_write_deny_reason(command) is None
+
+    def test_both_lanes_refuse_it(self) -> None:
+        assert "publish pr-body" in (hard_deny_reason("gh pr edit 12 --body-file f.md") or "")
+        assert (guard.issue_write_deny_reason("gh issue edit 12 --body x") or "").startswith("BLOCKED:")
 
 
 class TestTheNoteIsDenied:

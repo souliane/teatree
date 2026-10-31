@@ -11,6 +11,7 @@ a deploy hand-over apart from a race this deployment can never win.
 """
 
 import os
+import select
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -29,6 +30,41 @@ from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, Execu
 from teatree.utils.singleton_refusals import ESCALATION_THRESHOLD, read_streak, record_refusal
 
 _OUTSIDE_HOLDER = ExecutionContext(pid_namespace="pid:[1]", hostname="box", role="")
+
+
+_STARTUP_BUDGET_S = 120
+_LOCK_ATTEMPT_BUDGET_S = 10
+_SECOND_WORKER = (
+    "from teatree.utils.singleton import AlreadyRunningError, WORKER_SINGLETON, "
+    "singleton, worker_control_lock_path\n"
+    "print('READY', flush=True)\n"
+    "try:\n"
+    "    with singleton(WORKER_SINGLETON, pid_path=worker_control_lock_path(primary=True)):\n"
+    "        raise SystemExit(1)\n"
+    "except AlreadyRunningError:\n"
+    "    raise SystemExit(0)\n"
+)
+
+
+def _run_second_worker(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run a competing worker; only the lock attempt after its READY line is timed, not interpreter start-up."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", _SECOND_WORKER],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None
+    try:
+        ready, _, _ = select.select([child.stdout], [], [], _STARTUP_BUDGET_S)
+        assert ready, f"second worker never printed READY within {_STARTUP_BUDGET_S}s"
+        assert child.stdout.readline().strip() == "READY"
+        stdout, stderr = child.communicate(timeout=_LOCK_ATTEMPT_BUDGET_S)
+    finally:
+        child.kill()
+        child.wait()
+    return subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
 
 
 @pytest.fixture(autouse=True)
@@ -87,26 +123,7 @@ def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytes
         env["T3_DATA_DIR"] = str(tmp_path / "other-worker-state")
         env["T3_CONTROL_DB_DIR"] = str(database.parent)
         env.pop("XDG_DATA_HOME", None)
-        return subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "from teatree.utils.singleton import AlreadyRunningError, WORKER_SINGLETON, "
-                    "singleton, worker_control_lock_path\n"
-                    "try:\n"
-                    "    with singleton(WORKER_SINGLETON, pid_path=worker_control_lock_path(primary=True)):\n"
-                    "        raise SystemExit(1)\n"
-                    "except AlreadyRunningError:\n"
-                    "    raise SystemExit(0)\n"
-                ),
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        return _run_second_worker(env)
 
     def check_running() -> None:
         assert flock_is_held(WORKER_SINGLETON, pid_path=db_lock)

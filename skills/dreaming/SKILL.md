@@ -48,6 +48,7 @@ The nightly pass is not the only producer of umbrella gaps: `t3 <overlay> retro 
 
 ## Drive the rest of the output
 
+- Every waste is recorded with its cost before it becomes a fix.
 - Core-gap fixes are auto-scheduled and merge via the keystone; you don't hand-work them. Watch #2663 for the checkbox trend (checked = its fix merged).
 - Follow up queued eval artifacts on their ticket and ratify staged `derived_evals.yaml` scenarios via PR.
 - A binding-reconciliation conflict is queued as one deduped gap like any other, so a human settles it on the host the sweep folds it into; the pass files no issue.

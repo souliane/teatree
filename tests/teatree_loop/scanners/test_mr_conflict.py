@@ -142,6 +142,28 @@ class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
         assert [action.kind for action in actions] == ["statusline"]
 
 
+class TestTheDispatchedBriefCarriesTheBaseAnchorAndTheEscape(TestCase):
+    """The fixer brief the factory mints for a conflict is anchored on both shas and names the way out."""
+
+    _BASE = "ba5e0ff1ce" + "0" * 30
+
+    def _brief(self, **hit: object) -> str:
+        host = FakeCodeHost(user="alice", my_prs=[_mr(70, **hit)], merge_state_by_pr={(_SLUG, 70): _conflicted()})
+        (task,) = persist_agent_actions(dispatch(_scanner(host).scan()))
+        return task.execution_reason
+
+    def test_the_base_the_forge_reported_is_verified_at_in_the_brief(self) -> None:
+        assert f"PR base: verified at {self._BASE}." in self._brief(base_sha=self._BASE)
+
+    def test_a_forge_that_reported_no_base_says_so(self) -> None:
+        assert "PR base: not read; read it first." in self._brief()
+
+    def test_the_brief_names_the_recorded_escape(self) -> None:
+        reason = self._brief(base_sha=self._BASE)
+        assert "Recorded escape: none" not in reason
+        assert "needs_user_input" in reason
+
+
 class TestOneFixPerHead(TestCase):
     """Re-ticking a still-conflicted merge request must not re-dispatch its fix."""
 

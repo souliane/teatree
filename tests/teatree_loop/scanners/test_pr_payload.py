@@ -1,6 +1,6 @@
 """Unit tests for the shared dual-forge PR payload extractors (#7 / SIG-2)."""
 
-from teatree.loop.scanners.pr_payload import head_sha
+from teatree.loop.scanners.pr_payload import base_sha, head_sha
 
 
 class TestHeadSha:
@@ -27,3 +27,18 @@ class TestHeadSha:
         assert head_sha({"head": {"sha": 99}}) == ""
         assert head_sha({"diff_refs": {"head_sha": True}}) == ""
         assert head_sha({"head": "not-a-dict"}) == ""
+
+
+class TestBaseSha:
+    def test_the_enriched_github_hit_carries_it_top_level(self) -> None:
+        assert base_sha({"base_sha": "cafef00d"}) == "cafef00d"
+
+    def test_github_rest_nests_it_under_base(self) -> None:
+        assert base_sha({"base": {"sha": "deadbeef"}}) == "deadbeef"
+
+    def test_gitlab_diff_refs_carry_it(self) -> None:
+        assert base_sha({"diff_refs": {"base_sha": "feedface"}}) == "feedface"
+
+    def test_missing_or_mistyped_is_blank(self) -> None:
+        assert base_sha({}) == ""
+        assert base_sha({"base_sha": 123, "base": "x", "diff_refs": {"base_sha": True}}) == ""

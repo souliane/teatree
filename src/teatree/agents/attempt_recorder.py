@@ -25,7 +25,6 @@ from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, UNPARSEABLE_ENVELOPE_PREFIX
-from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.plan_artifact_recorder import record_returned_plan
@@ -37,22 +36,16 @@ from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
 from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
 from teatree.agents.result_schema_owner_stop import owner_stop_refusal
-from teatree.agents.review_context_recorder import record_returned_review_context
+from teatree.agents.returned_envelope_recorder import record_returned_envelopes
 from teatree.agents.review_envelope_recorder import (
-    record_returned_review_envelope,
     review_head_mismatch_refusal,
     review_venue_limit_refusal,
     settle_review_venue_limit,
 )
-from teatree.agents.review_request_recorder import record_returned_review_request
 from teatree.agents.runner_result import ResultEnvelopeError
-from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
-from teatree.agents.sweep_proposals_recorder import record_returned_sweep_proposals
-from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
+from teatree.agents.sweep_report_gate import sweep_report_error
 from teatree.core.answering.earlier_answers import earlier_answer_problem
 from teatree.core.answering.work_intent import missing_work_item_error
-from teatree.core.gates.critic_gate import record_returned_critic_verdict
-from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.db_retry import wait_out_locked_writes
 from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OWNER_RAISABLE_DECISIONS, owner_decision
 from teatree.core.modelkit.owner_stop_misfits import MisfitAction, owner_stop_misfit
@@ -249,7 +242,7 @@ def record_result_envelope(
             else _record_failure(task, error=checked.error, result=result, usage=usage)
         )
 
-    server_side_error = _record_returned_envelopes(
+    server_side_error = record_returned_envelopes(
         task,
         result,
         phase=phase,
@@ -481,7 +474,8 @@ def _check_before_recording(
         ""
         if owner_kept_stop
         else blocked_before_edits_error(task, result, phase=phase, routed=routed)
-        or landing_verification_error(task, phase=phase)
+        or landing_verification_error(task, phase=phase, result=result)
+        or sweep_report_error(task, phase=phase)
     )
     return _PreRecordCheck(landing_error, result)
 
@@ -491,37 +485,6 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
     if normalize_phase(phase or task.phase) != "answering":
         return ""
     return missing_work_item_error(task, result)
-
-
-def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool) -> str:
-    """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
-
-    A headless phase denied the shell RETURNS its typed verdict/sketch instead of
-    writing it; the orchestrator (a different actor) records it here. Each recorder is
-    a no-op unless its own dispatch/verdict is present on the task, and returns an
-    error string when the returned artifact is malformed or maker-graded — the first
-    such error stops the chain so the caller fails the task and the block surfaces.
-    """
-    context_error = record_returned_review_context(task, result, phase=phase)
-    if context_error:
-        return context_error
-    review_error = record_returned_review_envelope(task, result, phase=phase)
-    if review_error:
-        return review_error
-    critic_error = record_returned_critic_verdict(task, result)
-    if critic_error:
-        return critic_error
-    fix_error = record_returned_fix_record(task, result)
-    sweep_error = fix_error or verify_returned_ticket_sweep(result)
-    draft_error = sweep_error or (
-        executor_draft_run
-        and (
-            record_returned_review_request(task, result, phase=phase)
-            or record_returned_ship_readiness(task, result, phase=phase)
-            or record_returned_sweep_proposals(task, result, phase=phase)
-        )
-    )
-    return draft_error or record_returned_directive_interpretation(task, result)
 
 
 def _record_failure(

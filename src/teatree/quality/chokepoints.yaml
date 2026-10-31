@@ -116,6 +116,7 @@
     - teatree.backends.gitlab.client
     - teatree.core.answering.work_item_filing
     - teatree.core.issue_hygiene
+    - teatree.core.publishing.host
     - teatree.core.reply_transport
     - teatree.core.review.nit_lane
     - teatree.core.review.verdict_findings_publish

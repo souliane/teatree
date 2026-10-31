@@ -282,7 +282,7 @@ def enrich_pr_pipeline(hit: RawAPIDict, *, token: str) -> RawAPIDict:
             "--repo",
             slug,
             "--json",
-            "headRefOid,headRefName,statusCheckRollup,mergeable,mergeStateStatus",
+            "headRefOid,baseRefOid,headRefName,statusCheckRollup,mergeable,mergeStateStatus",
             token=token,
             timeout=_FORGE_READ_TIMEOUT_SECONDS,
         )
@@ -305,6 +305,9 @@ def enrich_pr_pipeline(hit: RawAPIDict, *, token: str) -> RawAPIDict:
     head_oid = detail.get("headRefOid")
     if isinstance(head_oid, str) and head_oid:
         enriched["sha"] = head_oid
+    base_oid = detail.get("baseRefOid")
+    if isinstance(base_oid, str) and base_oid:
+        enriched["base_sha"] = base_oid
     enriched["source_branch"] = detail.get("headRefName")
     # Present the aggregate CI verdict under the key the scanner already reads.
     enriched["status_check_rollup"] = {"state": rollup_state(detail.get("statusCheckRollup"))}
