@@ -14,7 +14,7 @@ import pytest
 
 from teatree.agents.codex_router import run_router
 from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
-from tests._process_liveness import is_gone_within
+from tests._process_liveness import is_gone_within, spawn_held_at_its_pipes, written_pids
 
 
 def _router_script(tmp_path: Path, body: str) -> Path:
@@ -160,6 +160,33 @@ def test_a_caller_that_stops_waiting_takes_the_routers_children_down_too(
 
     try:
         assert asyncio.run(cancel_mid_run()) is True
+        assert is_gone_within(int(child_pid.read_text(encoding="utf-8")), seconds=2)
+    finally:
+        if child_pid.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(child_pid.read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+def test_a_caller_that_stops_waiting_mid_spawn_takes_the_routers_children_down_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    child_pid = tmp_path / "child.pid"
+    monkeypatch.setattr(
+        "teatree.agents.codex_router._RUN_HOOK", _router_script(tmp_path, f"sleep 300 &\necho $! > {child_pid}\nwait")
+    )
+
+    async def cancel_mid_spawn() -> bool:
+        with spawn_held_at_its_pipes() as released:
+            task = asyncio.create_task(run_router("PreToolUse", {}, str(tmp_path)))
+            await written_pids(tmp_path, "child.pid")
+            task.cancel()
+            await asyncio.sleep(0)
+            released.set()
+            finished, _pending = await asyncio.wait({task}, timeout=10)
+        return bool(finished)
+
+    try:
+        assert asyncio.run(cancel_mid_spawn()) is True
         assert is_gone_within(int(child_pid.read_text(encoding="utf-8")), seconds=2)
     finally:
         if child_pid.exists():

@@ -9,6 +9,7 @@ PreToolUse hook enforces. This module's denylist is only a cheap first cut so an
 obviously-destructive command is refused even before the gate wrapper runs.
 """
 
+import asyncio
 import itertools
 import os
 import shutil
@@ -23,7 +24,8 @@ from pydantic_ai.toolsets.function import FunctionToolset
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_BASH
-from teatree.utils.run import TimeoutExpired, redact_secrets, run_allowed_to_fail
+from teatree.utils.process_group import spawn_group_leader, stop_process_group
+from teatree.utils.run import redact_secrets
 
 SHELL_OUTPUT_DIR: Final = Path(".t3-cache") / "tool-output"
 
@@ -113,20 +115,28 @@ def _resolve_shell() -> str:
     return shutil.which("bash") or shutil.which("sh") or "bash"
 
 
+def _text(raw: bytes) -> str:
+    return raw.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     """Assemble the Shell ``FunctionToolset`` bound to *config*'s knobs.
 
     The command runs with ``cwd`` pinned to the worktree root (or the process cwd
-    when the task has none), under *config*'s pinned child env, with the
-    per-command timeout enforced by the shared ``teatree.utils.run`` wrapper. A
-    denylist hit raises :class:`ShellDeniedError`; a timeout raises
-    :class:`ShellTimeoutError` — both ``ToolInputError`` — so the gate wrapper
+    when the task has none), under *config*'s pinned child env, as the leader of its
+    own session. A timeout, or the model run being cancelled (a live ``pause``, also
+    while the command is still being spawned), kills that whole group before it
+    propagates, without waiting for pipes a descendant outside the group still holds.
+    Two things survive that: a background child left by a command that returns normally
+    (a leaderless group that ``t3 tool reap-orphan-groups`` reclaims once it is old and
+    burning) and a descendant that left the session (``setsid``). A denylist hit raises
+    :class:`ShellDeniedError`; a timeout raises :class:`ShellTimeoutError` — both
+    ``ToolInputError`` — so the gate wrapper
     (:class:`~teatree.agents.lane_b.gating.HardDenyToolset`) turns either into a
     retryable ``ModelRetry`` instead of crashing the run. The command is passed
     through a resolved POSIX ``-c`` shell
-    (:func:`_resolve_shell`, absolute path preferring ``bash``) so the list-based
-    runner still evaluates a full shell string (pipes, redirects) — the runner is
-    the sanctioned chokepoint, not raw ``subprocess``.
+    (:func:`_resolve_shell`, absolute path preferring ``bash``) so the argv-based
+    runner still evaluates a full shell string (pipes, redirects).
 
     The combined output is bounded by :class:`_OutputKeeper` to
     ``config.shell_max_output_bytes`` before it is returned, with the whole output kept
@@ -139,7 +149,7 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     shell_bin = _resolve_shell()
     keeper = _OutputKeeper(Path(cwd), config.shell_max_output_bytes)
 
-    def shell(command: str) -> str:
+    async def shell(command: str) -> str:
         """Run a shell command in the worktree and return its combined output.
 
         Past the output cap only the head and tail come back; the marker between them names the file holding all of it.
@@ -148,23 +158,34 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
         if denied is not None:
             msg = f"command refused: matches Shell denylist entry {denied!r}"
             raise ShellDeniedError(msg)
-        # ``expected_codes=None`` accepts any exit code — the tool REPORTS the
-        # exit status to the model rather than raising on a non-zero one.
         started = monotonic() if config.cache_lifetime_seconds is not None else None
-        try:
-            result = run_allowed_to_fail(
-                [shell_bin, "-c", command],
-                expected_codes=None,
-                env=config.shell_env or None,
+        process = await spawn_group_leader(
+            asyncio.create_subprocess_exec(
+                shell_bin,
+                "-c",
+                command,
                 cwd=cwd,
-                timeout=config.shell_timeout_seconds,
+                env=config.shell_env or None,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        except TimeoutExpired as exc:
+        )
+        try:
+            async with asyncio.timeout(config.shell_timeout_seconds):
+                stdout, stderr = await process.communicate()
+        except TimeoutError as exc:
+            await stop_process_group(process)
             # Redacted like ``CommandFailedError`` — this text can end up in a
             # TaskAttempt.error record, not just the model's own turn.
-            msg = f"command timed out after {exc.timeout}s: {redact_secrets(command)}"
+            msg = f"command timed out after {config.shell_timeout_seconds}s: {redact_secrets(command)}"
             raise ShellTimeoutError(msg) from exc
-        output = keeper.cap(f"exit={result.returncode}\n{result.stdout}{result.stderr}")
+        except asyncio.CancelledError:
+            await stop_process_group(process)
+            raise
+        # ``exit=N`` REPORTS any exit status to the model rather than raising on a non-zero one.
+        output = keeper.cap(f"exit={process.returncode}\n{_text(stdout)}{_text(stderr)}")
         if (
             started is not None
             and config.cache_lifetime_seconds is not None
