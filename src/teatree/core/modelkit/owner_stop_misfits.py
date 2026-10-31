@@ -40,10 +40,16 @@ def _squashed(text: str) -> str:
 @dataclass(frozen=True, slots=True)
 class OwnerStopMisfit:
     decision: OwnerDecision
+    name: str
     ask: re.Pattern[str]
     action: MisfitAction
     support: re.Pattern[str]
+    ruling: str
     facts: tuple[re.Pattern[str], ...] = ()
+
+    @property
+    def answer(self) -> str:
+        return f"Decided by the standing rule {self.name}: {self.ruling}"
 
     def fits(self, decision: OwnerDecision, question: str, texts: Sequence[str]) -> bool:
         stop = " ".join((question, *texts))
@@ -72,28 +78,34 @@ _OWN_PROCESS = r"(?:the |this |my |our )?(?:dev |local |test )?(?:process|job|se
 OWNER_STOP_MISFITS = (
     OwnerStopMisfit(
         OwnerDecision.CREDENTIALS,
+        "retry_denied_start",
         _closed_ask(rf"(?:retry|rerun|re-run|run|start|launch|try)(?: {_RETRY_TARGET})?{_AGAIN}"),
         MisfitAction.ENVIRONMENT_FAILURE,
         _closed(rf"{_FILLER}|{_DENIED_START}"),
+        "yes, retry it once in the background; a second denial is a fault to report, not a question.",
         (_words("denied|rejected|blocked"), _words(r"commands?|sub-?agents?|(?:agent|review) starts?")),
     ),
     OwnerStopMisfit(
         OwnerDecision.PUBLIC_POST,
+        "push_own_finished_branch",
         _closed_ask(
             rf"push (?:the |my |our )?(?:finished|own) (?:pull[- ]request )?branch{_AGAIN}"
             r"(?: after the (?:push )?round limit)?"
         ),
         MisfitAction.REFUSE_AND_DECIDE,
         _closed(_FILLER),
+        "yes, pushing your own finished branch needs no owner decision.",
     ),
     OwnerStopMisfit(
         OwnerDecision.IRREVERSIBLE,
+        "stop_own_process",
         _closed_ask(
             rf"(?:stop|kill|terminate|restart) {_OWN_PROCESS} (?:(?:that|which) )?(?:i|this task) "
             r"(?:started|launched|spawned)(?: for this (?:check|run|task|test))?"
         ),
         MisfitAction.REFUSE_AND_DECIDE,
         _closed(_FILLER),
+        "yes, stopping a process you started yourself needs no owner decision.",
     ),
 )
 
@@ -126,6 +138,13 @@ def _automatic_review_refusal(card: QuestionCard, question: str) -> bool:
     )
 
 
+def misfit_for(card: QuestionCard, question: str) -> OwnerStopMisfit | None:
+    """The closed row that proves *card* asks no owner decision, or ``None``: the card is the owner's."""
+    options = (text for option in card.options for text in (option.label, option.description))
+    texts = tuple(filter(None, (*card.checked, card.blocker, card.why, *options)))
+    return next((row for row in OWNER_STOP_MISFITS if row.fits(card.decision, question, texts)), None)
+
+
 def owner_stop_misfit(result: Mapping[str, object]) -> MisfitAction | None:
     """The action for an owner stop that a row proves is no owner decision, or ``None``: record the card."""
     card = QuestionCard.from_envelope(result)
@@ -134,6 +153,5 @@ def owner_stop_misfit(result: Mapping[str, object]) -> MisfitAction | None:
     question = str(result.get("user_input_reason", ""))
     if _automatic_review_refusal(card, question):
         return MisfitAction.BACKGROUND_RETRY
-    options = (text for option in card.options for text in (option.label, option.description))
-    texts = tuple(filter(None, (*card.checked, card.blocker, card.why, *options)))
-    return next((row.action for row in OWNER_STOP_MISFITS if row.fits(card.decision, question, texts)), None)
+    row = misfit_for(card, question)
+    return row.action if row else None

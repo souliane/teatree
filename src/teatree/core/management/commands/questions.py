@@ -227,7 +227,7 @@ class Command(MachineOutputCommand):
         if kind is None:
             return f"recorded #{row.pk} internal, not sent to the owner; decide it yourself. {OWNER_QUESTION_ROUTE}"
         if row.answered_at is not None:
-            return f"#{row.pk} was already answered: {row.answer_text}"
+            return f"#{row.pk} is answered and not sent to the owner: {row.answer_text}"
         if row.dismissed_at is not None:
             return f"#{row.pk} was already dismissed: {row.dismissed_reason}"
         return f"recorded #{row.pk}."

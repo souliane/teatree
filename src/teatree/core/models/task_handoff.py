@@ -59,7 +59,7 @@ def park_for_user_input(task: Task) -> None:
     question this ticket already asked resumes the task at once only through :func:`resume_on_answer`.
     """
     row = record_deferred_question(task)
-    if row.parked_task_id != task.pk:
+    if row.parked_task_id != task.pk or not row.is_pending:
         resume_on_answer(row, task)
 
 
